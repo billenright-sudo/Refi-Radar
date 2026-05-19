@@ -7,5 +7,13 @@ services:
       - "8080:8080"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - FRED_API_KEY=${FRED_API_KEY}
       - PORT=8080
       - NODE_ENV=production
+      - DATA_DIR=/data
+    volumes:
+      # SQLite database persists between container restarts
+      - refi-radar-data:/data
+
+volumes:
+  refi-radar-data:
