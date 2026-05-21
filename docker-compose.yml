@@ -11,6 +11,12 @@ services:
       - PORT=8080
       - NODE_ENV=production
       - DATA_DIR=/data
+      # Auth & email — required for production. Generate JWT_SECRET with:
+      # node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      - JWT_SECRET=${JWT_SECRET}
+      - EMAIL_USER=${EMAIL_USER:-}
+      - EMAIL_PASS=${EMAIL_PASS:-}
+      - APP_URL=${APP_URL:-http://localhost:8080}
     volumes:
       # SQLite database persists between container restarts
       - refi-radar-data:/data

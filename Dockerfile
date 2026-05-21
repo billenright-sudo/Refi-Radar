@@ -18,6 +18,8 @@ COPY server/package.json ./
 RUN npm install --production
 
 COPY server/ ./
+# .env is intentionally NOT copied — all secrets are injected at runtime via
+# environment variables (docker-compose, Cloud Run secrets, etc.)
 COPY --from=frontend-builder /app/client/build ./client/build
 
 # Persistent data directory (mount a volume here in Cloud Run / Docker)
