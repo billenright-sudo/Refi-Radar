@@ -839,6 +839,76 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
 };
 
 // ---------------------------------------------------------------------------
+// Client Tile (clickable card)
+// ---------------------------------------------------------------------------
+const ClientTile = ({ client: c, onClick }) => {
+  const a = c.a;
+  const stripe = a?.good ? (a.priority === "high" ? C.red : C.amber) : C.border;
+  const initials = c.name.split(/[\s&]+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+  const eq = equityAt(c, 0);
+
+  return (
+    <div
+      onClick={onClick}
+      className="client-tile"
+      style={{
+        ...card,
+        padding: 0,
+        overflow: "hidden",
+        cursor: "pointer",
+        borderLeft: `3px solid ${stripe}`,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div style={{ padding: "1.1rem 1.25rem 0.9rem" }}>
+        {/* Header: avatar + name + status */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: C.surfaceHi, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, ...mono, fontWeight: 700, fontSize: 14, color: C.mutedHi }}>
+            {initials}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, color: C.text, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+            <div style={{ fontSize: 12, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.email || c.phone || LOAN_LABELS[c.loanType]}</div>
+          </div>
+          <PriorityBadge priority={a?.priority} good={a?.good} />
+        </div>
+
+        {/* Rate comparison */}
+        <div style={{ display: "flex", gap: "0.75rem", marginBottom: "0.9rem" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>Current</div>
+            <div style={{ ...mono, color: C.red, fontWeight: 700, fontSize: 17 }}>{$r(c.currentRate)}</div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>Market</div>
+            <div style={{ ...mono, color: a ? C.green : C.muted, fontWeight: 700, fontSize: 17 }}>{a ? $r(a.mktRate) : "—"}</div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>Loan</div>
+            <div style={{ color: C.mutedHi, fontWeight: 600, fontSize: 13, paddingTop: 2 }}>{LOAN_LABELS[c.loanType]}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer: savings + equity */}
+      <div style={{ marginTop: "auto", borderTop: `1px solid ${C.border}`, background: `${C.surfaceHi}55`, padding: "0.75rem 1.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Monthly Savings</div>
+          <div style={{ ...mono, color: a?.monthlySavings > 0 ? C.green : C.muted, fontWeight: 700, fontSize: 16 }}>
+            {a && a.monthlySavings > 0 ? `${$c(a.monthlySavings)}/mo` : "—"}
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Equity</div>
+          <div style={{ ...mono, color: C.blue, fontWeight: 700, fontSize: 16 }}>{$c(eq.equity)}</div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Clients list (with search)
 // ---------------------------------------------------------------------------
 const Clients = ({ scored, setSelected, setView }) => {
@@ -881,40 +951,19 @@ const Clients = ({ scored, setSelected, setView }) => {
         )}
       </div>
 
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-        {filtered.length === 0 ? (
-          <div style={{ padding: "3rem", textAlign: "center", color: C.muted }}>
-            {search ? `No clients matching "${search}"` : "No clients in this category."}
-          </div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                {["Client", "Loan Type", "Current Rate", "Market Rate", "Monthly Savings", "Status"].map(h => (
-                  <th key={h} style={{ padding: "12px 16px", textAlign: "left", color: C.muted, fontSize: 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((c, i) => (
-                <tr key={c.id} onClick={() => { setSelected(c); setView("client-detail"); }} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: i % 2 === 0 ? "transparent" : `${C.surfaceHi}44` }}>
-                  <td style={{ padding: "14px 16px" }}>
-                    <div style={{ fontWeight: 600, color: C.text, fontSize: 14 }}>{c.name}</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>{c.email}</div>
-                  </td>
-                  <td style={{ padding: "14px 16px", color: C.mutedHi, fontSize: 13 }}>{LOAN_LABELS[c.loanType]}</td>
-                  <td style={{ padding: "14px 16px", ...mono, color: C.red, fontWeight: 600 }}>{$r(c.currentRate)}</td>
-                  <td style={{ padding: "14px 16px", ...mono, color: C.green, fontWeight: 600 }}>{c.a ? $r(c.a.mktRate) : "—"}</td>
-                  <td style={{ padding: "14px 16px", ...mono, color: c.a?.monthlySavings > 0 ? C.green : C.muted, fontWeight: 700 }}>{c.a ? $c(c.a.monthlySavings) : "—"}</td>
-                  <td style={{ padding: "14px 16px" }}><PriorityBadge priority={c.a?.priority} good={c.a?.good} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      {filtered.length === 0 ? (
+        <div style={{ ...card, padding: "3rem", textAlign: "center", color: C.muted }}>
+          {search ? `No clients matching "${search}"` : "No clients in this category."}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1rem" }}>
+          {filtered.map(c => (
+            <ClientTile key={c.id} client={c} onClick={() => { setSelected(c); setView("client-detail"); }} />
+          ))}
+        </div>
+      )}
       {filtered.length > 0 && (
-        <div style={{ color: C.muted, fontSize: 12, marginTop: 8, textAlign: "right" }}>
+        <div style={{ color: C.muted, fontSize: 12, marginTop: 12, textAlign: "right" }}>
           {filtered.length} client{filtered.length !== 1 ? "s" : ""}
         </div>
       )}
@@ -1884,6 +1933,8 @@ export default function App() {
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     input:focus, select:focus, textarea:focus { border-color: #f59e0b !important; }
     tr:hover td { background: rgba(15,32,53,0.6) !important; }
+    .client-tile { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+    .client-tile:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
   `;
 
   // Loading spinner
