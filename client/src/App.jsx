@@ -779,14 +779,29 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
 
       <TreasuryWidget treasury={treasury} />
 
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem" }}>
+      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
         <StatCard label="Refi Opportunities" value={ratesLoading || clientsLoading ? "—" : refiReady.length} sub="clients ready today" accent={refiReady.length > 0 ? C.amber : C.muted} />
         <StatCard label="Potential Monthly Savings" value={ratesLoading || clientsLoading ? "—" : $c(totalSavings / 12)} sub="across all opportunities" accent={C.green} />
         <StatCard label="Total Portfolio" value={clientsLoading ? "—" : scored.length} sub="clients tracked" />
         <StatCard label="Live Rate (30-Yr)" value={ratesLoading ? "Loading..." : (rates ? $r(rates.rate_30yr_fixed) : "—")} sub={rates?.source || "national average"} accent={C.blue} />
       </div>
 
-      <PortfolioEquityCard clients={scored} clientsLoading={clientsLoading} />
+      {/* Equity tile row */}
+      {!clientsLoading && scored.length > 0 && (() => {
+        const totalEquity   = scored.reduce((s, c) => s + equityAt(c, 0).equity, 0);
+        const equity5yr     = scored.reduce((s, c) => s + equityAt(c, 5).equity, 0);
+        const totalCashOut  = scored.reduce((s, c) => s + equityAt(c, 0).cashOut, 0);
+        const avgLtv        = scored.reduce((s, c) => s + equityAt(c, 0).ltvPct, 0) / scored.length;
+        const ltvColor      = avgLtv > 85 ? C.red : avgLtv > 75 ? C.amber : C.green;
+        return (
+          <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem" }}>
+            <StatCard label="🏡 Portfolio Equity" value={$c(totalEquity)} sub="combined today · 3.5%/yr" accent={C.blue} />
+            <StatCard label="📈 Equity in 5 Years" value={$c(equity5yr)} sub={`+${$c(equity5yr - totalEquity)} projected gain`} accent={C.purple} />
+            <StatCard label="💰 Cash-Out Potential" value={$c(totalCashOut)} sub="available at 80% LTV" accent={C.green} />
+            <StatCard label="📊 Avg Portfolio LTV" value={`${avgLtv.toFixed(1)}%`} sub={avgLtv <= 80 ? "below PMI threshold ✓" : "above 80% — PMI zone"} accent={ltvColor} />
+          </div>
+        );
+      })()}
 
       {rates && !ratesLoading && (
         <div style={{ ...card, display: "flex", gap: "2rem", alignItems: "center", flexWrap: "wrap", marginBottom: "2rem", background: C.amberBg, borderColor: "#3a2800" }}>
