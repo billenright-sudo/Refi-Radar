@@ -33,6 +33,44 @@ const $c = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: 
 const $r = (n) => `${(+n).toFixed(2)}%`;
 
 // ---------------------------------------------------------------------------
+// Equity helpers (3.5% annual appreciation)
+// ---------------------------------------------------------------------------
+const APPRECIATION_RATE = 0.035;
+
+// Project remaining loan balance N additional months from current balance
+function projectedBalance(balance, annualRate, loanType, additionalMonths) {
+  const totalMonths = loanType === "15yr_fixed" ? 180 : 360;
+  const r = annualRate / 100 / 12;
+  if (r === 0) return Math.max(0, balance - (balance / totalMonths) * additionalMonths);
+  const pmt = balance * (r * Math.pow(1 + r, totalMonths)) / (Math.pow(1 + r, totalMonths) - 1);
+  const fut  = balance * Math.pow(1 + r, additionalMonths) - pmt * (Math.pow(1 + r, additionalMonths) - 1) / r;
+  return Math.max(0, fut);
+}
+
+// Equity snapshot N years from now
+function equityAt(client, yearsFromNow) {
+  const months   = yearsFromNow * 12;
+  const futBal   = projectedBalance(client.loanBalance, client.currentRate, client.loanType, months);
+  const futVal   = client.propertyValue * Math.pow(1 + APPRECIATION_RATE, yearsFromNow);
+  const equity   = futVal - futBal;
+  const ltvPct   = (futBal / futVal) * 100;
+  const cashOut  = Math.max(0, futVal * 0.80 - futBal); // max cash-out at 80% LTV
+  return { equity, futVal, futBal, ltvPct, equityPct: 100 - ltvPct, cashOut };
+}
+
+// Months until LTV drops below 80% (PMI removal threshold)
+function monthsToSubEightyLTV(client) {
+  const currentLtv = (client.loanBalance / client.propertyValue) * 100;
+  if (currentLtv <= 80) return 0;
+  for (let m = 1; m <= 360; m++) {
+    const bal = projectedBalance(client.loanBalance, client.currentRate, client.loanType, m);
+    const val = client.propertyValue * Math.pow(1 + APPRECIATION_RATE, m / 12);
+    if ((bal / val) * 100 <= 80) return m;
+  }
+  return null; // never reaches 80% in 30 years
+}
+
+// ---------------------------------------------------------------------------
 // Design tokens
 // ---------------------------------------------------------------------------
 const C = {
@@ -650,6 +688,74 @@ const OrgStatsCard = () => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Portfolio Equity Card (dashboard)
+// ---------------------------------------------------------------------------
+const PortfolioEquityCard = ({ clients, clientsLoading }) => {
+  if (clientsLoading) return null;
+  if (!clients || clients.length === 0) return null;
+
+  const now5 = clients.map(c => ({
+    now:  equityAt(c, 0),
+    yr5:  equityAt(c, 5),
+  }));
+
+  const totalEquityNow    = now5.reduce((s, e) => s + e.now.equity, 0);
+  const totalEquity5yr    = now5.reduce((s, e) => s + e.yr5.equity, 0);
+  const totalCashOut      = now5.reduce((s, e) => s + e.now.cashOut, 0);
+  const gain5yr           = totalEquity5yr - totalEquityNow;
+  const avgLtv            = now5.reduce((s, e) => s + e.now.ltvPct, 0) / now5.length;
+
+  // LTV health bar color
+  const ltvColor = avgLtv > 85 ? C.red : avgLtv > 75 ? C.amber : C.green;
+
+  return (
+    <div style={{ ...card, background: "#0a1628", borderColor: "#1e3a5f", marginBottom: "2rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+        <div style={{ color: C.blue, fontSize: 12, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase" }}>
+          🏡 Portfolio Equity Snapshot · 3.5% Annual Appreciation
+        </div>
+        <div style={{ color: C.muted, fontSize: 12 }}>{clients.length} clients</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "1.5rem", marginBottom: "1.25rem" }}>
+        {[
+          ["Total Equity Today",      $c(totalEquityNow),  C.blue,   "combined across portfolio"],
+          ["Projected in 5 Years",    $c(totalEquity5yr),  C.purple, `+${$c(gain5yr)} projected gain`],
+          ["Cash-Out Potential",      $c(totalCashOut),    C.green,  "available at 80% LTV today"],
+          ["Avg Portfolio LTV",       `${avgLtv.toFixed(1)}%`, ltvColor, avgLtv <= 80 ? "below PMI threshold" : "above 80% — PMI zone"],
+        ].map(([label, val, accent, sub]) => (
+          <div key={label}>
+            <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>{label}</div>
+            <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: accent, marginBottom: 2 }}>{val}</div>
+            <div style={{ fontSize: 12, color: C.muted }}>{sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* LTV distribution bar */}
+      <div>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>LTV Distribution</div>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          {now5.map((e, i) => {
+            const ltv = e.now.ltvPct;
+            const col = ltv > 85 ? C.red : ltv > 75 ? C.amber : C.green;
+            return (
+              <div key={i} title={`${clients[i]?.name}: ${ltv.toFixed(1)}% LTV`}
+                style={{ flex: 1, height: 8, borderRadius: 4, background: col, opacity: 0.75 }} />
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.muted, marginTop: 4 }}>
+          <span><span style={{ color: C.green }}>■</span> &lt;75% LTV (strong)</span>
+          <span><span style={{ color: C.amber }}>■</span> 75–85% (watch)</span>
+          <span><span style={{ color: C.red }}>■</span> &gt;85% (PMI / high risk)</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user }) => {
   const topOpps = scored.filter(c => c.a?.good).slice(0, 5);
   const hour = new Date().getHours();
@@ -679,6 +785,8 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         <StatCard label="Total Portfolio" value={clientsLoading ? "—" : scored.length} sub="clients tracked" />
         <StatCard label="Live Rate (30-Yr)" value={ratesLoading ? "Loading..." : (rates ? $r(rates.rate_30yr_fixed) : "—")} sub={rates?.source || "national average"} accent={C.blue} />
       </div>
+
+      <PortfolioEquityCard clients={scored} clientsLoading={clientsLoading} />
 
       {rates && !ratesLoading && (
         <div style={{ ...card, display: "flex", gap: "2rem", alignItems: "center", flexWrap: "wrap", marginBottom: "2rem", background: C.amberBg, borderColor: "#3a2800" }}>
@@ -919,6 +1027,87 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
       ) : (
         <div style={{ ...card, textAlign: "center", color: C.muted, padding: "2rem" }}>Fetch live rates to see refi analysis.</div>
       )}
+
+      {/* ── Equity Projection ─────────────────────────────────────────── */}
+      {(() => {
+        const now   = equityAt(client, 0);
+        const yr1   = equityAt(client, 1);
+        const yr3   = equityAt(client, 3);
+        const yr5   = equityAt(client, 5);
+        const yr10  = equityAt(client, 10);
+        const pmiMonths = monthsToSubEightyLTV(client);
+        const ltvColor  = now.ltvPct > 85 ? C.red : now.ltvPct > 75 ? C.amber : C.green;
+
+        return (
+          <div style={{ ...card, marginTop: "1.5rem", background: "#0a1628", borderColor: "#1e3a5f" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                🏡 Equity Projection
+              </h3>
+              <span style={{ fontSize: 12, color: C.muted }}>3.5% annual appreciation</span>
+            </div>
+
+            {/* Current equity bar */}
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                <div>
+                  <span style={{ ...mono, fontSize: 28, fontWeight: 700, color: C.blue }}>{$c(now.equity)}</span>
+                  <span style={{ color: C.muted, fontSize: 14, marginLeft: 8 }}>current equity ({now.equityPct.toFixed(1)}%)</span>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ ...mono, color: ltvColor, fontWeight: 700 }}>{now.ltvPct.toFixed(1)}% LTV</div>
+                  {now.cashOut > 0 && <div style={{ color: C.green, fontSize: 12 }}>{$c(now.cashOut)} cash-out available</div>}
+                </div>
+              </div>
+              {/* LTV bar */}
+              <div style={{ height: 10, borderRadius: 6, background: C.surfaceHi, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.min(100, now.equityPct)}%`, background: ltvColor, borderRadius: 6, transition: "width 0.6s ease" }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.muted, marginTop: 4 }}>
+                <span>0%</span><span>Equity →</span><span>100%</span>
+              </div>
+            </div>
+
+            {/* Projection table */}
+            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "1.25rem" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                  {["", "Property Value", "Loan Balance", "Equity", "LTV", "Cash-Out @ 80%"].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", textAlign: h === "" ? "left" : "right", fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[["Today", now], ["+1 Year", yr1], ["+3 Years", yr3], ["+5 Years", yr5], ["+10 Years", yr10]].map(([label, e], i) => {
+                  const rowLtvColor = e.ltvPct > 85 ? C.red : e.ltvPct > 75 ? C.amber : C.green;
+                  return (
+                    <tr key={label} style={{ borderBottom: `1px solid ${C.border}44`, background: i === 0 ? `${C.surfaceHi}66` : "transparent" }}>
+                      <td style={{ padding: "10px 12px", color: i === 0 ? C.text : C.mutedHi, fontWeight: i === 0 ? 700 : 400, fontSize: 13 }}>{label}</td>
+                      <td style={{ padding: "10px 12px", ...mono, color: C.mutedHi, fontSize: 13, textAlign: "right" }}>{$c(e.futVal)}</td>
+                      <td style={{ padding: "10px 12px", ...mono, color: C.muted, fontSize: 13, textAlign: "right" }}>{$c(e.futBal)}</td>
+                      <td style={{ padding: "10px 12px", ...mono, color: C.blue, fontWeight: 700, fontSize: 13, textAlign: "right" }}>{$c(e.equity)}</td>
+                      <td style={{ padding: "10px 12px", ...mono, color: rowLtvColor, fontWeight: 600, fontSize: 13, textAlign: "right" }}>{e.ltvPct.toFixed(1)}%</td>
+                      <td style={{ padding: "10px 12px", ...mono, color: e.cashOut > 0 ? C.green : C.muted, fontSize: 13, textAlign: "right" }}>{e.cashOut > 0 ? $c(e.cashOut) : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {/* PMI milestone */}
+            {pmiMonths !== null && (
+              <div style={{ padding: "0.75rem 1rem", borderRadius: 8, background: pmiMonths === 0 ? C.greenBg : C.amberBg, borderLeft: `3px solid ${pmiMonths === 0 ? C.green : C.amber}` }}>
+                {pmiMonths === 0
+                  ? <span style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>✓ LTV already below 80% — no PMI exposure</span>
+                  : <span style={{ color: C.amber, fontSize: 13 }}>
+                      <strong style={{ color: C.amber }}>PMI removal:</strong> LTV drops below 80% in approximately <strong style={{ color: C.amber }}>{pmiMonths < 12 ? `${pmiMonths} months` : `${(pmiMonths / 12).toFixed(1)} years`}</strong> (combined paydown + appreciation at 3.5%/yr)
+                    </span>
+                }
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {client.notes && (
         <div style={{ ...card, marginTop: "1rem", borderLeft: `3px solid ${C.amber}` }}>
