@@ -9,7 +9,8 @@ const DB_PATH  = path.join(DATA_DIR, "refi-radar.db");
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
+// Use DELETE journal mode (not WAL) — GCS FUSE doesn't handle the separate -wal file reliably
+db.pragma("journal_mode = DELETE");
 db.pragma("foreign_keys = ON");
 
 // ── Schema ──────────────────────────────────────────────────────────────────

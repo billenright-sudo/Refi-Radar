@@ -20,6 +20,9 @@ const CLIENT_BUILD = path.join(__dirname, "client/build");
 
 const app = express();
 
+// Trust Cloud Run's load balancer so express-rate-limit reads the real client IP
+app.set("trust proxy", 1);
+
 app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
 app.use(express.static(CLIENT_BUILD));
