@@ -839,71 +839,52 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
 };
 
 // ---------------------------------------------------------------------------
-// Client Tile (clickable card)
+// Client Row (clickable horizontal card — matches original "opportunity" style)
 // ---------------------------------------------------------------------------
-const ClientTile = ({ client: c, onClick }) => {
+const ClientRow = ({ client: c, onClick }) => {
   const a = c.a;
   const stripe = a?.good ? (a.priority === "high" ? C.red : C.amber) : C.border;
-  const initials = c.name.split(/[\s&]+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
-  const eq = equityAt(c, 0);
+  const hasSavings = a && a.monthlySavings > 0;
 
   return (
     <div
       onClick={onClick}
       className="client-tile"
       style={{
-        ...card,
-        padding: 0,
-        overflow: "hidden",
-        cursor: "pointer",
-        borderLeft: `3px solid ${stripe}`,
         display: "flex",
-        flexDirection: "column",
+        alignItems: "center",
+        gap: "1rem",
+        padding: "1rem 1.25rem",
+        borderRadius: 12,
+        border: `1px solid ${C.border}`,
+        borderLeft: `3px solid ${stripe}`,
+        background: C.surfaceHi,
+        cursor: "pointer",
       }}
     >
-      <div style={{ padding: "1.1rem 1.25rem 0.9rem" }}>
-        {/* Header: avatar + name + status */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: C.surfaceHi, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, ...mono, fontWeight: 700, fontSize: 14, color: C.mutedHi }}>
-            {initials}
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 600, color: C.text, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
-            <div style={{ fontSize: 12, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.email || c.phone || LOAN_LABELS[c.loanType]}</div>
-          </div>
-          <PriorityBadge priority={a?.priority} good={a?.good} />
-        </div>
-
-        {/* Rate comparison */}
-        <div style={{ display: "flex", gap: "0.75rem", marginBottom: "0.9rem" }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>Current</div>
-            <div style={{ ...mono, color: C.red, fontWeight: 700, fontSize: 17 }}>{$r(c.currentRate)}</div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>Market</div>
-            <div style={{ ...mono, color: a ? C.green : C.muted, fontWeight: 700, fontSize: 17 }}>{a ? $r(a.mktRate) : "—"}</div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>Loan</div>
-            <div style={{ color: C.mutedHi, fontWeight: 600, fontSize: 13, paddingTop: 2 }}>{LOAN_LABELS[c.loanType]}</div>
-          </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, color: C.text, marginBottom: 2, fontSize: 15 }}>{c.name}</div>
+        <div style={{ fontSize: 13, color: C.muted }}>
+          {LOAN_LABELS[c.loanType]} · {$c(c.loanBalance)} balance · {$r(c.currentRate)}
         </div>
       </div>
-
-      {/* Footer: savings + equity */}
-      <div style={{ marginTop: "auto", borderTop: `1px solid ${C.border}`, background: `${C.surfaceHi}55`, padding: "0.75rem 1.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Monthly Savings</div>
-          <div style={{ ...mono, color: a?.monthlySavings > 0 ? C.green : C.muted, fontWeight: 700, fontSize: 16 }}>
-            {a && a.monthlySavings > 0 ? `${$c(a.monthlySavings)}/mo` : "—"}
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Equity</div>
-          <div style={{ ...mono, color: C.blue, fontWeight: 700, fontSize: 16 }}>{$c(eq.equity)}</div>
-        </div>
+      <div style={{ textAlign: "right" }}>
+        {hasSavings ? (
+          <>
+            <div style={{ ...mono, color: C.green, fontWeight: 700, fontSize: 18 }}>
+              {$c(a.monthlySavings)}<span style={{ fontSize: 12, fontWeight: 400 }}>/mo</span>
+            </div>
+            <div style={{ fontSize: 12, color: C.muted }}>saves {$r(a.rateDelta)} rate</div>
+          </>
+        ) : (
+          <>
+            <div style={{ ...mono, color: C.blue, fontWeight: 700, fontSize: 16 }}>{$c(equityAt(c, 0).equity)}</div>
+            <div style={{ fontSize: 12, color: C.muted }}>equity</div>
+          </>
+        )}
       </div>
+      <PriorityBadge priority={a?.priority} good={a?.good} />
+      <div style={{ color: C.muted, fontSize: 18 }}>›</div>
     </div>
   );
 };
@@ -956,9 +937,9 @@ const Clients = ({ scored, setSelected, setView }) => {
           {search ? `No clients matching "${search}"` : "No clients in this category."}
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1rem" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
           {filtered.map(c => (
-            <ClientTile key={c.id} client={c} onClick={() => { setSelected(c); setView("client-detail"); }} />
+            <ClientRow key={c.id} client={c} onClick={() => { setSelected(c); setView("client-detail"); }} />
           ))}
         </div>
       )}
