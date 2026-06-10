@@ -4,3 +4,5 @@ client/build/
 .env
 *.log
 .DS_Store
+# SQLite database (local dev)
+server/data/
