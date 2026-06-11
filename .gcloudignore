@@ -1,3 +1,9 @@
 .git
 node_modules
 server/node_modules
+# Secrets live in Secret Manager — never upload local env files
+.env
+server/.env
+# Local-only artifacts: dev SQLite DB and local client build
+server/data
+server/client
