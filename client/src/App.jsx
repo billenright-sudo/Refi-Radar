@@ -29,14 +29,20 @@ const LLPA_GRID = [
   [0,   [0,     0.125, 1.5,   2.125, 2.75,  3.0,   2.5,   2.25,  1.75 ]],
 ];
 
-const llpaRateAdj = (creditScore, ltv) => {
+const llpaPrice = (creditScore, ltv) => {
   const score = creditScore || 700;
   const row = LLPA_GRID.find(([floor]) => score >= floor)[1];
   let col = LLPA_LTV_BREAKS.findIndex((b) => ltv <= b);
   if (col === -1) col = LLPA_LTV_BREAKS.length;
-  const priceHit = row[col];
-  return Math.round((priceHit / 4) / 0.125) * 0.125;
+  return row[col];
 };
+
+const roundEighth = (x) => Math.round(x / 0.125) * 0.125;
+
+// The Optimal Blue top-tier index (LTV≤80, FICO≥740) is an observed lock rate
+// whose cohort mix already embeds roughly this much LLPA price; adjustments
+// for other borrowers are applied relative to it, not on top of it.
+const LLPA_TOP_TIER_EMBEDDED = 0.25;
 
 // Closing costs: fixed costs (title, appraisal, recording) plus 1% of balance
 // (origination) — tracks typical refi costs better than a flat percentage.
@@ -49,8 +55,26 @@ const analyze = (client, rates) => {
   if (!mktRate) return null;
   const years = client.loanType === "15yr_fixed" ? 15 : 30;
   const ltv = (client.loanBalance / client.propertyValue) * 100;
-  const rateAdj = llpaRateAdj(client.creditScore, ltv);
-  const effRate = mktRate + rateAdj;
+  const score = client.creditScore || 700;
+  const priceHit = llpaPrice(score, ltv);
+
+  // 30yr clients anchor to the observed top-tier lock rate when available:
+  // top-tier borrowers get the real cohort rate (no estimate), others get it
+  // plus pricing relative to what the index already embeds. 15yr/ARM have no
+  // top-tier index, so they use the average rate + absolute pricing estimate.
+  const topTier = client.loanType === "30yr_fixed" ? rates.rate_30yr_top_tier : null;
+  let base, baseLabel, rateAdj;
+  if (topTier) {
+    const isTopTier = score >= 740 && ltv <= 80;
+    base = topTier;
+    baseLabel = "top-tier";
+    rateAdj = isTopTier ? 0 : roundEighth(Math.max(0, priceHit - LLPA_TOP_TIER_EMBEDDED) / 4);
+  } else {
+    base = mktRate;
+    baseLabel = "market";
+    rateAdj = roundEighth(priceHit / 4);
+  }
+  const effRate = base + rateAdj;
   const rateDelta = client.currentRate - effRate;
   const curPmt = calcPayment(client.loanBalance, client.currentRate, years);
   const newPmt = calcPayment(client.loanBalance, effRate, years);
@@ -59,7 +83,7 @@ const analyze = (client, rates) => {
   const closingCosts = estClosingCosts(client.loanBalance);
   const breakEven = monthlySavings > 0 ? Math.ceil(closingCosts / monthlySavings) : 9999;
   const good = rateDelta >= 0.5 && breakEven <= 36 && monthlySavings > 0 && ltv <= 95;
-  return { mktRate, effRate, rateAdj, rateDelta, curPmt, newPmt, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low" };
+  return { mktRate, base, baseLabel, effRate, rateAdj, rateDelta, curPmt, newPmt, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low" };
 };
 
 const $c = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
@@ -1097,7 +1121,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
             <div style={{ marginTop: "1.25rem", padding: "1rem", background: `${C.greenBg}88`, borderRadius: 8, borderLeft: `3px solid ${C.green}` }}>
               <div style={{ color: C.green, fontWeight: 700, marginBottom: 4 }}>Recommendation</div>
               <div style={{ color: C.mutedHi, fontSize: 14 }}>
-                {client.name.split(" ")[0]} could save <strong style={{ color: C.green }}>{$c(a.monthlySavings)}/month</strong> by refinancing from {$r(client.currentRate)} to an estimated {$r(a.effRate)} (market {$r(a.mktRate)}{a.rateAdj > 0 ? ` + ${a.rateAdj.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}% credit/LTV pricing` : ""}). Break-even in {a.breakEven} months on ~{$c(a.closingCosts)} closing costs.
+                {client.name.split(" ")[0]} could save <strong style={{ color: C.green }}>{$c(a.monthlySavings)}/month</strong> by refinancing from {$r(client.currentRate)} to an estimated {$r(a.effRate)} ({a.baseLabel} {$r(a.base)}{a.rateAdj > 0 ? ` + ${a.rateAdj.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}% credit/LTV pricing` : ""}). Break-even in {a.breakEven} months on ~{$c(a.closingCosts)} closing costs.
               </div>
             </div>
           )}
