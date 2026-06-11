@@ -11,22 +11,55 @@ const calcPayment = (p, annualRate, years) => {
   return p * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
 };
 
+// Estimated loan-level pricing adjustments (rate-term refi, conventional).
+// Price hits as % of loan amount by credit-score band × LTV band, simplified
+// from the agency LLPA matrix. Converted to a rate adjustment at the customary
+// 4:1 price-to-rate ratio and rounded to the nearest eighth — an estimate for
+// prioritizing outreach, not a quote.
+const LLPA_LTV_BREAKS = [30, 60, 70, 75, 80, 85, 90, 95];
+const LLPA_GRID = [
+  [780, [0,     0,     0,     0,     0.375, 0.375, 0.25,  0.25,  0.125]],
+  [760, [0,     0,     0,     0.25,  0.625, 0.625, 0.5,   0.5,   0.25 ]],
+  [740, [0,     0,     0.125, 0.375, 0.875, 1.0,   0.75,  0.625, 0.5  ]],
+  [720, [0,     0,     0.25,  0.75,  1.25,  1.25,  1.0,   0.875, 0.75 ]],
+  [700, [0,     0,     0.375, 0.875, 1.375, 1.5,   1.25,  1.125, 0.875]],
+  [680, [0,     0,     0.625, 1.125, 1.75,  1.875, 1.5,   1.375, 1.125]],
+  [660, [0,     0,     0.75,  1.375, 1.875, 2.125, 1.75,  1.625, 1.25 ]],
+  [640, [0,     0,     1.125, 1.5,   2.25,  2.5,   2.0,   1.875, 1.5  ]],
+  [0,   [0,     0.125, 1.5,   2.125, 2.75,  3.0,   2.5,   2.25,  1.75 ]],
+];
+
+const llpaRateAdj = (creditScore, ltv) => {
+  const score = creditScore || 700;
+  const row = LLPA_GRID.find(([floor]) => score >= floor)[1];
+  let col = LLPA_LTV_BREAKS.findIndex((b) => ltv <= b);
+  if (col === -1) col = LLPA_LTV_BREAKS.length;
+  const priceHit = row[col];
+  return Math.round((priceHit / 4) / 0.125) * 0.125;
+};
+
+// Closing costs: fixed costs (title, appraisal, recording) plus 1% of balance
+// (origination) — tracks typical refi costs better than a flat percentage.
+const estClosingCosts = (balance) => 2500 + balance * 0.01;
+
 const analyze = (client, rates) => {
   if (!rates) return null;
   const rMap = { "30yr_fixed": rates.rate_30yr_fixed, "15yr_fixed": rates.rate_15yr_fixed, "5_1_arm": rates.rate_5_1_arm };
   const mktRate = rMap[client.loanType];
   if (!mktRate) return null;
   const years = client.loanType === "15yr_fixed" ? 15 : 30;
-  const rateDelta = client.currentRate - mktRate;
+  const ltv = (client.loanBalance / client.propertyValue) * 100;
+  const rateAdj = llpaRateAdj(client.creditScore, ltv);
+  const effRate = mktRate + rateAdj;
+  const rateDelta = client.currentRate - effRate;
   const curPmt = calcPayment(client.loanBalance, client.currentRate, years);
-  const newPmt = calcPayment(client.loanBalance, mktRate, years);
+  const newPmt = calcPayment(client.loanBalance, effRate, years);
   const monthlySavings = curPmt - newPmt;
   const annualSavings = monthlySavings * 12;
-  const closingCosts = client.loanBalance * 0.02;
+  const closingCosts = estClosingCosts(client.loanBalance);
   const breakEven = monthlySavings > 0 ? Math.ceil(closingCosts / monthlySavings) : 9999;
-  const ltv = (client.loanBalance / client.propertyValue) * 100;
   const good = rateDelta >= 0.5 && breakEven <= 36 && monthlySavings > 0 && ltv <= 95;
-  return { mktRate, rateDelta, curPmt, newPmt, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low" };
+  return { mktRate, effRate, rateAdj, rateDelta, curPmt, newPmt, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low" };
 };
 
 const $c = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
@@ -1047,7 +1080,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
           </h3>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1.25rem" }}>
             {[
-              ["Today Market Rate",   $r(a.mktRate),                     C.blue],
+              ["Est. Client Rate",    $r(a.effRate),                     C.blue],
               ["Rate Savings",        `${a.rateDelta.toFixed(2)}%`,      a.rateDelta >= 0.5 ? C.green : C.muted],
               ["New Monthly Payment", $c(a.newPmt),                      C.text],
               ["Monthly Savings",     $c(a.monthlySavings),              a.monthlySavings > 0 ? C.green : C.red],
@@ -1064,7 +1097,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
             <div style={{ marginTop: "1.25rem", padding: "1rem", background: `${C.greenBg}88`, borderRadius: 8, borderLeft: `3px solid ${C.green}` }}>
               <div style={{ color: C.green, fontWeight: 700, marginBottom: 4 }}>Recommendation</div>
               <div style={{ color: C.mutedHi, fontSize: 14 }}>
-                {client.name.split(" ")[0]} could save <strong style={{ color: C.green }}>{$c(a.monthlySavings)}/month</strong> by refinancing from {$r(client.currentRate)} to {$r(a.mktRate)}. Break-even in {a.breakEven} months.
+                {client.name.split(" ")[0]} could save <strong style={{ color: C.green }}>{$c(a.monthlySavings)}/month</strong> by refinancing from {$r(client.currentRate)} to an estimated {$r(a.effRate)} (market {$r(a.mktRate)}{a.rateAdj > 0 ? ` + ${a.rateAdj.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}% credit/LTV pricing` : ""}). Break-even in {a.breakEven} months on ~{$c(a.closingCosts)} closing costs.
               </div>
             </div>
           )}
