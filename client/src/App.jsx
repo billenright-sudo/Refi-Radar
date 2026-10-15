@@ -369,7 +369,7 @@ const RefiRadarLogo = () => (
         <circle cx="0"   cy="0"   r="4"   fill="#8aafc9" opacity="0.8"/>
         <circle cx="0"   cy="0"   r="8"   fill="none" stroke="#8aafc9" strokeWidth="1" opacity="0.3"/>
       </g>
-      <text x="340" y="140" textAnchor="middle" fontFamily="Georgia, serif" fontSize="62" fontWeight="700" fill="#f59e0b" letterSpacing="-1">RefiRadar&#8482;</text>
+      <text x="340" y="140" textAnchor="middle" fontFamily="Georgia, serif" fontSize="56" fontWeight="700" fill="#f59e0b" letterSpacing="-1">Broker Radar&#8482;</text>
       <line x1="80"  y1="162" x2="205" y2="162" stroke="#193048" strokeWidth="0.75"/>
       <line x1="475" y1="162" x2="600" y2="162" stroke="#193048" strokeWidth="0.75"/>
       <text x="340" y="175" textAnchor="middle" fontFamily="Georgia, serif" fontSize="13" fill="#8aafc9" letterSpacing="6">BROKER INTELLIGENCE PLATFORM</text>
@@ -444,7 +444,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
           </div>
         )}
         <div style={{ padding: "0.5rem", borderTop: `1px solid ${C.border}` }}>
-          <div style={{ color: C.muted, fontSize: 11, textAlign: "center" }}>© 2025 RefiRadar</div>
+          <div style={{ color: C.muted, fontSize: 11, textAlign: "center" }}>© 2026 Broker Radar</div>
         </div>
       </div>
     </aside>
@@ -1982,7 +1982,7 @@ export default function App() {
         <style>{globalStyles}</style>
         <div style={{ textAlign: "center" }}>
           <div style={{ width: 40, height: 40, border: `3px solid ${C.border}`, borderTopColor: C.amber, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
-          <div style={{ color: C.muted, fontSize: 14 }}>Loading RefiRadar…</div>
+          <div style={{ color: C.muted, fontSize: 14 }}>Loading Broker Radar…</div>
         </div>
       </div>
     );
