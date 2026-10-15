@@ -131,8 +131,8 @@ function monthsToSubEightyLTV(client) {
 // Design tokens
 // ---------------------------------------------------------------------------
 const C = {
-  bg: "#07111f", surface: "#0b1928", surfaceHi: "#0f2035",
-  border: "#193048", text: "#dce9f5", muted: "#5a7a99", mutedHi: "#8aafc9",
+  bg: "#15294f", surface: "#1d3359", surfaceHi: "#243c66",
+  border: "#324c77", text: "#dce9f5", muted: "#7496b6", mutedHi: "#a6c2db",
   amber: "#f59e0b", amberBg: "#1a1200",
   green: "#22c55e", greenBg: "#041a0e",
   red: "#f87171", redBg: "#200b0b",
@@ -348,7 +348,7 @@ const NotificationBell = () => {
 const RefiRadarLogo = () => (
   <div style={{ marginBottom: "1.5rem" }}>
     <svg width="204" height="96" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" style={{ display: "block", width: "100%" }}>
-      <rect x="0" y="0" width="680" height="320" rx="12" fill="#07111f"/>
+      <rect x="0" y="0" width="680" height="320" rx="12" fill="#15294f"/>
       <g transform="translate(340, 155)">
         <circle cx="0" cy="0" r="148" fill="none" stroke="#4a7a9b" strokeWidth="1.2" opacity="0.35"/>
         <circle cx="0" cy="0" r="120" fill="none" stroke="#4a7a9b" strokeWidth="1.2" opacity="0.45"/>
