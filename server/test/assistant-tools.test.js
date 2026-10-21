@@ -66,6 +66,8 @@ const lo1Ctx = { user: user(lo1, "lo", orgA), rates: LIVE, db };
 
 const clientRow = (id) => db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 const clientCount = () => db.prepare("SELECT COUNT(*) AS n FROM clients").get().n;
+// Error-path results must not look like a citation ("client record", "live rates ...").
+const NON_CITING = /^\([^)]+\)$/;
 
 test.beforeEach(() => {
   db.prepare("DELETE FROM rate_snapshots").run();
@@ -97,11 +99,27 @@ test("getMarketUpdate cites a dated 'live rates' source, and labels the estimate
   assert.match(est.source, /^estimated rates 2026-10-21$/);
 });
 
+const EST = { ...RATES, date: "2026-10-21", source: "Estimated — live fetch unavailable" };
+
+test("getMarketUpdate on estimated rates never fabricates a delta, even with a prior-day live snapshot", () => {
+  // A live prior-day snapshot exists, so getMovement would diff the hard-coded estimate against it
+  // and invent a day-over-day move. The tool must skip getMovement entirely.
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9 }, "2000-01-01");
+  const r = getMarketUpdate({}, { ...brokerCtx, rates: EST });
+  assert.equal(r.data.deltas, null);
+  assert.equal(r.data.hasHistory, false);
+  assert.equal(r.data.estimated, true);
+  assert.equal(r.data.rates.rate_30yr_fixed, RATES.rate_30yr_fixed, "still returns the (labeled) estimate");
+  assert.equal(r.source, "estimated rates 2026-10-21");
+  // live rates are not flagged
+  assert.equal(getMarketUpdate({}, brokerCtx).data.estimated, undefined);
+});
+
 test("getMarketUpdate refuses to answer without rates (never invents a number)", () => {
   const r = getMarketUpdate({}, { ...brokerCtx, rates: null });
   assert.ok(r.data.error);
   assert.equal(r.data.rates, undefined);
-  assert.ok(r.source);
+  assert.match(r.source, NON_CITING, "an error must not carry a citation-looking source");
 });
 
 // ── runSweepTool ────────────────────────────────────────────────────────────
@@ -137,10 +155,22 @@ test("runSweepTool scopes a loan officer to their own clients only", () => {
   assert.equal(r.data.opportunities[0].name, "Robert & Linda Chen");
 });
 
+test("runSweepTool marks its result estimated when the inputs are the hard-coded fallback rates", () => {
+  const r = runSweepTool({}, { ...brokerCtx, rates: EST });
+  assert.equal(r.source, "sweep engine (estimated rates 2026-10-21)");
+  assert.equal(r.data.estimated, true);
+  assert.equal(r.data.counts.total, 2, "still sweeps the book");
+  // live rates stay unmarked
+  const live = runSweepTool({}, brokerCtx);
+  assert.equal(live.source, "sweep engine");
+  assert.equal(live.data.estimated, undefined);
+});
+
 test("runSweepTool refuses to answer without rates", () => {
   const r = runSweepTool({}, { ...brokerCtx, rates: {} });
   assert.ok(r.data.error);
   assert.equal(r.data.counts, undefined);
+  assert.match(r.source, NON_CITING);
 });
 
 // ── findClient ──────────────────────────────────────────────────────────────
@@ -166,6 +196,7 @@ test("findClient: no match returns an empty list; blank query never dumps the bo
     const r = findClient({ query }, brokerCtx);
     assert.deepStrictEqual(r.data.matches, []);
     assert.ok(r.data.error);
+    assert.match(r.source, NON_CITING);
   }
 });
 
@@ -209,7 +240,21 @@ test("logContactTool will not package an intent for an unknown or out-of-scope c
     assert.equal(r.sideEffect, undefined, `no side effect for clientId=${clientId}`);
     assert.ok(r.data.error);
     assert.equal(r.data.client, undefined);
+    assert.match(r.source, NON_CITING, `error source must not cite for clientId=${clientId}`);
   }
+});
+
+test("logContactTool accepts only plain digit strings for an id (no exponent, hex, or padding)", () => {
+  // Each of these coerces via Number() to a REAL id in scope, so a loose parse would resolve them.
+  const literals = [`${chenId}e0`, `0x${chenId.toString(16)}`, ` ${chenId} `, `+${chenId}`, `${chenId}.0`];
+  for (const lit of literals) {
+    assert.equal(Number(lit), chenId, `precondition: Number(${JSON.stringify(lit)}) is a real id`);
+    const r = logContactTool({ clientId: lit }, brokerCtx);
+    assert.equal(r.sideEffect, undefined, `rejects ${JSON.stringify(lit)}`);
+    assert.ok(r.data.error);
+    assert.match(r.source, NON_CITING);
+  }
+  assert.equal(logContactTool({ clientId: `${chenId}` }, brokerCtx).sideEffect.clientId, chenId);
 });
 
 test("addClientTool previews the new client and does NOT write", () => {
@@ -243,4 +288,12 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);
+});
+
+test("tools dispatch map has no prototype, so a model-supplied name can't hit Object.prototype", () => {
+  assert.equal(Object.getPrototypeOf(tools), null);
+  for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
+    assert.equal(tools[name], undefined, `${name} must not resolve`);
+  }
+  assert.ok(Object.isFrozen(tools));
 });

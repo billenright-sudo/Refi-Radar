@@ -11,9 +11,14 @@ const { getMovement } = require("../rateHistory");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
+const ratesDate = (rates) => (typeof rates.date === "string" && rates.date ? rates.date : todayUtc());
+// The rates endpoint falls back to hard-coded numbers ("Estimated — live fetch unavailable")
+// when the live fetch fails. Those are never snapshotted and must never be treated as live.
+const isEstimated = (rates) => /^estimated/i.test(String(rates.source || ""));
 
 // A tool that cannot answer returns an error in `data` (never throws on bad input and never
-// guesses), so the model can recover or tell the user.
+// guesses), so the model can recover or tell the user. `source` is a parenthesised non-citation
+// label like "(not found)" so an error can't be mistaken for a cited fact.
 const fail = (source, error) => ({ data: { error }, source });
 
 // Same scoping as routes/sweeps.js and routes/clients.js: a broker sees every client in its
@@ -42,27 +47,34 @@ function toClient(row) {
 
 function getMarketUpdate(_args, ctx) {
   const rates = ctx && ctx.rates;
-  if (!hasRates(rates)) return fail("live rates (unavailable)", "current rates are unavailable");
+  if (!hasRates(rates)) return fail("(unavailable)", "current rates are unavailable");
+  const date = ratesDate(rates);
+  // Never cite the hard-coded fallback as "live", and never diff it against the last live
+  // snapshot (that would invent a day-over-day move): report it as estimated with no history.
+  if (isEstimated(rates)) {
+    return {
+      data: { rates, deltas: null, hasHistory: false, estimated: true },
+      source: `estimated rates ${date}`,
+    };
+  }
   const { current, deltas, hasHistory } = getMovement(rates);
-  const date = typeof rates.date === "string" && rates.date ? rates.date : todayUtc();
-  // The rates endpoint falls back to hard-coded numbers when the live fetch fails; never
-  // cite those as "live".
-  const estimated = /^estimated/i.test(String(rates.source || ""));
-  return {
-    data: { rates: current, deltas, hasHistory },
-    source: `${estimated ? "estimated" : "live"} rates ${date}`,
-  };
+  return { data: { rates: current, deltas, hasHistory }, source: `live rates ${date}` };
 }
 
 function runSweepTool(_args, ctx) {
   const rates = ctx && ctx.rates;
-  if (!hasRates(rates)) return fail("sweep engine", "current rates are unavailable");
-  return { data: refi.runSweep(scopedClients(ctx), rates), source: "sweep engine" };
+  if (!hasRates(rates)) return fail("(unavailable)", "current rates are unavailable");
+  const result = refi.runSweep(scopedClients(ctx), rates);
+  // Same sweep either way; when the inputs were the hard-coded fallback, say so in the result.
+  if (isEstimated(rates)) {
+    return { data: { ...result, estimated: true }, source: `sweep engine (estimated rates ${ratesDate(rates)})` };
+  }
+  return { data: result, source: "sweep engine" };
 }
 
 function findClient(args, ctx) {
   const query = String((args && args.query) == null ? "" : args.query).trim().toLowerCase();
-  if (!query) return { data: { matches: [], error: "a client name to search for is required" }, source: "client record" };
+  if (!query) return { data: { matches: [], error: "a client name to search for is required" }, source: "(invalid input)" };
   const matches = scopedClients(ctx)
     .filter((row) => String(row.name || "").toLowerCase().includes(query))
     .map(toClient);
@@ -82,10 +94,11 @@ function addClientTool(fields, _ctx) {
 
 function logContactTool(args, ctx) {
   const raw = args && args.clientId;
-  const id = typeof raw === "number" || typeof raw === "string" ? Number(raw) : NaN;
-  if (!Number.isInteger(id) || id <= 0) return fail("client record", "a valid clientId is required");
+  // A string id must be plain digits: Number() would also accept "1e2", "0x10" and " 5 ".
+  const id = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
   const row = scopedClients(ctx).find((r) => r.id === id);
-  if (!row) return fail("client record", "no such client in your book");
+  if (!row) return fail("(not found)", "no such client in your book");
   return {
     data: { client: toClient(row) },
     source: "client record",
@@ -93,7 +106,11 @@ function logContactTool(args, ctx) {
   };
 }
 
-const tools = Object.freeze({ getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool });
+// Null-prototype map: a model-supplied tool name like "constructor" or "toString" must not
+// resolve to an inherited Object.prototype function.
+const tools = Object.freeze(
+  Object.assign(Object.create(null), { getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool })
+);
 
 // ── Anthropic tool definitions (names match the keys of `tools` exactly) ─────
 
