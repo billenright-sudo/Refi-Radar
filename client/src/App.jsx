@@ -381,6 +381,7 @@ const RefiRadarLogo = () => (
 const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
   const nav = [
     { id: "dashboard", label: "Dashboard",      icon: "dashboard" },
+    { id: "sweeps",    label: "Sweeps",         icon: "search" },
     { id: "clients",   label: "All Clients",    icon: "users" },
     { id: "rates",     label: "Rate Watch",     icon: "trending" },
     { id: "add",       label: "Add Client",     icon: "plus" },
@@ -1851,6 +1852,127 @@ const ImportClients = ({ setView, setClients }) => {
 // ---------------------------------------------------------------------------
 // App root
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Sweeps — AI opportunity engine (results computed server-side, deterministic)
+// ---------------------------------------------------------------------------
+const LENS_META = {
+  rate_term:    { label: "Rate & Term", color: C.amber,  bg: C.amberBg },
+  cash_out:     { label: "Cash-Out",    color: C.green,  bg: C.greenBg },
+  arm_to_fixed: { label: "ARM → Fixed", color: C.blue,   bg: "#0b1f3a" },
+  term_swap:    { label: "Term Swap",   color: C.purple, bg: "#1a1230" },
+};
+const PRI_BADGE = {
+  high:   { bg: C.redBg,   color: C.red,   label: "High" },
+  medium: { bg: C.amberBg, color: C.amber, label: "Medium" },
+  low:    { bg: "transparent", color: C.muted, label: "Monitor" },
+};
+const fmtHeadline = (o) =>
+  o.unit === "%" ? `${(+o.headline).toFixed(2)}%` : (o.unit === "$/mo" ? `${$c(o.headline)}/mo` : $c(o.headline));
+
+const SweepsView = ({ rates, clients, setSelected, setView }) => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [logged, setLogged] = useState({});
+
+  const run = useCallback(async () => {
+    if (!rates) return;
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch("/api/sweeps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rates }) });
+      const d = await res.json();
+      if (d.success) setData(d); else setError(d.error || "Sweep failed");
+    } catch { setError("Server error running the sweep"); }
+    finally { setLoading(false); }
+  }, [rates]);
+
+  useEffect(() => { if (rates && !data) run(); }, [rates, data, run]);
+
+  const openClient = (id) => { const c = clients.find(x => x.id === id); if (c) { setSelected(c); setView("client-detail"); } };
+  const logContact = async (id) => {
+    try { const res = await fetch(`/api/clients/${id}/contact`, { method: "POST" }); const d = await res.json(); if (d.success) setLogged(p => ({ ...p, [id]: true })); } catch { /* ignore */ }
+  };
+
+  return (
+    <div style={{ animation: "fadeIn 0.3s ease", maxWidth: 960 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700 }}>Sweeps</h1>
+          <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Scans your whole book for refinance, cash-out, ARM, and term opportunities — plus 6-month check-ins.</div>
+        </div>
+        <button onClick={run} disabled={loading || !rates} style={{ display: "flex", alignItems: "center", gap: 8, background: C.amber, color: "#0f2040", border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: loading ? "default" : "pointer", opacity: (loading || !rates) ? 0.6 : 1, fontFamily: "inherit" }}>
+          <Icon name="search" size={15} color="#0f2040" />{loading ? "Sweeping…" : "Run a Sweep"}
+        </button>
+      </div>
+
+      {!rates && <div style={card}>Waiting for today&rsquo;s rates…</div>}
+      {error && <div style={{ ...card, borderColor: "#4a1414", color: C.red }}>{error}</div>}
+
+      {data && (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: "1.75rem" }}>
+            {Object.entries(LENS_META).map(([k, m]) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 14px" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: m.color }} />
+                <span style={{ fontSize: 13, color: C.mutedHi }}>{m.label}</span>
+                <span style={{ ...mono, fontSize: 15, fontWeight: 700, color: m.color }}>{data.byLens?.[k] || 0}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 14px" }}>
+              <Icon name="phone" size={13} color={C.muted} />
+              <span style={{ fontSize: 13, color: C.mutedHi }}>Check-ins due</span>
+              <span style={{ ...mono, fontSize: 15, fontWeight: 700, color: C.text }}>{data.counts.checkInsDue}</span>
+            </div>
+          </div>
+
+          <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: "0.75rem" }}>Opportunities ({data.counts.withOpportunity})</h2>
+          {data.opportunities.length === 0 ? (
+            <div style={{ ...card, color: C.muted }}>No strong opportunities at today&rsquo;s rates. Keep monitoring.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: "2rem" }}>
+              {data.opportunities.map((r) => {
+                const o = r.best; const m = LENS_META[o.lens]; const p = PRI_BADGE[o.priority];
+                return (
+                  <div key={r.clientId} onClick={() => openClient(r.clientId)} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${o.priority === "high" ? "#3a5a8a" : C.border}`, borderRadius: 11, padding: "13px 16px", cursor: "pointer" }}>
+                    <span style={{ background: m.bg, color: m.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{m.label}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{r.name}{r.opportunities.length > 1 && <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>  +{r.opportunities.length - 1} more</span>}</div>
+                      <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>{o.detail}</div>
+                    </div>
+                    <div style={{ ...mono, fontSize: 16, fontWeight: 700, color: m.color, whiteSpace: "nowrap" }}>{fmtHeadline(o)}</div>
+                    <span style={{ background: p.bg, color: p.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700 }}>{p.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: "0.75rem" }}>Check-ins due ({data.counts.checkInsDue})</h2>
+          {data.checkIns.length === 0 ? (
+            <div style={{ ...card, color: C.muted }}>Everyone has been contacted in the last 6 months.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {data.checkIns.map((r) => (
+                <div key={r.clientId} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 11, padding: "12px 16px" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, cursor: "pointer" }} onClick={() => openClient(r.clientId)}>{r.name}</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Last touch ~{r.checkIn.monthsSince} months ago</div>
+                  </div>
+                  {logged[r.clientId] ? (
+                    <span style={{ color: C.green, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Icon name="check" size={14} color={C.green} />Logged</span>
+                  ) : (
+                    <button onClick={() => logContact(r.clientId)} style={{ background: C.surfaceHi, color: C.mutedHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Log contact</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
 export default function App() {
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
@@ -2016,6 +2138,7 @@ export default function App() {
           </header>
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
             {view === "dashboard"     && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
+            {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}

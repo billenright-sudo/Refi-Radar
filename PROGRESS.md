@@ -9,7 +9,9 @@ _Last updated: 2026-10-21_
 - **Sweeps Phase 1 — server + tests** (built, **not yet deployed**): `server/lib/refi.js`
   deterministic engine (rate-term, cash-out, ARM→fixed, term-swap lenses + 6-month
   check-in), `POST /api/sweeps` (org-scoped), `last_contact` migration + `POST
-  /api/clients/:id/contact`. **19 node:tests pass.** Client UI pending. _Temporary:_
+  /api/clients/:id/contact`. **19 node:tests pass.** Client UI **built** (new Sweeps
+  view + nav item + "Run a Sweep" + "Log contact"; client compiles clean) — **not yet
+  browser-verified or deployed.** _Temporary:_
   refi math is duplicated in `App.jsx analyze()` and `lib/refi.js` — matching tests
   guard drift until the dashboard migrates onto the shared engine.
 - **Core app v2 live on Cloud Run** (rev `refi-radar-00035`): JWT auth, org/LO
@@ -48,9 +50,9 @@ _Last updated: 2026-10-21_
 - gcloud auth tokens expire often → deploys intermittently need `gcloud auth login`.
 
 ## Next steps
-1. **Sweeps Phase 1 — CLIENT UI** (server done): a "Sweeps" nav item + "Run a Sweep"
-   that POSTs the current rates to `/api/sweeps`, results grouped by lens with
-   reason-code tags, and "Log contact" on check-ins. Then local verify → deploy on go.
+1. **Sweeps Phase 1 — verify + deploy**: browser-test the Sweeps view locally (login
+   demo@refiradar.com, run a sweep, open an opportunity, log a contact), fix anything,
+   then deploy on Bill's go. The server + UI are built; only verification + deploy remain.
 2. **Sweeps Phase 2:** add program/MI fields + an AVM feed → the **drop-MI** lens
    and accurate cash-out.
 3. **Sweeps Phase 3:** "Talk to Sweeps" chat + morning briefing + draft outreach
