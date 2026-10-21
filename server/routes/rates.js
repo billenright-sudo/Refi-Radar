@@ -27,6 +27,17 @@ const ARM_SPREAD_ESTIMATE = -0.10; // typical recent 5/1 ARM spread vs 30yr fixe
 const RATES_TTL_MS = 6 * 60 * 60 * 1000;
 let ratesCache = null; // { payload, expires }
 
+// Persist a genuinely resolved (FRED / Claude web-search) rate set for market-movement
+// tracking. Never throws — snapshotting must not break the rates response — and is
+// required lazily so merely loading this router doesn't open the database.
+function captureSnapshot(rates) {
+  try {
+    require("../lib/rateHistory").recordSnapshot(rates);
+  } catch (err) {
+    console.error("Rate snapshot error:", err.message);
+  }
+}
+
 async function fredLatest(seriesId, fredKey, signal) {
   const url = `${FRED_BASE}?series_id=${seriesId}&api_key=${fredKey}&file_type=json&sort_order=desc&limit=5`;
   const response = await fetch(url, { signal });
@@ -117,6 +128,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
       },
     };
     ratesCache = { payload, expires: Date.now() + RATES_TTL_MS };
+    captureSnapshot(payload.rates);
     return res.json(payload);
   } catch (err) {
     console.error("OBMMI rates error:", err.name === "AbortError" ? "FRED timeout" : err.message);
@@ -135,6 +147,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
     if (typeof rates.rate_30yr_fixed !== "number") throw new Error("Unexpected rate format");
     const payload = { success: true, rates };
     ratesCache = { payload, expires: Date.now() + RATES_TTL_MS };
+    captureSnapshot(rates);
     res.json(payload);
   } catch (err) {
     const isTimeout = err.name === "AbortError";

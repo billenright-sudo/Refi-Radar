@@ -76,4 +76,13 @@ if (!clientCols.some((c) => c.name === "last_contact")) {
   db.exec("UPDATE clients SET last_contact = close_date WHERE (last_contact IS NULL OR last_contact = '') AND close_date <> ''");
 }
 
+// One row per UTC day of the market rates we served — the basis for "market movement".
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rate_snapshots (
+    day         TEXT PRIMARY KEY,
+    rates       TEXT NOT NULL,
+    captured_at TEXT NOT NULL
+  );
+`);
+
 module.exports = db;
