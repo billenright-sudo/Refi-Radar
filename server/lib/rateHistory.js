@@ -24,7 +24,7 @@ function getMovement(rates) {
   if (previous) {
     deltas = {};
     for (const key of Object.keys(rates || {})) {
-      if (typeof rates[key] === "number" && typeof previous[key] === "number") {
+      if (Number.isFinite(rates[key]) && Number.isFinite(previous[key])) {
         // Round away float noise (7.40 - 7.50 = -0.0999999...); rates carry <= 3 decimals.
         deltas[key] = Math.round((rates[key] - previous[key]) * 10000) / 10000;
       }

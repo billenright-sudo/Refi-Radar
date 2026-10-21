@@ -25,7 +25,12 @@ const ARM_SPREAD_ESTIMATE = -0.10; // typical recent 5/1 ARM spread vs 30yr fixe
 
 // Rates are daily — cache so refresh clicks don't refetch (or re-hit Claude).
 const RATES_TTL_MS = 6 * 60 * 60 * 1000;
-let ratesCache = null; // { payload, expires }
+let ratesCache = null; // { payload, expires, day }
+
+// The cache is also bounded to the UTC day it was filled on: a payload cached before
+// midnight must not be served after it, or that response would have no same-day snapshot
+// and getMovement would compare the data against itself.
+const utcDay = () => new Date().toISOString().slice(0, 10);
 
 // Persist a genuinely resolved (FRED / Claude web-search) rate set for market-movement
 // tracking. Never throws — snapshotting must not break the rates response — and is
@@ -73,7 +78,7 @@ async function claudeJson(prompt, timeoutMs) {
 
 // POST /api/rates — Optimal Blue (FRED) primary, Claude web search fallback
 router.post("/rates", rateLimiter, async (req, res) => {
-  if (ratesCache && Date.now() < ratesCache.expires) {
+  if (ratesCache && Date.now() < ratesCache.expires && ratesCache.day === utcDay()) {
     return res.json({ ...ratesCache.payload, cached: true });
   }
 
@@ -127,7 +132,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
         source: `Optimal Blue lock data (${obmmi.rate_30yr_fixed.date}) · ${armSource}`,
       },
     };
-    ratesCache = { payload, expires: Date.now() + RATES_TTL_MS };
+    ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
     captureSnapshot(payload.rates);
     return res.json(payload);
   } catch (err) {
@@ -146,7 +151,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
     );
     if (typeof rates.rate_30yr_fixed !== "number") throw new Error("Unexpected rate format");
     const payload = { success: true, rates };
-    ratesCache = { payload, expires: Date.now() + RATES_TTL_MS };
+    ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
     captureSnapshot(rates);
     res.json(payload);
   } catch (err) {
