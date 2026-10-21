@@ -1,12 +1,12 @@
-# Broker Radar — Voice-First AI CRM ("Teresa") — Design
+# Broker Radar — Voice-First AI CRM ("Charli") — Design
 
 _Status: draft for approval · Owner: Bill Enright · Date: 2026-10-21_
 
 ## 1. Intent & why
 
 Turn Broker Radar from a dashboard you look at into a **voice-first AI CRM you talk to**.
-You open the app and a real spoken voice — **Teresa**, the house voice already used across
-the North Star brands — greets you by name and offers to drive your morning:
+You open the app and a real spoken voice — **Charli**, voiced by the warm house voice already
+used across the North Star brands — greets you by name and offers to drive your morning:
 
 > "Good morning, Bill. How are you this morning? Where would you like to start — a market
 > update, a sweep of your book for the best opportunities, some marketing ideas, or is there
@@ -14,7 +14,7 @@ the North Star brands — greets you by name and offers to drive your morning:
 
 From there you run the entire book **hands-free, by talking**: market updates with real
 rates, a live sweep that names your best opportunities, pulling up and updating clients,
-logging contacts, and staying on top of relationships. Teresa also lives in your day — she
+logging contacts, and staying on top of relationships. Charli also lives in your day — she
 reads your Google calendar, books the check-ins she surfaces, and drafts refi outreach in
 Gmail that **you approve before it ever sends**.
 
@@ -29,21 +29,21 @@ it is the concrete realization of the broker/LO CRM from the UWM pitch.
 
 ## 2. Goals
 
-- A broker opens Broker Radar and **runs their morning by talking to Teresa, hands-free.**
+- A broker opens Broker Radar and **runs their morning by talking to Charli, hands-free.**
 - **v1 proves the "wow"** end to end: greet → market update → sweep that names opportunities
   → pull up / add a client → log a contact → read today's calendar + book a follow-up →
   draft a Gmail outreach for approval.
-- **Every answer is grounded and citeable.** Teresa's replies trace to a real source (a
+- **Every answer is grounded and citeable.** Charli's replies trace to a real source (a
   client record, a live rate, the sweep engine, a calendar event, an email). Nothing stated
   as fact is invented.
-- The experience feels **natural and low-latency** — real turn-taking, Teresa's real voice,
+- The experience feels **natural and low-latency** — real turn-taking, Charli's real voice,
   not a robotic toy.
 
 ## 3. Non-goals (explicitly deferred past v1)
 
 - **Marketing-ideas generation** (freeform brainstorm) — phase 2.
 - **Reading / summarizing inbound email and auto-logging threads** to a client — phase 2.
-- **"Hey Teresa" wake word** / summon-while-away — phase 2. v1 uses the live-session model.
+- **"Hey Charli" wake word** / summon-while-away — phase 2. v1 uses the live-session model.
 - **Outlook / Microsoft 365** email + calendar — later. v1 is Google only (built so a second
   provider can slot in behind the same interface).
 - **Self-serve multi-broker onboarding at scale** — later. v1 connects one account (Bill /
@@ -53,11 +53,11 @@ it is the concrete realization of the broker/LO CRM from the UWM pitch.
 
 ## 4. Anti-goals (these make it a failure even if it "works")
 
-1. **Teresa guesses.** Any fabricated number, fact, or guideline stated as truth — or any
+1. **Charli guesses.** Any fabricated number, fact, or guideline stated as truth — or any
    confident answer she couldn't verify — is a failure, not a bug. "I can't verify that" is a
    correct answer.
 2. **Anything is sent without explicit per-send approval.** No email, text, or invite leaves
-   on Teresa's own initiative. Ever. (Standing rule.)
+   on Charli's own initiative. Ever. (Standing rule.)
 3. **The math diverges from the engine.** If a spoken number doesn't match
    `server/lib/refi.js` / the rates engine, the feature is broken.
 4. **It feels like a toy** — laggy, stilted, wrong-voice, or constantly mis-hearing.
@@ -70,13 +70,13 @@ already lives by.
 
 - **Today:** no LLM ever computes a *number*. Savings, payments, LTV, break-even, rates come
   from `server/lib/refi.js` and the rates engine.
-- **Added here:** no LLM ever invents a *fact or guideline* either. Teresa answers only from a
+- **Added here:** no LLM ever invents a *fact or guideline* either. Charli answers only from a
   source she can check and cite. If nothing she can query answers the question, she says she
   can't confirm it rather than guessing.
 
-**How it's enforced in the build:** Teresa's LLM turn does not answer factual questions from
+**How it's enforced in the build:** Charli's LLM turn does not answer factual questions from
 its own knowledge. It **calls a tool**, and the tool returns structured data from a real
-source. The LLM's job is to *route to the right tool, narrate the result in Teresa's voice,
+source. The LLM's job is to *route to the right tool, narrate the result in Charli's voice,
 and decide the next action* — never to supply the facts or the figures itself. Every spoken
 claim is backed by a tool result that is also shown in the on-screen transcript as its source.
 
@@ -91,7 +91,7 @@ claim is backed by a tool result that is also shown in the on-screen transcript 
 | Outreach drafts | generated text staged as a Gmail **draft**, shown for approval |
 
 If a question falls outside these (e.g. "what's Fannie's reserve requirement on a 2-unit
-investment?"), v1 Teresa says she can't verify that yet — that's the loan-guideline module
+investment?"), v1 Charli says she can't verify that yet — that's the loan-guideline module
 (§9), switched on later.
 
 **One engine, canonical.** The voice layer uses the **server** engine
@@ -101,15 +101,16 @@ call.)_
 
 ## 6. The experience (decided)
 
-- **Live session, greet on open.** When the app opens, Teresa greets you and the mic begins
+- **Live session, greet on open.** When the app opens, Charli greets you and the mic begins
   listening; you talk, she talks back, natural turn-taking, until you pause. A visible
   **pause / mute** control is always present. (Note for builder: browsers block audio autoplay
   until a user gesture, so the very first greeting may require a single "Start" tap or the
   login click as the gesture — acceptable; after that it's hands-free. This is a builder call,
   flagged in §11.)
-- **Teresa's voice** is the existing ElevenLabs house voice ("Teresa") used on the North Star
-  explainers, so she sounds identical. The builder pulls the exact voice id from Bill's
-  ElevenLabs account (recon step, §11).
+- **Charli's voice** is the existing ElevenLabs house voice (the "Teresa" asset in Bill's
+  account) used on the North Star explainers, so she sounds identical. The builder pulls the
+  exact voice id from Bill's ElevenLabs account (recon step, §11). If Bill later wants a
+  different voice to match the Charli name, only that voice id changes.
 - **What she can do by voice in v1:**
   - **Market update** — reads today's real rates, plus the day's movement once a prior
     snapshot exists (we persist a daily rate snapshot from now on; until two exist she gives
@@ -126,8 +127,8 @@ call.)_
   - **Calendar** — "what's on today?" reads the day; "book a follow-up with the Chens Friday
     at 10" creates the event.
   - **Draft outreach** — "draft the Chens their refi note" → composes a Gmail **draft**;
-    Teresa reads it back; sending requires an explicit, separate yes (voice + on-screen).
-- **Proactive but bounded:** Teresa offers and suggests (the morning menu, "want me to book
+    Charli reads it back; sending requires an explicit, separate yes (voice + on-screen).
+- **Proactive but bounded:** Charli offers and suggests (the morning menu, "want me to book
   that?", "want me to draft it?"), but every side-effecting action (create client, create
   event, send email) takes an explicit confirmation.
 
@@ -138,18 +139,18 @@ to Cloud Run, SQLite on the GCS volume. No rewrite.
 
 ### 7.1 Voice pipeline (decided — data stays on our infra)
 
-**ElevenLabs for voice only (speech-to-text + Teresa's TTS); Claude orchestrates
+**ElevenLabs for voice only (speech-to-text + Charli's TTS); Claude orchestrates
 server-side.** Borrower data stays on our infrastructure — client names, balances, rates, and
 every tool result are reasoned over by Claude on our own server and **never flow through a
 third-party conversational-AI model.** ElevenLabs transcribes the broker's speech and speaks
-Teresa's replies; it does not see the CRM lookups. We own the turn-taking / barge-in loop in
+Charli's replies; it does not see the CRM lookups. We own the turn-taking / barge-in loop in
 the browser.
 
 _(Bill chose this over ElevenLabs' all-in-one Conversational AI, which would have routed
 borrower NPI through their model and servers. The tradeoff is that we build the turn-taking
 loop ourselves rather than getting it bundled — worth it to keep borrower data on our infra.)_
 
-### 7.2 Tools (deterministic; the only way Teresa gets facts)
+### 7.2 Tools (deterministic; the only way Charli gets facts)
 
 Server endpoints the voice layer may call, each returning structured, citeable data:
 
@@ -158,7 +159,7 @@ Server endpoints the voice layer may call, each returning structured, citeable d
 - `runSweep()` → opportunities + check-ins (existing `/api/sweeps`)
 - `getClient(query)` / `listClients()` → CRM records (existing `/api/clients`)
 - `addClient(fields)` → create (existing), **confirmed before save**
-- `logContact(clientId)` → set `last_contact` (existing `/api/clients/:id/contact`); Teresa
+- `logContact(clientId)` → set `last_contact` (existing `/api/clients/:id/contact`); Charli
   reads back the client name for confirmation before writing, so a mis-heard name can't
   corrupt the check-in cadence _(builder call)_
 - `getCalendar(range)` / `createEvent(details)` → Google Calendar (new, §7.3)
@@ -167,7 +168,7 @@ Server endpoints the voice layer may call, each returning structured, citeable d
   sends — never called autonomously.
 
 The orchestration LLM (Claude; `ANTHROPIC_API_KEY` / `CLAUDE_MODEL` already in the app) maps
-each utterance to a tool call, then narrates the structured result in Teresa's voice. It is
+each utterance to a tool call, then narrates the structured result in Charli's voice. It is
 instructed never to answer a factual/quantitative question except via a tool result.
 
 ### 7.3 Google integration
@@ -200,13 +201,13 @@ To ground "the day's movement" (§4/§5), persist **one rate snapshot per day**.
 **Capture-on-fetch** — store the snapshot whenever rates are refreshed and the day has rolled
 over — avoids needing an always-on cron on Cloud Run; a Cloud Scheduler ping is the fallback
 if capture-on-fetch proves too sparse. "Movement" = today vs. the most recent prior snapshot.
-Until two snapshots exist, Teresa reports today's rates without claiming a move. (This is the
-mortgage-rate series Teresa quotes — not the 10-yr Treasury, which is a different instrument.)
+Until two snapshots exist, Charli reports today's rates without claiming a move. (This is the
+mortgage-rate series Charli quotes — not the 10-yr Treasury, which is a different instrument.)
 
-## 8. Teresa's persona & prompt (decided intent)
+## 8. Charli's persona & prompt (decided intent)
 
-- **Voice/tone:** warm, familiar, competent, a step ahead — the North Star "Teresa," not a
-  cold assistant.
+- **Voice/tone:** warm, familiar, competent, a step ahead — the warm North Star house voice,
+  not a cold assistant.
 - **System prompt encodes:** the morning greeting + proactive menu; the retrieve-and-cite law
   (answer only from tools; say "I can't verify that" otherwise); the confirmation rule for any
   side-effecting action; PII minimization (don't read back full SSNs/account numbers); and the
@@ -216,14 +217,14 @@ mortgage-rate series Teresa quotes — not the 10-yr Treasury, which is a differ
 
 The "Loan Decision & Guideline Expert — Complete Build Package" (Bill's doc, 2026-10-21) is
 **not v1**, and **not a separate assistant** to the user — it is a **knowledge module** that
-plugs into Teresa later and makes her a guideline expert too, using the *same* zero-guessing
+plugs into Charli later and makes her a guideline expert too, using the *same* zero-guessing
 discipline this design is built on.
 
 It is deferred because its value is 90% in the **maintained corpus and governance**, not the
 prompt: a current, dated, access-controlled library of UWM overlays + agency/investor/AUS
 guidance, with a named owner and a refresh cadence; confirmed authorization to ingest internal
 UWM content; and the compliance gating (Bill-only pilot, test gate T01–T20, blocking rule)
-from that doc. When that library is ready, Teresa routes loan-guideline questions to it and
+from that doc. When that library is ready, Charli routes loan-guideline questions to it and
 answers with citations and standardized outcomes; until then she says she can't verify those.
 
 See the source doc for the agent spec, evidence hierarchy, test suite, and rollout checklist.
@@ -243,7 +244,8 @@ See the source doc for the agent spec, evidence hierarchy, test suite, and rollo
 
 ## 11. What's left to the builder
 
-- **Pull the exact Teresa voice id** from Bill's ElevenLabs account (recon).
+- **Pull the exact voice id for Charli** (Bill's house voice — the "Teresa" asset on the North
+  Star explainers) from Bill's ElevenLabs account (recon).
 - **First-greeting gesture** (§6): decide whether the login click or a one-tap "Start" serves
   as the autoplay gesture.
 - **Voice panel UI**: transcript + source display, waveform/indicator, pause/mute placement.

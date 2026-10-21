@@ -1,10 +1,10 @@
-# Teresa Voice Co-pilot (Core) Implementation Plan
+# Charli Voice Co-pilot (Core) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A broker opens Broker Radar, is greeted by Teresa in her real voice, and runs their book hands-free — market update, live sweep by name, pull up / add a client, log a contact — with every spoken fact traced to a source and nothing guessed.
+**Goal:** A broker opens Broker Radar, is greeted by Charli in her real voice, and runs their book hands-free — market update, live sweep by name, pull up / add a client, log a contact — with every spoken fact traced to a source and nothing guessed.
 
-**Architecture:** Browser captures the broker's speech and chunks it on silence; a server route transcribes it (ElevenLabs Scribe), a server-side orchestrator asks Claude to pick one of a fixed set of deterministic tools (which wrap the existing engine + CRM), executes it, and returns Teresa's narrated reply + its source; another route turns that reply into audio via Teresa's ElevenLabs voice. Borrower data and all reasoning stay on our server; ElevenLabs only receives audio and reply text, never a third-party LLM making decisions. Side-effecting actions (add client, log contact) are read back and confirmed before they run.
+**Architecture:** Browser captures the broker's speech and chunks it on silence; a server route transcribes it (ElevenLabs Scribe), a server-side orchestrator asks Claude to pick one of a fixed set of deterministic tools (which wrap the existing engine + CRM), executes it, and returns Charli's narrated reply + its source; another route turns that reply into audio via Charli's ElevenLabs voice. Borrower data and all reasoning stay on our server; ElevenLabs only receives audio and reply text, never a third-party LLM making decisions. Side-effecting actions (add client, log contact) are read back and confirmed before they run.
 
 **Tech Stack:** Node 20 + Express + better-sqlite3; `@anthropic-ai/sdk` (already a dependency); ElevenLabs REST API (TTS + Scribe STT) via server proxy; React 18 + Vite (existing `client/src/App.jsx`); node:test.
 
@@ -15,16 +15,16 @@
 - **Node 20** locally (better-sqlite3 prebuilds; Node 24 won't compile it).
 - **Deterministic math only:** every number comes from `server/lib/refi.js` or the rates engine. No LLM computes or guesses a number, fact, or guideline. When no tool answers, the reply is an explicit "I can't verify that," never a generated answer.
 - **Data stays on our infra:** Claude orchestration runs server-side; borrower NPI never flows to a third-party conversational model. STT uses **ElevenLabs Scribe via our server proxy** (not the browser's Google-backed Web Speech API, which would send spoken client names to Google).
-- **Side effects are confirmed:** `addClient` and `logContact` return a pending action that runs only after an explicit confirm; Teresa reads the client name back first.
-- **Secrets by env var only**, never in the repo: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` (existing), new `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_TERESA`. Confirm they are in `server/.env` locally and Google Secret Manager for Cloud Run.
+- **Side effects are confirmed:** `addClient` and `logContact` return a pending action that runs only after an explicit confirm; Charli reads the client name back first.
+- **Secrets by env var only**, never in the repo: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` (existing), new `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_CHARLI`. Confirm they are in `server/.env` locally and Google Secret Manager for Cloud Run.
 - **No deploy without Bill's explicit go.** This plan builds and verifies locally only.
 - All new server code is CommonJS `"use strict";`, matching the existing server.
 
 ## Review Focus
 
-- **Ambiguous or mis-heard client name on a side-effecting action** → Teresa must read the matched name back and require a confirm; if the query matches 0 or >1 clients she asks which, never acts on a guess. _(Task 2 tests `findClient`; Task 3 tests the confirm gate.)_
+- **Ambiguous or mis-heard client name on a side-effecting action** → Charli must read the matched name back and require a confirm; if the query matches 0 or >1 clients she asks which, never acts on a guess. _(Task 2 tests `findClient`; Task 3 tests the confirm gate.)_
 - **Claude tries to answer a factual/quantitative question without calling a tool** → the orchestrator must not surface model-authored facts; the turn resolves to "I can't verify that." _(Task 3 test with a stubbed model that returns prose instead of a tool call.)_
-- **A question in the deferred loan-guideline domain** (e.g. a Fannie reserve rule) → Teresa gives the hand-off line ("I can't verify that yet"), no hallucinated guideline. _(Task 3 test.)_
+- **A question in the deferred loan-guideline domain** (e.g. a Fannie reserve rule) → Charli gives the hand-off line ("I can't verify that yet"), no hallucinated guideline. _(Task 3 test.)_
 - **ElevenLabs or Claude API failure mid-session** → the turn returns a clean error turn, the session stays usable, and no partial side effect is committed. _(Task 4 tests the route's error path; Task 5 tests the voice proxy error path.)_
 - **"Movement" requested with fewer than two daily snapshots** → states today's rates and explicitly makes no movement claim. _(Task 1 test.)_
 
@@ -95,19 +95,19 @@
 
 ---
 
-### Task 3: Teresa prompt + Claude orchestrator
+### Task 3: Charli prompt + Claude orchestrator
 
 **Files:**
-- Create: `server/lib/assistant/prompt.js` (exports `TERESA_SYSTEM` string)
+- Create: `server/lib/assistant/prompt.js` (exports `CHARLI_SYSTEM` string)
 - Create: `server/lib/assistant/orchestrator.js`
 - Test: `server/test/assistant-orchestrator.test.js`
 
 **Interfaces:**
-- Consumes: `TOOL_SCHEMA` + tool fns (Task 2), `TERESA_SYSTEM`.
+- Consumes: `TOOL_SCHEMA` + tool fns (Task 2), `CHARLI_SYSTEM`.
 - Produces: `runTurn({ messages, ctx, client }) -> { reply, sources:[string], sideEffect?:{...}, usage:{inputTokens,outputTokens} }`. `client` is an injected Anthropic-like client with `messages.create()` — **injected so tests use a fake**; production passes the real `@anthropic-ai/sdk` client built from `ANTHROPIC_API_KEY`/`CLAUDE_MODEL`.
 - Contract enforced: the model may only produce facts by calling a tool. `runTurn` executes the requested tool, feeds the result back, and returns the model's narration. If the model answers a factual ask with no tool call, `runTurn` returns the fixed `reply: "I can't verify that from what I have, so I won't guess."` A side-effect tool call is **not executed**; it is returned in `sideEffect` for confirmation (Task 4).
 
-**`TERESA_SYSTEM` must encode:** the warm "Teresa" persona + morning greeting intent; the retrieve-and-cite law (answer only from tool results; otherwise say she can't verify); the confirmation rule for side effects; PII minimization (never read back full SSNs/account numbers); and the hand-off line for the deferred loan-guideline domain.
+**`CHARLI_SYSTEM` must encode:** the warm "Charli" persona + morning greeting intent; the retrieve-and-cite law (answer only from tool results; otherwise say she can't verify); the confirmation rule for side effects; PII minimization (never read back full SSNs/account numbers); and the hand-off line for the deferred loan-guideline domain.
 
 - [ ] **Step 1: Write the failing test** in `server/test/assistant-orchestrator.test.js` using a **fake client** whose `messages.create()` is scripted per case:
   - Fake returns a `getMarketUpdate` tool_use → `runTurn` reply contains the real rate number and `sources` includes the market source.
@@ -121,7 +121,7 @@
 
 - [ ] **Step 4: Run to verify it passes** — `cd server && npm test` → PASS.
 
-- [ ] **Step 5: Commit** — `git add -A && git commit -m "feat: Teresa orchestrator enforces retrieve-and-cite, gates side effects"`
+- [ ] **Step 5: Commit** — `git add -A && git commit -m "feat: Charli orchestrator enforces retrieve-and-cite, gates side effects"`
 
 ---
 
@@ -164,7 +164,7 @@
 - Test: `server/test/voice-api.test.js`
 
 **Interfaces:**
-- `POST /api/voice/tts` (requireAuth) body `{ text }` → streams `audio/mpeg` from ElevenLabs using `ELEVENLABS_VOICE_ID_TERESA` and the Flash/Turbo model id; 400 if `text` missing/empty; counts `text.length` into `recordUsage` (ttsChars). API key stays server-side.
+- `POST /api/voice/tts` (requireAuth) body `{ text }` → streams `audio/mpeg` from ElevenLabs using `ELEVENLABS_VOICE_ID_CHARLI` and the Flash/Turbo model id; 400 if `text` missing/empty; counts `text.length` into `recordUsage` (ttsChars). API key stays server-side.
 - `POST /api/voice/stt` (requireAuth) multipart audio blob → `{ text }` via ElevenLabs Scribe; 400 if no audio.
 - The outbound ElevenLabs call is made through an injectable `fetch`-like fn (module default = global `fetch`) so tests stub it; an ElevenLabs non-2xx returns 502 with `{ error }`, not a crash.
 
@@ -180,41 +180,41 @@
 
 - [ ] **Step 4: Run to verify it passes** — `cd server && npm test` → PASS.
 
-- [ ] **Step 5: Commit** — `git add -A && git commit -m "feat: server-side ElevenLabs voice proxy (Teresa TTS + Scribe STT)"`
+- [ ] **Step 5: Commit** — `git add -A && git commit -m "feat: server-side ElevenLabs voice proxy (Charli TTS + Scribe STT)"`
 
 ---
 
-### Task 6: Teresa live-session voice UI
+### Task 6: Charli live-session voice UI
 
 **Files:**
-- Modify: `client/src/App.jsx` (add `TeresaView` component + nav item + render-switch; greet-on-open hook)
+- Modify: `client/src/App.jsx` (add `CharliView` component + nav item + render-switch; greet-on-open hook)
 - Verify: browser preview (this task is UI/audio — verified in the Browser pane, not node:test)
 
 **Interfaces:**
 - Consumes: `POST /api/assistant/turn`, `POST /api/assistant/confirm`, `POST /api/voice/tts`, `POST /api/voice/stt` (same-origin cookie auth).
-- `TeresaView` behavior:
+- `CharliView` behavior:
   - On open, posts a greeting turn (or a canned greeting) and plays it via `/api/voice/tts`; the login/open click is the audio-autoplay gesture.
-  - **Live loop:** capture mic (`getUserMedia`) → detect end-of-utterance by a simple silence timer (VAD-lite) → POST the audio to `/api/voice/stt` → send the transcript + running `messages` to `/api/assistant/turn` → render Teresa's reply with its **source**, play it via `/api/voice/tts`, then reopen the mic. **Pause/Mute** control stops the loop.
+  - **Live loop:** capture mic (`getUserMedia`) → detect end-of-utterance by a simple silence timer (VAD-lite) → POST the audio to `/api/voice/stt` → send the transcript + running `messages` to `/api/assistant/turn` → render Charli's reply with its **source**, play it via `/api/voice/tts`, then reopen the mic. **Pause/Mute** control stops the loop.
   - **Side-effect confirmation:** when a turn returns `sideEffect`, show the read-back + a Confirm/Cancel; Confirm calls `/api/assistant/confirm`, Cancel discards.
   - Transcript list shows each turn with its source; a turn flagged `error:true` renders as a recoverable error, session continues.
   - Reuses module-scope `C`, `card`, `mono`, `Icon`, `$c`; matches the Sweeps view's styling.
 
-- [ ] **Step 1: Add** `TeresaView` + a `{ id:"teresa", label:"Teresa", icon:"mic" }` nav item (after `sweeps`) + the render-switch line, following the `SweepsView` pattern already in `App.jsx`.
+- [ ] **Step 1: Add** `CharliView` + a `{ id:"charli", label:"Charli", icon:"mic" }` nav item (after `sweeps`) + the render-switch line, following the `SweepsView` pattern already in `App.jsx`.
 
 - [ ] **Step 2: Build the client** — `cd client && npx vite build` → exit 0.
 
-- [ ] **Step 3: Browser-verify** (per the harness verification workflow): start the server (Node 20) + vite, log in as `demo@refiradar.com`, open **Teresa**; confirm greeting plays, a spoken "what are rates today" is transcribed → market update spoken with a visible source, "run a sweep" names an opportunity, "log contact for the Chens" shows a read-back + Confirm and only writes on Confirm. Capture a screenshot. (Requires `ELEVENLABS_*` and `ANTHROPIC_API_KEY` in `server/.env`.)
+- [ ] **Step 3: Browser-verify** (per the harness verification workflow): start the server (Node 20) + vite, log in as `demo@refiradar.com`, open **Charli**; confirm greeting plays, a spoken "what are rates today" is transcribed → market update spoken with a visible source, "run a sweep" names an opportunity, "log contact for the Chens" shows a read-back + Confirm and only writes on Confirm. Capture a screenshot. (Requires `ELEVENLABS_*` and `ANTHROPIC_API_KEY` in `server/.env`.)
 
-- [ ] **Step 4: Commit** — `git add -A && git commit -m "feat: Teresa live-session voice UI"`
+- [ ] **Step 4: Commit** — `git add -A && git commit -m "feat: Charli live-session voice UI"`
 
 ---
 
 ## Prerequisites (Bill / setup, before Task 5–6 verification)
 
 - `ELEVENLABS_API_KEY` in `server/.env` (+ Secret Manager before any deploy).
-- `ELEVENLABS_VOICE_ID_TERESA` — the exact Teresa voice id, pulled from Bill's ElevenLabs account (recon step; the ElevenLabs connector in this session can list voices to confirm the id).
+- `ELEVENLABS_VOICE_ID_CHARLI` — the voice Bill chose for Charli: his house voice (the one on the North Star explainers, named "Teresa" in his ElevenLabs account). Pull the exact voice id from his ElevenLabs account (recon step; the ElevenLabs connector in this session can list voices to confirm the id). If Bill later wants a different voice to match the Charli name, only this id changes.
 - `ANTHROPIC_API_KEY` already present (used by the existing app).
 
 ## Out of scope (this plan)
 
-Google calendar + Gmail draft-and-approve (Plan B), marketing-ideas, inbound-email reading, "Hey Teresa" wake word, Outlook, multi-broker onboarding, and the loan-guideline corpus module.
+Google calendar + Gmail draft-and-approve (Plan B), marketing-ideas, inbound-email reading, "Hey Charli" wake word, Outlook, multi-broker onboarding, and the loan-guideline corpus module.
