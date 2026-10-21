@@ -14,6 +14,7 @@ const orgRoutes    = require("./routes/org");
 const notifRoutes  = require("./routes/notifications");
 const ratesRoutes  = require("./routes/rates");
 const importRoutes = require("./routes/import");
+const sweepsRoutes = require("./routes/sweeps");
 
 const PORT         = process.env.PORT || 8080;
 const CLIENT_BUILD = path.join(__dirname, "client/build");
@@ -34,6 +35,7 @@ app.use("/api/org",           orgRoutes);
 app.use("/api/notifications", notifRoutes);
 app.use("/api",               ratesRoutes);   // mounts /api/rates and /api/treasury
 app.use("/api/import",        importRoutes);
+app.use("/api/sweeps",        sweepsRoutes);
 
 // Health check
 app.get("/health", (req, res) => {

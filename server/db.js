@@ -68,4 +68,12 @@ db.exec(`
   );
 `);
 
+// ── Migrations (idempotent) ──────────────────────────────────────────────────
+const clientCols = db.prepare("PRAGMA table_info(clients)").all();
+if (!clientCols.some((c) => c.name === "last_contact")) {
+  db.exec("ALTER TABLE clients ADD COLUMN last_contact TEXT");
+  // Seed last_contact from the close date so the 6-month cadence has a basis.
+  db.exec("UPDATE clients SET last_contact = close_date WHERE (last_contact IS NULL OR last_contact = '') AND close_date <> ''");
+}
+
 module.exports = db;

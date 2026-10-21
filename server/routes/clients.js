@@ -13,7 +13,8 @@ function toClient(row) {
     loanType: row.loan_type, currentRate: row.current_rate,
     loanBalance: row.loan_balance, propertyValue: row.property_value,
     closeDate: row.close_date, creditScore: row.credit_score,
-    notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at,
+    notes: row.notes, lastContact: row.last_contact,
+    createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
 
@@ -110,6 +111,23 @@ router.delete("/:id", (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error("DELETE /api/clients/:id:", err.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+
+// POST /api/clients/:id/contact — log an outreach (sets last_contact = now).
+// Broker: any org client; LO: own clients only.
+router.post("/:id/contact", (req, res) => {
+  const id = parseInt(req.params.id);
+  const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+  if (!existing) return res.status(404).json({ success: false, error: "Client not found" });
+  if (req.user.role === "lo" && existing.user_id !== req.user.id) return res.status(403).json({ success: false, error: "Access denied" });
+  if (existing.org_id !== req.user.org_id) return res.status(403).json({ success: false, error: "Access denied" });
+  try {
+    db.prepare("UPDATE clients SET last_contact = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
+    res.json({ success: true, client: toClient(db.prepare("SELECT * FROM clients WHERE id = ?").get(id)) });
+  } catch (err) {
+    console.error("POST /api/clients/:id/contact:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
   }
 });
