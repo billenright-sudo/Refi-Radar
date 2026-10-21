@@ -6,12 +6,14 @@ cleanly after compaction / a new session. Newest notes at the top of each list.
 _Last updated: 2026-10-21_
 
 ## Done
-- **Sweeps Phase 1 — server + tests** (built, **not yet deployed**): `server/lib/refi.js`
-  deterministic engine (rate-term, cash-out, ARM→fixed, term-swap lenses + 6-month
-  check-in), `POST /api/sweeps` (org-scoped), `last_contact` migration + `POST
-  /api/clients/:id/contact`. **19 node:tests pass.** Client UI **built** (new Sweeps
-  view + nav item + "Run a Sweep" + "Log contact"; client compiles clean) — **not yet
-  browser-verified or deployed.** _Temporary:_
+- **Sweeps Phase 1 — LIVE** (rev `refi-radar-00036-85j`, deployed 2026-10-21):
+  `server/lib/refi.js` deterministic engine (rate-term, cash-out, ARM→fixed, term-swap
+  lenses + 6-month check-in), `POST /api/sweeps` (org-scoped), `last_contact` migration
+  + `POST /api/clients/:id/contact`. **19 node:tests pass.** Browser-verified locally
+  and on prod: sweep auto-runs, all lenses fire, opportunity→client-detail nav works,
+  "Log contact" persists `last_contact`. On prod Rate & Term = 2 (tuned demo rates);
+  on the local seed it's 0 (milder rates vs 7.4% market — correct, parity with
+  dashboard). _Temporary:_
   refi math is duplicated in `App.jsx analyze()` and `lib/refi.js` — matching tests
   guard drift until the dashboard migrates onto the shared engine.
 - **Core app v2 live on Cloud Run** (rev `refi-radar-00035`): JWT auth, org/LO
