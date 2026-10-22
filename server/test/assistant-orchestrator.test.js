@@ -620,7 +620,7 @@ test("the action-claim guard catches the first-person completion phrasings and l
     const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
     assert.equal(r.reply, NOTHING_CHANGED, claim);
   }
-  for (const honest of ["I haven't logged anything.", "Anytime!", "Happy to help.", "Do you want me to log that?"]) {
+  for (const honest of ["Anytime!", "Happy to help.", "Do you want me to log that?"]) {
     const client = fakeClient([say(honest)]);
     const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
     assert.equal(r.reply, honest);
@@ -921,15 +921,64 @@ test("wider completion claims are replaced with the nothing-changed line, ground
     assert.equal(r.reply, NOTHING_CHANGED, "after findClient: " + claim);
     assert.deepStrictEqual(r.sources, []);
   }
-  // negations, offers and modals are not completion claims
-  for (const honest of [
-    "I have not logged anything.", "I haven't logged anything.", "I can log that once you confirm.",
-    "I will add her when you say so.", "Want me to log it?", "I never logged it.",
-  ]) {
+  // offers and plain acknowledgements are not completion claims and name no book noun
+  for (const honest of ["I will add her when you say so.", "Want me to log it?", "Anytime!"]) {
     const client = fakeClient([say(honest)]);
     const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
     assert.equal(r.reply, honest, honest);
   }
+  // negations and modals are not completion claims either (the nothing-changed line must not fire);
+  // they do name "log", so the reply-side keyword screen resolves them to the can't-verify line
+  for (const negated of [
+    "I have not logged anything.", "I haven't logged anything.", "I can log that once you confirm.", "I never logged it.",
+  ]) {
+    const client = fakeClient([say(negated)]);
+    const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
+    assert.equal(r.reply, CANT_VERIFY, negated);
+    assert.notEqual(r.reply, NOTHING_CHANGED, negated);
+  }
+});
+
+// ── reply-side keyword screen on ungrounded turns ────────────────────────────
+
+test("ungrounded reply that names a book/market noun is blocked even when the user only said 'good morning'", async () => {
+  for (const reply of [
+    "Rates ticked down today.", "Chen's your best opportunity this morning.", "Your pipeline looks healthy.",
+    "You have a few clients due.", "Good morning, Bill! Want me to run a sweep?",
+  ]) {
+    const client = fakeClient([say(reply)]);
+    const r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client });
+    assert.equal(r.reply, CANT_VERIFY, reply);
+    assert.deepStrictEqual(r.sources, [], reply);
+  }
+});
+
+test("a lone question still passes on a greeting turn, and a greeting with no book noun is untouched", async () => {
+  for (const reply of ["Want me to run a sweep?", "Good morning, Bill! How are you today?", "Good morning, Bill! How can I help?"]) {
+    const client = fakeClient([say(reply)]);
+    const r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client });
+    assert.equal(r.reply, reply, reply);
+  }
+});
+
+test("grounded turns are unaffected by the reply-side keyword screen (figure check only)", async () => {
+  const client = fakeClient([useTool("getMarketUpdate"), say("Rates are at 6.52 percent today, and your pipeline is quiet.")]);
+  const r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "Rates are at 6.52 percent today, and your pipeline is quiet.");
+  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+});
+
+test("screenUngroundedText: the reply's own book/market noun resolves to can't-verify, after the lone-question exemption", () => {
+  assert.equal(screenUngroundedText("good morning", "Rates ticked down today."), CANT_VERIFY);
+  assert.equal(screenUngroundedText("good morning", "Want me to run a sweep?"), "Want me to run a sweep?");
+  assert.equal(screenUngroundedText("good morning", "Good morning, Bill! Want me to run a sweep?"), CANT_VERIFY);
+  assert.equal(screenUngroundedText("good morning", "Good morning, Bill! How are you today?"), "Good morning, Bill! How are you today?");
+  assert.equal(screenUngroundedText("is Chen eligible for FHA", "Rates ticked down."), GUIDELINE_HANDOFF);
+});
+
+test("CHARLI_SYSTEM's greeting does not offer a market or call list (that offer would be blocked as unsourced)", () => {
+  assert.doesNotMatch(CHARLI_SYSTEM, /offer to run through/i);
+  assert.match(CHARLI_SYSTEM, /ask how you can help/i);
 });
 
 test("'contact' in any form is a book keyword (contacted, contacts, contact)", () => {

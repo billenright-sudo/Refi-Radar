@@ -112,8 +112,10 @@ function isLoneClarifyingQuestion(reply, userText) {
 //   1. guideline-domain question  -> the fixed hand-off line;
 //   2. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
 //      and "what's their name?" must reach the user;
-//   3. the model's text has a digit or a spoken figure, or the user asked about book/market
-//      facts, or the model said nothing -> the fixed can't-verify line;
+//   3. the model's text has a digit or a spoken figure, or the user's message OR the model's
+//      own text names a book/market noun (rates, clients, pipeline, ...), or the model said
+//      nothing                      -> the fixed can't-verify line (with no cited tool result, a
+//      statement about the book can't be sourced, even if the user only said "good morning");
 //   4. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
 // Pure: no I/O, no state.
 function screenUngroundedText(userText, modelText) {
@@ -121,7 +123,8 @@ function screenUngroundedText(userText, modelText) {
   const text = String(modelText == null ? "" : modelText);
   if (isGuidelineQuestion(user)) return GUIDELINE_HANDOFF;
   if (isLoneClarifyingQuestion(text, user)) return text;
-  if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0 || BOOK_FACT_RE.test(user)) return CANT_VERIFY;
+  if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0) return CANT_VERIFY;
+  if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text)) return CANT_VERIFY;
   return text;
 }
 
