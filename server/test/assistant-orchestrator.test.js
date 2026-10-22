@@ -18,7 +18,9 @@ const { TOOL_SCHEMA } = require("../lib/assistant/tools");
 const {
   CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
 } = require("../lib/assistant/prompt");
-const { runTurn, screenUngroundedText, ungroundedNumbers } = require("../lib/assistant/orchestrator");
+const {
+  runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion,
+} = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
 const LIVE = { ...RATES, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
@@ -234,7 +236,7 @@ test("a failed lookup is narrated normally and its '(…)' source is not cited",
     say("I couldn't find that one."),
   ]);
   // no book/market keyword in the user's words, so the narration of the failure may pass
-  const r = await runTurn({ messages: userSays("mark Zed as contacted"), ctx: brokerCtx, client });
+  const r = await runTurn({ messages: userSays("update Zed"), ctx: brokerCtx, client });
   assert.equal(r.reply, "I couldn't find that one.");
   assert.deepStrictEqual(r.sources, []);
   assert.equal(r.sideEffect, undefined);
@@ -792,6 +794,155 @@ test("the clarifying-question exemption does not beat the guideline hand-off", a
   const client = fakeClient([say("Which Chen do you mean?")]);
   const r = await runTurn({ messages: userSays("Is Chen eligible for an FHA streamline?"), ctx: brokerCtx, client });
   assert.equal(r.reply, GUIDELINE_HANDOFF);
+});
+
+test("grounded turn: a clarifying question can't carry a figure either (the exemption never bypasses the figure check)", async () => {
+  const client = fakeClient([useTool("getMarketUpdate"), say("Chen owes $485,000, want to call?")]);
+  const r = await runTurn({ messages: userSays("What's Chen's balance?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.deepStrictEqual(r.sources, []);
+});
+
+test("isLoneClarifyingQuestion: a single short question, nothing asserted, no new names", () => {
+  for (const [reply, user] of [
+    ["What's their name?", "add a client"],
+    ["  What's their name?  ", "add a client"],
+    ["Want me to run the sweep?", "who should I call today"],
+    ["Which Chen do you mean?", "log a call with Chen"],
+    ["So which one?", "log a call"],
+    ["And what's their loan type?", "add a client"],
+    ["Who's calling?", "hello"],
+    ["Which one, Robert or Wei?", "call Robert or Wei"],
+    ["Do you mean Chen Wei?", "call chen wei"],
+    ["Can I get the balance first?", "log a call"],
+    ["Need anything else?", "thanks"],
+  ]) {
+    assert.equal(isLoneClarifyingQuestion(reply, user), true, reply);
+  }
+});
+
+test("isLoneClarifyingQuestion: statements, tag questions, punctuation breaks, new names, digits, claims are rejected", () => {
+  for (const [reply, user, why] of [
+    ["Start with Robert and Linda Chen — want me to pull their numbers?", "who should I call today", "statement + tag"],
+    ["Rates ticked down a bit today — want the exact numbers?", "how are rates", "statement + tag"],
+    ["Want to start with the Chens?", "who should I call", "capitalized word the user never said"],
+    ["Sure. Which one?", "add a client", "period before the ?"],
+    ["Chen's the one with the highest rate, right?", "which client has the highest rate", "tag question"],
+    ["Which Chen — Robert and Linda, or Chen Wei?", "log a call with Chen", "em dash and new names"],
+    ["Which Chen – the first one?", "log a call with Chen", "en dash"],
+    ["Which Chen - the first one?", "log a call with Chen", "spaced hyphen"],
+    ["Which one! Robert?", "log a call with Robert", "exclamation"],
+    ["Which one; I mean who?", "add a client", "semicolon"],
+    ["Which one: Robert?", "log a call with Robert", "colon"],
+    ["What? Which one?", "add a client", "two questions"],
+    ["Do you mean Robert Chen?", "call Chen", "Robert is new"],
+    ["Is that 30 years?", "add a client", "digit"],
+    ["Do you want the four hundred thousand one?", "add a client", "number words"],
+    ["Want me to log it since I've logged the others?", "add a client", "completion claim"],
+    ["What's their name", "add a client", "no question mark"],
+    ["Whatever?", "add a client", "not a question word"],
+    ["Isn't that Chen?", "call Chen", "contraction not in the list"],
+    ["", "add a client", "empty"],
+  ]) {
+    assert.equal(isLoneClarifyingQuestion(reply, user), false, why + ": " + reply);
+  }
+});
+
+test("a tag-question statement or a made-up name does not ride on the clarifying-question exemption", async () => {
+  for (const [user, reply] of [
+    ["Who should I call today?", "Start with Robert and Linda Chen — want me to pull their numbers?"],
+    ["how are rates today", "Rates ticked down a bit today — want the exact numbers?"],
+    ["who should I call", "Want to start with the Chens?"],
+    ["add a client", "Sure. Which one?"],
+    ["which client has the highest rate", "Chen's the one with the highest rate, right?"],
+  ]) {
+    const client = fakeClient([say(reply)]);
+    const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client });
+    assert.equal(r.reply, CANT_VERIFY, reply);
+    assert.deepStrictEqual(r.sources, []);
+  }
+  // while the lone question on the same turn still passes
+  const client = fakeClient([say("Want me to run the sweep?")]);
+  const r = await runTurn({ messages: userSays("Who should I call today?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "Want me to run the sweep?");
+  assert.deepStrictEqual(r.sources, []);
+});
+
+// ── number words, wider completion claims ────────────────────────────────────
+
+test("number words count as figures that can't be grounded: hundred/thousand/million/billion/percent, 'point' + digit word", () => {
+  for (const reply of [
+    "Chen owes four hundred eighty-five thousand dollars.", "about six percent", "a Million bucks", "two billion",
+    "six point five two", "it's point five", "Point zero eight lower",
+  ]) {
+    assert.notDeepEqual(ungroundedNumbers(reply, [MARKET_PAYLOAD]), [], reply);
+  }
+  // numerals consume their own multiplier/percent word; "thirty" alone is not on the list
+  for (const reply of [
+    "The thirty-year fixed is 6.52 percent.", "The thirty-year fixed", "70 thousand", "$485K", "1.2 billion", "5 hundred",
+    "that is a good point, one of several", "percentage points",
+  ]) {
+    const payload = JSON.stringify({ a: 70000, b: 485000, c: 1.2e9, d: 500, rate_30yr_fixed: 6.52 });
+    assert.deepStrictEqual(ungroundedNumbers(reply, [payload]), [], reply);
+  }
+});
+
+test("a grounded turn rejects a figure spelled in words; the thirty-year narration still passes", async () => {
+  let client = fakeClient([useTool("getMarketUpdate"), say("Chen owes four hundred eighty-five thousand dollars.")]);
+  let r = await runTurn({ messages: userSays("What's Chen's balance?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.deepStrictEqual(r.sources, []);
+
+  client = fakeClient([useTool("getMarketUpdate"), say("The thirty-year fixed is at 6.52 percent.")]);
+  r = await runTurn({ messages: userSays("what's the rate"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent.");
+  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+});
+
+test("an ungrounded reply with a spoken figure is blocked even on small talk", async () => {
+  const client = fakeClient([say("Good morning! I'd say it's about six percent.")]);
+  const r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client });
+  assert.equal(r.reply, CANT_VERIFY);
+});
+
+test("wider completion claims are replaced with the nothing-changed line, grounded or not", async () => {
+  const claims = [
+    "I've gone ahead and logged the call", "That's logged.", "All set, contact recorded.", "All set, Chen's marked as contacted.",
+    "Logged.", "The call is logged.", "Chen has been updated.", "I went ahead and saved it for you.",
+    "I noted it.", "I changed the record.", "I've recorded the call.",
+  ];
+  for (const claim of claims) {
+    let client = fakeClient([say(claim)]);
+    let r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, "ungrounded: " + claim);
+
+    client = fakeClient([useTool("findClient", { query: "chen" }), say(claim)]);
+    r = await runTurn({ messages: userSays("Log a call with Chen"), ctx: brokerCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, "after findClient: " + claim);
+    assert.deepStrictEqual(r.sources, []);
+  }
+  // negations, offers and modals are not completion claims
+  for (const honest of [
+    "I have not logged anything.", "I haven't logged anything.", "I can log that once you confirm.",
+    "I will add her when you say so.", "Want me to log it?", "I never logged it.",
+  ]) {
+    const client = fakeClient([say(honest)]);
+    const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
+    assert.equal(r.reply, honest, honest);
+  }
+});
+
+test("'contact' in any form is a book keyword (contacted, contacts, contact)", () => {
+  for (const u of ["who did I contact", "any contacts due", "who was contacted last", "contacting Chen"]) {
+    assert.equal(screenUngroundedText(u, "Pretty good."), CANT_VERIFY, u);
+  }
+});
+
+test("CHARLI_SYSTEM narrows the deferred eligibility topic to program eligibility", () => {
+  assert.doesNotMatch(CHARLI_SYSTEM, /DTI limits, reserve requirements or eligibility/);
+  assert.match(CHARLI_SYSTEM, /program eligibility/i);
+  assert.match(CHARLI_SYSTEM, /FHA, VA, USDA, conventional, jumbo/i);
+  assert.match(CHARLI_SYSTEM, /candidate for a refinance|refinance candidate/i);
 });
 
 test("screenUngroundedText: only a digit-free, question-mark-terminated, claim-free reply is exempt", () => {

@@ -52,33 +52,76 @@ const ELIGIBLE_NEAR_PROGRAM_RE = new RegExp(
 );
 const isGuidelineQuestion = (text) => GUIDELINE_RE.test(text) || ELIGIBLE_NEAR_PROGRAM_RE.test(text);
 
-// Questions about the book or the market: an answer needs a tool, so text alone can't stand.
+/// Questions about the book or the market: an answer needs a tool, so text alone can't stand.
 const BOOK_FACT_RE = wordRe([
   "rates?", "markets?", "sweeps?", "opportunit\\w*", "clients?", "balances?", "payments?",
   "savings?", "LTV", "equity", "refi\\w*", "cash[\\s-]?out",
-  "call\\w*", "log\\w*", "contacts?", "loans?", "pipeline", "books?", "check[\\s-]?ins?", "follow[\\s-]?ups?",
+  "call\\w*", "log\\w*", "contact\\w*", "loans?", "pipeline", "books?", "check[\\s-]?ins?", "follow[\\s-]?ups?",
 ]);
 
 // A first-person completion claim. runTurn never performs an action, so by construction any
-// "Done" or "I logged / added / saved ..." the model says is false.
-const ACTION_CLAIM_RE =
-  /^\s*done\b|\bI(?:['’]ve| have| just)?\s+(?:just\s+)?(?:logged|added|saved|booked|sent|scheduled|updated|created)\b/i;
+// "Done", "All set", "Logged", "I (just / went ahead and) logged / added / saved ...", or "it's /
+// was / has been logged" the model says is false. Up to three words may sit between "I" and the
+// verb, but not a negation or a modal ("I have not logged", "I can add").
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|changed";
+const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent";
+const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
+const ACTION_CLAIM_RE = new RegExp(
+  "^\\s*(?:done|all\\s+set|logged)\\b" +
+  "|\\bI(?:['\\u2019]ve)?(?:\\s+(?!(?:" + NOT_A_CLAIM + ")\\b)\\w+){0,3}\\s+(?:" + CLAIM_VERBS + ")\\b" +
+  "|(?:\\b(?:is|was|been|got)|['\\u2019]s)\\s+(?:" + PASSIVE_VERBS + ")\\b",
+  "i"
+);
+
+// Spoken figures that no payload can ground: hundred / thousand / million / billion / percent, or
+// "point" followed by a digit word ("six point five"). A numeral consumes its own multiplier and
+// percent word first (see figureWords), so "6.52 percent" and "70 thousand" are left to the
+// numeric check. Other number words ("thirty") are deliberately not on the list.
+const FIGURE_WORD_RE =
+  /\b(?:hundred|thousand|million|billion|percent)\b|\bpoint\s+(?:zero|one|two|three|four|five|six|seven|eight|nine)\b/gi;
+const figureWords = (text) => String(text).replace(FIGURE_RE, " ").match(FIGURE_WORD_RE) || [];
+
+// Words that open a question or an offer. A leading and/or/so (no comma) is allowed.
+const QUESTION_START_RE =
+  /^(?:(?:and|or|so)\s+)?(?:what|which|who|whom|whose|when|where|why|how|do|does|did|is|are|was|were|can|could|would|should|will|shall|may|might|want|need)\b/i;
+// A sentence or clause break: . ! ; : ? an em or en dash, or a spaced hyphen.
+const CLAUSE_BREAK_RE = /[.!;:?—–]| - /;
+const lettersOf = (s) => String(s == null ? "" : s).match(/[A-Za-zÀ-ɏ]+/g) || [];
+
+// True only for a reply that is ONE short question and asserts nothing: it starts with a
+// question/auxiliary word, ends with "?", has no sentence or clause break before that "?", no
+// digit or spoken figure, no completion claim, and no capitalized word (other than its first word
+// and "I") that the user's message did not already contain. A statement with a question tacked on
+// ("Start with Robert Chen, want the numbers?") fails the first test; a made-up name fails the
+// last.
+// Pure: no I/O, no state.
+function isLoneClarifyingQuestion(reply, userText) {
+  const text = String(reply == null ? "" : reply).trim();
+  if (!text.endsWith("?")) return false;
+  const body = text.slice(0, -1);
+  if (!QUESTION_START_RE.test(body) || CLAUSE_BREAK_RE.test(body)) return false;
+  if (/\d/.test(text) || figureWords(text).length > 0 || ACTION_CLAIM_RE.test(text)) return false;
+  const said = new Set(lettersOf(userText).map((w) => w.toLowerCase()));
+  return lettersOf(body).every(
+    (w, i) => i === 0 || w === "I" || w[0] === w[0].toLowerCase() || said.has(w.toLowerCase())
+  );
+}
 
 // What may be said when the model answered in text and no tool result this turn carried a
 // citation (it called no tool, or every tool it called failed).
 //   1. guideline-domain question  -> the fixed hand-off line;
-//   2. a clarifying question (no digit, ends with "?", no completion claim) -> unchanged: a
-//      question asserts no figure, and "what's their name?" must reach the user;
-//   3. the model's text has a digit, or the user asked about book/market facts, or the model
-//      said nothing                -> the fixed can't-verify line;
+//   2. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
+//      and "what's their name?" must reach the user;
+//   3. the model's text has a digit or a spoken figure, or the user asked about book/market
+//      facts, or the model said nothing -> the fixed can't-verify line;
 //   4. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
 // Pure: no I/O, no state.
 function screenUngroundedText(userText, modelText) {
   const user = String(userText == null ? "" : userText);
   const text = String(modelText == null ? "" : modelText);
   if (isGuidelineQuestion(user)) return GUIDELINE_HANDOFF;
-  if (text.trim().endsWith("?") && !/\d/.test(text) && !ACTION_CLAIM_RE.test(text)) return text;
-  if (!text.trim() || /\d/.test(text) || BOOK_FACT_RE.test(user)) return CANT_VERIFY;
+  if (isLoneClarifyingQuestion(text, user)) return text;
+  if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0 || BOOK_FACT_RE.test(user)) return CANT_VERIFY;
   return text;
 }
 
@@ -86,11 +129,11 @@ function screenUngroundedText(userText, modelText) {
 
 // An integer (with optional thousands commas) and optional decimals.
 const NUMBER_SRC = "(\\d{1,3}(?:,\\d{3})+|\\d+)(\\.\\d+)?";
-const MULTIPLIER = { thousand: 1e3, k: 1e3, million: 1e6, m: 1e6 };
-// A figure in a reply: $ prefix, number, then an optional K / thousand / M / million multiplier
+const MULTIPLIER = { hundred: 1e2, thousand: 1e3, k: 1e3, million: 1e6, m: 1e6, billion: 1e9 };
+// A figure in a reply: $ prefix, number, then an optional K / hundred / thousand / M / million / billion multiplier
 // and an optional % / percent / dollars suffix.
 const FIGURE_RE = new RegExp(
-  "(\\$)?" + NUMBER_SRC + "(?:\\s*(thousand|million|k|m)\\b)?(\\s*%|\\s+(?:percent|dollars?)\\b)?", "gi"
+  "(\\$)?" + NUMBER_SRC + "(?:\\s*(hundred|thousand|million|billion|k|m)\\b)?(\\s*%|\\s+(?:percent|dollars?)\\b)?", "gi"
 );
 
 // Every number appearing anywhere in the payload text (values, dates inside strings, even the
@@ -114,12 +157,15 @@ function payloadNumbers(payloads) {
 //     the reply's own decimal places (6.46 and 6.5 both match 6.461; 412 matches 412.37;
 //     485,000 and $485K match 485000; ties round either way);
 //   * a standalone integer 0-10 (counts, ordinals) is exempt, unless it sits next to a $, a %,
-//     "percent", "dollars" or a multiplier.
+//     "percent", "dollars" or a multiplier;
+//   * a figure spoken in words (hundred, thousand, million, billion, percent, "point five") can't
+//     be matched to anything, so it is always returned.
 // Pure: no I/O, no state.
 function ungroundedNumbers(replyText, payloads) {
   const known = payloadNumbers(Array.isArray(payloads) ? payloads : []);
+  const text = String(replyText == null ? "" : replyText);
   const bad = [];
-  for (const m of String(replyText == null ? "" : replyText).matchAll(FIGURE_RE)) {
+  for (const m of text.matchAll(FIGURE_RE)) {
     const [whole, dollar, int, frac, mult, suffix] = m;
     const value = Number(int.replace(/,/g, "") + (frac || ""));
     if (!dollar && !frac && !mult && !suffix && value <= 10) continue;
@@ -128,6 +174,7 @@ function ungroundedNumbers(replyText, payloads) {
     const tolerance = 0.5 * 10 ** -decimals + 1e-9;
     if (!known.some((p) => Math.abs(p / scale - value) <= tolerance)) bad.push(whole.trim());
   }
+  bad.push(...figureWords(text));
   return bad;
 }
 
@@ -337,4 +384,4 @@ async function runTurn({ messages, ctx, client } = {}) {
   return finish(CANT_VERIFY);
 }
 
-module.exports = { runTurn, screenUngroundedText, ungroundedNumbers };
+module.exports = { runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion };
