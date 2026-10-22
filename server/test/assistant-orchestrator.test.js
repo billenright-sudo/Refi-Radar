@@ -70,9 +70,19 @@ for (const [i, rate] of [[15, 7.2], [16, 7.3]]) {
   });
 }
 
+// An org with two Chens, for the "which Chen?" clarifying question.
+const orgD = addOrg("Delta");
+const brokerD = addUser(orgD, "broker", "broker@d.co");
+for (const name of ["Robert & Linda Chen", "Chen Wei"]) {
+  addClientRow(orgD, brokerD, {
+    name, loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 450000, creditScore: 740,
+  });
+}
+
 const user = (id, role, orgId) => ({ id, role, org_id: orgId });
 const brokerCtx = { user: user(brokerA, "broker", orgA), rates: LIVE, db };
 const sweepCtx = { user: user(brokerC, "broker", orgC), rates: LIVE, db };
+const twoChensCtx = { user: user(brokerD, "broker", orgD), rates: LIVE, db };
 
 const lastContactOf = (id) => db.prepare("SELECT last_contact FROM clients WHERE id = ?").get(id).last_contact;
 const clientCount = () => db.prepare("SELECT COUNT(*) AS n FROM clients").get().n;
@@ -742,4 +752,56 @@ test("findClient output is trimmed: at most 5 matches, no email/phone/notes, wit
   assert.equal(m.loanBalance, 485000);
   for (const k of ["email", "phone", "notes"]) assert.equal(k in m, false, k);
   for (const v of Object.values(CHEN_PII)) assert.ok(!raw.includes(v), "PII value must not reach the model: " + v);
+});
+
+// ── clarifying questions pass the book-keyword screen ────────────────────────
+
+test("clarifying question: 'add a client' answered 'What's their name?' with no tool passes through", async () => {
+  const client = fakeClient([say("What's their name?")]);
+  const r = await runTurn({ messages: userSays("add a client"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "What's their name?");
+  assert.deepStrictEqual(r.sources, []);
+  assert.equal(r.sideEffect, undefined);
+});
+
+test("clarifying question after findClient returns two matches passes through", async () => {
+  const client = fakeClient([
+    useTool("findClient", { query: "chen" }),
+    say("Which Chen — Robert and Linda, or Chen Wei?"),
+  ]);
+  const r = await runTurn({ messages: userSays("log a call with Chen"), ctx: twoChensCtx, client });
+  assert.equal(toolResultPayload(client.calls[1]).data.totalMatches, 2);
+  assert.equal(r.reply, "Which Chen — Robert and Linda, or Chen Wei?");
+  assert.equal(r.sideEffect, undefined);
+});
+
+test("the clarifying-question exemption does not bypass the digit check", async () => {
+  const client = fakeClient([say("Chen's rate is 8.95%, want the draft?")]);
+  const r = await runTurn({ messages: userSays("what's Chen's rate"), ctx: brokerCtx, client });
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.deepStrictEqual(r.sources, []);
+});
+
+test("the clarifying-question exemption does not beat the action-claim guard", async () => {
+  const client = fakeClient([say("Done, I logged it — anything else?")]);
+  const r = await runTurn({ messages: userSays("log a call with Chen"), ctx: brokerCtx, client });
+  assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+test("the clarifying-question exemption does not beat the guideline hand-off", async () => {
+  const client = fakeClient([say("Which Chen do you mean?")]);
+  const r = await runTurn({ messages: userSays("Is Chen eligible for an FHA streamline?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, GUIDELINE_HANDOFF);
+});
+
+test("screenUngroundedText: only a digit-free, question-mark-terminated, claim-free reply is exempt", () => {
+  assert.equal(screenUngroundedText("add a client", "What's their name?"), "What's their name?");
+  assert.equal(screenUngroundedText("add a client", "  What's their name?  "), "  What's their name?  ");
+  // an assertion is not a question
+  assert.equal(screenUngroundedText("add a client", "Start with Robert Chen."), CANT_VERIFY);
+  assert.equal(screenUngroundedText("add a client", "What's their name? Start with Robert."), CANT_VERIFY);
+  // digits, claims and guideline questions keep their lines
+  assert.equal(screenUngroundedText("add a client", "Is that 30 years?"), CANT_VERIFY);
+  assert.equal(screenUngroundedText("add a client", "I logged it, anything else?"), CANT_VERIFY);
+  assert.equal(screenUngroundedText("is Chen eligible for FHA", "Which Chen?"), GUIDELINE_HANDOFF);
 });

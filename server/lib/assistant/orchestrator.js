@@ -67,14 +67,17 @@ const ACTION_CLAIM_RE =
 // What may be said when the model answered in text and no tool result this turn carried a
 // citation (it called no tool, or every tool it called failed).
 //   1. guideline-domain question  -> the fixed hand-off line;
-//   2. the model's text has a digit, or the user asked about book/market facts, or the model
+//   2. a clarifying question (no digit, ends with "?", no completion claim) -> unchanged: a
+//      question asserts no figure, and "what's their name?" must reach the user;
+//   3. the model's text has a digit, or the user asked about book/market facts, or the model
 //      said nothing                -> the fixed can't-verify line;
-//   3. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
+//   4. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
 // Pure: no I/O, no state.
 function screenUngroundedText(userText, modelText) {
   const user = String(userText == null ? "" : userText);
   const text = String(modelText == null ? "" : modelText);
   if (isGuidelineQuestion(user)) return GUIDELINE_HANDOFF;
+  if (text.trim().endsWith("?") && !/\d/.test(text) && !ACTION_CLAIM_RE.test(text)) return text;
   if (!text.trim() || /\d/.test(text) || BOOK_FACT_RE.test(user)) return CANT_VERIFY;
   return text;
 }
