@@ -52,55 +52,94 @@ const ELIGIBLE_NEAR_PROGRAM_RE = new RegExp(
 );
 const isGuidelineQuestion = (text) => GUIDELINE_RE.test(text) || ELIGIBLE_NEAR_PROGRAM_RE.test(text);
 
-/// Questions about the book or the market: an answer needs a tool, so text alone can't stand.
+// Questions about the book or the market: an answer needs a tool, so text alone can't stand.
 const BOOK_FACT_RE = wordRe([
   "rates?", "markets?", "sweeps?", "opportunit\\w*", "clients?", "balances?", "payments?",
   "savings?", "LTV", "equity", "refi\\w*", "cash[\\s-]?out",
   "call\\w*", "log\\w*", "contact\\w*", "loans?", "pipeline", "books?", "check[\\s-]?ins?", "follow[\\s-]?ups?",
 ]);
 
-// A first-person completion claim. runTurn never performs an action, so by construction any
-// "Done", "All set", "Logged", "I (just / went ahead and) logged / added / saved ...", or "it's /
-// was / has been logged" the model says is false. Up to three words may sit between "I" and the
-// verb, but not a negation or a modal ("I have not logged", "I can add").
-const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|changed";
-const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent";
-const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
-const ACTION_CLAIM_RE = new RegExp(
-  "^\\s*(?:done|all\\s+set|logged)\\b" +
-  "|\\bI(?:['\\u2019]ve)?(?:\\s+(?!(?:" + NOT_A_CLAIM + ")\\b)\\w+){0,3}\\s+(?:" + CLAIM_VERBS + ")\\b" +
-  "|(?:\\b(?:is|was|been|got)|['\\u2019]s)\\s+(?:" + PASSIVE_VERBS + ")\\b",
+// ── Openers, questions, completion claims ────────────────────────────────────
+
+// One content-free conversational opener ("Sure,", "Got it.", "Happy to -") ahead of the real
+// sentence. The closed list is followed by , . ! an em or en dash or a spaced hyphen.
+const OPENER_RE = new RegExp(
+  "^\\s*(?:sure|okay|ok|got\\s+it|of\\s+course|happy\\s+to|absolutely|certainly|no\\s+problem|great|perfect|alright|right)" +
+  "(?:\\s*[,.!\\u2014\\u2013]|\\s+-(?=\\s))\\s*",
   "i"
 );
-
-// Spoken figures that no payload can ground: hundred / thousand / million / billion / percent, or
-// "point" followed by a digit word ("six point five"). A numeral consumes its own multiplier and
-// percent word first (see figureWords), so "6.52 percent" and "70 thousand" are left to the
-// numeric check. Other number words ("thirty") are deliberately not on the list.
-const FIGURE_WORD_RE =
-  /\b(?:hundred|thousand|million|billion|percent)\b|\bpoint\s+(?:zero|one|two|three|four|five|six|seven|eight|nine)\b/gi;
-const figureWords = (text) => String(text).replace(FIGURE_RE, " ").match(FIGURE_WORD_RE) || [];
+// Removes at most one such opener. "Sure, what's their name?" -> "what's their name?";
+// "Surely, ..." and "Right now, ..." are left alone. Pure.
+const stripOpener = (text) => String(text == null ? "" : text).replace(OPENER_RE, "");
 
 // Words that open a question or an offer. A leading and/or/so (no comma) is allowed.
 const QUESTION_START_RE =
   /^(?:(?:and|or|so)\s+)?(?:what|which|who|whom|whose|when|where|why|how|do|does|did|is|are|was|were|can|could|would|should|will|shall|may|might|want|need)\b/i;
-// A sentence or clause break: . ! ; : ? an em or en dash, or a spaced hyphen.
-const CLAUSE_BREAK_RE = /[.!;:?—–]| - /;
-const lettersOf = (s) => String(s == null ? "" : s).match(/[A-Za-zÀ-ɏ]+/g) || [];
+// A sentence or clause break: . ! ; : ? an em or en dash, "--", an ellipsis, or a spaced hyphen.
+const CLAUSE_BREAK_RE = /[.!;:?\u2014\u2013\u2026]|--| - /;
+const lettersOf = (s) => String(s == null ? "" : s).match(/[A-Za-z\u00c0-\u024f]+/g) || [];
 
-// True only for a reply that is ONE short question and asserts nothing: it starts with a
-// question/auxiliary word, ends with "?", has no sentence or clause break before that "?", no
-// digit or spoken figure, no completion claim, and no capitalized word (other than its first word
-// and "I") that the user's message did not already contain. A statement with a question tacked on
-// ("Start with Robert Chen, want the numbers?") fails the first test; a made-up name fails the
-// last.
+// A first-person completion claim. runTurn never performs an action, so by construction anything
+// the model says that reads as "I did it" is false. Three forms:
+//   * a completion opener at the start of the reply ("Done", "All set", "You're all set",
+//     "Consider it done", "Logged", "Saved", ...), after one content-free opener is stripped;
+//   * "I" / "I've" / "I have" then up to four words then a past-tense verb ("I just went ahead
+//     and logged it"); the words may not be a negation or modal ("I have not logged", "I can add");
+//   * a bare passive ("it's / was / has been logged"). That one is only a claim on an ungrounded
+//     turn: after a tool result the model may narrate a fact ("your last contact was logged on
+//     ..."), so there it counts only with a just-happened adverb ("is now marked", "was already
+//     logged"), which fires on any turn.
+// A sentence that is itself an offer (starts with a question/auxiliary word and ends with "?",
+// e.g. "Should I get that marked as contacted?") is skipped. "changed" is not a claim verb: "I see
+// rates changed overnight" is narration.
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted";
+const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent";
+const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
+const FIRST_PERSON_CLAIM_RE = new RegExp(
+  "\\bI(?:['\\u2019]ve|\\s+have)?(?:\\s+(?!(?:" + NOT_A_CLAIM + ")\\b)\\w+){0,4}\\s+(?:" + CLAIM_VERBS + ")\\b", "i"
+);
+const PASSIVE_RE = new RegExp("(?:\\b(?:is|was|been|got)|['\\u2019]s)\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
+const PASSIVE_JUST_RE =
+  new RegExp("(?:\\b(?:is|was|been|got)|['\\u2019]s)\\s+(?:now|already|just|all)\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
+const COMPLETION_OPENER_RE =
+  /^\s*(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+done|logged|saved|added|booked|recorded|noted|updated|marked)\b/i;
+
+const sentencesOf = (text) => String(text).match(/[^.!?;\u2014\u2013]+[.!?;\u2014\u2013]*/g) || [];
+const isOffer = (sentence) => /\?\s*$/.test(sentence) && QUESTION_START_RE.test(sentence.trim());
+
+// `grounded` = a cited tool result backs this turn. Pure: no I/O, no state.
+function claimsCompletion(text, grounded) {
+  const parts = sentencesOf(stripOpener(text));
+  if (parts.length === 0) return false;
+  if (COMPLETION_OPENER_RE.test(parts[0])) return true;
+  return parts.some(
+    (s) => !isOffer(s) &&
+      (FIRST_PERSON_CLAIM_RE.test(s) || PASSIVE_JUST_RE.test(s) || (!grounded && PASSIVE_RE.test(s)))
+  );
+}
+
+// Spoken figures that no payload can ground: hundred / thousand / million / billion / percent, or
+// "point" followed by a digit word ("six point five", "six-point-two"). A numeral consumes its own
+// multiplier and percent word first (see figureWords), so "6.52 percent" and "70 thousand" are left
+// to the numeric check. Other number words ("thirty") are deliberately not on the list.
+const FIGURE_WORD_RE =
+  /\b(?:hundred|thousand|million|billion|percent)\b|\bpoint[\s-]+(?:zero|one|two|three|four|five|six|seven|eight|nine)\b/gi;
+const figureWords = (text) => String(text).replace(FIGURE_RE, " ").match(FIGURE_WORD_RE) || [];
+
+// True only for a reply that is ONE short question and asserts nothing: after one content-free
+// opener is stripped it starts with a question/auxiliary word, ends with "?", has no sentence or
+// clause break before that "?", no digit or spoken figure, and no capitalized word (other than its
+// first word and "I") that the user's message did not already contain. A statement with a question
+// tacked on ("Start with Robert Chen, want the numbers?") fails the first test; a made-up name
+// fails the last. (Completion claims need no separate test here: a lone question is an offer, which
+// the claim guard skips.)
 // Pure: no I/O, no state.
 function isLoneClarifyingQuestion(reply, userText) {
-  const text = String(reply == null ? "" : reply).trim();
+  const text = stripOpener(reply).trim();
   if (!text.endsWith("?")) return false;
   const body = text.slice(0, -1);
   if (!QUESTION_START_RE.test(body) || CLAUSE_BREAK_RE.test(body)) return false;
-  if (/\d/.test(text) || figureWords(text).length > 0 || ACTION_CLAIM_RE.test(text)) return false;
+  if (/\d/.test(text) || figureWords(text).length > 0) return false;
   const said = new Set(lettersOf(userText).map((w) => w.toLowerCase()));
   return lettersOf(body).every(
     (w, i) => i === 0 || w === "I" || w[0] === w[0].toLowerCase() || said.has(w.toLowerCase())
@@ -348,7 +387,7 @@ async function runTurn({ messages, ctx, client } = {}) {
         .join(" ")
         .trim();
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
-      if (ACTION_CLAIM_RE.test(text)) return finish(NOTHING_CHANGED);
+      if (claimsCompletion(text, sources.length > 0)) return finish(NOTHING_CHANGED);
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
       if (sources.length === 0) return finish(screenUngroundedText(userText, text));
@@ -387,4 +426,6 @@ async function runTurn({ messages, ctx, client } = {}) {
   return finish(CANT_VERIFY);
 }
 
-module.exports = { runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion };
+module.exports = {
+  runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
+};

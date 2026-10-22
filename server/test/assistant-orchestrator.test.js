@@ -19,7 +19,7 @@ const {
   CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
 } = require("../lib/assistant/prompt");
 const {
-  runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion,
+  runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -816,9 +816,69 @@ test("isLoneClarifyingQuestion: a single short question, nothing asserted, no ne
     ["Do you mean Chen Wei?", "call chen wei"],
     ["Can I get the balance first?", "log a call"],
     ["Need anything else?", "thanks"],
+    // one content-free opener is stripped first
+    ["Sure, what's their name?", "add a client"],
+    ["Sure! What's their name?", "add a client"],
+    ["Happy to — what's the client's name?", "add a client"],
+    ["Got it. Who did you talk to?", "log a call"],
+    ["OK - which one?", "log a call"],
+    ["Of course, so which Chen?", "log a call with Chen"],
   ]) {
     assert.equal(isLoneClarifyingQuestion(reply, user), true, reply);
   }
+});
+
+test("stripOpener removes at most one content-free opener and nothing else", () => {
+  for (const [input, expected] of [
+    ["Sure, what's their name?", "what's their name?"],
+    ["Sure! What's their name?", "What's their name?"],
+    ["Happy to — what's the client's name?", "what's the client's name?"],
+    ["Happy to – which one?", "which one?"],
+    ["Got it. Who did you talk to?", "Who did you talk to?"],
+    ["OK - which one?", "which one?"],
+    ["okay, which one?", "which one?"],
+    ["Of course, which one?", "which one?"],
+    ["Absolutely! Which one?", "Which one?"],
+    ["Certainly. Which one?", "Which one?"],
+    ["No problem, which one?", "which one?"],
+    ["Great, which one?", "which one?"],
+    ["Perfect. Which one?", "Which one?"],
+    ["Alright, which one?", "which one?"],
+    ["Right, which one?", "which one?"],
+    ["  SURE,   what's their name?", "what's their name?"],
+    ["Sure, okay, what's the name?", "okay, what's the name?"],
+    // not openers: no punctuation right after, a longer word, or not on the list
+    ["Sure thing, what's the name?", "Sure thing, what's the name?"],
+    ["Surely, what's the name?", "Surely, what's the name?"],
+    ["Great rates today!", "Great rates today!"],
+    ["Right now, which one?", "Right now, which one?"],
+    ["Well, which one?", "Well, which one?"],
+    ["", ""],
+  ]) {
+    assert.equal(stripOpener(input), expected, input);
+  }
+  assert.equal(stripOpener(null), "");
+});
+
+test("polite-opener clarifying questions pass through on ungrounded turns, unchanged", async () => {
+  for (const [user, reply] of [
+    ["add a client", "Sure, what's their name?"],
+    ["add a client", "Sure! What's their name?"],
+    ["add a client", "Happy to — what's the client's name?"],
+    ["log a call", "Got it. Who did you talk to?"],
+  ]) {
+    const client = fakeClient([say(reply)]);
+    const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client });
+    assert.equal(r.reply, reply, reply);
+    assert.deepStrictEqual(r.sources, []);
+  }
+});
+
+test("an opener does not launder a statement: 'Sure, Chen's your best bet — want their numbers?' is still blocked", async () => {
+  const client = fakeClient([say("Sure, Chen's your best bet — want their numbers?")]);
+  const r = await runTurn({ messages: userSays("who should I call today"), ctx: brokerCtx, client });
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.equal(isLoneClarifyingQuestion("Sure, Chen's your best bet — want their numbers?", "who should I call today"), false);
 });
 
 test("isLoneClarifyingQuestion: statements, tag questions, punctuation breaks, new names, digits, claims are rejected", () => {
@@ -826,7 +886,8 @@ test("isLoneClarifyingQuestion: statements, tag questions, punctuation breaks, n
     ["Start with Robert and Linda Chen — want me to pull their numbers?", "who should I call today", "statement + tag"],
     ["Rates ticked down a bit today — want the exact numbers?", "how are rates", "statement + tag"],
     ["Want to start with the Chens?", "who should I call", "capitalized word the user never said"],
-    ["Sure. Which one?", "add a client", "period before the ?"],
+    ["Yes. Which one?", "add a client", "period before the ? (Yes is not an opener)"],
+    ["Sure. Okay. Which one?", "add a client", "only one opener is stripped"],
     ["Chen's the one with the highest rate, right?", "which client has the highest rate", "tag question"],
     ["Which Chen — Robert and Linda, or Chen Wei?", "log a call with Chen", "em dash and new names"],
     ["Which Chen – the first one?", "log a call with Chen", "en dash"],
@@ -838,7 +899,10 @@ test("isLoneClarifyingQuestion: statements, tag questions, punctuation breaks, n
     ["Do you mean Robert Chen?", "call Chen", "Robert is new"],
     ["Is that 30 years?", "add a client", "digit"],
     ["Do you want the four hundred thousand one?", "add a client", "number words"],
-    ["Want me to log it since I've logged the others?", "add a client", "completion claim"],
+    ["Which one -- Robert?", "log a call with Robert", "double hyphen"],
+    ["Which one… Robert?", "log a call with Robert", "ellipsis"],
+    ["Sure, Chen's your best bet — want their numbers?", "who should I call today", "statement after an opener"],
+    ["Done, I logged it — anything else?", "log a call", "not an opener, not a question start"],
     ["What's their name", "add a client", "no question mark"],
     ["Whatever?", "add a client", "not a question word"],
     ["Isn't that Chen?", "call Chen", "contraction not in the list"],
@@ -853,7 +917,7 @@ test("a tag-question statement or a made-up name does not ride on the clarifying
     ["Who should I call today?", "Start with Robert and Linda Chen — want me to pull their numbers?"],
     ["how are rates today", "Rates ticked down a bit today — want the exact numbers?"],
     ["who should I call", "Want to start with the Chens?"],
-    ["add a client", "Sure. Which one?"],
+    ["add a client", "Yes. Which one?"],
     ["which client has the highest rate", "Chen's the one with the highest rate, right?"],
   ]) {
     const client = fakeClient([say(reply)]);
@@ -873,7 +937,7 @@ test("a tag-question statement or a made-up name does not ride on the clarifying
 test("number words count as figures that can't be grounded: hundred/thousand/million/billion/percent, 'point' + digit word", () => {
   for (const reply of [
     "Chen owes four hundred eighty-five thousand dollars.", "about six percent", "a Million bucks", "two billion",
-    "six point five two", "it's point five", "Point zero eight lower",
+    "six point five two", "it's point five", "Point zero eight lower", "six-point-two", "a point-five drop",
   ]) {
     assert.notDeepEqual(ungroundedNumbers(reply, [MARKET_PAYLOAD]), [], reply);
   }
@@ -906,11 +970,20 @@ test("an ungrounded reply with a spoken figure is blocked even on small talk", a
 });
 
 test("wider completion claims are replaced with the nothing-changed line, grounded or not", async () => {
+  // claims that fire on every turn
   const claims = [
-    "I've gone ahead and logged the call", "That's logged.", "All set, contact recorded.", "All set, Chen's marked as contacted.",
-    "Logged.", "The call is logged.", "Chen has been updated.", "I went ahead and saved it for you.",
-    "I noted it.", "I changed the record.", "I've recorded the call.",
+    "I've gone ahead and logged the call", "All set, contact recorded.", "All set, Chen's marked as contacted.",
+    "Logged.", "I went ahead and saved it for you.", "I noted it.", "I've recorded the call.",
+    "I have gone ahead and logged the call.", "I just went ahead and logged the call.", "Chen is now marked as contacted.",
+    "I have just gone ahead and logged the call.", "The call was already logged.",
   ];
+  // bare passive forms ("That's logged") are claims only when there is no tool result behind the reply
+  const ungroundedOnly = ["That's logged.", "The call is logged.", "Chen has been updated.", "Chen is marked as contacted."];
+  for (const claim of ungroundedOnly) {
+    const client = fakeClient([say(claim)]);
+    const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, "ungrounded: " + claim);
+  }
   for (const claim of claims) {
     let client = fakeClient([say(claim)]);
     let r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
@@ -979,6 +1052,119 @@ test("screenUngroundedText: the reply's own book/market noun resolves to can't-v
 test("CHARLI_SYSTEM's greeting does not offer a market or call list (that offer would be blocked as unsourced)", () => {
   assert.doesNotMatch(CHARLI_SYSTEM, /offer to run through/i);
   assert.match(CHARLI_SYSTEM, /ask how you can help/i);
+});
+
+test("CHARLI_SYSTEM tells her to ask for a missing detail with a single question that opens with the question word", () => {
+  assert.match(CHARLI_SYSTEM, /reply with only that one question, starting with the question word/i);
+  assert.match(CHARLI_SYSTEM, /What's their name\?/);
+});
+
+// ── completion-claim guard: forms, grounding, offers, openers ────────────────
+
+test("claimsCompletion: I-forms (gap of up to four words, not through a negation or modal)", () => {
+  for (const t of [
+    "I have gone ahead and logged the call.", "I just went ahead and logged the call.", "I've gone ahead and logged it.",
+    "I have just gone ahead and logged the call.", "I logged it.", "I’ve added her.", "I recorded it.", "I marked it.", "I noted that.",
+  ]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+  }
+  for (const t of [
+    "I have not logged anything.", "I haven't logged anything.", "I can log that once you confirm.",
+    "I never logged it.", "I want to get this logged.", "I see rates changed overnight.", "I changed the record.",
+  ]) {
+    assert.equal(claimsCompletion(t, false), false, t);
+  }
+});
+
+test("claimsCompletion: bare passives fire only on ungrounded turns; with now/already/just/all they fire on any turn", () => {
+  for (const t of ["That's logged.", "The call was logged.", "Chen has been updated.", "Chen got marked."]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), false, "grounded: " + t);
+  }
+  for (const t of ["Chen is now marked as contacted.", "It's already logged.", "The call was just saved.", "Chen's all noted."]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+  }
+});
+
+test("claimsCompletion: a question/auxiliary-led sentence ending in '?' is an offer, not a claim; other sentences still count", () => {
+  assert.equal(claimsCompletion("Should I get that marked as contacted?", false), false);
+  assert.equal(claimsCompletion("Want me to log it?", false), false);
+  assert.equal(claimsCompletion("Sure, should I get that marked as contacted?", false), false);
+  assert.equal(claimsCompletion("I logged it, okay?", false), true, "starts with I: not an offer");
+  assert.equal(claimsCompletion("Done, I logged it — anything else?", false), true, "the first sentence fires");
+  assert.equal(claimsCompletion("Should I log it? I logged it.", false), true, "a later claim still fires");
+});
+
+test("claimsCompletion: completion openers, with one content-free opener stripped first", () => {
+  for (const t of [
+    "Done.", "All done!", "All set.", "You're all set!", "You’re all set!", "You are all set.", "Consider it done.",
+    "Logged.", "Saved it for you.", "Added.", "Booked.", "Recorded.", "Noted.", "Updated.", "Marked as contacted.",
+    "Got it, logged.", "Perfect — saved it for you.", "Sure, done.", "Okay. All done!",
+  ]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+  }
+  assert.equal(claimsCompletion("Sure, what's their name?", false), false);
+  assert.equal(claimsCompletion("", false), false);
+});
+
+test("openers feed the claim check through runTurn, grounded or not", async () => {
+  for (const claim of [
+    "All done!", "You're all set!", "Consider it done.", "Got it, logged.", "Perfect — saved it for you.",
+  ]) {
+    let client = fakeClient([say(claim)]);
+    let r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, "ungrounded: " + claim);
+
+    client = fakeClient([useTool("findClient", { query: "chen" }), say(claim)]);
+    r = await runTurn({ messages: userSays("Log a call with Chen"), ctx: brokerCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, "after findClient: " + claim);
+    assert.deepStrictEqual(r.sources, []);
+  }
+});
+
+test("a grounded narration of a tool fact may use a bare passive, but 'is now marked' is a claim on any turn", async () => {
+  // Chen's last contact is 2026-01-01 in the fixture: the date still has to pass the figure check
+  let client = fakeClient([useTool("findClient", { query: "chen" }), say("Your last contact with Chen was logged on 2026-01-01.")]);
+  let r = await runTurn({ messages: userSays("When did I last talk to Chen?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "Your last contact with Chen was logged on 2026-01-01.");
+  assert.deepStrictEqual(r.sources, ["client record"]);
+
+  client = fakeClient([useTool("findClient", { query: "chen" }), say("Your last contact with Chen was logged on 2026-01-21.")]);
+  r = await runTurn({ messages: userSays("When did I last talk to Chen?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, CANT_VERIFY, "a wrong date fails the figure check");
+
+  client = fakeClient([useTool("findClient", { query: "chen" }), say("Chen is now marked as contacted.")]);
+  r = await runTurn({ messages: userSays("When did I last talk to Chen?"), ctx: brokerCtx, client });
+  assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+test("'changed' is not a completion verb: narrating that rates changed passes on a grounded turn", async () => {
+  const client = fakeClient([useTool("getMarketUpdate"), say("I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.")]);
+  const r = await runTurn({ messages: userSays("what are rates doing"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.");
+  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+});
+
+test("offers pass the claim guard through runTurn; 'I logged it, okay?' and a claim before the question do not", async () => {
+  // ungrounded: a lone question passes (the lone-question exemption beats the book-noun screen)
+  let client = fakeClient([say("Should I get that marked as contacted?")]);
+  let r = await runTurn({ messages: userSays("mark Chen"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "Should I get that marked as contacted?");
+
+  // grounded: the offer is skipped by the claim guard, and has no figure
+  client = fakeClient([useTool("findClient", { query: "chen" }), say("Should I get that marked as contacted?")]);
+  r = await runTurn({ messages: userSays("mark Chen"), ctx: brokerCtx, client });
+  assert.equal(r.reply, "Should I get that marked as contacted?");
+  assert.deepStrictEqual(r.sources, ["client record"]);
+
+  for (const claim of ["I logged it, okay?", "Done, I logged it — anything else?"]) {
+    client = fakeClient([say(claim)]);
+    r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, claim);
+  }
 });
 
 test("'contact' in any form is a book keyword (contacted, contacts, contact)", () => {

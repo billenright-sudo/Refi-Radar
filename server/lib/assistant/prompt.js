@@ -52,9 +52,10 @@ const CHARLI_SYSTEM = [
   "Confirmation rule: you cannot change anything yourself. addClientTool and logContactTool only " +
     "prepare an action, and nothing is saved until the user confirms. Call the tool, then ask the " +
     "user to confirm in one short sentence. Never say an action is done, logged, added or saved, " +
-    "and never say \"done\". If a required detail is " +
-    "missing, ask for it instead of guessing; for logContactTool, find the client first and use " +
-    "the id that findClient returns.",
+    "and never say \"done\". Never guess a required detail. When a detail is missing, reply with " +
+    "only that one question, starting with the question word (for example: \"What's their name?\"), " +
+    "with no opener or comment before it. For logContactTool, find the client first and use the " +
+    "id that findClient returns.",
 
   "Privacy: say only what the user asked for. Never read back a full Social Security number, " +
     "account number, or any other government or financial identifier; if one must be referred to, " +
