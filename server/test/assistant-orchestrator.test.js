@@ -20,6 +20,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
+  isYesNoQuestion,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -976,9 +977,10 @@ test("wider completion claims are replaced with the nothing-changed line, ground
     "Logged.", "I went ahead and saved it for you.", "I noted it.", "I've recorded the call.",
     "I have gone ahead and logged the call.", "I just went ahead and logged the call.", "Chen is now marked as contacted.",
     "I have just gone ahead and logged the call.", "The call was already logged.",
+    "That's logged.", "The call is logged.", "Chen has been updated.", "Chen is marked as contacted.",
   ];
-  // bare passive forms ("That's logged") are claims only when there is no tool result behind the reply
-  const ungroundedOnly = ["That's logged.", "The call is logged.", "Chen has been updated.", "Chen is marked as contacted."];
+  // the simple past passive ("was logged") is a claim only when there is no tool result behind the reply
+  const ungroundedOnly = ["The call was logged.", "The calls were added."];
   for (const claim of ungroundedOnly) {
     const client = fakeClient([say(claim)]);
     const r = await runTurn({ messages: userSays("thanks"), ctx: brokerCtx, client });
@@ -1077,12 +1079,26 @@ test("claimsCompletion: I-forms (gap of up to four words, not through a negation
   }
 });
 
-test("claimsCompletion: bare passives fire only on ungrounded turns; with now/already/just/all they fire on any turn", () => {
-  for (const t of ["That's logged.", "The call was logged.", "Chen has been updated.", "Chen got marked."]) {
+test("claimsCompletion: only the simple past passive (was/were) is exempt on a grounded turn; every other passive fires on any turn", () => {
+  // simple past: the narration form a grounded turn may use
+  for (const t of ["The call was logged.", "The calls were added.", "Your last contact with Chen was logged on 2026-01-01."]) {
     assert.equal(claimsCompletion(t, false), true, t);
     assert.equal(claimsCompletion(t, true), false, "grounded: " + t);
   }
-  for (const t of ["Chen is now marked as contacted.", "It's already logged.", "The call was just saved.", "Chen's all noted."]) {
+  // is / 's / are / 're / been / has been / have been / had been / got: claims on every turn
+  for (const t of [
+    "That's logged.", "Chen has been updated.", "Chen got marked.", "The call is logged.", "Chen's marked as contacted.",
+    "The calls are logged.", "They're logged.", "The calls have been logged.", "It had been saved.",
+  ]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+  }
+  // the just-happened adverb forms fire on every turn, simple past included, with or without "been"
+  for (const t of [
+    "Chen is now marked as contacted.", "It's already logged.", "The call was just saved.", "Chen's all noted.",
+    "The call has already been logged.", "Chen has just been marked as contacted.", "It's now been logged.",
+    "The office has already logged the call.", "They've just logged it.", "The calls were already added.",
+  ]) {
     assert.equal(claimsCompletion(t, false), true, t);
     assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
   }
@@ -1190,4 +1206,236 @@ test("screenUngroundedText: only a digit-free, question-mark-terminated, claim-f
   assert.equal(screenUngroundedText("add a client", "Is that 30 years?"), CANT_VERIFY);
   assert.equal(screenUngroundedText("add a client", "I logged it, anything else?"), CANT_VERIFY);
   assert.equal(screenUngroundedText("is Chen eligible for FHA", "Which Chen?"), GUIDELINE_HANDOFF);
+});
+
+// ── offers, completion forms anywhere, yes/no questions ──────────────────────
+
+test("claimsCompletion: an offer loses only its question word and pronoun; the rest gets the full claim test", () => {
+  for (const t of [
+    "Should I get that marked as contacted?", "Should I have it logged?", "Do you want me to log that?",
+    "Can I get the balance first?", "Would you like me to log the call?", "Want me to log it?",
+    "Do you want it logged and marked as contacted?", "Sure, should I get that marked as contacted?",
+  ]) {
+    assert.equal(claimsCompletion(t, false), false, t);
+    assert.equal(claimsCompletion(t, true), false, "grounded: " + t);
+  }
+  for (const t of [
+    "Would you like me to set a follow-up now that I've logged the call?",
+    "Want me to set a follow-up, now that the call's logged?",
+    "Want me to log it since I've logged the others?",
+    "Should we add a note, since it's all set?",
+  ]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+  }
+});
+
+test("claimsCompletion: completion forms in any sentence, anywhere in it, or at the start of a later clause", () => {
+  for (const t of [
+    "Found Robert Chen — logged the call for today.", "Thanks! All set.", "Yep, all set.", "It's done.", "Sure thing, done!",
+    "That's all done.", "The call is done.", "It's been done.", "Everything's all set.", "That's taken care of.",
+    "Yep, logged it.", "Okay Bill, saved.", "Found Robert Chen and logged the call for today.", "Found Chen, then logged it.",
+    "Chen's found - marked as contacted.", "Yep, updated the record.", "Just logged the call for you.", "Already done.",
+    "Handled.", "That's handled.", "Got that logged for you.", "We've logged the call.", "I've done that for you.",
+    "I'm logging that call now.",
+  ]) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+  }
+  // narration and honest replies are not claims
+  for (const t of [
+    "The thirty-year fixed is at 6.52 percent, updated this morning.", "I haven't logged anything yet.",
+    "When you're done, let me know.", "Rates are at 6.52 percent today, and your pipeline is quiet.",
+    "I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.",
+    "Robert and Linda Chen show a rate and term opportunity.", "Which Chen — Robert and Linda, or Chen Wei?",
+  ]) {
+    assert.equal(claimsCompletion(t, false), false, t);
+    assert.equal(claimsCompletion(t, true), false, "grounded: " + t);
+  }
+});
+
+test("isYesNoQuestion: yes/no and tag questions, not requests", () => {
+  for (const u of [
+    "Is Chen my best refi opportunity?", "Chen's my top opportunity, right?", "Did I already call Chen this week?",
+    "Do I have a client named Chen?", "are rates up", "Am I due to call anyone?", "Was Chen contacted?", "Were they added?",
+    "Does Chen have a check-in due?", "Has Chen refinanced?", "Have I called Chen?", "Had I logged that?",
+    "Chen's due, correct?", "That's the one, yes?",
+    // beyond the listed starts: after a filler word or a clause break, the n't forms, and no? / yeah? / true? tags
+    "Hey Charli, is Chen my best refi opportunity?", "hey charli is chen my best refi opportunity", "So did I call Chen?",
+    "Okay. Did I call Chen?", "Chen's my top opportunity, isn't he?", "Didn't I call Chen?", "Chen's my top one, no?",
+  ]) {
+    assert.equal(isYesNoQuestion(u), true, u);
+  }
+  for (const u of [
+    "can you log a call", "could you add a client", "will you log it", "would you add Jane", "should I call Chen",
+    "add a client", "log a call with Chen", "who should I call today", "which client has the highest rate",
+    "good morning", "Isabel called", "Don called", "Alright?", "",
+  ]) {
+    assert.equal(isYesNoQuestion(u), false, u);
+  }
+  assert.equal(isYesNoQuestion(null), false);
+});
+
+test("an affirming opener is not stripped when the user asked a yes/no or tag question; requests keep the strip", async () => {
+  for (const [user, reply] of [
+    ["Is Chen my best refi opportunity?", "Absolutely — want me to pull their numbers?"],
+    ["Chen's my top opportunity, right?", "Right — want me to run the numbers?"],
+    ["Did I already call Chen this week?", "Sure — want me to pull up the record?"],
+    ["Do I have a client named Chen?", "Of course, which one?"],
+  ]) {
+    assert.equal(isLoneClarifyingQuestion(reply, user), false, reply);
+    const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, CANT_VERIFY, reply);
+    assert.deepStrictEqual(r.sources, []);
+  }
+  for (const [user, reply] of [
+    ["can you log a call", "Sure, who did you talk to?"],
+    ["add a client", "Sure, what's their name?"],
+    ["could you add a client", "Sure, what's their name?"],
+  ]) {
+    assert.equal(isLoneClarifyingQuestion(reply, user), true, reply);
+    const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, reply, reply);
+  }
+});
+
+// ── regression table: every sentence the re-reviews used ────────────────────
+//
+// Each row: [user message, tool that grounds the turn (null = no tool, ungrounded), model reply,
+// expected]. expected is PASS (the reply reaches the user unchanged, with the tool's citation on a
+// grounded turn) or the fixed line that replaces it. This is the net for any future round: a
+// change to the guards must keep every row.
+
+const PASS = "pass-through";
+const TOOL_INPUT = { findClient: { query: "chen" }, getMarketUpdate: {}, runSweepTool: {} };
+const TOOL_SOURCE = { findClient: "client record", getMarketUpdate: "live rates 2026-10-21", runSweepTool: "sweep engine" };
+const onBoth = (user, reply, expected) => [[user, null, reply, expected], [user, "findClient", reply, expected]];
+const claimRows = (user, replies) => replies.flatMap((t) => onBoth(user, t, NOTHING_CHANGED));
+
+async function checkTable(rows) {
+  for (const [i, [user, tool, reply, expected]] of rows.entries()) {
+    const script = tool ? [useTool(tool, TOOL_INPUT[tool]), say(reply)] : [say(reply)];
+    const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client: fakeClient(script) });
+    const label = `#${i} [${tool || "ungrounded"}] user=${JSON.stringify(user)} reply=${JSON.stringify(reply)}`;
+    if (expected === PASS) {
+      assert.equal(r.reply, reply, label);
+      assert.deepStrictEqual(r.sources, tool ? [TOOL_SOURCE[tool]] : [], label);
+    } else {
+      assert.equal(r.reply, expected, label);
+      assert.deepStrictEqual(r.sources, [], label);
+    }
+    assert.equal(r.sideEffect, undefined, label);
+  }
+}
+
+const REVIEW_TABLE = [
+  // round 1: ungrounded figures, claims, a figure laundered through an unrelated tool, guideline routing
+  ["what's today's rate", null, "Rates are around 6.9 percent today.", CANT_VERIFY],
+  ...onBoth("Log a call with Chen", "Done, I logged it.", NOTHING_CHANGED),
+  ["What's Chen's balance?", "getMarketUpdate", "Chen owes $485,000.", CANT_VERIFY],
+  ["What's Chen's balance?", "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+  ["What's Chen's balance?", "findClient", "Robert and Linda Chen owe $485,500 at 7.85 percent.", CANT_VERIFY],
+  ["Is Chen eligible for an FHA streamline?", "findClient", "Chen is eligible for an FHA streamline.", GUIDELINE_HANDOFF],
+  ["Is Chen eligible for a refi?", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
+  ["Who should I call today?", null, "Start with Robert and Linda Chen.", CANT_VERIFY],
+  // round 2: the clarifying-question exemption, and what it must not beat
+  ["add a client", null, "What's their name?", PASS],
+  ["log a call with Chen", "findClient", "Which Chen — Robert and Linda, or Chen Wei?", PASS],
+  ["what's Chen's rate", null, "Chen's rate is 8.95%, want the draft?", CANT_VERIFY],
+  ["log a call with Chen", null, "Done, I logged it — anything else?", NOTHING_CHANGED],
+  ["Is Chen eligible for an FHA streamline?", null, "Which Chen do you mean?", GUIDELINE_HANDOFF],
+  ["What's Chen's balance?", "getMarketUpdate", "Chen owes $485,000, want to call?", CANT_VERIFY],
+  // round 3: tag questions, made-up names, spoken figures, wider claims
+  ["Who should I call today?", null, "Start with Robert and Linda Chen — want me to pull their numbers?", CANT_VERIFY],
+  ["how are rates today", null, "Rates ticked down a bit today — want the exact numbers?", CANT_VERIFY],
+  ["who should I call", null, "Want to start with the Chens?", CANT_VERIFY],
+  ["which client has the highest rate", null, "Chen's the one with the highest rate, right?", CANT_VERIFY],
+  ["Who should I call today?", null, "Want me to run the sweep?", PASS],
+  ["good morning", null, "Good morning! I'd say it's about six percent.", CANT_VERIFY],
+  ["What's Chen's balance?", "getMarketUpdate", "Chen owes four hundred eighty-five thousand dollars.", CANT_VERIFY],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
+  ...claimRows("Log a call with Chen", [
+    "I've gone ahead and logged the call", "All set, contact recorded.", "All set, Chen's marked as contacted.", "Logged.",
+    "I went ahead and saved it for you.", "I noted it.", "I've recorded the call.",
+  ]),
+  // round 4: the reply's own book/market noun on an ungrounded turn
+  ["good morning", null, "Rates ticked down today.", CANT_VERIFY],
+  ["good morning", null, "Chen's your best opportunity this morning.", CANT_VERIFY],
+  ["good morning", null, "Your pipeline looks healthy.", CANT_VERIFY],
+  ["good morning", null, "You have a few clients due.", CANT_VERIFY],
+  ["good morning", null, "Good morning, Bill! Want me to run a sweep?", CANT_VERIFY],
+  ["good morning", null, "Want me to run a sweep?", PASS],
+  ["good morning", null, "Good morning, Bill! How are you today?", PASS],
+  ["good morning", null, "Good morning, Bill! How can I help?", PASS],
+  ["good morning", "getMarketUpdate", "Rates are at 6.52 percent today, and your pipeline is quiet.", PASS],
+  // round 5: polite openers, I-forms with a gap, grounded narration, offers
+  ["add a client", null, "Sure, what's their name?", PASS],
+  ["add a client", null, "Sure! What's their name?", PASS],
+  ["add a client", null, "Happy to — what's the client's name?", PASS],
+  ["log a call", null, "Got it. Who did you talk to?", PASS],
+  ["add a client", null, "Right — what's their name?", PASS],
+  ["add a client", null, "Sure. Which one?", PASS],
+  ["add a client", null, "Yes. Which one?", CANT_VERIFY],
+  ["add a client", null, "Sure. Okay. Which one?", CANT_VERIFY],
+  ["who should I call today", null, "Sure, Chen's your best bet — want their numbers?", CANT_VERIFY],
+  ...claimRows("Log a call with Chen", [
+    "I have gone ahead and logged the call.", "I just went ahead and logged the call.",
+    "I have just gone ahead and logged the call.", "Chen is now marked as contacted.", "I logged it, okay?",
+    "All done!", "You're all set!", "Consider it done.", "Got it, logged.", "Perfect — saved it for you.",
+  ]),
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Chen was logged on 2026-01-01.", PASS],
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Chen was logged on 2026-01-21.", CANT_VERIFY],
+  ["When did I last talk to Chen?", null, "Your last contact with Chen was logged on 2026-01-01.", NOTHING_CHANGED],
+  ["what are rates doing", "getMarketUpdate", "I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.", PASS],
+  ...onBoth("mark Chen", "Should I get that marked as contacted?", PASS),
+  ["thanks", null, "I haven't logged anything yet.", CANT_VERIFY],
+  ["Log a call with Chen", "findClient", "I haven't logged anything yet.", PASS],
+  // round 6: passives on grounded turns, claims inside offers, openers that answer yes/no
+  // questions, completion phrasings outside the first sentence
+  ...claimRows("Log a call with Chen", [
+    "Got it — Chen's been marked as contacted.", "Chen has been marked as contacted.", "The call with Chen is logged.",
+    "Chen's call is logged now.", "The call has already been logged.", "Chen has just been marked as contacted.",
+    "It's now been logged.",
+  ]),
+  ...claimRows("Log a call with Chen", [
+    "Would you like me to set a follow-up now that I've logged the call?",
+    "Want me to set a follow-up, now that the call's logged?",
+    "Want me to log it since I've logged the others?",
+  ]),
+  ...onBoth("Log a call with Chen", "Should I have it logged?", PASS),
+  ["Is Chen my best refi opportunity?", null, "Absolutely — want me to pull their numbers?", CANT_VERIFY],
+  ["Chen's my top opportunity, right?", null, "Right — want me to run the numbers?", CANT_VERIFY],
+  ["Did I already call Chen this week?", null, "Sure — want me to pull up the record?", CANT_VERIFY],
+  ["Do I have a client named Chen?", null, "Of course, which one?", CANT_VERIFY],
+  ["can you log a call", null, "Sure, who did you talk to?", PASS],
+  ...claimRows("Log a call with Chen", [
+    "Found Robert Chen — logged the call for today.", "Thanks! All set.", "Yep, all set.", "It's done.", "Sure thing, done!",
+  ]),
+];
+
+test("regression table: every sentence the re-reviews used resolves as ruled", async () => {
+  await checkTable(REVIEW_TABLE);
+});
+
+// Forms beyond the reviewers' sentences that this round's rules also cover (the plural and
+// "we" forms, done / handled / taken care of, a later clause, "got that logged", "I'm logging",
+// yes/no questions after a filler or as an n't / no? tag), and the narration they must leave alone.
+const EXTENSION_TABLE = [
+  ...claimRows("Log a call with Chen", [
+    "The calls are logged.", "They're all logged.", "We've logged the call.", "I've done that for you.", "That's handled.",
+    "Handled.", "That's taken care of.", "It's been done.", "Everything's all set.", "The call is done.",
+    "Just logged the call for you.", "Yep, logged it.", "Found Robert Chen and logged the call for today.",
+    "Got that logged for you.", "I'm logging that call now.", "The office has already logged the call.",
+  ]),
+  ["Hey Charli, is Chen my best refi opportunity?", null, "Absolutely — want me to pull their numbers?", CANT_VERIFY],
+  ["hey charli is chen my best refi opportunity", null, "Absolutely — want me to pull their numbers?", CANT_VERIFY],
+  ["Chen's my top opportunity, isn't he?", null, "Absolutely — want me to run the numbers?", CANT_VERIFY],
+  ["Chen's my top opportunity, no?", null, "Right — want me to run the numbers?", CANT_VERIFY],
+  ["could you add a client", null, "Sure, what's their name?", PASS],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, updated this morning.", PASS],
+  ...onBoth("Log a call with Chen", "Do you want it logged and marked as contacted?", PASS),
+];
+
+test("extension table: the same rules cover the nearby forms and leave narration alone", async () => {
+  await checkTable(EXTENSION_TABLE);
 });

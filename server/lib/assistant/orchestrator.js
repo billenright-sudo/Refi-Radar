@@ -73,49 +73,102 @@ const OPENER_RE = new RegExp(
 const stripOpener = (text) => String(text == null ? "" : text).replace(OPENER_RE, "");
 
 // Words that open a question or an offer. A leading and/or/so (no comma) is allowed.
-const QUESTION_START_RE =
-  /^(?:(?:and|or|so)\s+)?(?:what|which|who|whom|whose|when|where|why|how|do|does|did|is|are|was|were|can|could|would|should|will|shall|may|might|want|need)\b/i;
+const QUESTION_WORDS =
+  "what|which|who|whom|whose|when|where|why|how|do|does|did|is|are|was|were|can|could|would|should|will|shall|may|might|want|need";
+const QUESTION_START_RE = new RegExp("^(?:(?:and|or|so)\\s+)?(?:" + QUESTION_WORDS + ")\\b", "i");
+// The question word of an offer plus its subject pronoun ("Should I", "Would you", "Can we"). Only
+// this is removed from an offer before the full claim test runs on the rest of the sentence.
+const OFFER_LEAD_RE = new RegExp("^(?:(?:and|or|so)\\s+)?(?:" + QUESTION_WORDS + ")\\s+(?:I|you|we)\\b", "i");
 // A sentence or clause break: . ! ; : ? an em or en dash, "--", an ellipsis, or a spaced hyphen.
 const CLAUSE_BREAK_RE = /[.!;:?\u2014\u2013\u2026]|--| - /;
 const lettersOf = (s) => String(s == null ? "" : s).match(/[A-Za-z\u00c0-\u024f]+/g) || [];
 
-// A first-person completion claim. runTurn never performs an action, so by construction anything
-// the model says that reads as "I did it" is false. Three forms:
-//   * a completion opener at the start of the reply ("Done", "All set", "You're all set",
-//     "Consider it done", "Logged", "Saved", ...), after one content-free opener is stripped;
-//   * "I" / "I've" / "I have" then up to four words then a past-tense verb ("I just went ahead
+// The user's message asks a yes/no or tag question: a clause opens with is / are / am / was / were
+// / do / does / did / has / have / had (or the n't form), optionally after "hey", "Charli", "so",
+// "and" ..., or the message ends with right? / correct? / yes? / no? / yeah? / true?. Requests
+// ("can you log a call", "could you add Jane", "will you ...") are not yes/no questions. A reply's
+// leading "Sure" / "Absolutely" / "Right" would BE the answer to such a question, so the
+// lone-question predicate does not strip it. Pure.
+const YES_NO_RE = new RegExp(
+  "(?:^|[,.;:!?\\u2014\\u2013]|\\s-\\s)\\s*(?:(?:hey|hi|ok|okay|so|and|but|well|charli)\\b[\\s,]*)*" +
+    "(?:is|are|am|was|were|do|does|did|has|have|had)(?:n['\\u2019]t)?\\b" +
+    "|\\b(?:right|correct|yes|no|yeah|true)\\s*\\?\\s*$",
+  "i"
+);
+const isYesNoQuestion = (text) => YES_NO_RE.test(String(text == null ? "" : text));
+
+// A completion claim. runTurn never performs an action, so by construction anything the model
+// says that reads as "it's done" is false. Each sentence (split on . ! ? ; and em/en dashes) is
+// tested on its own, after one content-free opener is stripped from it:
+//   * a completion opener at its start ("Done", "All set", "You're all set", "Consider it done",
+//     "Logged", "Already saved", ...); a sentence that is only "done" / "all done" / "all set" is
+//     the simplest case of this;
+//   * "I" / "we" (+ 've / have) then up to four words then a past-tense verb ("I just went ahead
 //     and logged it"); the words may not be a negation or modal ("I have not logged", "I can add");
-//   * a bare passive ("it's / was / has been logged"). That one is only a claim on an ungrounded
-//     turn: after a tool result the model may narrate a fact ("your last contact was logged on
-//     ..."), so there it counts only with a just-happened adverb ("is now marked", "was already
-//     logged"), which fires on any turn.
-// A sentence that is itself an offer (starts with a question/auxiliary word and ends with "?",
-// e.g. "Should I get that marked as contacted?") is skipped. "changed" is not a claim verb: "I see
-// rates changed overnight" is narration.
-const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted";
-const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent";
+//     and "I'm / we're logging it" (an action in progress is just as false);
+//   * a present, perfect or "got" passive ("is logged", "Chen's marked", "has been updated", "are
+//     saved", "got that logged") and the just-happened adverb forms ("is now marked", "has already
+//     been logged", "was just saved", "it's now been logged"), on every turn;
+//   * "it's done", "is done", "has been done", "all set", "taken care of", anywhere in the sentence;
+//   * the simple past passive ("was logged", "were added") only on an ungrounded turn: it is the one
+//     form a grounded turn may use to narrate a tool fact ("your last contact with Chen was logged on
+//     2026-01-01"; the date still goes through the figure check);
+//   * in a statement (not an offer), a completion opener at the start of a later clause, after a
+//     comma, colon, ellipsis, "--", a spaced hyphen, "and" or "then" ("Sure thing, done!", "Yep,
+//     logged it.", "Found Chen and logged the call"). There "updated" and "marked" count only when
+//     an object or nothing follows them ("updated the record", "marked as contacted"), so narration
+//     like "6.52 percent, updated this morning" is left alone.
+// An offer (a sentence that starts with a question/auxiliary word and ends with "?") loses only its
+// question word and subject pronoun ("Should I", "Would you"), and the rest gets the same test:
+// "Should I get that marked as contacted?" is not a claim, "Would you like me to set a follow-up now
+// that I've logged the call?" is. "changed" is not a claim verb: "I see rates changed overnight" is
+// narration.
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done";
+const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled";
 const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
 const FIRST_PERSON_CLAIM_RE = new RegExp(
-  "\\bI(?:['\\u2019]ve|\\s+have)?(?:\\s+(?!(?:" + NOT_A_CLAIM + ")\\b)\\w+){0,4}\\s+(?:" + CLAIM_VERBS + ")\\b", "i"
+  "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?!(?:" + NOT_A_CLAIM + ")\\b)\\w+){0,4}\\s+(?:" + CLAIM_VERBS + ")\\b", "i"
 );
-const PASSIVE_RE = new RegExp("(?:\\b(?:is|was|been|got)|['\\u2019]s)\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
-const PASSIVE_JUST_RE =
-  new RegExp("(?:\\b(?:is|was|been|got)|['\\u2019]s)\\s+(?:now|already|just|all)\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
+const IN_PROGRESS_RE =
+  /\b(?:I['\u2019]m|I\s+am|we['\u2019]re|we\s+are)\s+(?:(?:now|just|going\s+ahead\s+and)\s+)?(?:logging|saving|adding|booking|recording|marking|noting|updating|scheduling|sending|creating)\b/i;
+const PASSIVE_RE = new RegExp("(?:\\b(?:is|are|been|got)|['\\u2019](?:s|re))\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
+const PASSIVE_PAST_RE = new RegExp("\\b(?:was|were)\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
+const PASSIVE_JUST_RE = new RegExp(
+  "(?:\\b(?:is|are|was|were|been|got|has|have|had)|['\\u2019](?:s|re|ve))\\s+(?:now|already|just|all)\\s+(?:been\\s+)?(?:" +
+    PASSIVE_VERBS + ")\\b",
+  "i"
+);
+const GOT_IT_DONE_RE = new RegExp("\\bgot\\s+(?:\\S+\\s+){1,3}?(?:" + PASSIVE_VERBS + ")\\b", "i");
+const DONE_RE =
+  /\b(?:it|that)['\u2019]s\s+(?:all\s+)?done\b|\b(?:is|been)\s+(?:all\s+)?done\b|\ball\s+set\b|\b(?:taken|took)\s+care\s+of\b/i;
 const COMPLETION_OPENER_RE =
-  /^\s*(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+done|logged|saved|added|booked|recorded|noted|updated|marked)\b/i;
+  /^\s*(?:(?:just|already|also)\s+)?(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+(?:done|handled)|logged|saved|added|booked|recorded|noted|updated|marked|handled)\b/i;
+const CLAUSE_SPLIT_RE = /,|:|\u2026|--|\s-\s|\b(?:and|then)\b/i;
+const LEADING_CONJ_RE = /^(?:(?:so|but|plus)\s+)+/i;
+const TRAILING_PUNCT_RE = /[\s.!?;:,\u2026"\u201d)]+$/;
+const CLAUSE_CLAIM_RE =
+  /^(?:(?:just|already|also)\s+)?(?:(?:all\s+)?done|all\s+set|logged|saved|added|booked|recorded|noted|handled|(?:updated|marked)(?=$|\s+(?:it|that|them|him|her|the|your|their|as\s+contacted)\b))\b/i;
 
 const sentencesOf = (text) => String(text).match(/[^.!?;\u2014\u2013]+[.!?;\u2014\u2013]*/g) || [];
 const isOffer = (sentence) => /\?\s*$/.test(sentence) && QUESTION_START_RE.test(sentence.trim());
+// A completion opener at the start of any clause after the first (the first is the sentence start).
+const laterClauseClaims = (sentence) =>
+  sentence.split(CLAUSE_SPLIT_RE).slice(1).some((c) =>
+    CLAUSE_CLAIM_RE.test(stripOpener(c.trim().replace(LEADING_CONJ_RE, "")).trim().replace(TRAILING_PUNCT_RE, ""))
+  );
 
 // `grounded` = a cited tool result backs this turn. Pure: no I/O, no state.
 function claimsCompletion(text, grounded) {
-  const parts = sentencesOf(stripOpener(text));
-  if (parts.length === 0) return false;
-  if (COMPLETION_OPENER_RE.test(parts[0])) return true;
-  return parts.some(
-    (s) => !isOffer(s) &&
-      (FIRST_PERSON_CLAIM_RE.test(s) || PASSIVE_JUST_RE.test(s) || (!grounded && PASSIVE_RE.test(s)))
-  );
+  return sentencesOf(String(text == null ? "" : text)).some((part) => {
+    let s = stripOpener(part.trim()).trim();
+    const offer = isOffer(s);
+    if (offer) s = s.replace(OFFER_LEAD_RE, "").trim();
+    return COMPLETION_OPENER_RE.test(s) ||
+      FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
+      PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
+      (!grounded && PASSIVE_PAST_RE.test(s)) ||
+      (!offer && laterClauseClaims(s));
+  });
 }
 
 // Spoken figures that no payload can ground: hundred / thousand / million / billion / percent, or
@@ -131,11 +184,15 @@ const figureWords = (text) => String(text).replace(FIGURE_RE, " ").match(FIGURE_
 // clause break before that "?", no digit or spoken figure, and no capitalized word (other than its
 // first word and "I") that the user's message did not already contain. A statement with a question
 // tacked on ("Start with Robert Chen, want the numbers?") fails the first test; a made-up name
-// fails the last. (Completion claims need no separate test here: a lone question is an offer, which
-// the claim guard skips.)
+// fails the last. (Completion claims need no separate test here: a lone question is an offer, and
+// claimsCompletion, which runs first, tests what follows its question word and pronoun.) The
+// opener is NOT stripped when the user asked a
+// yes/no or tag question (isYesNoQuestion): "Is Chen my best?" + "Absolutely — want the numbers?"
+// answers the question with the opener, so it is not a lone question.
 // Pure: no I/O, no state.
 function isLoneClarifyingQuestion(reply, userText) {
-  const text = stripOpener(reply).trim();
+  const raw = String(reply == null ? "" : reply);
+  const text = (isYesNoQuestion(userText) ? raw : stripOpener(raw)).trim();
   if (!text.endsWith("?")) return false;
   const body = text.slice(0, -1);
   if (!QUESTION_START_RE.test(body) || CLAUSE_BREAK_RE.test(body)) return false;
@@ -156,6 +213,9 @@ function isLoneClarifyingQuestion(reply, userText) {
 //      nothing                      -> the fixed can't-verify line (with no cited tool result, a
 //      statement about the book can't be sourced, even if the user only said "good morning");
 //   4. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
+// Safe ONLY after claimsCompletion(modelText, false) has run and returned false, as runTurn does:
+// this function does not test for completion claims itself, so a lone question or a small-talk
+// statement that claims an action ("Should I log it? Done.", "All set!") would pass through here.
 // Pure: no I/O, no state.
 function screenUngroundedText(userText, modelText) {
   const user = String(userText == null ? "" : userText);
@@ -428,4 +488,5 @@ async function runTurn({ messages, ctx, client } = {}) {
 
 module.exports = {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
+  isYesNoQuestion,
 };
