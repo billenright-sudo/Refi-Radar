@@ -220,4 +220,5 @@ module.exports = {
   calcPayment, llpaPrice, estClosingCosts, analyze,
   rateTerm, cashOut, armToFixed, termSwap, checkInStatus,
   sweepClient, runSweep,
+  PRIORITY_RANK, impact,
 };
