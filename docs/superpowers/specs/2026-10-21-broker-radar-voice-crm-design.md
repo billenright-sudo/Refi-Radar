@@ -132,6 +132,24 @@ call.)_
   that?", "want me to draft it?"), but every side-effecting action (create client, create
   event, send email) takes an explicit confirmation.
 
+### 6.1 Experience-aware coaching (added 2026-10-22)
+
+Bill's ask: a broker or LO could be a 20-year veteran or a week in, so Charli should tailor her
+suggestions to their experience. **Charli knows each user's career stage and adapts how she
+coaches, never what the numbers say.**
+
+- **Stages:** New (under 1 year), Developing (1–3), Established (3–10), Veteran (10+).
+- **Veteran:** numbers first, terse, ranked list, fastest path to action — no definitions.
+- **New:** explains the why in plain words (what LTV and break-even mean), one concrete next
+  step at a time, a short talk track on offer, reminders that outreach is approved before it
+  sends. Developing and Established sit in between.
+- **How she knows:** she asks once in the first session ("How long have you been
+  originating?"), saves it only after the user confirms, and it's editable in the Charli panel;
+  a broker can set it for their LOs. **Never inferred from behavior** — that would be guessing.
+- **Never changes with stage:** the math, the tools, the retrieve-and-cite law, the confirm rule.
+- Why it matters beyond the app: it's the concrete answer to "how do the next generation of
+  brokers thrive" — the same co-pilot coaches a rookie up and gets out of a veteran's way.
+
 ## 7. Architecture (how — recommendation + decided pieces)
 
 Built as an extension of the existing app: React/Vite client + Node/Express server, deployed
@@ -272,3 +290,6 @@ Calls I made (sensible-builder defaults; say the word if you'd rule otherwise):
 - The **server** `refi.js` engine is canonical for all math, with a parity test vs. the
   dashboard (§5).
 - `logContact` **reads back the client name** before writing (§7.2).
+- **Experience-aware coaching design** (§6.1, Bill said "you decide", 2026-10-22): four stages,
+  asked once by voice and confirmed, editable in the panel, broker can set it for LOs, never
+  inferred; stage changes coaching style only.

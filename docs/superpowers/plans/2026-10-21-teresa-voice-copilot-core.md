@@ -15,7 +15,9 @@
 - **Node 20** locally (better-sqlite3 prebuilds; Node 24 won't compile it).
 - **Deterministic math only:** every number comes from `server/lib/refi.js` or the rates engine. No LLM computes or guesses a number, fact, or guideline. When no tool answers, the reply is an explicit "I can't verify that," never a generated answer.
 - **Data stays on our infra:** Claude orchestration runs server-side; borrower NPI never flows to a third-party conversational model. STT uses **ElevenLabs Scribe via our server proxy** (not the browser's Google-backed Web Speech API, which would send spoken client names to Google).
-- **Side effects are confirmed:** `addClient` and `logContact` return a pending action that runs only after an explicit confirm; Charli reads the client name back first.
+- **Side effects are confirmed:** `addClient`, `logContact`, and `setCareerStage` return a pending action that runs only after an explicit confirm; Charli reads back exactly what will be written first.
+- **Career stage changes coaching style only** — never the numbers, the tools, the no-guess law, or the confirm rule. Stage is self-set (voice, confirmed) or broker-set for their LOs; it is never inferred from behavior.
+- **Execution order:** Tasks 1, 2, 3, 4, **7**, 5, 6 — Task 7 was added mid-build and must precede Task 6, whose UI includes the career-stage selector.
 - **Secrets by env var only**, never in the repo: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` (existing), new `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_CHARLI`. Confirm they are in `server/.env` locally and Google Secret Manager for Cloud Run.
 - **No deploy without Bill's explicit go.** This plan builds and verifies locally only.
 - All new server code is CommonJS `"use strict";`, matching the existing server.
@@ -27,6 +29,7 @@
 - **A question in the deferred loan-guideline domain** (e.g. a Fannie reserve rule) → Charli gives the hand-off line ("I can't verify that yet"), no hallucinated guideline. _(Task 3 test.)_
 - **ElevenLabs or Claude API failure mid-session** → the turn returns a clean error turn, the session stays usable, and no partial side effect is committed. _(Task 4 tests the route's error path; Task 5 tests the voice proxy error path.)_
 - **"Movement" requested with fewer than two daily snapshots** → states today's rates and explicitly makes no movement claim. _(Task 1 test.)_
+- **Same question from a brand-new LO and a 20-year veteran** → identical tool calls, data, and sources; only the coaching style in the system prompt differs. A user with no stage set is asked once and never assigned a guessed stage. _(Task 7 tests.)_
 
 ---
 
@@ -197,6 +200,7 @@
   - **Live loop:** capture mic (`getUserMedia`) → detect end-of-utterance by a simple silence timer (VAD-lite) → POST the audio to `/api/voice/stt` → send the transcript + running `messages` to `/api/assistant/turn` → render Charli's reply with its **source**, play it via `/api/voice/tts`, then reopen the mic. **Pause/Mute** control stops the loop.
   - **Side-effect confirmation:** when a turn returns `sideEffect`, show the read-back + a Confirm/Cancel; Confirm calls `/api/assistant/confirm`, Cancel discards.
   - Transcript list shows each turn with its source; a turn flagged `error:true` renders as a recoverable error, session continues.
+  - **Career-stage selector** (New / Developing / Established / Veteran — labels from Task 7's `CAREER_STAGES`) in the Charli panel, showing the user's current stage; choosing one posts `{ sideEffect: { type: "setCareerStage", stage } }` to `/api/assistant/confirm` (the click is the confirmation).
   - Reuses module-scope `C`, `card`, `mono`, `Icon`, `$c`; matches the Sweeps view's styling.
 
 - [ ] **Step 1: Add** `CharliView` + a `{ id:"charli", label:"Charli", icon:"mic" }` nav item (after `sweeps`) + the render-switch line, following the `SweepsView` pattern already in `App.jsx`.
@@ -206,6 +210,49 @@
 - [ ] **Step 3: Browser-verify** (per the harness verification workflow): start the server (Node 20) + vite, log in as `demo@refiradar.com`, open **Charli**; confirm greeting plays, a spoken "what are rates today" is transcribed → market update spoken with a visible source, "run a sweep" names an opportunity, "log contact for the Chens" shows a read-back + Confirm and only writes on Confirm. Capture a screenshot. (Requires `ELEVENLABS_*` and `ANTHROPIC_API_KEY` in `server/.env`.)
 
 - [ ] **Step 4: Commit** — `git add -A && git commit -m "feat: Charli live-session voice UI"`
+
+---
+
+### Task 7: Experience-aware coaching (career stage)
+
+_Added mid-build (2026-10-22). Runs after Task 4, before Task 5._
+
+**Files:**
+- Modify: `server/db.js` (idempotent migration: `users.career_stage TEXT` nullable)
+- Modify: `server/middleware/auth.js` (`requireAuth` SELECT adds `career_stage`, so `req.user` / `ctx.user` carry it)
+- Create: `server/lib/assistant/coaching.js`
+- Modify: `server/lib/assistant/prompt.js`, `server/lib/assistant/orchestrator.js`, `server/lib/assistant/tools.js`, `server/routes/assistant.js`, `server/routes/org.js`
+- Test: `server/test/coaching.test.js`
+
+**Interfaces:**
+- Consumes: `runTurn`, `CHARLI_SYSTEM` (Task 3); the tools map + `TOOL_SCHEMA` (Task 2); `/api/assistant/confirm` side-effect executor (Task 4).
+- Produces: `CAREER_STAGES` — ordered `[{ id:"new", label:"New (under 1 year)" }, { id:"developing", label:"Developing (1–3 years)" }, { id:"established", label:"Established (3–10 years)" }, { id:"veteran", label:"Veteran (10+ years)" }]`; `coachingStyle(stageId|null) -> string`; `buildCharliSystem(user) -> string` (= `CHARLI_SYSTEM` + `coachingStyle(user.career_stage)`); `setCareerStageTool({ stage }, ctx) -> { data:{ stage, label }, source:"(unsaved)", sideEffect:{ type:"setCareerStage", stage } }` (invalid stage → `(invalid input)`, no `sideEffect`); `PATCH /api/org/los/:id/stage` body `{ stage }`.
+- `runTurn` sends `buildCharliSystem(ctx.user)` as `system`. Read-back for this side effect is code-authored: `Just to confirm — set your career stage to <label>?`. `/api/assistant/confirm` executes `setCareerStage` as `UPDATE users SET career_stage = ? WHERE id = req.user.id` only.
+
+**Coaching style by stage (the content `coachingStyle` encodes):**
+- **new** — explain each figure in plain words the first time it comes up (what LTV, break-even, a rate-and-term refi mean); suggest one concrete next step at a time; offer a short talk track; remind that outreach is approved before sending and drafts stay general; encouraging.
+- **developing** — brief explanations only for less common terms; suggest next steps; offer talk tracks, don't push them.
+- **established** — concise; ranked actions; explain only when asked.
+- **veteran** — numbers first, terse, no definitions, ranked list, fastest path to action.
+- **null (unknown)** — balanced like *developing*; after greeting, ask once how long they've been originating, map the answer to a stage, and call `setCareerStageTool`. Never assume a stage.
+- **Every stage:** same tools, same numbers, same retrieve-and-cite law, same confirm rule.
+
+- [ ] **Step 1: Write the failing test** in `server/test/coaching.test.js` (temp DATA_DIR seed pattern):
+  - `buildCharliSystem` returns four distinct prompts for the four stages and a fifth for `null`; every one contains `CHARLI_SYSTEM` verbatim.
+  - The `null` prompt contains the ask-once instruction; the four staged prompts do not.
+  - `setCareerStageTool({ stage:"veteran" })` → `sideEffect.type === "setCareerStage"`, DB unchanged; `{ stage:"guru" }` → `(invalid input)`, no `sideEffect`.
+  - `runTurn` with one scripted fake client, run once as a `new` user and once as a `veteran` user: the tool calls, tool args, `sources`, and returned data are identical; only the `system` param sent to the client differs.
+  - A fake `setCareerStageTool` tool_use → reply `Just to confirm — set your career stage to Veteran (10+ years)?` + `sideEffect`, not executed.
+  - `/confirm` with `setCareerStage` writes `career_stage` for the caller only.
+  - `PATCH /api/org/los/:id/stage`: broker, same-org LO → 200 + written; LO caller → 403; LO in another org → 404; invalid stage → 400.
+
+- [ ] **Step 2: Run to verify it fails** — `cd server && npm test` → FAIL.
+
+- [ ] **Step 3: Implement** the migration, `requireAuth` column, `coaching.js`, `buildCharliSystem`, the orchestrator `system` switch, `setCareerStageTool` + its `TOOL_SCHEMA` entry, the `/confirm` executor branch, and the broker `PATCH` route (reuse `requireBroker` and the org-scoping already in `routes/org.js`).
+
+- [ ] **Step 4: Run to verify it passes** — `cd server && npm test` → PASS.
+
+- [ ] **Step 5: Commit** — `git add -A && git commit -m "feat: Charli tailors coaching to the user's career stage"`
 
 ---
 
