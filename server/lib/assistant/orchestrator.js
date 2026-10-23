@@ -97,6 +97,20 @@ const YES_NO_RE = new RegExp(
 );
 const isYesNoQuestion = (text) => YES_NO_RE.test(String(text == null ? "" : text));
 
+// The first word of a reply (after leading whitespace, an opening quote and the fillers oh / ah /
+// um / uh / er / erm / hmm / well / so) is an affirming or negating word. Tested on the raw reply,
+// before any opener strip, because "Sure" / "Absolutely" / "Right" are openers too.
+const YES_NO_WORD_RE = new RegExp(
+  "^[\\s\"'\\u201c\\u2018]*(?:(?:oh|ah|um|uh|er|erm|hmm|well|so)\\b[\\s,.!\\u2014\\u2013\\u2026-]*)*" +
+    "(?:yes|yeah|yep|yup|no|nope|nah|absolutely|right|correct|sure|of\\s+course|certainly|definitely|indeed|exactly|true|false)\\b",
+  "i"
+);
+// The user asked a yes/no or tag question (isYesNoQuestion) and the reply opens with a yes or a
+// no: that first word IS the answer. On an ungrounded turn nothing backs it ("Is Chen my best?" +
+// "Absolutely — want me to pull their numbers?"), so screenUngroundedText refuses it. Pure.
+const isBareYesNoAnswer = (reply, userText) =>
+  isYesNoQuestion(userText) && YES_NO_WORD_RE.test(String(reply == null ? "" : reply));
+
 // A completion claim. runTurn never performs an action, so by construction anything the model
 // says that reads as "it's done" is false. Each sentence (split on . ! ? ; and em/en dashes) is
 // tested on its own, after one content-free opener is stripped from it:
@@ -206,13 +220,16 @@ function isLoneClarifyingQuestion(reply, userText) {
 // What may be said when the model answered in text and no tool result this turn carried a
 // citation (it called no tool, or every tool it called failed).
 //   1. guideline-domain question  -> the fixed hand-off line;
-//   2. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
+//   2. a yes/no or tag question answered by a first-word yes or no (isBareYesNoAnswer)
+//                                 -> the fixed can't-verify line; checked before 3 so the
+//      exemption can't rescue it;
+//   3. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
 //      and "what's their name?" must reach the user;
-//   3. the model's text has a digit or a spoken figure, or the user's message OR the model's
+//   4. the model's text has a digit or a spoken figure, or the user's message OR the model's
 //      own text names a book/market noun (rates, clients, pipeline, ...), or the model said
 //      nothing                      -> the fixed can't-verify line (with no cited tool result, a
 //      statement about the book can't be sourced, even if the user only said "good morning");
-//   4. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
+//   5. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
 // Safe ONLY after claimsCompletion(modelText, false) has run and returned false, as runTurn does:
 // this function does not test for completion claims itself, so a lone question or a small-talk
 // statement that claims an action ("Should I log it? Done.", "All set!") would pass through here.
@@ -221,6 +238,7 @@ function screenUngroundedText(userText, modelText) {
   const user = String(userText == null ? "" : userText);
   const text = String(modelText == null ? "" : modelText);
   if (isGuidelineQuestion(user)) return GUIDELINE_HANDOFF;
+  if (isBareYesNoAnswer(text, user)) return CANT_VERIFY;
   if (isLoneClarifyingQuestion(text, user)) return text;
   if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0) return CANT_VERIFY;
   if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text)) return CANT_VERIFY;
@@ -488,5 +506,5 @@ async function runTurn({ messages, ctx, client } = {}) {
 
 module.exports = {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion,
+  isYesNoQuestion, isBareYesNoAnswer,
 };

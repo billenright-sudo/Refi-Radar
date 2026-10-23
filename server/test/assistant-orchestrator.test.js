@@ -20,7 +20,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion,
+  isYesNoQuestion, isBareYesNoAnswer,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -1299,6 +1299,97 @@ test("an affirming opener is not stripped when the user asked a yes/no or tag qu
   }
 });
 
+// ── round 6b: an unsourced yes / no ──────────────────────────────────────────
+
+test("isBareYesNoAnswer: a yes/no or tag question answered by a first-word yes or no", () => {
+  const yesNo = "Is Chen my best?";
+  // the ruled pairs and the accepted cost
+  for (const [u, reply] of [
+    ["Is Chen my best?", "Absolutely — want me to pull their numbers?"],
+    ["Do I have anything due today?", "Yes, a few — want the list?"],
+    ["Is the market up?", "Nope, pretty flat. Want details?"],
+    ["Chen's my top pick, right?", "Exactly."],
+    ["Is Chen my best?", "Yes — what's their name?"],
+  ]) {
+    assert.equal(isBareYesNoAnswer(reply, u), true, `${u} / ${reply}`);
+  }
+  // every listed word, case-insensitive, with or without punctuation after it
+  for (const w of [
+    "yes", "yeah", "yep", "yup", "no", "nope", "nah", "absolutely", "right", "correct", "sure", "of course",
+    "certainly", "definitely", "indeed", "exactly", "true", "false",
+  ]) {
+    for (const reply of [w, w + ".", w + "!", w + ", he is.", w + " — want the numbers?", w.toUpperCase() + " he is"]) {
+      assert.equal(isBareYesNoAnswer(reply, yesNo), true, reply);
+    }
+  }
+  // optional leading whitespace and filler; "of  course" with extra spaces
+  for (const reply of ["   Yes.", "Well, no — not yet.", "Oh yes!", "Hmm, nope.", "Um, sure.", "So yeah, he is.", "Of  course."]) {
+    assert.equal(isBareYesNoAnswer(reply, yesNo), true, reply);
+  }
+  // not the first word, a longer word, or no yes/no question
+  for (const [u, reply] of [
+    ["Is Chen my best?", "Which Chen do you mean?"],
+    ["Is Chen my best?", "I think yes."],
+    ["Is Chen my best?", "Yesterday was busy."],
+    ["Is Chen my best?", "Surely you jest."],
+    ["Is Chen my best?", "Nobody has told me."],
+    ["Is Chen my best?", "Truthfully, I can't say."],
+    ["Is Chen my best?", "Indeedy."],
+    ["can you log a call", "Sure, who did you talk to?"],
+    ["add a client", "Sure, what's their name?"],
+    ["could you add a client", "Absolutely — what's their name?"],
+    ["good morning", "Yes, good morning!"],
+    ["Is Chen my best?", ""],
+  ]) {
+    assert.equal(isBareYesNoAnswer(reply, u), false, `${u} / ${reply}`);
+  }
+  assert.equal(isBareYesNoAnswer(null, yesNo), false);
+  assert.equal(isBareYesNoAnswer("Yes.", null), false);
+});
+
+test("ungrounded: a first-word yes or no to a yes/no question is the can't-verify line; requests, lone questions and grounded turns are untouched", async () => {
+  for (const [u, reply] of [
+    ["Is Chen my best?", "Absolutely — want me to pull their numbers?"],
+    ["Do I have anything due today?", "Yes, a few — want the list?"],
+    ["Is the market up?", "Nope, pretty flat. Want details?"],
+    ["Chen's my top pick, right?", "Exactly."],
+    ["Is Chen my best?", "Yes — what's their name?"],   // accepted cost: the opener answers before the question asks
+  ]) {
+    assert.equal(screenUngroundedText(u, reply), CANT_VERIFY, reply);
+    const r = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, CANT_VERIFY, reply);
+    assert.deepStrictEqual(r.sources, [], reply);
+    assert.equal(r.sideEffect, undefined, reply);
+  }
+  for (const [u, reply] of [
+    ["can you log a call", "Sure, who did you talk to?"],
+    ["add a client", "Sure, what's their name?"],
+    ["Is Chen my best?", "Which Chen do you mean?"],
+  ]) {
+    assert.equal(screenUngroundedText(u, reply), reply, reply);
+    const r = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, reply, reply);
+    assert.deepStrictEqual(r.sources, [], reply);
+  }
+  // grounded turns are governed by the figure check, not this rule
+  let r = await runTurn({
+    messages: userSays("Is the market up?"), ctx: brokerCtx,
+    client: fakeClient([useTool("getMarketUpdate"), say("The thirty-year is at 6.52 percent today.")]),
+  });
+  assert.equal(r.reply, "The thirty-year is at 6.52 percent today.");
+  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  r = await runTurn({
+    messages: userSays("Is Chen my best?"), ctx: brokerCtx,
+    client: fakeClient([useTool("findClient", { query: "chen" }), say("Absolutely — want me to pull their numbers?")]),
+  });
+  assert.equal(r.reply, "Absolutely — want me to pull their numbers?");
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  // precedence: the guideline hand-off and the completion-claim line still come first
+  assert.equal(screenUngroundedText("Is Chen eligible for an FHA streamline?", "Yes, he is."), GUIDELINE_HANDOFF);
+  r = await runTurn({ messages: userSays("Did you log the call with Chen?"), ctx: brokerCtx, client: fakeClient([say("Yes, I logged it.")]) });
+  assert.equal(r.reply, NOTHING_CHANGED);
+});
+
 // ── regression table: every sentence the re-reviews used ────────────────────
 //
 // Each row: [user message, tool that grounds the turn (null = no tool, ungrounded), model reply,
@@ -1411,6 +1502,17 @@ const REVIEW_TABLE = [
   ...claimRows("Log a call with Chen", [
     "Found Robert Chen — logged the call for today.", "Thanks! All set.", "Yep, all set.", "It's done.", "Sure thing, done!",
   ]),
+  // round 6b: on an ungrounded turn a first-word yes / no to a yes/no question is itself an unsourced answer
+  ["Is Chen my best?", null, "Absolutely — want me to pull their numbers?", CANT_VERIFY],
+  ["Do I have anything due today?", null, "Yes, a few — want the list?", CANT_VERIFY],
+  ["Is the market up?", null, "Nope, pretty flat. Want details?", CANT_VERIFY],
+  ["Chen's my top pick, right?", null, "Exactly.", CANT_VERIFY],
+  ["can you log a call", null, "Sure, who did you talk to?", PASS],
+  ["add a client", null, "Sure, what's their name?", PASS],
+  ["Is Chen my best?", null, "Which Chen do you mean?", PASS],
+  ["Is the market up?", "getMarketUpdate", "The thirty-year is at 6.52 percent today.", PASS],
+  ["Is Chen my best?", "findClient", "Absolutely — want me to pull their numbers?", PASS],
+  ["Is Chen my best?", null, "Yes — what's their name?", CANT_VERIFY],   // accepted cost
 ];
 
 test("regression table: every sentence the re-reviews used resolves as ruled", async () => {
