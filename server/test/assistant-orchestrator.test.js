@@ -20,7 +20,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer,
+  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -232,21 +232,36 @@ test("an unscreened-looking answer after only a failed tool call cannot smuggle 
 });
 
 test("a failed lookup is narrated normally and its '(…)' source is not cited", async () => {
-  const client = fakeClient([
+  let client = fakeClient([
     useTool("logContactTool", { clientId: 999999 }),
     say("I couldn't find that one."),
   ]);
-  // no book/market keyword in the user's words, so the narration of the failure may pass
-  const r = await runTurn({ messages: userSays("update Zed"), ctx: brokerCtx, client });
+  // no book/market keyword and no action request in the user's words, so the narration of the failure may pass
+  let r = await runTurn({ messages: userSays("what about Zed?"), ctx: brokerCtx, client });
   assert.equal(r.reply, "I couldn't find that one.");
+  assert.deepStrictEqual(r.sources, []);
+  assert.equal(r.sideEffect, undefined);
+
+  // R5-3 FLIP (was a pass-through): "update Zed" is an action request and no sideEffect came back,
+  // so a statement is replaced by the nothing-changed line
+  client = fakeClient([useTool("logContactTool", { clientId: 999999 }), say("I couldn't find that one.")]);
+  r = await runTurn({ messages: userSays("update Zed"), ctx: brokerCtx, client });
+  assert.equal(r.reply, NOTHING_CHANGED);
   assert.deepStrictEqual(r.sources, []);
   assert.equal(r.sideEffect, undefined);
 });
 
 test("a failed lookup on a book-keyword question still resolves to the can't-verify line", async () => {
-  const client = fakeClient([useTool("logContactTool", { clientId: 999999 }), say("I couldn't find that client.")]);
-  const r = await runTurn({ messages: userSays("log a call with Zed"), ctx: brokerCtx, client });
+  let client = fakeClient([useTool("logContactTool", { clientId: 999999 }), say("I couldn't find that client.")]);
+  let r = await runTurn({ messages: userSays("Zed's balance"), ctx: brokerCtx, client });
   assert.equal(r.reply, CANT_VERIFY);
+  assert.deepStrictEqual(r.sources, []);
+
+  // R5-3 FLIP (was CANT_VERIFY): "log a call with Zed" is an action request, so the statement is the
+  // nothing-changed line instead (blocked either way)
+  client = fakeClient([useTool("logContactTool", { clientId: 999999 }), say("I couldn't find that client.")]);
+  r = await runTurn({ messages: userSays("log a call with Zed"), ctx: brokerCtx, client });
+  assert.equal(r.reply, NOTHING_CHANGED);
   assert.deepStrictEqual(r.sources, []);
 });
 
@@ -918,12 +933,18 @@ test("a tag-question statement or a made-up name does not ride on the clarifying
     ["Who should I call today?", "Start with Robert and Linda Chen — want me to pull their numbers?"],
     ["how are rates today", "Rates ticked down a bit today — want the exact numbers?"],
     ["who should I call", "Want to start with the Chens?"],
-    ["add a client", "Yes. Which one?"],
     ["which client has the highest rate", "Chen's the one with the highest rate, right?"],
   ]) {
     const client = fakeClient([say(reply)]);
     const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client });
     assert.equal(r.reply, CANT_VERIFY, reply);
+    assert.deepStrictEqual(r.sources, []);
+  }
+  // R5-3 FLIP (was CANT_VERIFY): "add a client" is an action request and "Yes. Which one?" is not
+  // question-shaped ("Yes" is not an opener), so it is the nothing-changed line (blocked either way)
+  {
+    const r = await runTurn({ messages: userSays("add a client"), ctx: brokerCtx, client: fakeClient([say("Yes. Which one?")]) });
+    assert.equal(r.reply, NOTHING_CHANGED);
     assert.deepStrictEqual(r.sources, []);
   }
   // while the lone question on the same turn still passes
@@ -1214,7 +1235,7 @@ test("claimsCompletion: an offer loses only its question word and pronoun; the r
   for (const t of [
     "Should I get that marked as contacted?", "Should I have it logged?", "Do you want me to log that?",
     "Can I get the balance first?", "Would you like me to log the call?", "Want me to log it?",
-    "Do you want it logged and marked as contacted?", "Sure, should I get that marked as contacted?",
+    "Sure, should I get that marked as contacted?",
   ]) {
     assert.equal(claimsCompletion(t, false), false, t);
     assert.equal(claimsCompletion(t, true), false, "grounded: " + t);
@@ -1224,6 +1245,9 @@ test("claimsCompletion: an offer loses only its question word and pronoun; the r
     "Want me to set a follow-up, now that the call's logged?",
     "Want me to log it since I've logged the others?",
     "Should we add a note, since it's all set?",
+    // R5-4 FLIP (was not a claim): an offer now gets the later-clause test, and "marked as contacted"
+    // after "and" is a completion opener
+    "Do you want it logged and marked as contacted?",
   ]) {
     assert.equal(claimsCompletion(t, false), true, t);
     assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
@@ -1254,15 +1278,20 @@ test("claimsCompletion: completion forms in any sentence, anywhere in it, or at 
   }
 });
 
-test("isYesNoQuestion: yes/no and tag questions, not requests", () => {
+test("isYesNoQuestion (R5-1): ends with '?', opens with an auxiliary or ends with a state tag, and is not a request", () => {
   for (const u of [
     "Is Chen my best refi opportunity?", "Chen's my top opportunity, right?", "Did I already call Chen this week?",
-    "Do I have a client named Chen?", "are rates up", "Am I due to call anyone?", "Was Chen contacted?", "Were they added?",
+    "Do I have a client named Chen?", "Am I due to call anyone?", "Was Chen contacted?", "Were they added?",
     "Does Chen have a check-in due?", "Has Chen refinanced?", "Have I called Chen?", "Had I logged that?",
-    "Chen's due, correct?", "That's the one, yes?",
-    // beyond the listed starts: after a filler word or a clause break, the n't forms, and no? / yeah? / true? tags
-    "Hey Charli, is Chen my best refi opportunity?", "hey charli is chen my best refi opportunity", "So did I call Chen?",
-    "Okay. Did I call Chen?", "Chen's my top opportunity, isn't he?", "Didn't I call Chen?", "Chen's my top one, no?",
+    "Chen's due, correct?", "Chen's my top one, true?", "It's Chen, isn't it?", "Chen's due, isn't she?",
+    "The Chens are due, aren't they?",
+    // after filler / address, in the last sentence or the last clause, and the n't form of the auxiliary
+    "Hey Charli, is Chen my best refi opportunity?", "So did I call Chen?", "Okay. Did I call Chen?",
+    "Good morning Charli, is Chen my best?", "Quick one, is Chen my best?", "Is Chen, my best client, due?",
+    "Chen's my top opportunity, isn't he?", "Didn't I call Chen?", "I'm back. Is Chen my best?",
+    "Is Chen my best?", "Did I talk to Chen this week?", "Have I talked to Chen lately?",
+    // not on the ruled mic-check list, so a yes/no question (fail-closed cost, see the report)
+    "Did you hear me?", "Did you get that?",
   ]) {
     assert.equal(isYesNoQuestion(u), true, u);
   }
@@ -1270,6 +1299,29 @@ test("isYesNoQuestion: yes/no and tag questions, not requests", () => {
     "can you log a call", "could you add a client", "will you log it", "would you add Jane", "should I call Chen",
     "add a client", "log a call with Chen", "who should I call today", "which client has the highest rate",
     "good morning", "Isabel called", "Don called", "Alright?", "",
+    // R5-1 (a): no "?" at the end, so no clause counts
+    "Do me a favor and add a client", "Add a new client. Her name is Jane Doe. Do it now.",
+    "Chen called me, was asking about rates, log it", "Log a call with Chen, did it this morning",
+    "Is Chen my best? Log it.",
+    // R5-1 (c): request and mic-check leads, after filler
+    "Are you there?", "Hey Charli, are you there?", "Good morning Charli, are you ready?", "Are you awake?",
+    "Are you listening?", "Are you around?", "Are you up?", "Are you with me?", "Are you able to add a client?",
+    "Are you free?", "Is this thing on?", "Is this on?", "Is it on?", "Can you hear me?",
+    "Do you want to log a call?", "Do you mind logging a call for me?", "Do you have time to log a call?",
+    "Hey Charli, do you think you could log a call for me?", "Have you got a minute to log a call?",
+    "Have you got a sec?", "Is it possible to add a client?", "Is there a way to log a call?",
+    "Do me a favor, is that ok?", "I'm back. Are you there?",
+    // the message itself opens with a mic-check lead (the ruled message-level exclusion)
+    "Are you there? Is Chen my best?",
+    // R5-1 (c): the first word after filler is an imperative action verb, even with a trailing tag
+    "Add a client for me, yeah?", "Add a client, is that ok?", "Log a call with Chen, did it this morning?",
+    "Hey Charli, log it, right?", "Pull up Chen, is he due?", "Run a sweep, is that possible?",
+    // R5-1 FLIPS (were yes/no questions in round 6): no "?" ...
+    "are rates up", "hey charli is chen my best refi opportunity",
+    // ... and yes? / no? / yeah? are not on the ruled state-tag list
+    "That's the one, yes?", "Chen's my top one, no?", "Chen's due, yeah?",
+    // a clause in the middle of the message never counts
+    "Is Chen due, or not, I wonder.", "Chen called, did I log it, any idea?", "I talked to Chen, was it logged, who knows?",
   ]) {
     assert.equal(isYesNoQuestion(u), false, u);
   }
@@ -1378,6 +1430,8 @@ test("ungrounded: a first-word yes or no to a yes/no question is the can't-verif
   });
   assert.equal(r.reply, "The thirty-year is at 6.52 percent today.");
   assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  // ACCEPTED RESIDUAL: grounded yes/no is figure-check-only by design. A cited tool result backs the
+  // turn, so the opener may answer the question; this pass is intended, not a regression.
   r = await runTurn({
     messages: userSays("Is Chen my best?"), ctx: brokerCtx,
     client: fakeClient([useTool("findClient", { query: "chen" }), say("Absolutely — want me to pull their numbers?")]),
@@ -1388,6 +1442,216 @@ test("ungrounded: a first-word yes or no to a yes/no question is the can't-verif
   assert.equal(screenUngroundedText("Is Chen eligible for an FHA streamline?", "Yes, he is."), GUIDELINE_HANDOFF);
   r = await runTurn({ messages: userSays("Did you log the call with Chen?"), ctx: brokerCtx, client: fakeClient([say("Yes, I logged it.")]) });
   assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+// ── round 7 (final, structural): narrow yes/no, strict yes/no answers, the action backstop ──
+
+// R5-1 must-pass: requests, mic checks and greetings that read like yes/no questions keep their opener.
+const R5_1_PAIRS = [
+  ["Are you there?", "Yes, I'm here! What can I do for you?"],
+  ["Good morning Charli, are you ready?", "Yes! Good morning, Bill. What can I help with?"],
+  ["Is this thing on?", "Yep, I'm listening."],
+  ["Do you want to log a call?", "Sure, who did you talk to?"],
+  ["Do you mind logging a call for me?", "Sure, who did you talk to?"],
+  ["Are you able to add a client?", "Sure, what's their name?"],
+  ["Is it possible to add a client?", "Sure, what's their name?"],
+  ["Do me a favor and add a client", "Sure, what's their name?"],
+  ["Add a new client. Her name is Jane Doe. Do it now.", "Sure, what's her phone number?"],
+  ["Chen called me, was asking about rates, log it", "Got it. Which Chen?"],
+  ["Log a call with Chen, did it this morning", "Sure, which Chen?"],
+  ["Add a client for me, yeah?", "Sure, what's their name?"],
+];
+
+// R5-2 must-block: an ungrounded yes/no question answered by anything but a lone clarifying question.
+const R5_2_BLOCKS = [
+  ["Is Chen my best?", "He sure is."],
+  ["Is Chen my best?", "That's right — want me to pull their numbers?"],
+  ["Is Chen my best?", "You bet."],
+  ["Is Chen my best?", "Not really — Garcia is ahead."],
+  ["Did I talk to Chen this week?", "You did, on Monday."],
+  ["Have I talked to Chen lately?", "Not since last month."],
+];
+// round 6b's must-block rows, still blocked by R5-2 (which subsumes the first-word check)
+const R4B_BLOCKS = [
+  ["Is Chen my best refi opportunity?", "Absolutely — want me to pull their numbers?"],
+  ["Chen's my top opportunity, right?", "Right — want me to run the numbers?"],
+  ["Did I already call Chen this week?", "Sure — want me to pull up the record?"],
+  ["Do I have a client named Chen?", "Of course, which one?"],
+  ["Is Chen my best?", "Absolutely — want me to pull their numbers?"],
+  ["Do I have anything due today?", "Yes, a few — want the list?"],
+  ["Is the market up?", "Nope, pretty flat. Want details?"],
+  ["Chen's my top pick, right?", "Exactly."],
+  ["Is Chen my best?", "Yes — what's their name?"],
+];
+
+// R5-3 must-block (user "log a call with Chen", no tool AND after findClient): no sideEffect came back,
+// and none of these is question-shaped.
+const R5_3_BLOCKS = [
+  "Call logged for Robert and Linda Chen.", "Contact logged for Robert and Linda Chen — anything else?",
+  "Robert and Linda Chen marked as contacted for today.", "Consider it logged.", "Logging that call now.",
+  "On it — logging that now.", "I've made a note that you talked to Robert and Linda Chen.",
+  "Chen's last contact is now set to today.", "I've put that call in.", "Your call with Robert and Linda Chen was logged.",
+];
+
+// R5-4 must-block after findClient: an offer with a completion claim in a later clause.
+const R5_4_BLOCKS = [
+  "Should I set a follow-up, logged it already?", "Want a follow-up set too - logged the call already?",
+];
+
+test("R5-1: requests, mic checks and greetings phrased as questions pass with their opener", async () => {
+  for (const [u, reply] of R5_1_PAIRS) {
+    assert.equal(isYesNoQuestion(u), false, u);
+    const r = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, reply, `${u} / ${reply}`);
+    assert.deepStrictEqual(r.sources, [], reply);
+    assert.equal(r.sideEffect, undefined, reply);
+  }
+});
+
+test("R5-2: on an ungrounded turn a yes/no question accepts only a lone clarifying question, with no opener strip", async () => {
+  for (const [u, reply] of [...R5_2_BLOCKS, ...R4B_BLOCKS, ["Is Chen my best?", "Sure, which Chen?"]]) {
+    assert.equal(screenUngroundedText(u, reply), CANT_VERIFY, `${u} / ${reply}`);
+    const r = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, CANT_VERIFY, `${u} / ${reply}`);
+    assert.deepStrictEqual(r.sources, [], reply);
+    assert.equal(r.sideEffect, undefined, reply);
+  }
+  for (const [u, reply] of [
+    ["Is Chen my best?", "Which Chen do you mean?"],
+    ["Did I talk to Chen this week?", "Which Chen do you mean?"],
+  ]) {
+    assert.equal(screenUngroundedText(u, reply), reply, reply);
+    const r = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(reply)]) });
+    assert.equal(r.reply, reply, reply);
+    assert.deepStrictEqual(r.sources, [], reply);
+  }
+  // grounded yes/no turns are unaffected: figure check only, by design
+  const r = await runTurn({
+    messages: userSays("Is Chen my best?"), ctx: brokerCtx,
+    client: fakeClient([useTool("findClient", { query: "chen" }), say("He sure is.")]),
+  });
+  assert.equal(r.reply, "He sure is.");   // ACCEPTED RESIDUAL: grounded yes/no is figure-check-only by design
+  assert.deepStrictEqual(r.sources, ["client record"]);
+});
+
+test("isActionRequest (R5-3): an action verb opens a clause, or a request lead comes within four words of one", () => {
+  for (const u of [
+    "log a call with Chen", "Log a call with Chen", "add a client", "Add a new client. Her name is Jane Doe. Do it now.",
+    "mark Chen", "update Zed", "put someone new in", "Record a call with Chen", "Note that I talked to Chen",
+    "Set a follow-up for Chen", "Book a call with Chen", "Schedule a follow-up", "Save that", "Create a client",
+    "Enter a new client", "Hey Charli, log a call with Chen", "Okay so log it", "Add a client for me, yeah?",
+    "Log a call with Chen, did it this morning", "can you log a call", "could you add a client",
+    "Could you please log a call?", "Would you add Jane?", "Will you log it?", "Please log a call with Chen",
+    "Do you want to log a call?", "Do you mind logging a call for me?", "Do you mind adding a client?",
+    "Are you able to add a client?", "Is it possible to add a client?", "Go ahead and add Jane",
+    "I need you to log a call", "I want you to add a client", "Could you real quick log a call?",
+    "Would you be able to add a client?",
+    // beyond the message start: the action verb opens a later clause (see the report)
+    "Chen called me, was asking about rates, log it", "I just talked to Chen. Had a great chat. Log it.",
+    "I talked to Chen, was a good call, log it", "When you get a chance, log a call with Chen",
+    "Did I log Chen? If not, log him.",
+  ]) {
+    assert.equal(isActionRequest(u), true, u);
+  }
+  for (const u of [
+    // past-state or wh-questions are not action requests
+    "When did I last log a call with Chen?", "Did I log Chen?", "Has it been logged?", "What did I log today?",
+    "Who did I log yesterday?", "Which client did I add?", "How do I add a client?", "Was Chen logged?",
+    "Were they added?", "Have I logged Chen?", "Had I logged that?", "Have you got a minute to log a call?",
+    // ... even when they hold a request lead and an action verb
+    "What can you log for me?", "When can you add Jane?", "How would you log a call?", "Who could you add next?",
+    "Which client can you mark?", "Did you want me to log it, can you check?",
+    // no action verb in reach, or not one of the ruled verbs / leads
+    "good morning", "thanks", "Who should I call today?", "Is Chen my best?", "Tell me about Chen", "Run a sweep",
+    "find chen", "Do me a favor and add a client", "Book's looking thin", "Logging off now", "Settle down",
+    "Can you tell me what to log?", "Do you have time to log a call?", "Is there a way to log a call?",
+    "Okay, do it", "Are you there?", "", null,
+  ]) {
+    assert.equal(isActionRequest(u), false, String(u));
+  }
+});
+
+test("isQuestionShaped (R5-3): after one opener, the first clause opens with a question word and the reply ends with '?'", () => {
+  for (const t of [
+    "Sure, which Chen?", "Which Chen — Robert and Linda, or Chen Wei?", "Got it. Who did you talk to?",
+    "Who did you talk to?", "Should I have it logged?", "Okay — which Chen do you mean?", "  Which Chen?  ",
+    "Want a follow-up set too - logged the call already?",   // shaped like a question: the claim guard catches it
+  ]) {
+    assert.equal(isQuestionShaped(t), true, t);
+  }
+  for (const t of [
+    ...R5_3_BLOCKS, "Not at all — what's their name?", "Yes. Which one?", "Sure. Okay. Which one?",
+    "I found Robert and Linda Chen. Want me to log a call with them?", "Who did you talk to? I'll log it.",
+    "I haven't logged anything yet.", "Which Chen", "", null,
+  ]) {
+    assert.equal(isQuestionShaped(t), false, String(t));
+  }
+});
+
+test("R5-3: on an action request with no sideEffect, only a question-shaped reply passes; anything else is the nothing-changed line", async () => {
+  for (const reply of R5_3_BLOCKS) {
+    for (const tool of [null, "findClient"]) {
+      const script = tool ? [useTool(tool, { query: "chen" }), say(reply)] : [say(reply)];
+      const r = await runTurn({ messages: userSays("log a call with Chen"), ctx: brokerCtx, client: fakeClient(script) });
+      assert.equal(r.reply, NOTHING_CHANGED, `[${tool || "ungrounded"}] ${reply}`);
+      assert.deepStrictEqual(r.sources, [], reply);
+      assert.equal(r.sideEffect, undefined, reply);
+    }
+  }
+  // must pass on the same request
+  for (const [reply, tool, ctx] of [
+    ["Sure, which Chen?", null, brokerCtx], ["Sure, which Chen?", "findClient", brokerCtx],
+    ["Which Chen — Robert and Linda, or Chen Wei?", "findClient", twoChensCtx],
+    ["Got it. Who did you talk to?", null, brokerCtx], ["Got it. Who did you talk to?", "findClient", brokerCtx],
+    ["Who did you talk to?", null, brokerCtx], ["Who did you talk to?", "findClient", brokerCtx],
+  ]) {
+    const client = fakeClient(tool ? [useTool(tool, { query: "chen" }), say(reply)] : [say(reply)]);
+    const r = await runTurn({ messages: userSays("log a call with Chen"), ctx, client });
+    assert.equal(r.reply, reply, `[${tool || "ungrounded"}] ${reply}`);
+    assert.deepStrictEqual(r.sources, tool ? ["client record"] : [], reply);
+    if (ctx === twoChensCtx) assert.equal(toolResultPayload(client.calls[1]).data.totalMatches, 2);
+  }
+  // not an action request: a past-state question, narrated from the payload's own date
+  const r = await runTurn({
+    messages: userSays("When did I last log a call with Chen?"), ctx: brokerCtx,
+    client: fakeClient([useTool("findClient", { query: "chen" }), say("Your last contact with Robert and Linda Chen was logged on 2026-01-01.")]),
+  });
+  assert.equal(r.reply, "Your last contact with Robert and Linda Chen was logged on 2026-01-01.");
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  // a real change still comes back for confirmation (the backstop only governs text-ending turns)
+  const se = await runTurn({
+    messages: userSays("log a call with Chen"), ctx: brokerCtx,
+    client: fakeClient([useTool("logContactTool", { clientId: chenId })]),
+  });
+  assert.deepStrictEqual(se.sideEffect, { type: "logContact", clientId: chenId });
+});
+
+test("R5-4: an offer also gets the later-clause completion test", async () => {
+  for (const t of R5_4_BLOCKS) {
+    assert.equal(claimsCompletion(t, false), true, t);
+    assert.equal(claimsCompletion(t, true), true, "grounded: " + t);
+    for (const [user, tool] of [["log a call with Chen", "findClient"], ["thanks", null], ["thanks", "findClient"]]) {
+      const script = tool ? [useTool(tool, { query: "chen" }), say(t)] : [say(t)];
+      const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client: fakeClient(script) });
+      assert.equal(r.reply, NOTHING_CHANGED, `${user} [${tool || "ungrounded"}] ${t}`);
+      assert.deepStrictEqual(r.sources, [], t);
+    }
+  }
+  // offers whose later clauses claim nothing still pass
+  for (const t of [
+    "Should I get that marked as contacted?", "Want me to log the call with Robert and Linda Chen?",
+    "Should I log it, or set a follow-up?", "Would you like me to log the call and set a follow-up?",
+  ]) {
+    assert.equal(claimsCompletion(t, true), false, t);
+  }
+});
+
+test("R5-6: CHARLI_SYSTEM narrates a past contact as 'was logged on <date>', never 'is logged as'", () => {
+  assert.match(CHARLI_SYSTEM, /say it was logged on its date/);
+  assert.match(CHARLI_SYSTEM, /"Your last contact was logged on 2026-01-01\."/);
+  assert.match(CHARLI_SYSTEM, /never that a contact "is logged as" a date/);
+  // the example sentence itself survives the guards on a grounded, non-action turn
+  assert.equal(claimsCompletion("Your last contact was logged on 2026-01-01.", true), false);
 });
 
 // ── regression table: every sentence the re-reviews used ────────────────────
@@ -1466,8 +1730,10 @@ const REVIEW_TABLE = [
   ["log a call", null, "Got it. Who did you talk to?", PASS],
   ["add a client", null, "Right — what's their name?", PASS],
   ["add a client", null, "Sure. Which one?", PASS],
-  ["add a client", null, "Yes. Which one?", CANT_VERIFY],
-  ["add a client", null, "Sure. Okay. Which one?", CANT_VERIFY],
+  // R5-3 FLIPS (were CANT_VERIFY): an action request, and neither reply is question-shaped after one
+  // opener strip ("Yes" is not an opener; "Okay" is left after "Sure."), so both are the nothing-changed line
+  ["add a client", null, "Yes. Which one?", NOTHING_CHANGED],
+  ["add a client", null, "Sure. Okay. Which one?", NOTHING_CHANGED],
   ["who should I call today", null, "Sure, Chen's your best bet — want their numbers?", CANT_VERIFY],
   ...claimRows("Log a call with Chen", [
     "I have gone ahead and logged the call.", "I just went ahead and logged the call.",
@@ -1480,7 +1746,9 @@ const REVIEW_TABLE = [
   ["what are rates doing", "getMarketUpdate", "I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.", PASS],
   ...onBoth("mark Chen", "Should I get that marked as contacted?", PASS),
   ["thanks", null, "I haven't logged anything yet.", CANT_VERIFY],
-  ["Log a call with Chen", "findClient", "I haven't logged anything yet.", PASS],
+  // R5-3 FLIP (was a pass-through): an action request with no sideEffect, and a statement, so it is the
+  // nothing-changed line (which says the same thing)
+  ["Log a call with Chen", "findClient", "I haven't logged anything yet.", NOTHING_CHANGED],
   // round 6: passives on grounded turns, claims inside offers, openers that answer yes/no
   // questions, completion phrasings outside the first sentence
   ...claimRows("Log a call with Chen", [
@@ -1511,8 +1779,189 @@ const REVIEW_TABLE = [
   ["add a client", null, "Sure, what's their name?", PASS],
   ["Is Chen my best?", null, "Which Chen do you mean?", PASS],
   ["Is the market up?", "getMarketUpdate", "The thirty-year is at 6.52 percent today.", PASS],
+  // ACCEPTED RESIDUAL: grounded yes/no is figure-check-only by design (R5-5): keep this row passing
   ["Is Chen my best?", "findClient", "Absolutely — want me to pull their numbers?", PASS],
   ["Is Chen my best?", null, "Yes — what's their name?", CANT_VERIFY],   // accepted cost
+
+  // round 7 (final, structural): the rulings' own must-pass / must-block sentences
+  // R5-1: requests, mic checks and greetings phrased as questions keep their opener
+  ...R5_1_PAIRS.map(([u, reply]) => [u, null, reply, PASS]),
+  // R5-2: an ungrounded yes/no question accepts only a lone clarifying question
+  ...R5_2_BLOCKS.map(([u, reply]) => [u, null, reply, CANT_VERIFY]),
+  ...R4B_BLOCKS.map(([u, reply]) => [u, null, reply, CANT_VERIFY]),
+  ["Is Chen my best?", null, "Which Chen do you mean?", PASS],
+  // R5-3: the action backstop (user "log a call with Chen", ungrounded and after findClient)
+  ...R5_3_BLOCKS.flatMap((t) => onBoth("log a call with Chen", t, NOTHING_CHANGED)),
+  ...onBoth("log a call with Chen", "Sure, which Chen?", PASS),
+  ["log a call with Chen", "findClient", "Which Chen — Robert and Linda, or Chen Wei?", PASS],
+  ...onBoth("log a call with Chen", "Got it. Who did you talk to?", PASS),
+  ...onBoth("log a call with Chen", "Who did you talk to?", PASS),
+  ["When did I last log a call with Chen?", "findClient", "Your last contact with Robert and Linda Chen was logged on 2026-01-01.", PASS],
+  // RULED COST (R5-3): "update" is on the ruled verb list, so an information request that opens with it is
+  // an action request, and grounded narration is replaced. Flip this row if a later ruling narrows the list.
+  ["update me on the market", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", NOTHING_CHANGED],
+  // R5-4: an offer also gets the later-clause completion test
+  ...R5_4_BLOCKS.map((t) => ["log a call with Chen", "findClient", t, NOTHING_CHANGED]),
+
+  // round 7: the reviewer's probe cases (cases1-4.json), each with its outcome under R5-1..R5-6
+  // cases1 / F1: grounded passives on an action request (the backstop catches the was-forms too)
+  ...[
+    "Got it — Chen's been marked as contacted.", "Chen has been marked as contacted.", "The call with Chen is logged.",
+    "Chen's call is logged now.", "The call has already been logged.", "Chen has just been marked as contacted.",
+    "It's now been logged.", "Chen was marked as contacted.", "Your call with Robert and Linda Chen was logged.",
+    "The call with Chen's been recorded.", "Chen's now marked as contacted for today.", "Chen's contact is recorded for today.",
+  ].map((t) => ["Log a call with Chen", "findClient", t, NOTHING_CHANGED]),
+  // cases1 / F1 must-pass
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Chen was logged on 2026-01-01.", PASS],
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Chen was logged on 2026-01-21.", CANT_VERIFY],
+  // cases1 / F2: offers
+  ["Log a call with Chen", "findClient", "Would you like me to set a follow-up now that I've logged the call?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Want me to set a follow-up, now that the call's logged?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Should I get that marked as contacted?", PASS],
+  ["Log a call with Chen", "findClient", "Should I have it logged?", PASS],
+  ["Log a call with Chen", null, "Should I get that marked as contacted?", PASS],
+  ["Log a call with Chen", null, "Should I have it logged?", PASS],
+  ["Log a call with Chen", "findClient", "Want me to set a follow-up - logged the call already?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Do you want a follow-up too, since I logged it?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Shall I set a follow-up now that it's been logged?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Should I also set a follow-up now that the call is in?", PASS],   // deferred: question-smuggled assertion
+  ["Log a call with Chen", "findClient", "Want me to log the call with Robert and Linda Chen?", PASS],
+  ["Log a call with Chen", "findClient", "Do you want me to log a call for Robert and Linda Chen today?", PASS],
+  // cases1 / F3-F6: yes/no must-block (ungrounded) and must-pass
+  ...R4B_BLOCKS.slice(0, 8).map(([u, reply]) => [u, null, reply, CANT_VERIFY]),
+  ["can you log a call", null, "Sure, who did you talk to?", PASS],
+  ["add a client", null, "Sure, what's their name?", PASS],
+  ["Is Chen my best?", null, "Which Chen do you mean?", PASS],
+  ["Is the market up?", "getMarketUpdate", "The thirty-year is at 6.52 percent today.", PASS],
+  // cases1 / F4: residual completion on an action request (grounded)
+  ...["Found Robert Chen — logged the call for today.", "Thanks! All set.", "Yep, all set.", "It's done.", "Sure thing, done!",
+    "Done.", "All done!", "Okay — all set."].map((t) => ["Log a call with Chen", "findClient", t, NOTHING_CHANGED]),
+  // cases1: residual vocabulary on an action request (grounded): every one is a statement, so the backstop
+  ...[
+    "Call logged for Robert and Linda Chen.", "Contact logged for Robert and Linda Chen — anything else?",
+    "Robert and Linda Chen marked as contacted for today.", "Logging that call now.",
+    "Logging that call with Robert and Linda Chen for you now.", "On it — logging that now.",
+    "Got it, I've made a note that you talked to Robert and Linda Chen today.", "I've set Chen's last contact to today.",
+    "Chen's last contact is now set to today.", "Chen's last contact now shows today.",
+    "I've put that call in for Robert and Linda Chen.", "That's in the book for Robert and Linda Chen.",
+    "The call with Robert and Linda Chen is in.", "Robert and Linda Chen are up to date now.", "I've captured that call.",
+    "Your call with Chen's been saved to their record.", "Got it! Your call with Robert and Linda Chen is on the record.",
+    "Perfect, that call's in for today.", "Consider it logged.", "Consider it done!", "You're good to go — call logged.",
+    "You're good to go.", "Easy — Chen's last contact is today now.",
+  ].map((t) => ["Log a call with Chen", "findClient", t, NOTHING_CHANGED]),
+  // cases2: requests phrased as yes/no questions (the missing-detail clarifying question)
+  ["Do you want to log a call?", null, "Sure, who did you talk to?", PASS],
+  ["Do you want to log a call?", null, "Who did you talk to?", PASS],
+  ["Do you mind logging a call for me?", null, "Sure, who did you talk to?", PASS],
+  ["Do you mind logging a call for me?", null, "Happy to — who did you talk to?", PASS],
+  ["Do you mind logging a call for me?", null, "Of course! Who was it with?", PASS],
+  ["Do you mind adding a client?", null, "Not at all — what's their name?", NOTHING_CHANGED],   // R5-3: "Not at all" is no opener
+  ["Do me a favor and log a call with Chen", null, "Sure — which Chen?", PASS],
+  ["Do me a favor and add a client", null, "Sure, what's their name?", PASS],
+  ["Are you able to add a client?", null, "Sure, what's their name?", PASS],
+  ["Are you able to add a client?", null, "Absolutely — what's their name?", PASS],
+  ["Is it possible to add a client?", null, "Sure, what's their name?", PASS],
+  ["Is there a way to log a call?", null, "Yes — who did you talk to?", CANT_VERIFY],   // not a lead; book noun in the user's words
+  ["Hey Charli, do you think you could log a call for me?", null, "Sure, who did you talk to?", PASS],
+  ["I talked to Chen, was a good call, log it", null, "Sure — which Chen?", PASS],
+  ["Add a client, is that ok?", null, "Sure, what's their name?", PASS],
+  ["Add a client for me, yeah?", null, "Sure, what's their name?", PASS],
+  ["Okay, do it", null, "Sure — which client?", PASS],
+  ["Do a quick sweep", null, "Sure — want the top ten or everyone?", PASS],
+  ["Have you got a minute to log a call?", null, "Sure, who did you talk to?", PASS],
+  ["Do you have time to log a call?", null, "Of course — who did you talk to?", PASS],
+  // cases2: greetings / mic checks
+  ["Are you there?", null, "Yes, I'm here! What can I do for you?", PASS],
+  ["Hey Charli, are you there?", null, "I'm here! What can I help with?", PASS],
+  ["Good morning Charli, are you ready?", null, "Yes! Good morning, Bill. What can I help with?", PASS],
+  ["Good morning Charli, are you ready?", null, "Good morning, Bill! Ready when you are.", PASS],
+  ["Hey Charli, are you awake?", null, "Sure am! How can I help?", PASS],
+  ["Did you hear me?", null, "Yes — sorry, could you say that again?", CANT_VERIFY],   // R5-2 cost: not on the mic-check list
+  ["Did you get that?", null, "Sorry, I didn't catch that. Could you say it again?", CANT_VERIFY],   // R5-2 cost (was a pass)
+  ["Is this thing on?", null, "Yep, I'm listening. What do you need?", PASS],
+  ["Hi Charli, how are you?", null, "Doing great, thanks! How can I help?", PASS],
+  // cases2: affirmative / negative answers outside the old word list (ungrounded): R5-2
+  ...[
+    ["Is Chen my best?", "He sure is."], ["Is Chen my best?", "That's right — want me to pull their numbers?"],
+    ["Is Chen my best?", "He is, and by a lot."], ["Is Chen my best?", "You bet."],
+    ["Is Chen my best?", "Not really — Garcia is ahead."], ["Chen's my top pick, right?", "That's right."],
+    ["Chen's my top pick, right?", "You got it."], ["Did I talk to Chen this week?", "You did, on Monday."],
+    ["Have I talked to Chen lately?", "Not since last month."],
+    ["Did I speak to the Chens recently?", "Not recently — it's been a few weeks."], ["Is Chen my best?", "Bill, yes."],
+    ["Is Chen my best?", "Mm-hmm, he is."], ["Is Chen my best?", "Yes!"], ["Is Chen my best?", "Totally — want their numbers?"],
+    ["Is Chen my best?", "For sure."], ["Is Chen my best?", "Big time."],
+  ].map(([u, reply]) => [u, null, reply, CANT_VERIFY]),
+  // cases2: grounded yes/no. ACCEPTED RESIDUAL: grounded yes/no is figure-check-only by design
+  ["Is Chen my best?", "findClient", "Absolutely — want me to pull their numbers?", PASS],
+  ["Is the market up?", "getMarketUpdate", "Yes, rates are up today.", PASS],
+  ["Did I call Chen this week?", "findClient", "Yes, you called on Monday.", PASS],
+  // cases3: narrating a looked-up client (grounded); the NOTHING_CHANGED rows are the deferred
+  // fail-closed narration ("is recorded as", "is logged as", "all set", "we have them marked")
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen have a 30yr_fixed loan at 7.85 percent, with $485,000 left.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen are at 7.85 percent. Your notes say they prefer evening calls.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen, last contacted on 2026-01-01, are at 7.85 percent.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen — last contact logged on 2026-01-01.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen: balance $485,000, rate 7.85 percent, last contact 2026-01-01.", PASS],
+  ["Tell me about Chen", "findClient", "Found them — Robert and Linda Chen, and their last contact was 2026-01-01.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen's last contact is recorded as 2026-01-01.", NOTHING_CHANGED],
+  ["Tell me about Chen", "findClient", "Their last contact is noted as 2026-01-01.", NOTHING_CHANGED],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen's notes are saved as: prefers evening calls.", NOTHING_CHANGED],
+  ["Tell me about Chen", "findClient", "I found Robert and Linda Chen; their last contact was logged on 2026-01-01.", PASS],
+  ["Tell me about Chen", "findClient", "I see Robert and Linda Chen were last contacted on 2026-01-01.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen are all set at 7.85 percent on a thirty-year fixed.", NOTHING_CHANGED],
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Robert and Linda Chen is logged as 2026-01-01.", NOTHING_CHANGED],
+  ["When did I last talk to Chen?", "findClient", "You last talked to them on 2026-01-01, and that's the date on record.", PASS],
+  ["When did I last talk to Chen?", "findClient", "It's been a while — the last contact on record is 2026-01-01.", PASS],
+  ["When did I last talk to Chen?", "findClient", "We have 2026-01-01 as the last contact.", PASS],
+  ["When did I last talk to Chen?", "findClient", "We have them marked as last contacted on 2026-01-01.", NOTHING_CHANGED],
+  // cases3: sweep / market narration (grounded); NOTHING_CHANGED rows are the deferred fail-closed forms
+  ["Run a sweep", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
+  ["Run a sweep", "runSweepTool", "You've got Robert and Linda Chen marked as a rate and term opportunity.", PASS],
+  ["Run a sweep", "runSweepTool", "The sweep is done: Robert and Linda Chen show a rate and term opportunity.", NOTHING_CHANGED],
+  ["Run a sweep", "runSweepTool", "Sweep's done — Robert and Linda Chen are your top opportunity.", PASS],
+  ["Run a sweep", "runSweepTool", "All right, the sweep's finished, and Robert and Linda Chen come out on top.", PASS],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent; rates are updated daily.", NOTHING_CHANGED],
+  ["what's the rate", "getMarketUpdate", "Rates were updated this morning: the thirty-year fixed is 6.52 percent.", PASS],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is 6.52 percent, and the fifteen-year is 5.91 percent.", PASS],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is 6.52 percent, then the fifteen-year sits at 5.91 percent.", PASS],
+  ["what's the rate", "getMarketUpdate", "Today the thirty-year fixed is at 6.52 percent, done through Optimal Blue lock data.", NOTHING_CHANGED],
+  ["good morning", "getMarketUpdate", "Good morning, Bill! The thirty-year fixed is at 6.52 percent — all set for the day?", NOTHING_CHANGED],
+  ["good morning", "getMarketUpdate", "Good morning, Bill! The thirty-year fixed is at 6.52 percent. Anything else, or are we done?", NOTHING_CHANGED],
+  // cases3: confirming an action / closing small talk
+  ["thanks", null, "Anything else, or are we done for today?", NOTHING_CHANGED],   // deferred fail-closed
+  ["thanks", null, "Are we all done for today?", NOTHING_CHANGED],   // deferred fail-closed
+  ["thanks", null, "You're welcome! Let me know when you're done with the call.", CANT_VERIFY],
+  ["Log a call with Chen", "findClient", "Which Chen — Robert and Linda, or Chen Wei?", PASS],
+  // R5-3 cost: on an action request with no sideEffect a statement before the question is not question-shaped
+  ...[
+    "I found Robert and Linda Chen. Want me to log a call with them?",
+    "Got it — I found Robert and Linda Chen. Should I log the call?",
+    "I found Robert and Linda Chen, and I can log that once you confirm.",
+    "I haven't logged anything yet — want me to log the call with Robert and Linda Chen?",
+    "Nothing's saved until you confirm — log a call with Robert and Linda Chen?",
+    "Okay, I'll get that logged once you confirm. Robert and Linda Chen, right?",
+  ].map((t) => ["Log a call with Chen", "findClient", t, NOTHING_CHANGED]),
+  ["good morning", null, "Good morning, Bill! How are you today?", PASS],
+  ["good morning", null, "Good morning! Hope you slept well. What can I do for you?", PASS],
+  // cases4: requests whose action verb opens a later clause, or that end with a statement
+  ["I just talked to Chen. Had a great chat. Log it.", null, "Sure — which Chen?", PASS],
+  ["I just talked to Chen. Had a great chat. Log it.", null, "Which Chen?", PASS],
+  ["Chen called me, was asking about rates, log it", null, "Got it. Which Chen?", PASS],
+  ["Log a call with Chen, did it this morning", null, "Sure, which Chen?", PASS],
+  ["Log a call with Chen, did it this morning", null, "Okay — which Chen do you mean?", PASS],
+  ["Add a new client. Her name is Jane Doe. Do it now.", null, "Sure, what's her phone number?", PASS],
+  // cases4: no-opener control
+  ["Do you mind logging a call for me?", null, "Who did you talk to?", PASS],
+  ["Are you able to add a client?", null, "What's their name?", PASS],
+  ["Is it possible to add a client?", null, "What's their name?", PASS],
+  ["Hey Charli, are you there?", null, "Yes, I'm here! What can I help with?", PASS],
+  // cases4: spaced-hyphen and comma offers (R5-4), and a claim after the question
+  ["Log a call with Chen", "findClient", "Want a follow-up set too - logged the call already?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Should I set a follow-up, logged it already?", NOTHING_CHANGED],
+  ["Log a call with Chen", "findClient", "Do you want a follow-up? Logged the call already.", NOTHING_CHANGED],
+  // beyond the message start (R5-3 detection, see the report): the false "done" on a later-clause request
+  ...["I just talked to Chen. Had a great chat. Log it.", "Chen called me, was asking about rates, log it"]
+    .map((u) => [u, "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED]),
 ];
 
 test("regression table: every sentence the re-reviews used resolves as ruled", async () => {
@@ -1530,12 +1979,17 @@ const EXTENSION_TABLE = [
     "Got that logged for you.", "I'm logging that call now.", "The office has already logged the call.",
   ]),
   ["Hey Charli, is Chen my best refi opportunity?", null, "Absolutely — want me to pull their numbers?", CANT_VERIFY],
-  ["hey charli is chen my best refi opportunity", null, "Absolutely — want me to pull their numbers?", CANT_VERIFY],
+  // R5-1 FLIP (was CANT_VERIFY): no "?", so not a yes/no question; the opener is stripped and the rest is a
+  // lone question
+  ["hey charli is chen my best refi opportunity", null, "Absolutely — want me to pull their numbers?", PASS],
   ["Chen's my top opportunity, isn't he?", null, "Absolutely — want me to run the numbers?", CANT_VERIFY],
-  ["Chen's my top opportunity, no?", null, "Right — want me to run the numbers?", CANT_VERIFY],
+  // R5-1 FLIP (was CANT_VERIFY): "no?" is not on the ruled state-tag list, so not a yes/no question
+  ["Chen's my top opportunity, no?", null, "Right — want me to run the numbers?", PASS],
   ["could you add a client", null, "Sure, what's their name?", PASS],
   ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, updated this morning.", PASS],
-  ...onBoth("Log a call with Chen", "Do you want it logged and marked as contacted?", PASS),
+  // R5-4 FLIPS (were pass-throughs, both turn types): the offer's later clause "marked as contacted" (after
+  // "and") now counts as a completion opener
+  ...onBoth("Log a call with Chen", "Do you want it logged and marked as contacted?", NOTHING_CHANGED),
 ];
 
 test("extension table: the same rules cover the nearby forms and leave narration alone", async () => {

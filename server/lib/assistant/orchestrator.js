@@ -4,9 +4,10 @@
 // directly, and code (not the model) decides what is allowed to reach the user:
 //
 //   * text the model writes is screened before it is spoken: loan-guideline questions hand off,
-//     first-person "done / I logged it" claims are replaced (nothing is ever performed here),
-//     every figure must appear in this turn's tool results, and text with no cited tool result
-//     behind it can't carry any fact (screenUngroundedText);
+//     on an action request ("log a call with Chen") with no change handed up only a question may
+//     be spoken (isActionRequest / isQuestionShaped), "done / I logged it" claims are replaced
+//     (nothing is ever performed here), every figure must appear in this turn's tool results, and
+//     text with no cited tool result behind it can't carry any fact (screenUngroundedText);
 //   * a side-effect tool call is NOT acted on: it is returned as `sideEffect`, with a
 //     code-authored read-back, for the confirmation step;
 //   * an unknown tool name, or a loop that never settles, resolves to the can't-verify line.
@@ -83,19 +84,85 @@ const OFFER_LEAD_RE = new RegExp("^(?:(?:and|or|so)\\s+)?(?:" + QUESTION_WORDS +
 const CLAUSE_BREAK_RE = /[.!;:?\u2014\u2013\u2026]|--| - /;
 const lettersOf = (s) => String(s == null ? "" : s).match(/[A-Za-z\u00c0-\u024f]+/g) || [];
 
-// The user's message asks a yes/no or tag question: a clause opens with is / are / am / was / were
-// / do / does / did / has / have / had (or the n't form), optionally after "hey", "Charli", "so",
-// "and" ..., or the message ends with right? / correct? / yes? / no? / yeah? / true?. Requests
-// ("can you log a call", "could you add Jane", "will you ...") are not yes/no questions. A reply's
-// leading "Sure" / "Absolutely" / "Right" would BE the answer to such a question, so the
-// lone-question predicate does not strip it. Pure.
-const YES_NO_RE = new RegExp(
-  "(?:^|[,.;:!?\\u2014\\u2013]|\\s-\\s)\\s*(?:(?:hey|hi|ok|okay|so|and|but|well|charli)\\b[\\s,]*)*" +
-    "(?:is|are|am|was|were|do|does|did|has|have|had)(?:n['\\u2019]t)?\\b" +
-    "|\\b(?:right|correct|yes|no|yeah|true)\\s*\\?\\s*$",
+// ── What the user asked ──────────────────────────────────────────────────────
+
+// Filler and address ahead of what the user actually says: "hey Charli,", "good morning Charli,",
+// "ok so", "and", "well". Removed from the start of a sentence or clause before the tests below.
+const FILLER_RE = new RegExp(
+  "^\\s*(?:(?:hey|hi|hello|ok|okay|so|and|but|well|alright|oh|um|uh|good\\s+(?:morning|afternoon|evening)|morning|charli|charlie)" +
+    "\\b[\\s,\\u2014\\u2013-]*)*",
   "i"
 );
-const isYesNoQuestion = (text) => YES_NO_RE.test(String(text == null ? "" : text));
+const afterFiller = (s) => String(s == null ? "" : s).replace(FILLER_RE, "").trim();
+// A break between the user's own clauses: . ! ? ; : , an em or en dash, an ellipsis, "--" or a spaced hyphen.
+const USER_CLAUSE_BREAK_RE = /[.!?;:,\u2014\u2013\u2026]|--|\s-\s/;
+
+// R5-1. The user's message is a yes/no question only if ALL hold:
+//   (a) the message ends with "?" (a clause in the middle of the message never counts on its own);
+//   (b) the question (its last sentence, or the last clause of that), after filler, opens with is / are
+//       / am / was / were / do / does / did / has / have / had (or the n't form), or the message ends
+//       with a state tag: right? correct? isn't it? isn't he? isn't she? aren't they? true?;
+//   (c) it is not a request or a mic check: the message (after filler) does not open with an
+//       imperative action verb ("Add a client for me, yeah?"), and neither the message nor the question
+//       opens with one of the closed list of leads in NOT_YES_NO_LEAD_RE ("are you there", "is this thing
+//       on", "do you mind", "is it possible", "do me a favor", ...).
+// A reply's leading "Sure" / "Absolutely" / "Right" would BE the answer to such a question, so the
+// lone-question predicate does not strip it, and on an ungrounded turn nothing else may answer it
+// (R5-2, in screenUngroundedText). Pure.
+const YES_NO_AUX_RE = /^(?:is|are|am|was|were|do|does|did|has|have|had)(?:n['\u2019]t)?\b/i;
+const STATE_TAG_RE = /\b(?:right|correct|isn['\u2019]t\s+(?:it|he|she)|aren['\u2019]t\s+they|true)\s*\?\s*$/i;
+const NOT_YES_NO_LEAD_RE = new RegExp(
+  "^(?:are\\s+you\\s+(?:there|ready|awake|listening|around|up|with\\s+me|able|free)" +
+    "|is\\s+(?:this\\s+thing|this|it)\\s+on|can\\s+you\\s+hear\\s+me" +
+    "|do\\s+you\\s+(?:mind|want\\s+to|have\\s+time|think\\s+you\\s+could)" +
+    "|have\\s+you\\s+got\\s+a\\s+(?:minute|sec|second)|is\\s+it\\s+possible|is\\s+there\\s+a\\s+way" +
+    "|do\\s+me\\s+a\\s+favou?r)\\b",
+  "i"
+);
+const IMPERATIVE_LEAD_RE =
+  /^(?:add|log|mark|record|note|update|set|book|schedule|save|create|enter|put|pull|run|show|find|give|send|draft)(?![\w'\u2019-])/i;
+function isYesNoQuestion(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t.endsWith("?")) return false;
+  const opening = afterFiller(t);
+  if (IMPERATIVE_LEAD_RE.test(opening) || NOT_YES_NO_LEAD_RE.test(opening)) return false;
+  const body = t.replace(/[?\s]+$/, "");
+  const questions = [body.split(/[.!?;]/).pop(), body.split(USER_CLAUSE_BREAK_RE).pop()].map(afterFiller);
+  return STATE_TAG_RE.test(t) || questions.some((q) => YES_NO_AUX_RE.test(q) && !NOT_YES_NO_LEAD_RE.test(q));
+}
+
+// R5-3. An action request: some clause of the user's message, after filler, that is not a past-state or
+// wh-question (it does not open with when / what / which / who / how / did / has / have / had / was /
+// were), either opens with an action verb ("log a call with Chen", "Chen called me, ..., log it"), or
+// holds a request lead (can you, could you, would you, will you, please, do you mind, do you want to,
+// are you able to, is it possible to, go ahead and, I need you to, I want you to) with an action verb,
+// or its -ing form, within the next four words ("do you mind logging a call"). Pure.
+const ACTION_VERBS = "log|add|mark|record|note|update|set|book|schedule|save|create|enter|put";
+const ACTION_VERBS_ING =
+  "logging|adding|marking|recording|noting|updating|setting|booking|scheduling|saving|creating|entering|putting";
+const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
+const REQUEST_LEAD_RE = new RegExp(
+  "\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|do\\s+you\\s+mind|do\\s+you\\s+want\\s+to" +
+    "|are\\s+you\\s+able\\s+to|is\\s+it\\s+possible\\s+to|go\\s+ahead\\s+and|I\\s+need\\s+you\\s+to|I\\s+want\\s+you\\s+to)" +
+    "(?:\\s+\\S+){0,3}?\\s+(?:" + ACTION_VERBS + "|" + ACTION_VERBS_ING + ")(?![\\w'\\u2019-])",
+  "i"
+);
+const STATE_QUESTION_LEAD_RE = /^(?:when|what|which|who|how|did|has|have|had|was|were)\b/i;
+const isActionRequest = (text) =>
+  String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).some((clause) => {
+    const c = afterFiller(clause);
+    return !STATE_QUESTION_LEAD_RE.test(c) && (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c));
+  });
+
+// R5-3's pass condition: after at most one opener strip, the reply's first clause (the text before
+// its first . ! ; em dash, en dash or spaced hyphen) opens with a question/auxiliary word, and the
+// reply ends with "?". The first clause begins where the reply begins and QUESTION_START_RE is
+// anchored there, so it is tested on the stripped reply directly. A claim after the question word
+// is the claim guard's job. Names are allowed ("Which Chen — Robert and Linda, or Chen Wei?"). Pure.
+function isQuestionShaped(reply) {
+  const s = stripOpener(reply).trim();
+  return s.endsWith("?") && QUESTION_START_RE.test(s);
+}
 
 // The first word of a reply (after leading whitespace, an opening quote and the fillers oh / ah /
 // um / uh / er / erm / hmm / well / so) is an affirming or negating word. Tested on the raw reply,
@@ -106,8 +173,9 @@ const YES_NO_WORD_RE = new RegExp(
   "i"
 );
 // The user asked a yes/no or tag question (isYesNoQuestion) and the reply opens with a yes or a
-// no: that first word IS the answer. On an ungrounded turn nothing backs it ("Is Chen my best?" +
-// "Absolutely — want me to pull their numbers?"), so screenUngroundedText refuses it. Pure.
+// no: that first word IS the answer ("Is Chen my best?" + "Absolutely — want me to pull their
+// numbers?"). Kept as a helper: R5-2 in screenUngroundedText is stricter and subsumes it (on an
+// ungrounded yes/no turn only a lone clarifying question passes), so the guards no longer call it. Pure.
 const isBareYesNoAnswer = (reply, userText) =>
   isYesNoQuestion(userText) && YES_NO_WORD_RE.test(String(reply == null ? "" : reply));
 
@@ -127,16 +195,16 @@ const isBareYesNoAnswer = (reply, userText) =>
 //   * the simple past passive ("was logged", "were added") only on an ungrounded turn: it is the one
 //     form a grounded turn may use to narrate a tool fact ("your last contact with Chen was logged on
 //     2026-01-01"; the date still goes through the figure check);
-//   * in a statement (not an offer), a completion opener at the start of a later clause, after a
-//     comma, colon, ellipsis, "--", a spaced hyphen, "and" or "then" ("Sure thing, done!", "Yep,
-//     logged it.", "Found Chen and logged the call"). There "updated" and "marked" count only when
-//     an object or nothing follows them ("updated the record", "marked as contacted"), so narration
-//     like "6.52 percent, updated this morning" is left alone.
+//   * a completion opener at the start of a later clause, after a comma, colon, ellipsis, "--", a
+//     spaced hyphen, "and" or "then" ("Sure thing, done!", "Yep, logged it.", "Found Chen and logged
+//     the call", and in an offer "Should I set a follow-up, logged it already?"). There "updated" and
+//     "marked" count only when an object or nothing follows them ("updated the record", "marked as
+//     contacted"), so narration like "6.52 percent, updated this morning" is left alone.
 // An offer (a sentence that starts with a question/auxiliary word and ends with "?") loses only its
-// question word and subject pronoun ("Should I", "Would you"), and the rest gets the same test:
-// "Should I get that marked as contacted?" is not a claim, "Would you like me to set a follow-up now
-// that I've logged the call?" is. "changed" is not a claim verb: "I see rates changed overnight" is
-// narration.
+// question word and subject pronoun ("Should I", "Would you"), and the rest gets the same test,
+// later clauses included (R5-4): "Should I get that marked as contacted?" is not a claim, "Would you
+// like me to set a follow-up now that I've logged the call?" is. "changed" is not a claim verb: "I see
+// rates changed overnight" is narration.
 const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done";
 const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled";
 const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
@@ -175,13 +243,12 @@ const laterClauseClaims = (sentence) =>
 function claimsCompletion(text, grounded) {
   return sentencesOf(String(text == null ? "" : text)).some((part) => {
     let s = stripOpener(part.trim()).trim();
-    const offer = isOffer(s);
-    if (offer) s = s.replace(OFFER_LEAD_RE, "").trim();
+    if (isOffer(s)) s = s.replace(OFFER_LEAD_RE, "").trim();
     return COMPLETION_OPENER_RE.test(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       (!grounded && PASSIVE_PAST_RE.test(s)) ||
-      (!offer && laterClauseClaims(s));
+      laterClauseClaims(s);
   });
 }
 
@@ -201,7 +268,7 @@ const figureWords = (text) => String(text).replace(FIGURE_RE, " ").match(FIGURE_
 // fails the last. (Completion claims need no separate test here: a lone question is an offer, and
 // claimsCompletion, which runs first, tests what follows its question word and pronoun.) The
 // opener is NOT stripped when the user asked a
-// yes/no or tag question (isYesNoQuestion): "Is Chen my best?" + "Absolutely — want the numbers?"
+// yes/no or tag question (isYesNoQuestion, R5-1): "Is Chen my best?" + "Absolutely — want the numbers?"
 // answers the question with the opener, so it is not a lone question.
 // Pure: no I/O, no state.
 function isLoneClarifyingQuestion(reply, userText) {
@@ -220,9 +287,10 @@ function isLoneClarifyingQuestion(reply, userText) {
 // What may be said when the model answered in text and no tool result this turn carried a
 // citation (it called no tool, or every tool it called failed).
 //   1. guideline-domain question  -> the fixed hand-off line;
-//   2. a yes/no or tag question answered by a first-word yes or no (isBareYesNoAnswer)
-//                                 -> the fixed can't-verify line; checked before 3 so the
-//      exemption can't rescue it;
+//   2. the user asked a yes/no question (isYesNoQuestion, R5-1): the ONLY acceptable reply is a lone
+//      clarifying question with no opener stripped ("Which Chen do you mean?"); anything else
+//      ("He sure is.", "You did, on Monday.", "Absolutely — want the numbers?") -> the fixed
+//      can't-verify line (R5-2; it subsumes the round-6b first-word yes/no check);
 //   3. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
 //      and "what's their name?" must reach the user;
 //   4. the model's text has a digit or a spoken figure, or the user's message OR the model's
@@ -238,7 +306,8 @@ function screenUngroundedText(userText, modelText) {
   const user = String(userText == null ? "" : userText);
   const text = String(modelText == null ? "" : modelText);
   if (isGuidelineQuestion(user)) return GUIDELINE_HANDOFF;
-  if (isBareYesNoAnswer(text, user)) return CANT_VERIFY;
+  // isLoneClarifyingQuestion does not strip an opener when the user asked a yes/no question
+  if (isYesNoQuestion(user)) return isLoneClarifyingQuestion(text, user) ? text : CANT_VERIFY;
   if (isLoneClarifyingQuestion(text, user)) return text;
   if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0) return CANT_VERIFY;
   if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text)) return CANT_VERIFY;
@@ -465,6 +534,10 @@ async function runTurn({ messages, ctx, client } = {}) {
         .join(" ")
         .trim();
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
+      // R5-3, the action backstop: an action was asked for, and no change is being handed up for
+      // confirmation (a turn that ends in text never carries a sideEffect), so whatever the model
+      // says, nothing was done. Only a question may reach the user; anything else is replaced.
+      if (isActionRequest(userText) && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
       if (claimsCompletion(text, sources.length > 0)) return finish(NOTHING_CHANGED);
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
@@ -506,5 +579,5 @@ async function runTurn({ messages, ctx, client } = {}) {
 
 module.exports = {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer,
+  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped,
 };
