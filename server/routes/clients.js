@@ -31,6 +31,43 @@ function validateClient(body) {
   return errors;
 }
 
+// The two writes the REST routes and the assistant's /confirm share. `user` is the authenticated
+// req.user row: org_id / user_id come from it and from nothing else (a body's own org_id, user_id or id
+// is never read). Neither helper sends a response; they return { errors } | { client } and
+// { status, client } | { status, error }.
+
+// Validates `body` and inserts a client owned by `user`. Throws only on a database error.
+function createClientForUser(db, user, body) {
+  const input = body && typeof body === "object" ? body : {};
+  const errors = validateClient(input);
+  if (Object.keys(errors).length) return { errors };
+  const info = db.prepare(`
+    INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes)
+    VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes)
+  `).run({
+    org_id: user.org_id, user_id: user.id,
+    name: input.name.trim(), email: (input.email||"").trim(),
+    phone: (input.phone||"").trim(), loan_type: input.loanType,
+    current_rate: parseFloat(input.currentRate), loan_balance: parseFloat(input.loanBalance),
+    property_value: parseFloat(input.propertyValue), close_date: input.closeDate||"",
+    credit_score: parseInt(input.creditScore)||700, notes: (input.notes||"").trim(),
+  });
+  const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(info.lastInsertRowid);
+  return { client: toClient(row) };
+}
+
+// Sets last_contact = now on client `id`. Broker: any org client; LO: own clients only. `id` must be a
+// positive integer. Throws only on a database error.
+function logContactForUser(db, user, id) {
+  if (!Number.isInteger(id) || id <= 0) return { status: 404, error: "Client not found" };
+  const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+  if (!existing) return { status: 404, error: "Client not found" };
+  if (user.role === "lo" && existing.user_id !== user.id) return { status: 403, error: "Access denied" };
+  if (existing.org_id !== user.org_id) return { status: 403, error: "Access denied" };
+  db.prepare("UPDATE clients SET last_contact = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
+  return { status: 200, client: toClient(db.prepare("SELECT * FROM clients WHERE id = ?").get(id)) };
+}
+
 // GET /api/clients — brokers get all org clients, LOs get their own
 router.get("/", (req, res) => {
   try {
@@ -46,22 +83,10 @@ router.get("/", (req, res) => {
 
 // POST /api/clients — create, assigned to calling user
 router.post("/", (req, res) => {
-  const errors = validateClient(req.body);
-  if (Object.keys(errors).length) return res.status(400).json({ success: false, errors });
   try {
-    const info = db.prepare(`
-      INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes)
-      VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes)
-    `).run({
-      org_id: req.user.org_id, user_id: req.user.id,
-      name: req.body.name.trim(), email: (req.body.email||"").trim(),
-      phone: (req.body.phone||"").trim(), loan_type: req.body.loanType,
-      current_rate: parseFloat(req.body.currentRate), loan_balance: parseFloat(req.body.loanBalance),
-      property_value: parseFloat(req.body.propertyValue), close_date: req.body.closeDate||"",
-      credit_score: parseInt(req.body.creditScore)||700, notes: (req.body.notes||"").trim(),
-    });
-    const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(info.lastInsertRowid);
-    res.status(201).json({ success: true, client: toClient(row) });
+    const result = createClientForUser(db, req.user, req.body);
+    if (result.errors) return res.status(400).json({ success: false, errors: result.errors });
+    res.status(201).json({ success: true, client: result.client });
   } catch (err) {
     console.error("POST /api/clients:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
@@ -118,18 +143,14 @@ router.delete("/:id", (req, res) => {
 // POST /api/clients/:id/contact — log an outreach (sets last_contact = now).
 // Broker: any org client; LO: own clients only.
 router.post("/:id/contact", (req, res) => {
-  const id = parseInt(req.params.id);
-  const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
-  if (!existing) return res.status(404).json({ success: false, error: "Client not found" });
-  if (req.user.role === "lo" && existing.user_id !== req.user.id) return res.status(403).json({ success: false, error: "Access denied" });
-  if (existing.org_id !== req.user.org_id) return res.status(403).json({ success: false, error: "Access denied" });
   try {
-    db.prepare("UPDATE clients SET last_contact = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
-    res.json({ success: true, client: toClient(db.prepare("SELECT * FROM clients WHERE id = ?").get(id)) });
+    const result = logContactForUser(db, req.user, parseInt(req.params.id));
+    if (result.error) return res.status(result.status).json({ success: false, error: result.error });
+    res.json({ success: true, client: result.client });
   } catch (err) {
     console.error("POST /api/clients/:id/contact:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
   }
 });
 
-module.exports = router;
+module.exports = Object.assign(router, { validateClient, toClient, createClientForUser, logContactForUser });
