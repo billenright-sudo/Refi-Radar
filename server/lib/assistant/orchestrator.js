@@ -111,12 +111,16 @@ const USER_CLAUSE_BREAK_RE = /[.!?;:,\u2014\u2013\u2026]|--|\s-\s/;
 // (R5-2, in screenUngroundedText). Pure.
 const YES_NO_AUX_RE = /^(?:is|are|am|was|were|do|does|did|has|have|had)(?:n['\u2019]t)?\b/i;
 const STATE_TAG_RE = /\b(?:right|correct|isn['\u2019]t\s+(?:it|he|she)|aren['\u2019]t\s+they|true)\s*\?\s*$/i;
+// Mic checks ("are you on", "is this working", "do you hear me", "did you get that") are on the list. "Is it on"
+// is excluded only as the whole question ("is it on?"), so "Is it on the schedule?" stays a yes/no question.
 const NOT_YES_NO_LEAD_RE = new RegExp(
-  "^(?:are\\s+you\\s+(?:there|ready|awake|listening|around|up|with\\s+me|able|free)" +
-    "|is\\s+(?:this\\s+thing|this|it)\\s+on|can\\s+you\\s+hear\\s+me" +
+  "^(?:(?:are\\s+you\\s+(?:there|ready|awake|listening|around|up|with\\s+me|able|free|on|working)" +
+    "|is\\s+(?:this|it|everything)\\s+working|can\\s+you\\s+hear\\s+me" +
+    "|(?:do|did)\\s+you\\s+(?:hear|get|catch)" +
     "|do\\s+you\\s+(?:mind|want\\s+to|have\\s+time|think\\s+you\\s+could)" +
     "|have\\s+you\\s+got\\s+a\\s+(?:minute|sec|second)|is\\s+it\\s+possible|is\\s+there\\s+a\\s+way" +
-    "|do\\s+me\\s+a\\s+favou?r)\\b",
+    "|do\\s+me\\s+a\\s+favou?r)\\b" +
+    "|is\\s+(?:this\\s+thing|this|it)\\s+on\\s*\\?)",
   "i"
 );
 const IMPERATIVE_LEAD_RE =
@@ -128,23 +132,33 @@ function isYesNoQuestion(text) {
   if (IMPERATIVE_LEAD_RE.test(opening) || NOT_YES_NO_LEAD_RE.test(opening)) return false;
   const body = t.replace(/[?\s]+$/, "");
   const questions = [body.split(/[.!?;]/).pop(), body.split(USER_CLAUSE_BREAK_RE).pop()].map(afterFiller);
-  return STATE_TAG_RE.test(t) || questions.some((q) => YES_NO_AUX_RE.test(q) && !NOT_YES_NO_LEAD_RE.test(q));
+  // `q` has lost its "?" with the body, and the "is it on" exclusion is anchored on one, so put it back
+  return STATE_TAG_RE.test(t) || questions.some((q) => YES_NO_AUX_RE.test(q) && !NOT_YES_NO_LEAD_RE.test(q + "?"));
 }
 
 // R5-3. An action request: some clause of the user's message, after filler, that is not a past-state or
 // wh-question (it does not open with when / what / which / who / how / did / has / have / had / was /
 // were), either opens with an action verb ("log a call with Chen", "Chen called me, ..., log it"), or
 // holds a request lead (can you, could you, would you, will you, please, do you mind, do you want to,
-// are you able to, is it possible to, go ahead and, I need you to, I want you to) with an action verb,
-// or its -ing form, within the next four words ("do you mind logging a call"). Pure.
-const ACTION_VERBS = "log|add|mark|record|note|update|set|book|schedule|save|create|enter|put";
+// are you able to, is it possible to, go ahead and, I need you to, I want you to, let's, let me, help me,
+// can we, could we, I need / want / have to, I'd like to, do me a favor and, you could) followed by an
+// action verb, or its -ing form, with only the closed list of filler words (REQUEST_FILLER) in between
+// ("do you mind logging a call", "would you be able to add a client"). Any other word between the lead and
+// the verb is a noun or another verb ("can you pull up Chen's record"), so there is no request. Two
+// information requests share a verb with an action and are carved out of the verb list: "update me / us /
+// on ..." ("update me on rates") and "put together" ("put together a call list"). Pure.
+const ACTION_VERBS =
+  "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)";
 const ACTION_VERBS_ING =
   "logging|adding|marking|recording|noting|updating|setting|booking|scheduling|saving|creating|entering|putting";
+const REQUEST_FILLER = "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
 const REQUEST_LEAD_RE = new RegExp(
   "\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|do\\s+you\\s+mind|do\\s+you\\s+want\\s+to" +
-    "|are\\s+you\\s+able\\s+to|is\\s+it\\s+possible\\s+to|go\\s+ahead\\s+and|I\\s+need\\s+you\\s+to|I\\s+want\\s+you\\s+to)" +
-    "(?:\\s+\\S+){0,3}?\\s+(?:" + ACTION_VERBS + "|" + ACTION_VERBS_ING + ")(?![\\w'\\u2019-])",
+    "|are\\s+you\\s+able\\s+to|is\\s+it\\s+possible\\s+to|go\\s+ahead\\s+and|I\\s+need\\s+you\\s+to|I\\s+want\\s+you\\s+to" +
+    "|let['\\u2019]?s|let\\s+me|help\\s+me|can\\s+we|could\\s+we|I\\s+(?:need|want|have)\\s+to|I['\\u2019]d\\s+like\\s+to" +
+    "|do\\s+me\\s+a\\s+favou?r\\s+and|you\\s+could)" +
+    "(?:\\s+(?:" + REQUEST_FILLER + ")\\b){0,4}?\\s+(?:" + ACTION_VERBS + "|" + ACTION_VERBS_ING + ")(?![\\w'\\u2019-])",
   "i"
 );
 const STATE_QUESTION_LEAD_RE = /^(?:when|what|which|who|how|did|has|have|had|was|were)\b/i;
@@ -392,6 +406,23 @@ function latestUserText(messages) {
   return "";
 }
 
+// The action backstop must also hold while the user is answering a clarifying question about an action:
+// "log a call with Chen" -> "Which Chen?" -> "Robert and Linda" is no action request on its own. It is
+// when the assistant message just before the latest user message ends with "?" and the user message
+// just before THAT one was an action request. Walks back through such question/answer pairs (an earlier
+// question in the same chain, "log a call" -> "Who did you talk to?" -> "Chen" -> "Which Chen?" ->
+// "Robert and Linda", counts too); any message that breaks the pattern ends the chain. Pure.
+function answersActionQuestion(messages) {
+  for (let i = messages.length - 1; i >= 2; i -= 2) {
+    const asked = messages[i - 1];
+    const before = messages[i - 2];
+    if (!asked || asked.role !== "assistant" || !messageText(asked).trim().endsWith("?")) return false;
+    if (!before || before.role !== "user") return false;
+    if (isActionRequest(messageText(before))) return true;
+  }
+  return false;
+}
+
 // ── Tool execution ───────────────────────────────────────────────────────────
 
 // Error results carry a parenthesised label like "(not found)": those are never cited.
@@ -506,6 +537,8 @@ async function runTurn({ messages, ctx, client } = {}) {
 
   const convo = messages.slice();
   const userText = latestUserText(convo);
+  // R5-3 applies to this turn if the user asked for an action now, or is answering a question about one.
+  const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents actually sent to the model this turn
 
@@ -534,10 +567,11 @@ async function runTurn({ messages, ctx, client } = {}) {
         .join(" ")
         .trim();
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
-      // R5-3, the action backstop: an action was asked for, and no change is being handed up for
-      // confirmation (a turn that ends in text never carries a sideEffect), so whatever the model
-      // says, nothing was done. Only a question may reach the user; anything else is replaced.
-      if (isActionRequest(userText) && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
+      // R5-3, the action backstop: an action was asked for (now, or in the question this message
+      // answers), and no change is being handed up for confirmation (a turn that ends in text never
+      // carries a sideEffect), so whatever the model says, nothing was done. Only a question may
+      // reach the user; anything else is replaced.
+      if (actionTurn && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
       if (claimsCompletion(text, sources.length > 0)) return finish(NOTHING_CHANGED);
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).

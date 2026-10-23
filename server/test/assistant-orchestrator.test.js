@@ -1290,8 +1290,9 @@ test("isYesNoQuestion (R5-1): ends with '?', opens with an auxiliary or ends wit
     "Good morning Charli, is Chen my best?", "Quick one, is Chen my best?", "Is Chen, my best client, due?",
     "Chen's my top opportunity, isn't he?", "Didn't I call Chen?", "I'm back. Is Chen my best?",
     "Is Chen my best?", "Did I talk to Chen this week?", "Have I talked to Chen lately?",
-    // not on the ruled mic-check list, so a yes/no question (fail-closed cost, see the report)
-    "Did you hear me?", "Did you get that?",
+    // the "is it on" mic-check exclusion is anchored on the "?": a question that goes on is a real yes/no question
+    "Is it on the schedule?", "Is this on the list?", "Hey Charli, is it on the schedule?",
+    "Okay. Is it on the schedule?",
   ]) {
     assert.equal(isYesNoQuestion(u), true, u);
   }
@@ -1311,6 +1312,10 @@ test("isYesNoQuestion (R5-1): ends with '?', opens with an auxiliary or ends wit
     "Hey Charli, do you think you could log a call for me?", "Have you got a minute to log a call?",
     "Have you got a sec?", "Is it possible to add a client?", "Is there a way to log a call?",
     "Do me a favor, is that ok?", "I'm back. Are you there?",
+    // Task 4 Step 0 (4): more mic checks (these two were yes/no questions before), and "is it on" as a later clause
+    "Is this working?", "Do you hear me?", "Did you hear me?", "Did you get that?", "Did you catch that?",
+    "Are you on?", "Are you working?", "Is everything working?", "Is it working?", "Hey Charli, is this working?",
+    "Okay. Is it on?", "Hey Charli, thanks. Is this thing on?",
     // the message itself opens with a mic-check lead (the ruled message-level exclusion)
     "Are you there? Is Chen my best?",
     // R5-1 (c): the first word after filler is an imperative action verb, even with a trailing tag
@@ -1550,6 +1555,17 @@ test("isActionRequest (R5-3): an action verb opens a clause, or a request lead c
     "Chen called me, was asking about rates, log it", "I just talked to Chen. Had a great chat. Log it.",
     "I talked to Chen, was a good call, log it", "When you get a chance, log a call with Chen",
     "Did I log Chen? If not, log him.",
+    // Task 4 Step 0 (2): request leads that were missing
+    "Let's log a call with Chen", "Lets log a call with Chen", "Let’s log a call with Chen", "Let me log a call with Chen",
+    "Help me log a call with Chen", "Can we log a call with Chen?", "Could we add a client?",
+    "I need to log a call with Chen", "I want to log a call with Chen", "I have to log a call with Chen",
+    "I'd like to log a call with Chen", "I’d like to log a call with Chen", "Do me a favor and log a call with Chen",
+    "Do me a favour and add a client", "Do you think you could log a call with Chen?", "Maybe you could add Jane",
+    // ... and the leads that already existed now accept only the closed filler list before the verb
+    "Can you help me log a call?", "Can you just quickly log a call?", "Please just log it", "Can you kindly log a call with Chen?",
+    "Can you also add Jane?", "Can you go ahead and add Jane?",
+    // "update" and "put" are still actions when they are not "update me / us / on" or "put together"
+    "Can you update Chen's rate?", "Update the record for Chen", "Please put Chen down for a call",
   ]) {
     assert.equal(isActionRequest(u), true, u);
   }
@@ -1563,9 +1579,18 @@ test("isActionRequest (R5-3): an action verb opens a clause, or a request lead c
     "Which client can you mark?", "Did you want me to log it, can you check?",
     // no action verb in reach, or not one of the ruled verbs / leads
     "good morning", "thanks", "Who should I call today?", "Is Chen my best?", "Tell me about Chen", "Run a sweep",
-    "find chen", "Do me a favor and add a client", "Book's looking thin", "Logging off now", "Settle down",
+    "find chen", "Book's looking thin", "Logging off now", "Settle down",
     "Can you tell me what to log?", "Do you have time to log a call?", "Is there a way to log a call?",
     "Okay, do it", "Are you there?", "", null,
+    // Task 4 Step 0 (1): information requests where a noun or another verb sits between the lead and an
+    // action word, or that open with "update me / on" or "put together"
+    "Can you update me on rates?", "Could you give me an update on the market?", "Can you give me an update?",
+    "Please update me on rates", "Update on rates?", "Update me on Chen", "Can you pull up Chen's record?",
+    "Can you pull up the record for Chen?", "Could you check the call log for Chen?", "Can you look at my book?",
+    "Update me on the pipeline", "Can you put together a call list?",
+    "Update us on the market", "Put together a call list", "Let's put together a call list",
+    "Can you show me the notes on Chen?", "Could you read the log back to me?", "Let me know what Chen owes",
+    "Help me understand my book", "Can we look at rates?", "I need to know Chen's balance",
   ]) {
     assert.equal(isActionRequest(u), false, String(u));
   }
@@ -1667,10 +1692,13 @@ const TOOL_SOURCE = { findClient: "client record", getMarketUpdate: "live rates 
 const onBoth = (user, reply, expected) => [[user, null, reply, expected], [user, "findClient", reply, expected]];
 const claimRows = (user, replies) => replies.flatMap((t) => onBoth(user, t, NOTHING_CHANGED));
 
+// A row's `user` is the user's message, or (a multi-turn row) the whole Messages API history ending in the
+// user's latest message. An optional fifth item overrides the tool input (`input`) and the ctx (`ctx`).
 async function checkTable(rows) {
-  for (const [i, [user, tool, reply, expected]] of rows.entries()) {
-    const script = tool ? [useTool(tool, TOOL_INPUT[tool]), say(reply)] : [say(reply)];
-    const r = await runTurn({ messages: userSays(user), ctx: brokerCtx, client: fakeClient(script) });
+  for (const [i, [user, tool, reply, expected, opts = {}]] of rows.entries()) {
+    const script = tool ? [useTool(tool, opts.input || TOOL_INPUT[tool]), say(reply)] : [say(reply)];
+    const messages = Array.isArray(user) ? user : userSays(user);
+    const r = await runTurn({ messages, ctx: opts.ctx || brokerCtx, client: fakeClient(script) });
     const label = `#${i} [${tool || "ungrounded"}] user=${JSON.stringify(user)} reply=${JSON.stringify(reply)}`;
     if (expected === PASS) {
       assert.equal(r.reply, reply, label);
@@ -1797,9 +1825,9 @@ const REVIEW_TABLE = [
   ...onBoth("log a call with Chen", "Got it. Who did you talk to?", PASS),
   ...onBoth("log a call with Chen", "Who did you talk to?", PASS),
   ["When did I last log a call with Chen?", "findClient", "Your last contact with Robert and Linda Chen was logged on 2026-01-01.", PASS],
-  // RULED COST (R5-3): "update" is on the ruled verb list, so an information request that opens with it is
-  // an action request, and grounded narration is replaced. Flip this row if a later ruling narrows the list.
-  ["update me on the market", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", NOTHING_CHANGED],
+  // RULED COST (R5-3), FLIPPED by the Task 3 carry-over ruling (Task 4 Step 0, item 1): "update me / us / on ..."
+  // is an information request, not an action, so grounded narration passes (was NOTHING_CHANGED).
+  ["update me on the market", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
   // R5-4: an offer also gets the later-clause completion test
   ...R5_4_BLOCKS.map((t) => ["log a call with Chen", "findClient", t, NOTHING_CHANGED]),
 
@@ -1876,8 +1904,10 @@ const REVIEW_TABLE = [
   ["Good morning Charli, are you ready?", null, "Yes! Good morning, Bill. What can I help with?", PASS],
   ["Good morning Charli, are you ready?", null, "Good morning, Bill! Ready when you are.", PASS],
   ["Hey Charli, are you awake?", null, "Sure am! How can I help?", PASS],
-  ["Did you hear me?", null, "Yes — sorry, could you say that again?", CANT_VERIFY],   // R5-2 cost: not on the mic-check list
-  ["Did you get that?", null, "Sorry, I didn't catch that. Could you say it again?", CANT_VERIFY],   // R5-2 cost (was a pass)
+  // FLIPPED by the Task 3 carry-over ruling (Task 4 Step 0, item 4): "did you hear / get / catch" is a mic check,
+  // not a yes/no question, so these pass (were CANT_VERIFY, "R5-2 cost: not on the mic-check list")
+  ["Did you hear me?", null, "Yes — sorry, could you say that again?", PASS],
+  ["Did you get that?", null, "Sorry, I didn't catch that. Could you say it again?", PASS],
   ["Is this thing on?", null, "Yep, I'm listening. What do you need?", PASS],
   ["Hi Charli, how are you?", null, "Doing great, thanks! How can I help?", PASS],
   // cases2: affirmative / negative answers outside the old word list (ungrounded): R5-2
@@ -1994,4 +2024,129 @@ const EXTENSION_TABLE = [
 
 test("extension table: the same rules cover the nearby forms and leave narration alone", async () => {
   await checkTable(EXTENSION_TABLE);
+});
+
+// ── Task 4 Step 0: the Task 3 carry-over rulings ─────────────────────────────
+
+const WHICH_CHEN = "Which Chen — Robert and Linda, or Chen Wei?";
+const history = (...texts) => texts.map((content, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content }));
+
+// (2) the request leads that were missing: every one of these must block a false completion, and let a question through
+const MISSING_LEAD_USERS = [
+  "Let's log a call with Chen", "I need to log a call with Chen", "I want to log a call with Chen",
+  "I'd like to log a call with Chen", "Can we log a call with Chen?", "Help me log a call with Chen",
+  "Do me a favor and log a call with Chen", "Do you think you could log a call with Chen?",
+];
+const FALSE_COMPLETIONS = [
+  "Call logged for Robert and Linda Chen.", "Consider it logged.", "Robert and Linda Chen marked as contacted for today.",
+  "I've put that call in.", "Chen's last contact is now set to today.",
+];
+
+const CARRYOVER_TABLE = [
+  // (1) information requests are not action requests: grounded, figure-backed narration passes
+  ["Can you update me on rates?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
+  ["Could you give me an update on the market?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and the fifteen-year is 5.91 percent.", PASS],
+  ["Can you give me an update?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  ["Please update me on rates", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
+  ["Update on rates?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
+  ["Update me on Chen", "findClient", "Robert and Linda Chen are at 7.85 percent with $485,000 left.", PASS],
+  ["Can you pull up Chen's record?", "findClient", "Robert and Linda Chen are at 7.85 percent with $485,000 left.", PASS],
+  ["Can you pull up the record for Chen?", "findClient", "Robert and Linda Chen are at 7.85 percent with $485,000 left.", PASS],
+  ["Could you check the call log for Chen?", "findClient", "Your last contact with Robert and Linda Chen was logged on 2026-01-01.", PASS],
+  ["Can you look at my book?", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
+  ["Update me on the pipeline", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
+  ["Can you put together a call list?", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
+  // ... and an actual update request still gets the backstop
+  ["Can you update Chen's rate?", "findClient", "Robert and Linda Chen are now at 6.52 percent.", NOTHING_CHANGED],
+  ["Update the record for Chen", "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+
+  // (2) missing request leads: a false completion is replaced, with the tool or without, and a question passes
+  ...MISSING_LEAD_USERS.flatMap((u) => [
+    ...FALSE_COMPLETIONS.flatMap((t) => onBoth(u, t, NOTHING_CHANGED)),
+    ...onBoth(u, "Sure, which Chen?", PASS),
+  ]),
+
+  // (3) the disambiguation / not-found replies the prompt asks for pass on an action turn; statement-first
+  // variants of the same replies are replaced (ACCEPTED COST: the prompt tells the model not to write them)
+  ["log a call with Chen", "findClient", WHICH_CHEN, PASS, { ctx: twoChensCtx }],
+  ["log a call with Zed", "findClient", "Who did you mean — I don't see a Zed?", PASS, { input: { query: "Zed" } }],
+  ["log a call with Chen", "findClient", "I found two Chens. Which one did you mean?", NOTHING_CHANGED, { ctx: twoChensCtx }],
+  ["log a call with Zed", "findClient", "I couldn't find a Zed. Who did you mean?", NOTHING_CHANGED, { input: { query: "Zed" } }],
+
+  // (4) mic checks pass ungrounded; "Is it on the schedule?" is a real yes/no question
+  ["Is this working?", null, "I'm here! What can I help with?", PASS],
+  ["Do you hear me?", null, "Yes, I hear you! What can I do for you?", PASS],
+  ["Are you on?", null, "I'm on — what do you need?", PASS],
+  ["Is everything working?", null, "Everything's working — what can I help with?", PASS],
+  ["Did you get that?", null, "I did — what would you like to do?", PASS],
+  ["Did you hear me?", null, "I did — what would you like to do?", PASS],
+  ["Is it on the schedule?", null, "Yes, it is.", CANT_VERIFY],
+  ["Is it on the schedule?", null, "Which schedule do you mean?", PASS],
+  ["Is this thing on?", null, "Yep, I'm listening. What do you need?", PASS],
+  ["Is it on?", null, "Yep, I'm listening.", PASS],
+
+  // (5) the multi-turn bypass: the user answers a question about an action
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda"), null, "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "The first one"), "findClient", "Robert and Linda Chen marked as contacted for today.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "The first one"), null, "Robert and Linda Chen marked as contacted for today.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda"), "findClient", "Done, I logged it.", NOTHING_CHANGED],
+  // a question is still fine in the middle of the chain
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda"), "findClient", "Sure, when was the call?", PASS],
+  // a non-action chain narrates normally
+  [history("what's Chen's balance?", WHICH_CHEN, "Robert and Linda"), "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+  [history("good morning", "Good morning! How can I help?", "what's Chen's balance?"), "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+  // the chain walks back through every question/answer pair ("log a call" -> "Who?" -> "Chen" -> "Which Chen?" -> ...)
+  [history("log a call", "Who did you talk to?", "Chen", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  // ... and ends at the first assistant message that is not a question
+  [history("log a call with Chen", "I couldn't find that one.", "Robert and Linda"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  // an old action request does not follow the conversation past an assistant message that is not a question
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda", "That one is all set, so nothing else to do.", "what's Chen's balance?"), "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+];
+
+test("Task 3 carry-over rulings: information requests, missing request leads, disambiguation, mic checks, multi-turn chains", async () => {
+  await checkTable(CARRYOVER_TABLE);
+});
+
+test("multi-turn: the model's logContactTool call in an answered-question chain still returns the code-authored read-back", async () => {
+  const before = lastContactOf(chenId);
+  const client = fakeClient([useTool("logContactTool", { clientId: chenId })]);
+  const r = await runTurn({
+    messages: history("log a call with Chen", WHICH_CHEN, "Robert and Linda"),
+    ctx: brokerCtx, client,
+  });
+  assert.equal(r.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId });
+  assert.equal(lastContactOf(chenId), before);
+});
+
+test("multi-turn: the caller's history is not mutated; block-array content counts; a broken pattern is no chain", async () => {
+  const messages = history("log a call with Chen", WHICH_CHEN, "Robert and Linda");
+  const snapshot = JSON.stringify(messages);
+  await runTurn({ messages, ctx: brokerCtx, client: fakeClient([say("Which one do you mean?")]) });
+  assert.equal(JSON.stringify(messages), snapshot);
+
+  const blocks = [
+    { role: "user", content: [{ type: "text", text: "log a call with Chen" }] },
+    { role: "assistant", content: [{ type: "text", text: WHICH_CHEN }] },
+    { role: "user", content: [{ type: "text", text: "Robert and Linda" }] },
+  ];
+  let r = await runTurn({ messages: blocks, ctx: brokerCtx, client: fakeClient([say("Call logged for Robert and Linda Chen.")]) });
+  assert.equal(r.reply, NOTHING_CHANGED);
+
+  // user, user: there is no assistant question between them
+  r = await runTurn({
+    messages: [{ role: "user", content: "log a call with Chen" }, { role: "user", content: "Hi there" }],
+    ctx: brokerCtx, client: fakeClient([say("Hello!")]),
+  });
+  assert.equal(r.reply, "Hello!");
+});
+
+test("CHARLI_SYSTEM tells her to reply with ONE question, starting with the question word, when she is not calling a change tool", () => {
+  assert.ok(CHARLI_SYSTEM.includes(
+    "On a request to change something, if you are not calling addClientTool or logContactTool, " +
+    "reply with only ONE question that starts with the question word"
+  ));
+  assert.ok(CHARLI_SYSTEM.includes("'Which Chen — Robert and Linda, or Chen Wei?'"));
+  assert.ok(CHARLI_SYSTEM.includes("'Who did you mean — I don't see a Zed?'"));
 });
