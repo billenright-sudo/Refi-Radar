@@ -23,7 +23,13 @@ const { runTurn, screenUngroundedText } = require("../lib/assistant/orchestrator
 after(() => { try { fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch { /* */ } });
 
 const LIVE = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
-const ctxFor = (stage = null) => ({ user: { id: 1, role: "broker", org_id: 1, career_stage: stage }, rates: LIVE, db });
+// a broker with one client, for the turns that mix a client lookup with a glossary lookup
+const org = Number(db.prepare("INSERT INTO organizations (name) VALUES ('Gloss')").run().lastInsertRowid);
+const brokerId = Number(db.prepare("INSERT INTO users (org_id, role, first_name, last_name, email) VALUES (?, 'broker', 'Gil', 'Loss', 'gil@gloss.test')").run(org).lastInsertRowid);
+db.prepare(
+  "INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, last_contact) VALUES (?, ?, 'Robert & Linda Chen', '30yr_fixed', 7.85, 485000, 650000, 760, '2026-01-01')"
+).run(org, brokerId);
+const ctxFor = (stage = null) => ({ user: { id: brokerId, role: "broker", org_id: org, career_stage: stage }, rates: LIVE, db });
 
 function fakeClient(script) {
   const calls = [];
@@ -416,4 +422,46 @@ test("explainTerm: NOTHING_CHANGED still guards a false 'done' after a glossary 
     client: fakeClient([useTool("explainTerm", { term: "LTV" }), say("Done, I logged it.")]),
   });
   assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+// ── Fix round 2 (#3): the glossary's digits ground nothing the model says ───
+
+const parallel = (...calls) => resp(calls.map(([name, input], i) => ({ type: "tool_use", id: "toolu_" + i, name, input })), "tool_use");
+const mixed = (userText, calls, reply, ctx = ctxFor()) => runTurn({ messages: userSays(userText), ctx, client: fakeClient([parallel(...calls), say(reply)]) });
+
+test("#3: on a mixed turn the model's figure is checked against the book source only: a glossary number grounds nothing", async () => {
+  // a cash-out definition carries an 80, break-even a 36: neither makes Chen's LTV, or a rate, an 80 or a 36
+  let r = await mixed("what's Chen's LTV, and what's a cash-out refi?", [["findClient", { query: "chen" }], ["explainTerm", { term: "cash-out" }]],
+    "Robert and Linda Chen's LTV is 80 percent.");
+  assert.equal(r.reply, CANT_VERIFY);
+  r = await mixed("what's Chen's break-even, and what does it mean?", [["findClient", { query: "chen" }], ["explainTerm", { term: "break-even" }]],
+    "Robert and Linda Chen's break-even is 36 months.");
+  assert.equal(r.reply, CANT_VERIFY);
+  r = await mixed("what's the 15-year, and what's a cash-out refi?", [["getMarketUpdate", {}], ["explainTerm", { term: "cash-out" }]],
+    "The thirty-year fixed is at 6.52 percent and the 15-year is at 80 percent.");
+  assert.equal(r.reply, CANT_VERIFY);
+  // the same figures are fine when the book source has them: the real balance and value from the client record
+  r = await mixed("what does LTV mean for the Chens?", [["findClient", { query: "chen" }], ["explainTerm", { term: "LTV" }]],
+    "LTV compares the balance, $485,000, to the value, $650,000, for Robert and Linda Chen.");
+  assert.equal(r.reply, "LTV compares the balance, $485,000, to the value, $650,000, for Robert and Linda Chen.");
+  assert.deepStrictEqual(r.sources, ["client record", "Broker Radar glossary"]);
+  r = await mixed("what's the rate, and what does LTV mean?", [["getMarketUpdate", {}], ["explainTerm", { term: "LTV" }]],
+    "The thirty-year fixed is at 6.52 percent, and LTV is the loan balance over the home's value.");
+  assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent, and LTV is the loan balance over the home's value.");
+  // ACCEPTED COST (fails closed): on a mixed turn the model cannot quote a definition's own product number
+  r = await mixed("what's Chen's balance, and what's a cash-out refi?", [["findClient", { query: "chen" }], ["explainTerm", { term: "cash-out" }]],
+    "Chen owes $485,000, and Broker Radar estimates cash available up to a new loan of 80 percent of the home's value.");
+  assert.equal(r.reply, CANT_VERIFY);
+  // ... while the glossary-only turn is untouched: the definition, code-authored, with its own number
+  r = await mixed("what's a cash-out refi?", [["explainTerm", { term: "cash-out" }]], "whatever");
+  assert.match(r.reply, /80 percent of the home's value/);
+  assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
+});
+
+test("#3: the glossary lookup in an earlier model call grounds nothing in a later one either", async () => {
+  const r = await runTurn({
+    messages: userSays("what's a cash-out refi, and what's Chen's LTV?"), ctx: ctxFor(),
+    client: fakeClient([useTool("explainTerm", { term: "cash-out" }), useTool("findClient", { query: "chen" }, "toolu_2"), say("Robert and Linda Chen's LTV is 80 percent.")]),
+  });
+  assert.equal(r.reply, CANT_VERIFY);
 });

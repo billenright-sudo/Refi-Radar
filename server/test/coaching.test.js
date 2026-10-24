@@ -506,6 +506,12 @@ test("claimsCompletion: first-person 'set' and the every-turn 'is set to' / 'you
       "Your career stage's set to Veteran.", "They're set to Veteran.", "Your stage has been set as an Established broker.",
       "I just set your stage to Veteran.", "I've already set it.", "We set that up for you.", "I've gone ahead and set you as a Veteran.",
       "I have just set your stage.", "I now set you as Veteran.",
+      // round 2: a quoted or punctuated stage object, and the bare claim
+      "Your career stage is now set to “Veteran (10+ years)”.", "Your career stage is now set to: Veteran.", "Your stage is set to 'Veteran'.",
+      // (no 'stage' before the verb, so only the quoted / punctuated object form of 'set to' catches these)
+      "That's now set to: Veteran.", "It's set to “Veteran”.", "Your level is set to ‘Veteran (10+ years)’.", "They're set as a \"Veteran\".",
+      "Your career stage is set.", "Your stage has been set.", "Your stage is now updated.", "Your career stage has been saved.",
+      "Your stage's locked in.", "Your stage is all set.", "Your career stage is now changed.",
     ]) {
       assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
     }
@@ -519,6 +525,9 @@ test("claimsCompletion: first-person 'set' and the every-turn 'is set to' / 'you
       "The meeting is set for Thursday.", "I see the Fed is set to meet Wednesday.", "I think you could set a reminder.",
       "Is it okay if I set your stage to Veteran?", "Mind if I set you as a Veteran?", "Okay if we set it later?",
       "Do you want me to set it, or should I wait?",
+      // round 2: 'set to' with an object that is not a stage, 'new' included
+      "Their loan is set to a new fixed rate next month.", "Their ARM is set to new terms in the new year.",
+      "The stage is clear for a call today.", "Rates could ease in the new year.",
     ]) {
       assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
     }
@@ -986,7 +995,11 @@ test("I1: on the stage flows a setCareerStageTool call still returns its sideEff
     [userMsgs("can you switch me to established?"), { stage: "established" }, "established"],
     [userMsgs("make me a veteran"), { stage: "veteran" }, "veteran"],
     [userMsgs("what's my career stage?"), { stage: "veteran" }, "veteran"],
-    [userMsgs("I'm new to this"), { stage: "new" }, "new"],
+    [userMsgs("I'm new to the business"), { stage: "new" }, "new"],
+    // round 2: after the model's own offer, after a clarify turn, and when the user answers later
+    [[...afterQuestion, { role: "user", content: "about 20 years" }, { role: "assistant", content: "Want me to set your stage to Veteran?" }, { role: "user", content: "yes" }], { stage: "veteran" }, "veteran"],
+    [[...afterQuestion, { role: "user", content: "about sixteen years" }, { role: "assistant", content: "So about sixteen years — is that right?" }, { role: "user", content: "yep" }], { years: 16 }, "veteran"],
+    [[...afterQuestion, { role: "user", content: "what are rates today?" }, { role: "assistant", content: "The thirty-year fixed is at 6.52 percent." }, { role: "user", content: "oh and I've been originating about 12 years" }], { years: 12 }, "veteran"],
   ]) {
     const client = fakeClient([useTool("setCareerStageTool", input)]);
     const r = await runTurn({ messages, ctx, client });

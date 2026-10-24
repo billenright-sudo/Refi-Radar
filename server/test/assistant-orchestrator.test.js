@@ -2491,7 +2491,8 @@ const STAGE_FLOW_TABLE = [
   ...claimRows("can you switch me to established?", ["I've switched you to Established.", "You're Established now."]),
   ...claimRows("make me a veteran", ["You're a Veteran now.", "Done, Veteran it is."]),
   ...claimRows("what's my career stage?", ["Your career stage is Veteran."]),
-  ...claimRows("I'm new to this", ["Welcome aboard, you're New."]),
+  // (round 2: "I'm new to this" / "to the app" / "to Broker Radar" / "here" are not stage mentions; "to the business" is)
+  ...claimRows("I'm new to the business", ["Welcome aboard, you're New."]),
   ...claimRows("I'm brand new", ["Then you're New."]),
   ...claimRows("switch me to new", ["You're New now."]),
   // a question back to the user is not a claim (it may name the stages), nor is a reply that names none
@@ -2515,6 +2516,95 @@ const STAGE_FLOW_TABLE = [
 
 test("I1: a stage-flow turn that ends in model text cannot say the stage is set, changed or chosen", async () => {
   await checkTable(STAGE_FLOW_TABLE);
+});
+
+// ── Round 2 ──────────────────────────────────────────────────────────────────
+
+const claimsAfter = (history, replies) => claimRows(history, replies);
+// the whole history, for the paths below
+const H = (...texts) => texts.map((content, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content }));
+const OFFER = "Want me to set your stage to Veteran?";
+const FIRST_TURN = (userText, tool, replies, opts) =>
+  replies.map((reply) => [AFTER_CAREER_Q(userText), tool, reply, PASS, opts]);
+
+const ROUND2_TABLE = [
+  // #1: the first turn after the career question is a stage flow for every unstaged user, even if they ignore the question.
+  // Replies that merely contain "new" (a new fixed rate, a new low, the new year) must reach the user, with their citation.
+  ...["run a sweep", "what are rates today?", "run a sweep?"].flatMap((u) => FIRST_TURN(u, "runSweepTool", [
+    `${SWEEP_NARRATION} They could refinance into a new fixed-rate loan.`, `${SWEEP_NARRATION} Their ARM resets in the new year.`,
+  ], { ctx: sweepCtx })),
+  ...["give me a market update", "what are rates today?"].flatMap((u) => FIRST_TURN(u, "getMarketUpdate", [
+    "The thirty-year fixed is at 6.52 percent, down to a new low for the month.",
+    "The thirty-year fixed is at 6.52 percent. Rates could ease in the new year.",
+  ])),
+  ...["pull up Chen", "what's Chen's rate?"].flatMap((u) => FIRST_TURN(u, "findClient", [
+    "Robert and Linda Chen are at 7.85 percent, and moving to a new fixed rate would remove the reset risk.",
+    "Robert and Linda Chen could switch into a new fixed loan.",
+  ])),
+  // (b) a question is not an answer to the career question, so it opens no stage flow of its own
+  ...FIRST_TURN("what are rates today?", "getMarketUpdate", ["The thirty-year fixed is at 6.52 percent, a good fit for a Veteran like you."]),
+  [AFTER_CAREER_Q("I'm new to the app, what can you do?"), null, "Welcome! Since you're new here, just ask me anything you like.", PASS],
+
+  // ... and the answers still block (every STAGE_FLOW_TABLE row above is unchanged)
+  ...claimsAfter(AFTER_CAREER_Q("run a sweep"), ["Your stage is now Veteran."]),
+
+  // #2: it is also a stage flow after the model's own stage offer, after a clarify turn, and when the user answers later
+  ...claimRows(H(SESSION_STARTED, GREETING_Q, "about 20 years", OFFER, "yes"), [
+    "Great — you're a Veteran now.", "Perfect, Veteran it is.", "Great, your stage is Veteran.",
+  ]),
+  ...claimRows(H(SESSION_STARTED, GREETING_Q, "about sixteen years", "So about sixteen years — is that right?", "yep"), [
+    "Great — you're a Veteran now.", "Perfect, Veteran it is.", "Great, your stage is Veteran.",
+  ]),
+  ...claimRows(H(SESSION_STARTED, GREETING_Q, "what are rates today?", "The thirty-year fixed is at 6.52 percent.", "oh and I've been originating about 12 years"), [
+    "Got it, you're a Veteran now.", "Twelve years, so Veteran it is.",
+  ]),
+  // the offer alone is enough (no career question anywhere in the history), and so is the user's mention of originating
+  ...claimRows(H("hello", OFFER, "yes"), ["Great — you're a Veteran now.", "Done, Veteran it is."]),
+  ...claimRows("I've been originating about 12 years", ["Got it, you're a Veteran now."]),
+  // a question back after the offer is still a question
+  ...onBoth(H("hello", OFFER, "yes"), "Should I keep things short then?", PASS),
+  // an answer to an offer that names no stage and a reply that names none are ordinary conversation
+  ...onBoth(H("hello", "Want me to run a sweep?", "yes"), "Sure, give me a second.", PASS),
+  ...onBoth(H(SESSION_STARTED, GREETING_Q, "about 20 years", OFFER, "yes"), "Great, what can I help with?", PASS),
+
+  // stage words: the plural and a seasoned vet
+  ...claimRows(AFTER_CAREER_Q("about 20 years"), [
+    "Got it — you're one of the veterans now.", "Thanks, I'll treat you like one of our veterans.", "Nice, you're a seasoned vet.",
+    "Welcome to the veterans' tier.",
+  ]),
+
+  // "I'm new to the app" / "here" is not a stage mention, on either side
+  ["I'm new to the app, what can you do?", null, "Welcome! Since you're new here, just ask me anything you like.", PASS],
+  ["I'm new to Broker Radar, what can you do?", null, "Welcome! Since you're new here, just ask me anything you like.", PASS],
+  ["I'm new here", null, "Welcome aboard! Since you're new here, just ask me anything you like.", PASS],
+  [AFTER_CAREER_Q("I'm new to Broker Radar"), null, "Welcome! Since you're new here, just ask me anything you like.", PASS],
+  ["I'm new to this, what can you do?", null, "Happy to help. Just ask.", PASS],
+  // (the user's "I'm new to the app" opens no stage flow, so a reply that happens to name veterans is left alone)
+  ...["I'm new to the app", "I'm brand new to Broker Radar", "I'm new here", "I'm new to this"].map((u) =>
+    [u, null, "Welcome! Veterans and newcomers alike use it every day.", PASS]),
+  // ... while "I'm new to the business" does
+  ["I'm new to the business", null, "Welcome! Veterans and newcomers alike use it every day.", NOTHING_CHANGED],
+
+  // quoted and punctuated stage objects of 'set'
+  ...claimRows("about 20 years", [
+    "Your career stage is now set to “Veteran (10+ years)”.", "Your career stage is now set to: Veteran.",
+    "Your stage is set to \"Veteran\".", "Your stage has been set to ‘Veteran’.", "Your stage is set to a Veteran.",
+    "Your stage is set to New (under 1 year).",
+  ]),
+  // ... but 'set to' with an object that is not a stage is narration, 'new' included
+  ["Tell me about Chen", "findClient", "Their loan is set to a new fixed rate next month.", PASS],
+  ["Tell me about Chen", "findClient", "Their ARM is set to new terms in the new year.", PASS],
+
+  // the bare claim, on every turn, with no sideEffect
+  ...claimRows("about 20 years", [
+    "Your career stage is set.", "Your stage has been set.", "Your stage is now updated.", "Your career stage has been saved.",
+    "Your stage's locked in.", "Your stage is all set.", "Your career stage is now changed.",
+  ]),
+  ...claimRows("thanks", ["Your career stage is set."]),
+];
+
+test("Round 2: the first turn after the career question, the stage offer / clarify / later-answer flows, stage words and the bare claim", async () => {
+  await checkTable(ROUND2_TABLE);
 });
 
 // ── R7-a: explainTerm (the fixed glossary) ───────────────────────────────────

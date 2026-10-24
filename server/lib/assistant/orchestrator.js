@@ -258,18 +258,28 @@ const PASSIVE_JUST_RE = new RegExp(
     PASSIVE_VERBS + ")\\b",
   "i"
 );
-// Career stages (coaching.js). "new" is also an everyday word ("3 new opportunities", "a new rate"), so it names a
-// stage only in a stage context; the other three ids are rare enough to count anywhere.
+// Career stages (coaching.js). "new" is also an everyday word ("3 new opportunities", "a new fixed rate"), so it names a
+// stage only in a stage context; the other ids are rare enough to count anywhere, in the plural ("veterans") and as
+// "seasoned vet" too.
 const STAGE_IDS = CAREER_STAGES.map((st) => st.id);
-const OTHER_STAGE_WORDS = STAGE_IDS.filter((id) => id !== "new").join("|");
-const NEW_AS_NOUN_MODIFIER = "(?!\\s+(?:clients?|loans?|rates?|opportunit\\w*|records?|leads?|customers?|calls?|contacts?|ones?|purchases?|mortgages?|borrowers?)\\b)";
+const OTHER_STAGE_WORDS = STAGE_IDS.filter((id) => id !== "new")
+  .map((id) => (id === "veteran" ? "veterans?" : id)).concat("seasoned\\s+vets?").join("|");
+// "you're new" is a stage claim unless "new" modifies a noun, or is about the app ("you're new here")
+const NEW_AS_NOUN_MODIFIER = "(?!\\s+(?:clients?|loans?|rates?|opportunit\\w*|records?|leads?|customers?|calls?|contacts?|ones?|purchases?|mortgages?|borrowers?|here|to\\s+(?:the\\s+app|broker\\s+radar|this))\\b)";
+// after "as / to / into / in" ("set you as New", "switched to New") "new" is a stage only where the clause ends or a stage
+// noun follows: "into a new fixed-rate loan", "to a new low" and "in the new year" are not stages
+const NEW_STAGE_END = "(?=\\s*(?:[.!?,;:\\u2014\\u2013(]|$)|\\s+(?:stage|category|level|tier|bracket|broker|brokers|originator|loan\\s+officer|LO|now|then|instead|from|for|today|going)\\b)";
 
 // Setting a career stage is a change too, and it is reported with the stage next to the verb: "is set to Veteran",
-// "has been set as an Established broker", and "You're now set / marked / listed as Veteran" are false on every turn.
-// The object must be a stage ("Their ARM is set to adjust" is narration). The first-person forms are FIRST_PERSON_SET_RE.
+// "has been set as an Established broker", "is set to: “Veteran (10+ years)”" and "You're now set / marked / listed as
+// Veteran" are false on every turn. The object must be a stage ("Their ARM is set to adjust" is narration). The
+// first-person forms are FIRST_PERSON_SET_RE.
 const SET_PASSIVE_RE = new RegExp(
-  "(?:\\b(?:is|are|been)|['\\u2019](?:s|re))\\s+(?:now\\s+)?set\\s+(?:to|as)\\s+(?:an?\\s+|the\\s+)?(?:" + OTHER_STAGE_WORDS + "|new" + NEW_AS_NOUN_MODIFIER + ")\\b", "i"
+  "(?:\\b(?:is|are|been)|['\\u2019](?:s|re))\\s+(?:now\\s+)?set\\s+(?:to|as)[\\s:\"'\\u201c\\u2018]*(?:(?:an?|the)[\\s:\"'\\u201c\\u2018]+)?(?:" +
+    OTHER_STAGE_WORDS + "|new" + NEW_STAGE_END + ")\\b", "i"
 );
+// "Your career stage is set." / "has been saved": the bare claim, with no stage named
+const STAGE_SET_BARE_RE = /\bstage(?:\s+(?:is|has\s+been)|['\u2019]s)\s+(?:now\s+)?(?:all\s+)?(?:set|updated|saved|changed|locked\s+in)\b/i;
 // "I set you / your / it / that / this" with nothing but "have", "just", "already", "now" or "went ahead and" in between:
 // "I suggest you set up a call" and "I'd recommend we set a follow-up" are suggestions, and "if I set your stage" an offer.
 const FIRST_PERSON_SET_RE = /(?<!\bif\s)\b(?:I|we)(?:['\u2019]ve|\s+have)?(?:\s+(?:just|already|now|went\s+ahead\s+and|gone\s+ahead\s+and))*\s+set\s+(?:you|your|it|that|this)\b/i;
@@ -301,7 +311,7 @@ function claimsCompletion(text, grounded) {
     return COMPLETION_OPENER_RE.test(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
-      FIRST_PERSON_SET_RE.test(s) || SET_PASSIVE_RE.test(s) || YOURE_SET_RE.test(s) ||
+      FIRST_PERSON_SET_RE.test(s) || SET_PASSIVE_RE.test(s) || YOURE_SET_RE.test(s) || STAGE_SET_BARE_RE.test(s) ||
       (!grounded && PASSIVE_PAST_RE.test(s)) ||
       laterClauseClaims(s);
   });
@@ -484,31 +494,56 @@ function answersActionQuestion(messages) {
   return false;
 }
 
-// The stage flows (I1). A turn that ends in model text has handed up no change, so a reply that says the user's stage is
-// now this or that ("Your stage is now Veteran.", "Veteran it is.", "I'll coach you as a Veteran") is false whatever its
-// wording. The flows: the user is answering the career question (the assistant message before theirs ends with it), or
-// their message talks about their stage ("stage", a stage word, "I'm new", "switch me to new"). In a stage flow a reply
-// that names a stage and is not a question back to the user is the nothing-changed line (reply names: STAGE_NAMED_RE).
+// The stage flows. A turn that ends in model text has handed up no change, so a reply that says the user's stage is now
+// this or that ("Your stage is now Veteran.", "Veteran it is.", "I'll coach you as a Veteran") is false whatever its
+// wording. In a stage flow a reply that names a stage (STAGE_NAMED_RE) and is not a question back to the user is the
+// nothing-changed line. The flows:
+//   * the user's message talks about their stage or their years (USER_STAGE_RE: "stage", a stage word, "originating",
+//     "I'm new", "switch me to new"; "I'm new to the app / Broker Radar / here" is not one);
+//   * the user ANSWERS (isAnswerShaped: a question is not an answer) while the career question is still open, i.e. is
+//     one of the last CAREER_Q_LOOKBACK assistant messages and no "your career stage is set" came after it (this covers
+//     a clarify turn: "So about sixteen years - is that right?" / "yep"), or while the assistant's last message is a
+//     question that names a stage or "stage" ("Want me to set your stage to Veteran?" / "yes").
 const CAREER_Q_TAIL_RE = /how\s+long\s+have\s+you\s+been\s+originating\?\s*$/i;
+const STAGE_SET_DONE_RE = /your\s+career\s+stage\s+is\s+set\s+to/i;
+const CAREER_Q_LOOKBACK = 3;
 const USER_STAGE_RE = new RegExp(
-  "\\b(?:" + OTHER_STAGE_WORDS + "|stages?)\\b" +
-    "|\\b(?:i['\\u2019]?m|i\\s+am)\\s+(?:(?:brand|really|pretty|still|very)\\s+)?new\\b" +
+  "\\b(?:" + OTHER_STAGE_WORDS + "|stages?|originat\\w*)\\b" +
+    "|\\b(?:i['\\u2019]?m|i\\s+am)\\s+(?:(?:brand|really|pretty|still|very)\\s+)?new\\b(?!\\s+(?:to\\s+(?:the\\s+app|broker\\s+radar|this|here)|here)\\b)" +
     "|\\b(?:me|to|as|be)\\s+new\\s*[.!?]*\\s*$", "i"
 );
 const STAGE_NAMED_RE = new RegExp(
   "\\b(?:" + OTHER_STAGE_WORDS + ")\\b" +
-    "|\\b(?:you['\\u2019]?re|you\\s+are|as|to|into|in)\\s+(?:an?\\s+|the\\s+)?(?:now\\s+)?new\\b" + NEW_AS_NOUN_MODIFIER +
+    "|\\b(?:you['\\u2019]?re|you\\s+are)\\s+(?:an?\\s+|the\\s+)?(?:now\\s+)?new\\b" + NEW_AS_NOUN_MODIFIER +
+    "|\\b(?:as|to|into|in)\\s+(?:an?\\s+|the\\s+)?(?:now\\s+)?new\\b" + NEW_STAGE_END +
     "|\\bstage\\s+is\\s+(?:now\\s+)?new\\b" +
     "|\\bnew\\s+(?:stage|category|level|tier|broker|brokers|loan\\s+officer|originator)\\b" +
     "|\\bnew\\s+it\\s+is\\b", "i"
 );
-const answersCareerQuestion = (messages) => {
+// The career question is open: asked in one of the last CAREER_Q_LOOKBACK assistant messages and not yet answered by a
+// confirmed stage. `messages` ends with the user's latest message.
+function careerQuestionOpen(messages) {
+  let seen = 0;
+  for (let i = messages.length - 2; i >= 0 && seen < CAREER_Q_LOOKBACK; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "assistant") continue;
+    seen++;
+    const text = messageText(m).trim();
+    if (STAGE_SET_DONE_RE.test(text)) return false;
+    if (CAREER_Q_TAIL_RE.test(text)) return true;
+  }
+  return false;
+}
+// The assistant's last message is a question that names a stage (the model's own offer: "Want me to set your stage to Veteran?").
+function stageQuestionAsked(messages) {
   const prev = messages[messages.length - 2];
-  return !!prev && prev.role === "assistant" && CAREER_Q_TAIL_RE.test(messageText(prev).trim());
-};
+  if (!prev || prev.role !== "assistant") return false;
+  const text = messageText(prev).trim();
+  return text.endsWith("?") && (STAGE_NAMED_RE.test(text) || /\bstages?\b/i.test(text));
+}
+const answersStageQuestion = (messages, userText) => isAnswerShaped(userText) && (careerQuestionOpen(messages) || stageQuestionAsked(messages));
 // A question back to the user: question-shaped (isQuestionShaped), or "Mind if I ...?". It may name the stages it offers.
 const isQuestionBack = (reply) => isQuestionShaped(reply) || /^mind\s+if\b[^.!;]*\?\s*$/i.test(stripOpener(reply).trim());
-
 // ── Tool execution ───────────────────────────────────────────────────────────
 
 // Error results carry a parenthesised label like "(not found)": those are never cited.
@@ -631,10 +666,10 @@ async function runTurn({ messages, ctx, client } = {}) {
   // R5-3 applies to this turn if the user asked for an action now, or is answering a question about one.
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
   const sources = [];   // citing sources of the read tools run this turn
-  const payloads = [];  // the tool_result contents actually sent to the model this turn
+  const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
-  const stageFlow = answersCareerQuestion(messages) || USER_STAGE_RE.test(userText);
+  const stageFlow = answersStageQuestion(messages, userText) || USER_STAGE_RE.test(userText);
   // CHARLI_SYSTEM plus the coaching block for this user's career stage: it tailors how she coaches, nothing the
   // screening below depends on (that runs on the model's text and this turn's tool results alone)
   const system = buildCharliSystem(ctx && ctx.user);
@@ -673,7 +708,9 @@ async function runTurn({ messages, ctx, client } = {}) {
       if (actionTurn && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
       // I3: when the glossary is the only thing cited, the reply is the definition(s), code-authored from what explainTerm
       // returned (a term it did not know adds the can't-verify line), and the model's text is discarded: a glossary citation
-      // must not carry a claim about the book, and its digits must not ground anyone's figures.
+      // must not carry a claim about the book. (On a turn that also cites a book source the model's text stands, and its figures
+      // are checked against the book sources only: explainTerm's results are never in `payloads`, so the glossary's 80 or 36
+      // cannot make a client's LTV or a rate a fact.)
       if (glossaryDefs.length > 0 && sources.length > 0 && sources.every((src) => src === GLOSSARY_SOURCE)) {
         const spoken = glossaryDefs.map((d) => d.definition);
         if (glossaryMiss) spoken.push(CANT_VERIFY);
@@ -722,9 +759,10 @@ async function runTurn({ messages, ctx, client } = {}) {
     }
     if (lastCall) break;
 
-    for (const o of outs) {
+    for (const [i, o] of outs.entries()) {
       if (isCitation(o.source) && !sources.includes(o.source)) sources.push(o.source);
-      payloads.push(o.toolResult.content);
+      // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote
+      if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);
     }
     convo.push({ role: "user", content: outs.map((o) => o.toolResult) });
   }
