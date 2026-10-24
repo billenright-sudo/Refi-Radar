@@ -23,7 +23,7 @@ const refi = require("../lib/refi");
 const assistantTools = require("../lib/assistant/tools");
 const { ERROR_TURN, NOTHING_CHANGED } = require("../lib/assistant/prompt");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
-const { normalizeHistory, SESSION_STARTED, MAX_HISTORY } = require("../lib/assistant/history");
+const { normalizeHistory, SESSION_STARTED, MAX_HISTORY, MAX_MESSAGE_CHARS } = require("../lib/assistant/history");
 const clientRoutes = require("../routes/clients");
 const assistantRoutes = require("../routes/assistant");
 
@@ -595,15 +595,19 @@ test("turn: a missing ANTHROPIC_API_KEY (no injected client) is the error turn, 
 
 test("turn: a tool or screening failure inside runTurn never becomes a 500", async () => {
   // the orchestrator contains tool errors itself; an unexpected shape from the model client is the error turn
-  setClient({ messages: { create: async () => null } });
-  const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("hello"), rates: LIVE });
-  assert.equal(r.status, 200);
-  assert.ok(r.data.reply);
-  setClient({ messages: { create: async () => { throw "a string, not an Error"; } } });
-  await capturingErrors(async () => {
+  await capturingErrors(async (logged) => {
+    setClient({ messages: { create: async () => null } });
+    const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("hello"), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.error, true);
+    assert.equal(r.data.reply, ERROR_TURN);
+    assert.deepStrictEqual(r.data.sources, []);
+    assert.deepStrictEqual(logged, [["POST /api/assistant/turn:", "the model returned no response"]]);
+    setClient({ messages: { create: async () => { throw "a string, not an Error"; } } });
     const e = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("hello"), rates: LIVE });
     assert.equal(e.status, 200);
     assert.equal(e.data.error, true);
+    assert.equal(e.data.reply, ERROR_TURN);
   });
 });
 
@@ -717,10 +721,11 @@ const namedCount = (name) => db.prepare("SELECT COUNT(*) AS n FROM clients WHERE
 
 test("assistant_confirmations: the migration creates the dedupe table", () => {
   const cols = db.prepare("PRAGMA table_info(assistant_confirmations)").all();
-  assert.deepStrictEqual(cols.map((c) => c.name), ["confirm_id", "user_id", "result_json", "created_at"]);
+  assert.deepStrictEqual(cols.map((c) => c.name), ["confirm_id", "user_id", "result_json", "created_at", "action_type", "target"]);
   assert.equal(cols.find((c) => c.name === "confirm_id").pk, 1);
-  assert.equal(cols.find((c) => c.name === "user_id").notnull, 1);
-  assert.equal(cols.find((c) => c.name === "result_json").notnull, 1);
+  for (const name of ["user_id", "result_json", "action_type", "target"]) {
+    assert.equal(cols.find((c) => c.name === name).notnull, 1, name);
+  }
 });
 
 test("turn: every sideEffect it returns carries its own server-generated confirmId", async () => {
@@ -749,12 +754,17 @@ test("confirm addClient twice with the same confirmId: one client, the second re
   assert.equal(second.status, 200);
   assert.equal(second.data.success, true);
   assert.equal(second.data.duplicate, true);
-  assert.deepStrictEqual(second.data.result, first.data.result, "the stored result is returned");
+  const receipt = { id: first.data.result.id, name: "Idem Potent" };
+  assert.deepStrictEqual(second.data.result, receipt, "the stored receipt (id and name only) is returned");
+  assert.equal(second.data.reply, first.data.reply, "the duplicate carries the same reply");
+  assert.equal(second.data.reply, "Done — I added Idem Potent as a new client.");
   assert.equal(clientCount(), count + 1);
   assert.equal(namedCount("Idem Potent"), 1);
   const stored = confirmation(confirmId);
   assert.equal(stored.user_id, ann);
-  assert.deepStrictEqual(JSON.parse(stored.result_json), first.data.result);
+  assert.deepStrictEqual(JSON.parse(stored.result_json), receipt, "m3: no email, phone or notes are kept");
+  assert.equal(stored.action_type, "addClient");
+  assert.equal(stored.target, "idem potent", "m2: the fingerprint is the normalized, lower-cased name");
   assert.match(stored.created_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 
   // the id is case-insensitive: the same UUID in capitals is the same confirmation
@@ -825,7 +835,11 @@ test("confirm logContact: works without a confirmId; with one, a replay returns 
   const replay = await confirmAs(ann, { type: "logContact", confirmId, clientId: chen });
   assert.equal(replay.status, 200);
   assert.equal(replay.data.duplicate, true);
-  assert.deepStrictEqual(replay.data.result, first.data.result);
+  assert.deepStrictEqual(replay.data.result, { id: chen, name: "Robert & Linda Chen" });
+  assert.equal(replay.data.reply, "Done — I logged a contact for Robert & Linda Chen.");
+  assert.equal(replay.data.reply, first.data.reply);
+  assert.equal(confirmation(confirmId).action_type, "logContact");
+  assert.equal(confirmation(confirmId).target, String(chen));
   assert.equal(clientRow(chen).last_contact, "2000-01-01", "the replay executed nothing");
   assert.equal(confirmation(confirmId).user_id, ann);
 });
@@ -891,6 +905,197 @@ test("confirm: the write and its record commit together (a failing record rolls 
   }
   assert.equal(clientCount(), count);
   assert.equal(namedCount("Rolled Back"), 0);
+});
+
+// ── review fix round 1: confirm replies, bound confirmIds, message size ──────
+
+const READ_BACK = "Just to confirm — log a contact for Robert & Linda Chen?";
+const DONE_REPLY = "Done — I logged a contact for Robert & Linda Chen.";
+
+test("I2: /confirm success carries a code-authored reply, for both types, and a duplicate carries the same one", async () => {
+  const logId = newId();
+  const logged = await confirmAs(ann, { type: "logContact", confirmId: logId, clientId: chen });
+  assert.equal(logged.status, 200);
+  assert.equal(logged.data.reply, DONE_REPLY);
+  assert.equal(logged.data.success, true);
+  assert.equal(logged.data.result.id, chen, "result is still the client record");
+  const loggedAgain = await confirmAs(ann, { type: "logContact", confirmId: logId, clientId: chen });
+  assert.equal(loggedAgain.data.duplicate, true);
+  assert.equal(loggedAgain.data.reply, DONE_REPLY);
+
+  const addId = newId();
+  const added = await confirmAs(ann, { type: "addClient", confirmId: addId, fields: newClientFields("Reply Test") });
+  assert.equal(added.status, 200);
+  assert.equal(added.data.reply, "Done — I added Reply Test as a new client.");
+  const addedAgain = await confirmAs(ann, { type: "addClient", confirmId: addId, fields: newClientFields("Reply Test") });
+  assert.equal(addedAgain.data.duplicate, true);
+  assert.equal(addedAgain.data.reply, "Done — I added Reply Test as a new client.");
+  assert.equal(namedCount("Reply Test"), 1);
+
+  // a logContact without a confirmId has the reply too
+  const plain = await confirmAs(ann, { type: "logContact", clientId: chen });
+  assert.equal(plain.data.reply, DONE_REPLY);
+  // failures have none
+  const missing = await confirmAs(ann, { type: "logContact", clientId: 99999999 });
+  assert.equal(missing.status, 404);
+  assert.equal("reply" in missing.data, false);
+  const invalid = await confirmAs(ann, { type: "addClient", confirmId: newId(), fields: {} });
+  assert.equal(invalid.status, 400);
+  assert.equal("reply" in invalid.data, false);
+});
+
+test("I2: with the confirm's reply appended after the read-back, the next turn is not held to the backstop", async () => {
+  const withReply = [
+    { role: "user", content: "log a call with Chen" },
+    { role: "assistant", content: READ_BACK },
+    { role: "assistant", content: DONE_REPLY },   // the browser appends /confirm's reply as the assistant turn
+  ];
+
+  // a conversational reply
+  let client = fakeClient([say("Anytime!")]);
+  setClient(client);
+  let r = await as(ann)("POST", "/api/assistant/turn", { messages: [...withReply, { role: "user", content: "Thanks" }], rates: LIVE });
+  assert.equal(r.data.reply, "Anytime!");
+  assert.deepStrictEqual(client.calls[0].messages, [
+    { role: "user", content: "log a call with Chen" },
+    { role: "assistant", content: READ_BACK + "\n" + DONE_REPLY },
+    { role: "user", content: "Thanks" },
+  ]);
+
+  // a market update, narrated from the tool
+  client = fakeClient([useTool("getMarketUpdate"), say("The thirty-year fixed is at 6.52 percent today.")]);
+  setClient(client);
+  r = await as(ann)("POST", "/api/assistant/turn", { messages: [...withReply, { role: "user", content: "give me a market update" }], rates: LIVE });
+  assert.equal(r.data.reply, "The thirty-year fixed is at 6.52 percent today.");
+  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+
+  // a client lookup
+  client = fakeClient([useTool("findClient", { query: "chen" }), say("Robert & Linda Chen owe $485,000 at 7.85 percent.")]);
+  setClient(client);
+  r = await as(ann)("POST", "/api/assistant/turn", { messages: [...withReply, { role: "user", content: "Pull up Chen" }], rates: LIVE });
+  assert.equal(r.data.reply, "Robert & Linda Chen owe $485,000 at 7.85 percent.");
+  assert.deepStrictEqual(r.data.sources, ["client record"]);
+
+  // the contrast that motivates it: without the reply the read-back is still the last assistant message
+  setClient(fakeClient([say("Anytime!")]));
+  r = await as(ann)("POST", "/api/assistant/turn", {
+    messages: [withReply[0], withReply[1], { role: "user", content: "Thanks" }], rates: LIVE,
+  });
+  assert.equal(r.data.reply, NOTHING_CHANGED);
+});
+
+test("m2: a confirmId is bound to its action: another type or target is 409 and executes nothing", async () => {
+  // addClient: a different name is 409; the same name in other case and spacing is the same action
+  const addId = newId();
+  const first = await confirmAs(ann, { type: "addClient", confirmId: addId, fields: newClientFields("Bound One") });
+  assert.equal(first.status, 200);
+  const count = clientCount();
+  let r = await confirmAs(ann, { type: "addClient", confirmId: addId, fields: newClientFields("Bound Two") });
+  assert.equal(r.status, 409);
+  assert.equal(r.data.success, false);
+  assert.equal(namedCount("Bound Two"), 0);
+  r = await confirmAs(ann, { type: "addClient", confirmId: addId, fields: newClientFields("  BOUND   one ") });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.duplicate, true);
+  assert.equal(r.data.reply, "Done — I added Bound One as a new client.");
+  assert.equal(clientCount(), count);
+  // addClient id replayed as a logContact
+  db.prepare("UPDATE clients SET last_contact = '2001-01-01' WHERE id = ?").run(chen);
+  r = await confirmAs(ann, { type: "logContact", confirmId: addId, clientId: chen });
+  assert.equal(r.status, 409);
+  assert.equal(clientRow(chen).last_contact, "2001-01-01", "nothing was executed");
+
+  // logContact: another client is 409 and is not touched; another type is 409
+  const logId = newId();
+  assert.equal((await confirmAs(ann, { type: "logContact", confirmId: logId, clientId: chen })).status, 200);
+  db.prepare("UPDATE clients SET last_contact = '2002-02-02' WHERE id = ?").run(louClient);
+  r = await confirmAs(ann, { type: "logContact", confirmId: logId, clientId: louClient });
+  assert.equal(r.status, 409);
+  assert.equal(clientRow(louClient).last_contact, "2002-02-02");
+  r = await confirmAs(ann, { type: "addClient", confirmId: logId, fields: newClientFields("Bound Three") });
+  assert.equal(r.status, 409);
+  assert.equal(namedCount("Bound Three"), 0);
+  // the record is unchanged by the refused attempts, so the genuine replay still works
+  assert.equal(confirmation(logId).action_type, "logContact");
+  assert.equal(confirmation(logId).target, String(chen));
+  r = await confirmAs(ann, { type: "logContact", confirmId: logId, clientId: chen });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.duplicate, true);
+});
+
+test("m3: what is kept per confirmId is { id, name } only; the first response still carries the full client", async () => {
+  const confirmId = newId();
+  const fields = { ...newClientFields("Private Person"), email: "pp@example.test", phone: "555-0100", notes: "prefers evenings" };
+  const first = await confirmAs(ann, { type: "addClient", confirmId, fields });
+  assert.equal(first.status, 200);
+  assert.equal(first.data.result.email, "pp@example.test");
+  assert.equal(first.data.result.notes, "prefers evenings");
+  const stored = confirmation(confirmId);
+  assert.deepStrictEqual(JSON.parse(stored.result_json), { id: first.data.result.id, name: "Private Person" });
+  assert.doesNotMatch(stored.result_json, /pp@example|555-0100|evenings/);
+  const again = await confirmAs(ann, { type: "addClient", confirmId, fields });
+  assert.deepStrictEqual(again.data.result, { id: first.data.result.id, name: "Private Person" });
+  assert.equal(again.data.reply, "Done — I added Private Person as a new client.");
+});
+
+test("assistant_confirmations: a table made before the action columns existed gets them added", () => {
+  const { execFileSync } = require("child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "br-legacy-"));
+  const script = `
+    const D = require("better-sqlite3");
+    const d = new D(require("path").join(process.env.DATA_DIR, "refi-radar.db"));
+    d.exec("CREATE TABLE assistant_confirmations (confirm_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))");
+    d.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json) VALUES ('old-id', 1, '{}')").run();
+    d.close();
+    const db = require(${JSON.stringify(path.join(__dirname, "..", "db.js"))});
+    console.log(JSON.stringify({
+      cols: db.prepare("PRAGMA table_info(assistant_confirmations)").all().map((c) => c.name),
+      row: db.prepare("SELECT action_type, target FROM assistant_confirmations").get(),
+    }));
+  `;
+  try {
+    const out = execFileSync(process.execPath, ["-e", script], {
+      cwd: path.join(__dirname, ".."), env: { ...process.env, DATA_DIR: dir }, encoding: "utf8",
+    });
+    const result = JSON.parse(out.trim().split("\n").pop());
+    assert.deepStrictEqual(result.cols, ["confirm_id", "user_id", "result_json", "created_at", "action_type", "target"]);
+    assert.deepStrictEqual(result.row, { action_type: "", target: "" });
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
+  }
+});
+
+test("m8: a message over 4,000 characters is 400 before anything runs; 4,000 is fine", async () => {
+  assert.equal(MAX_MESSAGE_CHARS, 4000);
+  const client = fakeClient([say("Anytime!"), say("Anytime!")]);
+  setClient(client);
+  const ok = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("x".repeat(4000)), rates: LIVE });
+  assert.equal(ok.status, 200);
+  assert.equal(client.calls.length, 1);
+
+  const calls = client.calls.length;
+  for (const messages of [
+    userMsgs("x".repeat(4001)),
+    userMsgs("   " + "x".repeat(3999)),   // measured as sent, before trimming
+    [{ role: "assistant", content: "y".repeat(4001) }, { role: "user", content: "thanks" }],
+    [{ role: "user", content: "hi" }, { role: "assistant", content: "ok" }, { role: "user", content: "x".repeat(4001) }],
+    [{ role: "system", content: "z".repeat(4001) }, { role: "user", content: "thanks" }],   // even one that would be dropped
+  ]) {
+    const r = await as(ann)("POST", "/api/assistant/turn", { messages, rates: LIVE });
+    assert.equal(r.status, 400, messages.map((m) => m.content.length).join(","));
+    assert.equal(r.data.success, false);
+    assert.match(r.data.error, /4,?000/);
+  }
+  assert.equal(client.calls.length, calls, "no model call was made");
+  // the check is on the browser's messages: a normal long-ish history is fine
+  const fine = await as(ann)("POST", "/api/assistant/turn", { messages: [{ role: "assistant", content: "y".repeat(3000) }, { role: "user", content: "thanks" }], rates: LIVE });
+  assert.equal(fine.status, 200);
+});
+
+test("m4: the route uses the orchestrator's isCitation instead of its own copy", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "routes", "assistant.js"), "utf8");
+  assert.doesNotMatch(source, /const isCitation\s*=/);
+  assert.match(source, /isCitation[^\n]*require\("\.\.\/lib\/assistant\/orchestrator"\)/);
 });
 
 // ── metering ─────────────────────────────────────────────────────────────────

@@ -121,15 +121,17 @@ const NOT_YES_NO_LEAD_RE = new RegExp(
     "|do\\s+me\\s+a\\s+favou?r)\\b",
   "i"
 );
-// Mic checks. Unlike the leads above, a mic check must be the WHOLE question: one of these openings, an
-// optional "now / today / right now / ok / okay", an optional trailing "Charli", and the "?". So "Is this
-// working?" and "Did you get that?" are mic checks, while "Did you get Chen's file?", "Are you on the Chen
-// file?" and "Is it on the schedule?" are yes/no questions. Tested on the message (after filler) and on the
-// question (its last sentence, or the last clause of that) with its "?" put back.
+// Mic checks. Unlike the leads above, a mic check must be the WHOLE question: one of these openings (for
+// "are you ..." an optional "still" and an optional "to me" / "to go": "Are you still there?", "Are you
+// listening to me?", "Are you ready to go?"), an optional "now / today / right now / ok / okay", an optional
+// trailing "Charli", and the "?". So "Is this working?" and "Did you get that?" are mic checks, while "Did
+// you get Chen's file?", "Are you on the Chen file?" and "Is it on the schedule?" are yes/no questions.
+// Tested on the message (after filler) and on the question (its last sentence, or the last clause of that)
+// with its "?" put back.
 const MIC_CHECK_RE = new RegExp(
   "^(?:(?:do|did)\\s+you\\s+(?:hear|get|catch)(?:\\s+(?:me|that|it|this|what\\s+i\\s+said))?" +
     "|is\\s+(?:this\\s+thing|this|it|everything)\\s+(?:on|working)" +
-    "|are\\s+you\\s+(?:on|working|there|ready|awake|listening|around|up|with\\s+me)" +
+    "|are\\s+you\\s+(?:still\\s+)?(?:on|working|there|ready|awake|listening|around|up|with\\s+me)(?:\\s+to\\s+(?:me|go))?" +
     "|can\\s+you\\s+hear\\s+me)" +
     "(?:\\s+(?:now|today|right\\s+now|ok|okay))?(?:[\\s,]+(?:charli|charlie))?\\s*\\?$",
   "i"
@@ -157,16 +159,20 @@ function isYesNoQuestion(text) {
 // action verb, or its -ing form, with only the closed list of filler words (REQUEST_FILLER) in between
 // ("do you mind logging a call", "would you be able to add a client"). Any other word between the lead and
 // the verb is a noun or another verb ("can you pull up Chen's record"), so there is no request. Two
-// information requests share a verb with an action and are carved out of the verb list: "update me / us /
-// on ..." ("update me on rates") and "put together" ("put together a call list"). Pure.
+// information requests share a verb with an action and are carved out of the verb list (and of its -ing
+// form): "update me / us / on ..." ("update me on rates") and "put together" ("put together a call list").
+// The polite leads "would you mind" and a clause-initial "mind" ("mind logging a call") take the -ing form.
+// The filler list holds only words that cannot be a noun: "go log", "make sure to log", "try to log",
+// "remember to log", and "make a note" (the "a" counts only when "note" follows). Pure.
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)";
 const ACTION_VERBS_ING =
-  "logging|adding|marking|recording|noting|updating|setting|booking|scheduling|saving|creating|entering|putting";
-const REQUEST_FILLER = "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me";
+  "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)";
+const REQUEST_FILLER =
+  "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
 const REQUEST_LEAD_RE = new RegExp(
-  "\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|do\\s+you\\s+mind|do\\s+you\\s+want\\s+to" +
+  "\\b(?:^mind|can\\s+you|could\\s+you|would\\s+you\\s+mind|would\\s+you|will\\s+you|please|do\\s+you\\s+mind|do\\s+you\\s+want\\s+to" +
     "|are\\s+you\\s+able\\s+to|is\\s+it\\s+possible\\s+to|go\\s+ahead\\s+and|I\\s+need\\s+you\\s+to|I\\s+want\\s+you\\s+to" +
     "|let['\\u2019]?s|let\\s+me|help\\s+me|can\\s+we|could\\s+we|I\\s+(?:need|want|have)\\s+to|I['\\u2019]d\\s+like\\s+to" +
     "|do\\s+me\\s+a\\s+favou?r\\s+and|you\\s+could)" +
@@ -580,7 +586,9 @@ async function runTurn({ messages, ctx, client } = {}) {
       model: modelName(), max_tokens: MAX_TOKENS, system: CHARLI_SYSTEM, tools: TOOL_SCHEMA,
       messages: convo.slice(),
     });
-    const u = (response && response.usage) || {};
+    // A missing response is a fault upstream, not an answer: the route turns the throw into the error turn.
+    if (!response || typeof response !== "object") throw new Error("the model returned no response");
+    const u = response.usage || {};
     usage.inputTokens += Number.isFinite(u.input_tokens) ? u.input_tokens : 0;
     usage.outputTokens += Number.isFinite(u.output_tokens) ? u.output_tokens : 0;
 
@@ -643,5 +651,5 @@ async function runTurn({ messages, ctx, client } = {}) {
 
 module.exports = {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped,
+  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped, isCitation,
 };

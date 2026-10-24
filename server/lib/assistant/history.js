@@ -7,6 +7,10 @@
 
 const MAX_HISTORY = 20;   // messages kept, newest last (one synthetic opener may be added on top)
 
+// One message from the browser may not be longer than this (checked by the route before normalization): a
+// spoken turn or one of Charli's replies is a few hundred characters, so this only stops runaway input.
+const MAX_MESSAGE_CHARS = 4000;
+
 // Stands in for the user turn before an assistant-first history, so the greeting (and anything the user
 // was asked) stays in the model's context. The orchestrator treats it as inert: it is no action request
 // and no question, and a real user message always follows it, so it is never the latest user message.
@@ -37,4 +41,11 @@ function normalizeHistory(raw) {
   return recent;
 }
 
-module.exports = { normalizeHistory, SESSION_STARTED, MAX_HISTORY };
+// True if any item of the browser's history has a string `content` longer than MAX_MESSAGE_CHARS (as sent,
+// before trimming; other shapes are dropped by normalizeHistory anyway). Pure.
+function hasOversizedMessage(raw) {
+  return Array.isArray(raw) &&
+    raw.some((m) => m && typeof m === "object" && typeof m.content === "string" && m.content.length > MAX_MESSAGE_CHARS);
+}
+
+module.exports = { normalizeHistory, hasOversizedMessage, SESSION_STARTED, MAX_HISTORY, MAX_MESSAGE_CHARS };

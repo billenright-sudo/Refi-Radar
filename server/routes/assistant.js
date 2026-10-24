@@ -15,10 +15,10 @@ const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
-const { runTurn } = require("../lib/assistant/orchestrator");
+const { runTurn, isCitation } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
-const { normalizeHistory, SESSION_STARTED } = require("../lib/assistant/history");
+const { normalizeHistory, hasOversizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { createClientForUser, logContactForUser } = require("./clients");
 
@@ -67,8 +67,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 // ── The greeting (no model call) ─────────────────────────────────────────────
 
-// A tool result counts only if it carries a citation: error labels like "(unavailable)" are not one.
-const isCitation = (source) => typeof source === "string" && source.trim() !== "" && !/^\(.*\)$/.test(source.trim());
+// A tool result counts only if it carries a citation (isCitation): error labels like "(unavailable)" are not one.
 const runSafely = (tool, ctx) => {
   try { return tool({}, ctx); } catch (_err) { return null; }
 };
@@ -131,6 +130,17 @@ function clientFromFields(fields) {
   return Object.keys(errors).length ? { errors } : { body };
 }
 
+// What is kept per confirmId, and all the reply is built from: the client's id and name, nothing else.
+const receiptOf = (client) => ({ id: client.id, name: client.name });
+// The addClient fingerprint: the name, trimmed, with runs of whitespace collapsed, lower-cased.
+const fingerprintName = (name) => (typeof name === "string" ? name.trim().replace(/\s+/g, " ").toLowerCase() : "");
+
+// The code-authored sentence after a confirmed change; the browser speaks it and appends it to the
+// conversation as the assistant's turn (so the read-back is no longer the last thing Charli said).
+function confirmReply(type, { name }) {
+  return type === "logContact" ? `Done — I logged a contact for ${name}.` : `Done — I added ${name} as a new client.`;
+}
+
 // ── The router ───────────────────────────────────────────────────────────────
 
 // createAssistantRouter({ limiter }) builds a router with its own rate-limit counter; `limiter` overrides
@@ -181,6 +191,11 @@ function createAssistantRouter({ limiter = {} } = {}) {
       }
     }
 
+    if (hasOversizedMessage(body.messages)) {
+      return res.status(400).json({
+        success: false, error: `a message is longer than ${MAX_MESSAGE_CHARS.toLocaleString("en-US")} characters`,
+      });
+    }
     const messages = normalizeHistory(body.messages);
     if (!messages) return res.status(400).json({ success: false, error: "messages must be a history ending with the user's message" });
 
@@ -200,12 +215,16 @@ function createAssistantRouter({ limiter = {} } = {}) {
   });
 
   // POST /api/assistant/confirm — Body: { sideEffect } as /turn returned it (confirmId included), after the
-  // user said yes. -> { success: true, result: <client> }, plus duplicate: true when this confirmId was
-  // already confirmed by the same user (the stored result comes back and nothing is executed again).
+  // user said yes. -> { success: true, result: <client>, reply }, where `reply` is the code-authored sentence
+  // for the browser to speak and append to the conversation as the assistant's turn ("Done — I logged a
+  // contact for <name>."). A confirmId already confirmed by the same user for the same action comes back as
+  // { success: true, result: { id, name }, reply, duplicate: true } and nothing is executed again.
   //   * addClient requires a confirmId; logContact may send one. A malformed one is 400.
-  //   * the same confirmId from a different user is 409.
+  //   * a confirmId is bound to the user AND to the action it was recorded for (type + target); the same id
+  //     from another user, or for another type or target, is 409 and nothing is executed.
   //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
   //     that fails (400 / 403 / 404) records nothing, so the id is still good for a corrected retry.
+  //   * what is kept per confirmId is { id, name } only (no email, phone or notes).
   router.post("/confirm", (req, res) => {
     const sideEffect = req.body && req.body.sideEffect;
     if (!sideEffect || typeof sideEffect !== "object" || Array.isArray(sideEffect)) {
@@ -213,19 +232,24 @@ function createAssistantRouter({ limiter = {} } = {}) {
     }
     const bad = (error) => res.status(400).json({ success: false, error });
 
-    // Shape checks first; they leave `execute`, the write to run if this is not a duplicate.
+    // Shape checks first; they leave `execute`, the write to run if this is not a duplicate, and `target`,
+    // the fingerprint of what it acts on.
     let execute;
+    let target;
     if (sideEffect.type === "addClient") {
       const parsed = clientFromFields(sideEffect.fields);
       if (parsed.errors) return res.status(400).json({ success: false, errors: parsed.errors });
+      target = fingerprintName(parsed.body.name);
       execute = () => createClientForUser(db, req.user, parsed.body);
     } else if (sideEffect.type === "logContact") {
       const id = sideEffect.clientId;
       if (!Number.isInteger(id) || id <= 0) return bad("a valid clientId is required");
+      target = String(id);
       execute = () => logContactForUser(db, req.user, id);
     } else {
       return bad("unknown action");
     }
+    const type = sideEffect.type;
     let confirmId = null;
     if (sideEffect.confirmId != null) {
       if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return bad("confirmId must be a UUID");
@@ -238,21 +262,29 @@ function createAssistantRouter({ limiter = {} } = {}) {
       // One transaction: the duplicate check, the write and its record commit (or roll back) together.
       const outcome = db.transaction(() => {
         if (confirmId) {
-          const prior = db.prepare("SELECT user_id, result_json FROM assistant_confirmations WHERE confirm_id = ?").get(confirmId);
-          if (prior) return prior.user_id === req.user.id ? { duplicate: JSON.parse(prior.result_json) } : { conflict: true };
+          const prior = db.prepare(
+            "SELECT user_id, result_json, action_type, target FROM assistant_confirmations WHERE confirm_id = ?"
+          ).get(confirmId);
+          if (prior) {
+            if (prior.user_id !== req.user.id) return { conflict: "confirmId already used" };
+            if (prior.action_type !== type || prior.target !== target) return { conflict: "confirmId was used for a different action" };
+            return { duplicate: JSON.parse(prior.result_json) };
+          }
         }
         const done = execute();
         if (done.client && confirmId) {
-          db.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json) VALUES (?, ?, ?)")
-            .run(confirmId, req.user.id, JSON.stringify(done.client));
+          db.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target) VALUES (?, ?, ?, ?, ?)")
+            .run(confirmId, req.user.id, JSON.stringify(receiptOf(done.client)), type, target);
         }
         return done;
       })();
-      if (outcome.conflict) return res.status(409).json({ success: false, error: "confirmId already used" });
-      if (outcome.duplicate) return res.json({ success: true, result: outcome.duplicate, duplicate: true });
+      if (outcome.conflict) return res.status(409).json({ success: false, error: outcome.conflict });
+      if (outcome.duplicate) {
+        return res.json({ success: true, result: outcome.duplicate, reply: confirmReply(type, outcome.duplicate), duplicate: true });
+      }
       if (outcome.errors) return res.status(400).json({ success: false, errors: outcome.errors });
       if (outcome.error) return res.status(outcome.status).json({ success: false, error: outcome.error });
-      res.json({ success: true, result: outcome.client });
+      res.json({ success: true, result: outcome.client, reply: confirmReply(type, outcome.client) });
     } catch (err) {
       console.error("POST /api/assistant/confirm:", errText(err));
       res.status(500).json({ success: false, error: "Database error" });

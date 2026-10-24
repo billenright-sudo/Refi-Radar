@@ -107,8 +107,18 @@ db.exec(`
     confirm_id  TEXT    PRIMARY KEY,
     user_id     INTEGER NOT NULL,
     result_json TEXT    NOT NULL,
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    action_type TEXT    NOT NULL DEFAULT '',
+    target      TEXT    NOT NULL DEFAULT ''
   );
 `);
+// action_type and target bind a confirmId to the action it was issued for (a table made before they existed
+// gets them added).
+const confirmationCols = db.prepare("PRAGMA table_info(assistant_confirmations)").all();
+for (const column of ["action_type", "target"]) {
+  if (!confirmationCols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE assistant_confirmations ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`);
+  }
+}
 
 module.exports = db;

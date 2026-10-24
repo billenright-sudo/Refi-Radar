@@ -20,7 +20,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped,
+  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped, isCitation,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -2053,6 +2053,16 @@ const FALSE_COMPLETIONS = [
   "I've put that call in.", "Chen's last contact is now set to today.",
 ];
 
+const SWEEP_COUNTS = refi.runSweep(db.prepare("SELECT * FROM clients WHERE org_id = ? ORDER BY name ASC").all(orgC), LIVE).counts;
+const SWEEP_NARRATION = `You have ${SWEEP_COUNTS.total} clients, and ${SWEEP_COUNTS.withOpportunity} of them show an opportunity.`;
+const SWEEP_NARRATION_WRONG = `You have ${SWEEP_COUNTS.total + 1000} clients, and ${SWEEP_COUNTS.withOpportunity} of them show an opportunity.`;
+
+test("the sweep narration rows use counts the figure check really checks (above the 0-10 exemption)", () => {
+  assert.ok(SWEEP_COUNTS.total > 10 && SWEEP_COUNTS.withOpportunity > 10, JSON.stringify(SWEEP_COUNTS));
+  assert.deepStrictEqual(ungroundedNumbers(SWEEP_NARRATION, [{ counts: SWEEP_COUNTS }]), []);
+  assert.deepStrictEqual(ungroundedNumbers(SWEEP_NARRATION_WRONG, [{ counts: SWEEP_COUNTS }]), [String(SWEEP_COUNTS.total + 1000)]);
+});
+
 const CARRYOVER_TABLE = [
   // (1) information requests are not action requests: grounded, figure-backed narration passes
   ["Can you update me on rates?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
@@ -2064,9 +2074,12 @@ const CARRYOVER_TABLE = [
   ["Can you pull up Chen's record?", "findClient", "Robert and Linda Chen are at 7.85 percent with $485,000 left.", PASS],
   ["Can you pull up the record for Chen?", "findClient", "Robert and Linda Chen are at 7.85 percent with $485,000 left.", PASS],
   ["Could you check the call log for Chen?", "findClient", "Your last contact with Robert and Linda Chen was logged on 2026-01-01.", PASS],
-  ["Can you look at my book?", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
-  ["Update me on the pipeline", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
-  ["Can you put together a call list?", "runSweepTool", "Robert and Linda Chen show a rate and term opportunity.", PASS],
+  // (m5) the sweep rows run against the 16-client book and narrate counts from the payload, all above the
+  // 0-10 exemption, so the figure check really runs on them; the last row is the control (a wrong count is blocked)
+  ["Can you look at my book?", "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+  ["Update me on the pipeline", "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+  ["Can you put together a call list?", "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+  ["Can you look at my book?", "runSweepTool", SWEEP_NARRATION_WRONG, CANT_VERIFY, { ctx: sweepCtx }],
   // ... and an actual update request still gets the backstop
   ["Can you update Chen's rate?", "findClient", "Robert and Linda Chen are now at 6.52 percent.", NOTHING_CHANGED],
   ["Update the record for Chen", "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
@@ -2290,5 +2303,105 @@ test("C4: consecutive utterances are joined with a newline, and a newline is a c
     const script = tool ? [useTool(tool, { query: "chen" }), say("Call logged for Robert and Linda Chen.")] : [say("Call logged for Robert and Linda Chen.")];
     const r = await runTurn({ messages: userSays("I talked to Chen\nlog it"), ctx: brokerCtx, client: fakeClient(script) });
     assert.equal(r.reply, NOTHING_CHANGED, String(tool));
+  }
+});
+
+// ── Task 4 review, fix round 1: polite requests, mic-check tails, null responses, isCitation ──
+
+const POLITE_REQUESTS = [
+  "Would you mind logging a call with Chen?", "Can you make sure to log a call with Chen?",
+  "Can you go log a call with Chen?", "Could you make a note that I called Chen?",
+  "Can you try to log a call with Chen?", "Can you remember to log a call with Chen?",
+];
+const POLITE_FALSE_DONES = [
+  "Call logged for Robert and Linda Chen.", "Robert and Linda Chen marked as contacted for today.",
+];
+
+test("I1: polite requests (would you mind, make sure to, go, try to, remember to, make a note) are action requests", () => {
+  for (const u of [
+    ...POLITE_REQUESTS,
+    "Mind logging a call with Chen?", "mind logging a call with Chen", "Hey Charli, mind logging a call with Chen?",
+    "Would you mind adding a client?", "Would you mind if I asked you to log it? Log it.", "Do you mind logging a call?",
+    "Can you please make sure to log it?", "Could you go ahead and make a note that I called Chen?",
+    "Can you make a note of the call with Chen?", "Would you go add Jane?", "Can you try logging a call with Chen?",
+  ]) {
+    assert.equal(isActionRequest(u), true, u);
+  }
+  for (const u of [
+    // information requests with the same lead and a verb that can't capture an action
+    "Would you mind pulling up Chen?", "Would you mind looking at my book?", "Would you mind telling me the rates?",
+    "Would you mind updating me on rates?", "Do you mind updating me on the market?",
+    "Would you mind putting together a call list?", "Would you mind showing me Chen's record?",
+    "Can you go over my book?", "Can you go pull up Chen's record?", "Can you try the market update?",
+    "Can you remember what Chen owes?", "Can you make sure the rates are right?", "Can you make me a call list?",
+    "Can you make a list of who to call?", "Can you make sure I see Chen's record?",
+    "Never mind logging the call", "Do you mind?", "Mind the gap", "Would you mind?",
+  ]) {
+    assert.equal(isActionRequest(u), false, u);
+  }
+});
+
+const ROUND1_TABLE = [
+  // I1: a false completion after a polite request is replaced, grounded or not
+  ...POLITE_REQUESTS.flatMap((u) => POLITE_FALSE_DONES.flatMap((t) => onBoth(u, t, NOTHING_CHANGED))),
+  ...onBoth("Mind logging a call with Chen?", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED),
+  // ... a question still passes, and an information request with the same lead is narrated normally
+  ...POLITE_REQUESTS.flatMap((u) => onBoth(u, "Sure, which Chen?", PASS)),
+  ["Would you mind pulling up Chen?", "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+  ["Would you mind updating me on rates?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
+  ["Would you mind putting together a call list?", "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+
+  // m1: mic checks with "still", "to me" and "to go"
+  ["Are you listening to me?", null, "Yes, I'm here! What can I help with?", PASS],
+  ["Are you ready to go?", null, "Yes, I'm here! What can I help with?", PASS],
+  ["Are you still there?", null, "Yes, I'm here! What can I help with?", PASS],
+  ["Are you still on?", null, "Yes, I'm here! What can I help with?", PASS],
+  ["Hey Charli, are you still listening?", null, "Yes, I'm here! What can I help with?", PASS],
+  ["Are you still there, Charli?", null, "Yes, I'm here! What can I help with?", PASS],
+  // ... and a real question that merely starts the same way is still a yes/no question
+  ["Are you ready to go over Chen's file?", null, "Yes.", CANT_VERIFY],
+  ["Are you still on the Chen file?", null, "Yes, I am.", CANT_VERIFY],
+  ["Are you listening to the Chen voicemail?", null, "Yes.", CANT_VERIFY],
+];
+
+test("Task 4 review round 1: polite requests are held to the backstop, mic-check tails are mic checks", async () => {
+  await checkTable(ROUND1_TABLE);
+});
+
+test("m1: isYesNoQuestion treats 'still', 'to me' and 'to go' mic checks as mic checks, and nothing longer", () => {
+  for (const u of [
+    "Are you listening to me?", "Are you ready to go?", "Are you still there?", "Are you still on?", "Are you still with me?",
+    "Are you still listening to me?", "Are you still ready to go?", "Are you listening to me now?",
+  ]) {
+    assert.equal(isYesNoQuestion(u), false, u);
+  }
+  for (const u of [
+    "Are you ready to go over Chen's file?", "Are you still on the Chen file?", "Are you listening to the voicemail?",
+    "Are you still working on Chen?", "Are you there to take a call from Chen?",
+  ]) {
+    assert.equal(isYesNoQuestion(u), true, u);
+  }
+});
+
+test("m6: a null response from the model client is an error, not an answer", async () => {
+  await assert.rejects(
+    runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: { messages: { create: async () => null } } }),
+    /no response/
+  );
+  await assert.rejects(
+    runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: { messages: { create: async () => undefined } } }),
+    /no response/
+  );
+  // an object without content is still a (blank) answer
+  const r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([{ stop_reason: "end_turn", content: [] }]) });
+  assert.equal(r.reply, CANT_VERIFY);
+});
+
+test("m4: isCitation is exported: only a non-blank string that is not a parenthesised error label", () => {
+  for (const s of ["sweep engine", "client record", "live rates 2026-10-21", "sweep engine (estimated rates 2026-10-21)"]) {
+    assert.equal(isCitation(s), true, s);
+  }
+  for (const s of ["(unavailable)", "(not found)", "(unsaved)", " (invalid input) ", "", "   ", null, undefined, 5, {}]) {
+    assert.equal(isCitation(s), false, String(s));
   }
 });
