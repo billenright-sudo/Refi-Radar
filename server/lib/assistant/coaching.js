@@ -76,8 +76,9 @@ const coachingStyle = (stageId) => {
   return stage ? BLOCKS[stage.id] : BLOCKS.none;
 };
 
-// The one question the greeting of a user with no stage asks (routes/assistant.js). The orchestrator recognises the
-// answer to it by its tail, "how long have you been originating?" (a stage claim in reply to it is never passed).
+// The one question the greeting of a user with no stage asks (routes/assistant.js). The answer is mapped to a stage by the
+// model calling setCareerStageTool (the null block in coachingStyle); what Charli may SAY about the stage is screened by
+// claimsStage in the orchestrator, against the stored stage, however the conversation went.
 const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
 
 module.exports = { CAREER_STAGES, MAX_YEARS, CAREER_QUESTION, stageById, stageForYears, coachingStyle };

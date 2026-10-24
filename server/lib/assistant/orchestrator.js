@@ -264,10 +264,8 @@ const PASSIVE_JUST_RE = new RegExp(
 const STAGE_IDS = CAREER_STAGES.map((st) => st.id);
 const OTHER_STAGE_WORDS = STAGE_IDS.filter((id) => id !== "new")
   .map((id) => (id === "veteran" ? "veterans?" : id)).concat("seasoned\\s+vets?").join("|");
-// "you're new" is a stage claim unless "new" modifies a noun, or is about the app ("you're new here")
-const NEW_AS_NOUN_MODIFIER = "(?!\\s+(?:clients?|loans?|rates?|opportunit\\w*|records?|leads?|customers?|calls?|contacts?|ones?|purchases?|mortgages?|borrowers?|here|to\\s+(?:the\\s+app|broker\\s+radar|this))\\b)";
-// after "as / to / into / in" ("set you as New", "switched to New") "new" is a stage only where the clause ends or a stage
-// noun follows: "into a new fixed-rate loan", "to a new low" and "in the new year" are not stages
+// "new" is a stage only where the clause ends or a stage noun follows ("is set to New.", "New broker"): "set to a new fixed rate",
+// "to a new low" and "in the new year" are not stages
 const NEW_STAGE_END = "(?=\\s*(?:[.!?,;:\\u2014\\u2013(]|$)|\\s+(?:stage|category|level|tier|bracket|broker|brokers|originator|loan\\s+officer|LO|now|then|instead|from|for|today|going)\\b)";
 
 // Setting a career stage is a change too, and it is reported with the stage next to the verb: "is set to Veteran",
@@ -278,8 +276,8 @@ const SET_PASSIVE_RE = new RegExp(
   "(?:\\b(?:is|are|been)|['\\u2019](?:s|re))\\s+(?:now\\s+)?set\\s+(?:to|as)[\\s:\"'\\u201c\\u2018]*(?:(?:an?|the)[\\s:\"'\\u201c\\u2018]+)?(?:" +
     OTHER_STAGE_WORDS + "|new" + NEW_STAGE_END + ")\\b", "i"
 );
-// "Your career stage is set." / "has been saved": the bare claim, with no stage named
-const STAGE_SET_BARE_RE = /\bstage(?:\s+(?:is|has\s+been)|['\u2019]s)\s+(?:now\s+)?(?:all\s+)?(?:set|updated|saved|changed|locked\s+in)\b/i;
+// "Your career stage is set." / "has been saved": the bare claim, with no stage named ("Your stage is set for growth" is not one)
+const STAGE_SET_BARE_RE = /\b(?:your|career)\s+stage(?:\s+(?:is|has\s+been)|['\u2019]s)\s+(?:now\s+)?(?:all\s+)?(?:set|updated|saved|changed|locked\s+in)\b(?!\s+for\b)/i;
 // "I set you / your / it / that / this" with nothing but "have", "just", "already", "now" or "went ahead and" in between:
 // "I suggest you set up a call" and "I'd recommend we set a follow-up" are suggestions, and "if I set your stage" an offer.
 const FIRST_PERSON_SET_RE = /(?<!\bif\s)\b(?:I|we)(?:['\u2019]ve|\s+have)?(?:\s+(?:just|already|now|went\s+ahead\s+and|gone\s+ahead\s+and))*\s+set\s+(?:you|your|it|that|this)\b/i;
@@ -494,56 +492,81 @@ function answersActionQuestion(messages) {
   return false;
 }
 
-// The stage flows. A turn that ends in model text has handed up no change, so a reply that says the user's stage is now
-// this or that ("Your stage is now Veteran.", "Veteran it is.", "I'll coach you as a Veteran") is false whatever its
-// wording. In a stage flow a reply that names a stage (STAGE_NAMED_RE) and is not a question back to the user is the
-// nothing-changed line. The flows:
-//   * the user's message talks about their stage or their years (USER_STAGE_RE: "stage", a stage word, "originating",
-//     "I'm new", "switch me to new"; "I'm new to the app / Broker Radar / here" is not one);
-//   * the user ANSWERS (isAnswerShaped: a question is not an answer) while the career question is still open, i.e. is
-//     one of the last CAREER_Q_LOOKBACK assistant messages and no "your career stage is set" came after it (this covers
-//     a clarify turn: "So about sixteen years - is that right?" / "yep"), or while the assistant's last message is a
-//     question that names a stage or "stage" ("Want me to set your stage to Veteran?" / "yes").
-const CAREER_Q_TAIL_RE = /how\s+long\s+have\s+you\s+been\s+originating\?\s*$/i;
-const STAGE_SET_DONE_RE = /your\s+career\s+stage\s+is\s+set\s+to/i;
-const CAREER_Q_LOOKBACK = 3;
-const USER_STAGE_RE = new RegExp(
-  "\\b(?:" + OTHER_STAGE_WORDS + "|stages?|originat\\w*)\\b" +
-    "|\\b(?:i['\\u2019]?m|i\\s+am)\\s+(?:(?:brand|really|pretty|still|very)\\s+)?new\\b(?!\\s+(?:to\\s+(?:the\\s+app|broker\\s+radar|this|here)|here)\\b)" +
-    "|\\b(?:me|to|as|be)\\s+new\\s*[.!?]*\\s*$", "i"
-);
-const STAGE_NAMED_RE = new RegExp(
-  "\\b(?:" + OTHER_STAGE_WORDS + ")\\b" +
-    "|\\b(?:you['\\u2019]?re|you\\s+are)\\s+(?:an?\\s+|the\\s+)?(?:now\\s+)?new\\b" + NEW_AS_NOUN_MODIFIER +
-    "|\\b(?:as|to|into|in)\\s+(?:an?\\s+|the\\s+)?(?:now\\s+)?new\\b" + NEW_STAGE_END +
-    "|\\bstage\\s+is\\s+(?:now\\s+)?new\\b" +
-    "|\\bnew\\s+(?:stage|category|level|tier|broker|brokers|loan\\s+officer|originator)\\b" +
-    "|\\bnew\\s+it\\s+is\\b", "i"
-);
-// The career question is open: asked in one of the last CAREER_Q_LOOKBACK assistant messages and not yet answered by a
-// confirmed stage. `messages` ends with the user's latest message.
-function careerQuestionOpen(messages) {
-  let seen = 0;
-  for (let i = messages.length - 2; i >= 0 && seen < CAREER_Q_LOOKBACK; i--) {
-    const m = messages[i];
-    if (!m || m.role !== "assistant") continue;
-    seen++;
-    const text = messageText(m).trim();
-    if (STAGE_SET_DONE_RE.test(text)) return false;
-    if (CAREER_Q_TAIL_RE.test(text)) return true;
+// ── Stage claims ─────────────────────────────────────────────────────────────
+
+// Nothing the model says changes the user's career stage: only a confirmed setCareerStageTool does (/api/assistant/confirm).
+// So a reply that tells the user their stage IS this or that is true only if it is already their stored stage, and the
+// screening is a TRUTH check like the figure check, on what the reply says, not on what the user said or on how the
+// conversation went: claimsStage finds a USER-DIRECTED stage claim in the reply, and runTurn compares it with the stored
+// stage (a claim that equals it is true and passes; any other is the nothing-changed line). Tool calls, their args, the
+// sources and the data never depend on the stage; this only screens what is said.
+//
+// "new" and "developing" are also everyday words ("a new, lower payment", "a developing story", "you're developing a
+// book"): bare they name a stage only where the clause ends (NEW_STAGE_END), and after an article only before a stage noun.
+const STAGE_NOUN_AHEAD = "(?=\\s+(?:stage|category|level|tier|bracket|broker|brokers|originator|loan\\s+officer|LO)\\b)";
+const STAGE_SRC =
+  "(brand[\\s-]new(?!\\s+(?:here|to\\s+(?:the\\s+app|broker\\s+radar|this\\s+app))\\b)" +
+  "|(?<!\\b(?:an?|the)\\s)(?:new|developing)" + NEW_STAGE_END +
+  "|(?<=\\b(?:an?|the)\\s)(?:new|developing)" + STAGE_NOUN_AHEAD +
+  "|established|veterans?|seasoned\\s+vets?)\\b";
+const STAGE_WORDS_BARE = "(brand[\\s-]new|new|developing|established|veterans?|seasoned\\s+vets?)";
+const STAGE_FORM_SRC = {
+  // (a) you're / you are STAGE
+  youAre: "\\byou(?:['\\u2019]re|\\s+are)\\s+(?:(?:now|officially|still|all)\\s+)*(?:(?:an?|in\\s+the|one\\s+of\\s+(?:the|our))\\s+)?" + STAGE_SRC,
+  // (b) coach / treat / move / switch ... you as / like / in / into / to STAGE
+  actionOnYou: "\\b(?:coach(?:ing)?|treat(?:ing)?|count(?:ing)?|list(?:ing)?|mark(?:ed|ing)?|tag(?:ged|ging)?|put(?:ting)?|mov(?:e|ed|ing)|switch(?:ed|ing)?|chang(?:e|ed|ing)|have|see|consider(?:ing)?)\\s+you\\s+(?:as|like|in(?:to)?|to)\\s+(?:(?:an?|the|one\\s+of\\s+(?:the|our))\\s+)?" + STAGE_SRC,
+  // (b2) make / call / consider you STAGE (no preposition: "That makes you Established.")
+  makeYou: "\\b(?:makes?|making|call(?:s|ing)?|consider(?:s|ing)?)\\s+you\\s+(?:(?:an?|the)\\s+)?" + STAGE_SRC,
+  // (c) STAGE it is, (d) STAGE coaching (a bare "new coaching" is a tip, not a stage)
+  itIs: "\\b" + STAGE_WORDS_BARE + "\\s+it\\s+is\\b",
+  coaching: "\\b(brand[\\s-]new|developing|established|veterans?|seasoned\\s+vets?)\\s+coaching\\b",
+  // (e) your (career) stage is / 's / has been / was / will be (now) (set to / as) STAGE
+  yourStage: "\\byour\\s+(?:career\\s+)?stage(?:\\s+(?:is|has\\s+been|was|will\\s+be)|['\\u2019]s)\\s+(?:now\\s+)?(?:set\\s+(?:to|as))?[\\s:\"'\\u201c\\u2018]*(?:(?:an?|the)\\s+)?" + STAGE_SRC,
+  // two acknowledgements the earlier rounds pinned: "Welcome to the veterans' tier." and a sentence that opens with the stage
+  // ("Veteran, got it."; not "New, lower rates are out", so never a bare "new")
+  welcome: "\\bwelcome\\s+to\\s+(?:the\\s+)?" + STAGE_SRC,
+  leading: "^\\s*(?:(?:ok|okay|alright|great|got\\s+it|perfect|so|right|sure|yes|yep)[\\s,]+)*(brand[\\s-]new|veteran|established|developing)\\s*(?:[,.!\\u2014\\u2013]|$)",
+};
+const STAGE_FORMS = Object.fromEntries(Object.entries(STAGE_FORM_SRC).map(([name, src]) => [name, new RegExp(src, "gi")]));
+
+// "veterans" / "seasoned vet" are veteran, "brand-new" / "new" are new
+function stageIdOf(word) {
+  const w = String(word).toLowerCase().replace(/\s+/g, " ");
+  if (/^(?:brand[\s-])?new$/.test(w)) return "new";
+  if (/^veterans?$|^seasoned vets?$/.test(w)) return "veteran";
+  return STAGE_IDS.includes(w) ? w : null;
+}
+
+// The stage ids a reply claims for the USER, in order (one per claim): "You're a Veteran now.", "I'll coach you as a Veteran",
+// "Veteran it is.", "Veteran coaching", "Your stage is now Veteran.", and the acknowledgements above. Each sentence (split like
+// claimsCompletion, one opener stripped) is tested; an OFFER (a question-word sentence ending in "?") loses its lead and keeps
+// only the assertion forms (a) and (e): "Want me to coach you as a Veteran?" proposes, "...now that you're a Veteran?" asserts.
+// Subjects other than the user ("Chen is an established client", "VA loans for veterans", "a developing story") are not claims.
+function stageClaims(text) {
+  const claims = [];
+  for (const part of sentencesOf(String(text == null ? "" : text))) {
+    let s = stripOpener(part.trim()).trim();
+    if (!s) continue;
+    const offer = isOffer(s);
+    if (offer) s = s.replace(OFFER_LEAD_RE, "").trim();
+    const F = STAGE_FORMS;
+    const forms = offer
+      ? [F.youAre, F.yourStage]
+      : /\?\s*$/.test(s)
+        ? [F.youAre, F.actionOnYou, F.makeYou, F.itIs, F.coaching, F.yourStage, F.welcome]
+        : [F.youAre, F.actionOnYou, F.makeYou, F.itIs, F.coaching, F.yourStage, F.welcome, F.leading];
+    for (const re of forms) {
+      for (const m of s.matchAll(re)) {
+        const id = stageIdOf(m[1]);
+        if (id) claims.push(id);
+      }
+    }
   }
-  return false;
+  return claims;
 }
-// The assistant's last message is a question that names a stage (the model's own offer: "Want me to set your stage to Veteran?").
-function stageQuestionAsked(messages) {
-  const prev = messages[messages.length - 2];
-  if (!prev || prev.role !== "assistant") return false;
-  const text = messageText(prev).trim();
-  return text.endsWith("?") && (STAGE_NAMED_RE.test(text) || /\bstages?\b/i.test(text));
-}
-const answersStageQuestion = (messages, userText) => isAnswerShaped(userText) && (careerQuestionOpen(messages) || stageQuestionAsked(messages));
-// A question back to the user: question-shaped (isQuestionShaped), or "Mind if I ...?". It may name the stages it offers.
-const isQuestionBack = (reply) => isQuestionShaped(reply) || /^mind\s+if\b[^.!;]*\?\s*$/i.test(stripOpener(reply).trim());
+// The first stage id a reply claims for the user, or null. Pure.
+const claimsStage = (text) => stageClaims(text)[0] || null;
+
 // ── Tool execution ───────────────────────────────────────────────────────────
 
 // Error results carry a parenthesised label like "(not found)": those are never cited.
@@ -669,7 +692,8 @@ async function runTurn({ messages, ctx, client } = {}) {
   const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
-  const stageFlow = answersStageQuestion(messages, userText) || USER_STAGE_RE.test(userText);
+  // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
+  const storedStage = (ctx && ctx.user && stageById(ctx.user.career_stage) && stageById(ctx.user.career_stage).id) || null;
   // CHARLI_SYSTEM plus the coaching block for this user's career stage: it tailors how she coaches, nothing the
   // screening below depends on (that runs on the model's text and this turn's tool results alone)
   const system = buildCharliSystem(ctx && ctx.user);
@@ -716,8 +740,9 @@ async function runTurn({ messages, ctx, client } = {}) {
         if (glossaryMiss) spoken.push(CANT_VERIFY);
         return finish(spoken.join(" "), [GLOSSARY_SOURCE]);
       }
-      // I1: in a stage flow a reply that names a stage and is not a question back cannot say the stage is set
-      if (stageFlow && STAGE_NAMED_RE.test(text) && !isQuestionBack(text)) return finish(NOTHING_CHANGED);
+      // A stage claim is a truth check against the stored stage (see claimsStage): no sideEffect backs it, so only the stored
+      // stage may be claimed, on every turn, whatever the user said (a stored veteran hearing "you're a Veteran" is told the truth).
+      if (stageClaims(text).some((id) => id !== storedStage)) return finish(NOTHING_CHANGED);
       if (claimsCompletion(text, sources.length > 0)) return finish(NOTHING_CHANGED);
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
@@ -773,5 +798,5 @@ async function runTurn({ messages, ctx, client } = {}) {
 
 module.exports = {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped, isCitation,
+  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims,
 };

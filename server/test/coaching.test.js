@@ -24,7 +24,7 @@ const assistantTools = require("../lib/assistant/tools");
 const { tools, TOOL_SCHEMA, setCareerStageTool } = assistantTools;
 const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, buildCharliSystem } = require("../lib/assistant/prompt");
 const { CAREER_STAGES, coachingStyle, stageById, stageForYears } = require("../lib/assistant/coaching");
-const { runTurn, claimsCompletion } = require("../lib/assistant/orchestrator");
+const { runTurn, claimsCompletion, claimsStage, stageClaims } = require("../lib/assistant/orchestrator");
 const { SESSION_STARTED } = require("../lib/assistant/history");
 const authRoutes = require("../routes/auth");
 const orgRoutes = require("../routes/org");
@@ -984,9 +984,9 @@ test("POST /api/auth/accept-invite returns careerStage: null, or the stage the b
   assert.equal((await as(staged.id)("GET", "/api/auth/me")).data.user.careerStage, "developing");
 });
 
-// ── Fix round 1: the stage flows, and a stored stage that is not an id ───────
+// ── Fix round 1: stage claims on the first turns, and a stored stage that is not an id ──
 
-test("I1: on the stage flows a setCareerStageTool call still returns its sideEffect and the code-authored read-back", async () => {
+test("I1: on the stage-answering turns a setCareerStageTool call still returns its sideEffect and the code-authored read-back", async () => {
   const ctx = ctxFor(ann, "broker", orgA, null);
   const afterQuestion = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }];
   for (const [messages, input, id] of [
@@ -1009,11 +1009,12 @@ test("I1: on the stage flows a setCareerStageTool call still returns its sideEff
   }
 });
 
-test("I1: the stage backstop is stage-independent (every user, every career stage, gets the same answer)", async () => {
+test("R7-S: the stage claim is a truth check against the stored stage: true for that stage, nothing-changed for every other", async () => {
+  // (like the figure check, it only screens what is said: tool calls, args, sources and data never depend on the stage)
   const messages = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: "about 20 years" }];
   for (const stage of [...IDS, null]) {
     const r = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Your stage is now Veteran.")]) });
-    assert.equal(r.reply, NOTHING_CHANGED, String(stage));
+    assert.equal(r.reply, stage === "veteran" ? "Your stage is now Veteran." : NOTHING_CHANGED, String(stage));
     const asked = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Which stage fits — Established or Veteran?")]) });
     assert.equal(asked.reply, "Which stage fits — Established or Veteran?", String(stage));
   }
@@ -1057,4 +1058,104 @@ test("PATCH /api/org/los/:id/stage: the valid ids come from CAREER_STAGES, not a
   const source = fs.readFileSync(path.join(__dirname, "..", "routes", "org.js"), "utf8");
   assert.doesNotMatch(source, /new, developing, established, veteran/);
   assert.match(source, /CAREER_STAGES/);
+});
+
+// ── R7-S: claimsStage ────────────────────────────────────────────────────────
+
+const CLAIM_TABLE = [
+  // (a) you're / you are (+ adverb, + article / in the / one of the) STAGE
+  ["You're a Veteran now.", "veteran"], ["you are New.", "new"], ["You’re one of the veterans.", "veteran"],
+  ["Got it, you're now officially Established.", "established"], ["Welcome — you're in the Developing stage.", "developing"],
+  ["Nice, you're a seasoned vet.", "veteran"], ["You're brand new.", "new"], ["You're brand-new, so I'll keep it simple.", "new"],
+  ["Great, you're New, so I'll keep it simple.", "new"], ["Since you are an established broker, I'll be brief.", "established"],
+  ["You're still developing.", "developing"], ["you're one of our veterans", "veteran"], ["You're New now.", "new"],
+  // (b) coach / treat / ... you as / like / in / into / to STAGE
+  ["Great — I'll coach you as a Veteran from here on.", "veteran"], ["I'll treat you like one of our veterans.", "veteran"],
+  ["I've switched you to Established.", "established"], ["I'll move you into the New category.", "new"],
+  ["I have you as Developing.", "developing"], ["I'm counting you as a veteran.", "veteran"], ["Let me list you as a Veteran.", "veteran"],
+  ["I've changed you to New.", "new"], ["I'll tag you as established.", "established"], ["I see you as a seasoned vet.", "veteran"],
+  ["I'll put you in the Veteran bracket.", "veteran"],
+  // (b2) make / call / consider you STAGE (no preposition)
+  ["That makes you Established.", "established"], ["I'll call you a veteran.", "veteran"], ["I consider you a Veteran.", "veteran"],
+  // (c) STAGE it is, (d) STAGE coaching
+  ["Veteran it is.", "veteran"], ["Twenty years! New it is.", "new"], ["Established it is, then.", "established"],
+  ["Veteran coaching from here on.", "veteran"], ["I'll switch to Developing coaching.", "developing"], ["Seasoned vet coaching it is.", "veteran"],
+  // (e) your (career) stage is / 's / has been / was / will be (now) (set to) STAGE
+  ["Your stage is now Veteran.", "veteran"], ["Your career stage is Established.", "established"], ["Your stage's now New.", "new"],
+  ["Your stage has been set to “Veteran (10+ years)”.", "veteran"], ["Your career stage was set as: Developing.", "developing"],
+  ["Your stage will be Veteran.", "veteran"], ["Great, your stage is Veteran.", "veteran"], ["Your stage is set to a Veteran.", "veteran"],
+  // the acknowledgements the existing rows pin: a leading stage word, and a welcome
+  ["Veteran, got it.", "veteran"], ["Okay, Established.", "established"], ["Great — Developing!", "developing"],
+  ["Welcome to the veterans' tier.", "veteran"], ["Welcome to the Developing stage.", "developing"],
+];
+
+const NOT_CLAIMS = [
+  // exclusions
+  "Since you're new here, I'll keep things simple.", "You're brand new to Broker Radar.", "You're brand new here.", "You're new to the app.",
+  "you're brand new to this app", "Since you're new to this, let's start with a sweep.",
+  // not the user
+  "Chen is an established client.", "Robert and Linda Chen are an established client at 7.85 percent.", "They're established clients.",
+  "VA loans for veterans.", "It's a developing story with the Fed.", "New rates are out.", "A level veterans of the last cycle will recognize.",
+  "They could move to a new, lower payment.", "I could move you to a new, lower payment.", "I'll see you in the new year.",
+  "Rates could ease in the new year.", "You're developing a strong book.", "You're a developing story, no doubt.",
+  "Established brokers I know call first.", "Veteran brokers would call first thing.", "You're welcome.", "Welcome to Broker Radar.",
+  "Welcome to the new year.", "I can move you to a new fixed rate.",
+  // a set that is not a stage
+  "Your stage is set for growth this quarter.", "So the stage is set for a busy refi season.", "Your career is set for a strong year.",
+  // offers: they propose, they do not assert
+  "Want me to set you as a Veteran?", "Want me to coach you as a Veteran?", "Should I treat you like a Veteran?", "Would you like Veteran coaching?",
+  "Which stage fits — Established or Veteran?", "Established, Veteran, or Developing?", "Is it okay if I set your stage to Veteran?",
+  "Do you want to be Established?", "Does that make you Established?",
+  // not text
+  "", "   ", "Sure.",
+];
+
+test("claimsStage: user-directed stage claims (forms a-e and the acknowledgements), mapped to a stage id", () => {
+  for (const [text, id] of CLAIM_TABLE) {
+    assert.equal(claimsStage(text), id, text);
+    assert.deepStrictEqual(stageClaims(text).slice(0, 1), [id], text);
+  }
+});
+
+test("claimsStage: exclusions, non-user subjects, other uses of 'set', offers and non-text are null", () => {
+  for (const text of NOT_CLAIMS) assert.equal(claimsStage(text), null, text);
+  for (const bad of [null, undefined, 5, {}, [], true]) assert.equal(claimsStage(bad), null, String(bad));
+});
+
+test("claimsStage: plural and 'seasoned vet' are veteran, brand-new and new are new, and the first claim wins", () => {
+  assert.equal(claimsStage("You're one of the veterans."), "veteran");
+  assert.equal(claimsStage("You're a seasoned vet."), "veteran");
+  assert.equal(claimsStage("You're a Seasoned   Vet."), "veteran");
+  assert.equal(claimsStage("You're brand new."), "new");
+  assert.equal(claimsStage("You're brand-new."), "new");
+  assert.equal(claimsStage("You're New."), "new");
+  assert.equal(claimsStage("YOU'RE A VETERAN"), "veteran");
+  assert.deepStrictEqual(stageClaims("You're a Veteran now. Your stage is Established."), ["veteran", "established"]);
+  // an offer is skipped for the action forms, but not for an assertion inside it, and a statement beside it still claims
+  assert.equal(claimsStage("You're a Veteran now — want the sweep?"), "veteran");
+  assert.equal(claimsStage("Should I keep things terse now that you're a Veteran?"), "veteran");
+  assert.equal(claimsStage("Want me to set you as a Veteran?"), null);
+  // an opener is stripped first
+  assert.equal(claimsStage("Sure, you're a Veteran now."), "veteran");
+});
+
+test("R7-S: setCareerStageTool on every leak flow still returns its sideEffect and the code-authored read-back", async () => {
+  const H = (...texts) => texts.map((content, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content }));
+  const OFFER = "Want me to set your stage to Veteran?";
+  const ctx = ctxFor(ann, "broker", orgA, null);
+  for (const [messages, input, id] of [
+    [H(SESSION_STARTED, GREETING_Q, "about 20 years", OFFER, "Do it"), { stage: "veteran" }, "veteran"],
+    [H(SESSION_STARTED, GREETING_Q, "about 20 years", OFFER, "Sure, why not?"), { stage: "veteran" }, "veteran"],
+    ...["about 15 years, why do you ask?", "15 years. Why?", "About 20 years?", "Have been doing this 20 years", "Was at Chase for 8 years", "Did 12 years at Wells"]
+      .map((a) => [H(SESSION_STARTED, GREETING_Q, a), { years: 15 }, "veteran"]),
+    [H("I'm new to this business, what should I focus on?"), { stage: "new" }, "new"],
+    [H("I've been doing this 12 years"), { years: 12 }, "veteran"],
+    [H("12 years in the business, by the way"), { years: 12 }, "veteran"],
+  ]) {
+    const client = fakeClient([useTool("setCareerStageTool", input)]);
+    const r = await runTurn({ messages, ctx, client });
+    assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`, JSON.stringify(messages[messages.length - 1]));
+    assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
+    assert.equal(client.calls.length, 1);
+  }
 });
