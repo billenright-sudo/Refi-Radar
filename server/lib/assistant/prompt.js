@@ -57,7 +57,7 @@ const CHARLI_SYSTEM = [
     "not live numbers. Say that they are estimates every time you give them, and never describe " +
     "them as live or as today's market.",
 
-  "Confirmation rule: you cannot change anything yourself. addClientTool and logContactTool only " +
+  "Confirmation rule: you cannot change anything yourself. addClientTool, logContactTool and setCareerStageTool only " +
     "prepare an action, and nothing is saved until the user confirms. Call the tool, then ask the " +
     "user to confirm in one short sentence. Never say an action is done, logged, added or saved, " +
     "and never say \"done\". Never guess a required detail. When a detail is missing, reply with " +

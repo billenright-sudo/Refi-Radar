@@ -6,6 +6,7 @@ const rateLimit  = require("express-rate-limit");
 const db         = require("../db");
 const { signToken, requireAuth } = require("../middleware/auth");
 const { sendInvite } = require("../email");
+const { stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ const loginLimiter = rateLimit({
 function safeUser(u) {
   return {
     id: u.id, orgId: u.org_id, role: u.role, firstName: u.first_name, lastName: u.last_name, email: u.email,
-    careerStage: u.career_stage == null ? null : u.career_stage,   // null until set (see lib/assistant/coaching.js)
+    careerStage: stageById(u.career_stage)?.id ?? null,   // null until set, and for a stored value that is not a stage id
   };
 }
 

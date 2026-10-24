@@ -3,13 +3,13 @@ const express = require("express");
 const db      = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
 const { sendRefiAlert } = require("../email");
-const { stageById } = require("../lib/assistant/coaching");
+const { CAREER_STAGES, stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
 router.use(requireAuth, requireBroker);
 
 function toUser(u) {
-  return { id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, inviteAccepted: !!u.invite_accepted, createdAt: u.created_at, careerStage: u.career_stage == null ? null : u.career_stage };
+  return { id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, inviteAccepted: !!u.invite_accepted, createdAt: u.created_at, careerStage: stageById(u.career_stage)?.id ?? null };
 }
 
 // GET /api/org/los — list all LOs in this org
@@ -41,11 +41,13 @@ router.get("/los/:id/clients", (req, res) => {
 });
 
 // PATCH /api/org/los/:id/stage — broker sets how Charli coaches one of their LOs (their career stage)
-// Body: { stage } — one of the CAREER_STAGES ids (new, developing, established, veteran).
+// Body: { stage } — one of the CAREER_STAGES ids (lib/assistant/coaching.js).
 // -> { success: true, stage, label }. 400 for any other stage; 404 unless the target is an LO in the caller's org.
 router.patch("/los/:id/stage", (req, res) => {
   const stage = stageById(req.body && req.body.stage);
-  if (!stage) return res.status(400).json({ success: false, error: "stage must be one of: new, developing, established, veteran" });
+  if (!stage) {
+    return res.status(400).json({ success: false, error: `stage must be one of: ${CAREER_STAGES.map((s) => s.id).join(", ")}` });
+  }
 
   const loId = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
   const lo = Number.isSafeInteger(loId)

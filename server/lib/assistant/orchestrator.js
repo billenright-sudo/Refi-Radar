@@ -19,8 +19,8 @@ const { tools, TOOL_SCHEMA } = require("./tools");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
 } = require("./prompt");
-const { stageById } = require("./coaching");
-const { mentionsGlossaryTerm } = require("./glossary");
+const { CAREER_STAGES, stageById } = require("./coaching");
+const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 const MAX_TOKENS = 600;      // replies are 1-3 spoken sentences
@@ -227,8 +227,9 @@ const isBareYesNoAnswer = (reply, userText) =>
 //     saved", "got that logged") and the just-happened adverb forms ("is now marked", "has already
 //     been logged", "was just saved", "it's now been logged"), on every turn;
 //   * "it's done", "is done", "has been done", "all set", "taken care of", anywhere in the sentence;
-//   * a career stage reported as set, on every turn: first-person "I've set you as a veteran" (set is a claim verb
-//     for "I" / "we"), "is / are / 's / 're / been (now) set to / as", and "you're (now) set / marked / listed as / to";
+//   * a career stage reported as set, on every turn: first-person "I've set you as a veteran" (FIRST_PERSON_SET_RE: the
+//     pronoun right next to "set"), "is / are / 's / 're / been (now) set to / as <a stage>", and "you're (now) set /
+//     marked / listed as / to";
 //   * the simple past passive ("was logged", "were added", "was set") only on an ungrounded turn: it is the one
 //     form a grounded turn may use to narrate a tool fact ("your last contact with Chen was logged on
 //     2026-01-01"; the date still goes through the figure check);
@@ -242,7 +243,7 @@ const isBareYesNoAnswer = (reply, userText) =>
 // later clauses included (R5-4): "Should I get that marked as contacted?" is not a claim, "Would you
 // like me to set a follow-up now that I've logged the call?" is. "changed" is not a claim verb: "I see
 // rates changed overnight" is narration.
-const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done|set";
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done";
 const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled";
 const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
 const FIRST_PERSON_CLAIM_RE = new RegExp(
@@ -257,9 +258,21 @@ const PASSIVE_JUST_RE = new RegExp(
     PASSIVE_VERBS + ")\\b",
   "i"
 );
-// Setting a career stage is a change too: "is set to Veteran", "has been set as Veteran", and "You're now set /
-// marked / listed as Veteran" are false on every turn (the first-person "I've set you ..." is in CLAIM_VERBS).
-const SET_PASSIVE_RE = /(?:\b(?:is|are|been)|['\u2019](?:s|re))\s+(?:now\s+)?set\s+(?:to|as)\b/i;
+// Career stages (coaching.js). "new" is also an everyday word ("3 new opportunities", "a new rate"), so it names a
+// stage only in a stage context; the other three ids are rare enough to count anywhere.
+const STAGE_IDS = CAREER_STAGES.map((st) => st.id);
+const OTHER_STAGE_WORDS = STAGE_IDS.filter((id) => id !== "new").join("|");
+const NEW_AS_NOUN_MODIFIER = "(?!\\s+(?:clients?|loans?|rates?|opportunit\\w*|records?|leads?|customers?|calls?|contacts?|ones?|purchases?|mortgages?|borrowers?)\\b)";
+
+// Setting a career stage is a change too, and it is reported with the stage next to the verb: "is set to Veteran",
+// "has been set as an Established broker", and "You're now set / marked / listed as Veteran" are false on every turn.
+// The object must be a stage ("Their ARM is set to adjust" is narration). The first-person forms are FIRST_PERSON_SET_RE.
+const SET_PASSIVE_RE = new RegExp(
+  "(?:\\b(?:is|are|been)|['\\u2019](?:s|re))\\s+(?:now\\s+)?set\\s+(?:to|as)\\s+(?:an?\\s+|the\\s+)?(?:" + OTHER_STAGE_WORDS + "|new" + NEW_AS_NOUN_MODIFIER + ")\\b", "i"
+);
+// "I set you / your / it / that / this" with nothing but "have", "just", "already", "now" or "went ahead and" in between:
+// "I suggest you set up a call" and "I'd recommend we set a follow-up" are suggestions, and "if I set your stage" an offer.
+const FIRST_PERSON_SET_RE = /(?<!\bif\s)\b(?:I|we)(?:['\u2019]ve|\s+have)?(?:\s+(?:just|already|now|went\s+ahead\s+and|gone\s+ahead\s+and))*\s+set\s+(?:you|your|it|that|this)\b/i;
 const YOURE_SET_RE = /\byou(?:['\u2019]re|\s+are)\s+(?:now\s+)?(?:set|marked|listed)\s+(?:as|to)\b/i;
 const GOT_IT_DONE_RE = new RegExp("\\bgot\\s+(?:\\S+\\s+){1,3}?(?:" + PASSIVE_VERBS + ")\\b", "i");
 const DONE_RE =
@@ -288,7 +301,7 @@ function claimsCompletion(text, grounded) {
     return COMPLETION_OPENER_RE.test(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
-      SET_PASSIVE_RE.test(s) || YOURE_SET_RE.test(s) ||
+      FIRST_PERSON_SET_RE.test(s) || SET_PASSIVE_RE.test(s) || YOURE_SET_RE.test(s) ||
       (!grounded && PASSIVE_PAST_RE.test(s)) ||
       laterClauseClaims(s);
   });
@@ -471,6 +484,31 @@ function answersActionQuestion(messages) {
   return false;
 }
 
+// The stage flows (I1). A turn that ends in model text has handed up no change, so a reply that says the user's stage is
+// now this or that ("Your stage is now Veteran.", "Veteran it is.", "I'll coach you as a Veteran") is false whatever its
+// wording. The flows: the user is answering the career question (the assistant message before theirs ends with it), or
+// their message talks about their stage ("stage", a stage word, "I'm new", "switch me to new"). In a stage flow a reply
+// that names a stage and is not a question back to the user is the nothing-changed line (reply names: STAGE_NAMED_RE).
+const CAREER_Q_TAIL_RE = /how\s+long\s+have\s+you\s+been\s+originating\?\s*$/i;
+const USER_STAGE_RE = new RegExp(
+  "\\b(?:" + OTHER_STAGE_WORDS + "|stages?)\\b" +
+    "|\\b(?:i['\\u2019]?m|i\\s+am)\\s+(?:(?:brand|really|pretty|still|very)\\s+)?new\\b" +
+    "|\\b(?:me|to|as|be)\\s+new\\s*[.!?]*\\s*$", "i"
+);
+const STAGE_NAMED_RE = new RegExp(
+  "\\b(?:" + OTHER_STAGE_WORDS + ")\\b" +
+    "|\\b(?:you['\\u2019]?re|you\\s+are|as|to|into|in)\\s+(?:an?\\s+|the\\s+)?(?:now\\s+)?new\\b" + NEW_AS_NOUN_MODIFIER +
+    "|\\bstage\\s+is\\s+(?:now\\s+)?new\\b" +
+    "|\\bnew\\s+(?:stage|category|level|tier|broker|brokers|loan\\s+officer|originator)\\b" +
+    "|\\bnew\\s+it\\s+is\\b", "i"
+);
+const answersCareerQuestion = (messages) => {
+  const prev = messages[messages.length - 2];
+  return !!prev && prev.role === "assistant" && CAREER_Q_TAIL_RE.test(messageText(prev).trim());
+};
+// A question back to the user: question-shaped (isQuestionShaped), or "Mind if I ...?". It may name the stages it offers.
+const isQuestionBack = (reply) => isQuestionShaped(reply) || /^mind\s+if\b[^.!;]*\?\s*$/i.test(stripOpener(reply).trim());
+
 // ── Tool execution ───────────────────────────────────────────────────────────
 
 // Error results carry a parenthesised label like "(not found)": those are never cited.
@@ -595,6 +633,8 @@ async function runTurn({ messages, ctx, client } = {}) {
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents actually sent to the model this turn
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
+  const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
+  const stageFlow = answersCareerQuestion(messages) || USER_STAGE_RE.test(userText);
   // CHARLI_SYSTEM plus the coaching block for this user's career stage: it tailors how she coaches, nothing the
   // screening below depends on (that runs on the model's text and this turn's tool results alone)
   const system = buildCharliSystem(ctx && ctx.user);
@@ -631,6 +671,16 @@ async function runTurn({ messages, ctx, client } = {}) {
       // carries a sideEffect), so whatever the model says, nothing was done. Only a question may
       // reach the user; anything else is replaced.
       if (actionTurn && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
+      // I3: when the glossary is the only thing cited, the reply is the definition(s), code-authored from what explainTerm
+      // returned (a term it did not know adds the can't-verify line), and the model's text is discarded: a glossary citation
+      // must not carry a claim about the book, and its digits must not ground anyone's figures.
+      if (glossaryDefs.length > 0 && sources.length > 0 && sources.every((src) => src === GLOSSARY_SOURCE)) {
+        const spoken = glossaryDefs.map((d) => d.definition);
+        if (glossaryMiss) spoken.push(CANT_VERIFY);
+        return finish(spoken.join(" "), [GLOSSARY_SOURCE]);
+      }
+      // I1: in a stage flow a reply that names a stage and is not a question back cannot say the stage is set
+      if (stageFlow && STAGE_NAMED_RE.test(text) && !isQuestionBack(text)) return finish(NOTHING_CHANGED);
       if (claimsCompletion(text, sources.length > 0)) return finish(NOTHING_CHANGED);
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
@@ -654,7 +704,14 @@ async function runTurn({ messages, ctx, client } = {}) {
     // On the last allowed call no narration can follow, so only a change to confirm matters.
     const runBlocks = lastCall ? toolUses.filter((b) => SIDE_EFFECT_TOOLS.has(b.name)) : toolUses;
     const outs = runBlocks.map((block) => runTool(block, ctx));
-    if (runBlocks.some((b, i) => b.name === "explainTerm" && !isCitation(outs[i].source))) glossaryMiss = true;
+    runBlocks.forEach((b, i) => {
+      if (b.name !== "explainTerm") return;
+      const { source, data } = outs[i];
+      if (!isCitation(source)) glossaryMiss = true;
+      else if (data && typeof data.definition === "string" && !glossaryDefs.some((d) => d.term === data.term)) {
+        glossaryDefs.push({ term: data.term, definition: data.definition });
+      }
+    });
 
     // The tools only package a change; here it is handed up for confirmation, not acted on.
     const changes = outs.filter((o) => o.sideEffect);

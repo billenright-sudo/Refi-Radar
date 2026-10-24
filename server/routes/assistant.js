@@ -18,7 +18,7 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
-const { stageById } = require("../lib/assistant/coaching");
+const { stageById, CAREER_QUESTION } = require("../lib/assistant/coaching");
 const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
@@ -85,7 +85,6 @@ const partOfDay = (hour) => (hour < 12 ? "morning" : hour < 17 ? "afternoon" : "
 // they've been originating instead (the greeting asks exactly one thing); their answer is what Charli maps to a
 // stage with setCareerStageTool.
 const WANT_MORE = "Want a market update, a sweep of your book, or something else?";
-const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
 function buildGreeting(user, ctx, localHour) {
   const sweep = runSafely(assistantTools.runSweepTool, ctx);
   const market = runSafely(assistantTools.getMarketUpdate, ctx);

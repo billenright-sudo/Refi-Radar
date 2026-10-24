@@ -76,4 +76,8 @@ const coachingStyle = (stageId) => {
   return stage ? BLOCKS[stage.id] : BLOCKS.none;
 };
 
-module.exports = { CAREER_STAGES, MAX_YEARS, stageById, stageForYears, coachingStyle };
+// The one question the greeting of a user with no stage asks (routes/assistant.js). The orchestrator recognises the
+// answer to it by its tail, "how long have you been originating?" (a stage claim in reply to it is never passed).
+const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
+
+module.exports = { CAREER_STAGES, MAX_YEARS, CAREER_QUESTION, stageById, stageForYears, coachingStyle };

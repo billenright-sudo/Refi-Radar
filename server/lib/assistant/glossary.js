@@ -4,7 +4,8 @@
 // or worse, an unsourced definition): it calls explainTerm (tools.js) and reads the definition as given.
 //
 // Definitions only. Where Broker Radar's own engine (lib/refi.js) uses a number it is said as a product fact
-// ("Broker Radar estimates cash-out up to 80 percent of the home's value"); no definition states a loan-guideline
+// ("Broker Radar estimates the cash available up to a new loan of 80 percent of the home's value": the engine's cash-out
+// is 80 percent of the value minus the balance); no definition states a loan-guideline
 // limit (DTI limits, maximum LTVs, ...). Those stay in the deferred loan-guideline domain, which hands off.
 // Pure: no I/O, no state.
 
@@ -16,32 +17,33 @@ const entry = (term, aliases, definition) => Object.freeze({ term, aliases: Obje
 // so "Loan-to-Value", "loan to value" and "loan-to-value?" are one alias.
 const GLOSSARY = Object.freeze([
   entry("LTV", [
-    "ltv", "loan-to-value", "loan-to-value ratio",
+    "ltv", "ltv ratio", "loan-to-value", "loan-to-value ratio",
   ],
     "LTV, or loan-to-value, is the loan balance divided by what the home is worth, shown as a percentage. " +
     "The lower it is, the more equity the borrower has."),
 
   entry("break-even", [
-    "break-even", "breakeven", "break-even point", "break-even months",
+    "break-even", "breakeven", "break-even point", "breakeven point", "break-even months",
   ],
-    "Break-even is how many months of the new, lower payment it takes to earn back the closing costs of a refinance. " +
+    "Break-even is how many months of savings it takes to earn back the closing costs of a refinance. " +
     "For rate-and-term opportunities, Broker Radar requires a break-even of 36 months or less."),
 
   entry("rate-and-term refinance", [
     "rate-and-term refinance", "rate-and-term", "rate and term", "rate-term", "rate/term", "rate/term refinance",
-    "rate-and-term refi", "rate and term refi", "rate/term refi",
+    "rate-and-term refi", "rate and term refi", "rate/term refi", "rate-and-term refinancing",
   ],
     "A rate-and-term refinance replaces the current loan with a new one to get a lower rate, a different term, or both, " +
     "without taking cash out. Broker Radar flags one when today's rates would meaningfully lower a client's payment."),
 
   entry("cash-out refinance", [
-    "cash-out refinance", "cash-out", "cash out", "cash-out refi", "cash out refi",
+    "cash-out refinance", "cash-out refinancing", "cash-out", "cash out", "cash-out refi", "cash out refi",
   ],
     "A cash-out refinance replaces the loan with a larger one so the borrower can take some of their home equity as cash. " +
-    "Broker Radar estimates cash-out up to 80 percent of the home's value."),
+    "Broker Radar estimates the cash available up to a new loan of 80 percent of the home's value."),
 
   entry("ARM", [
-    "arm", "arms", "adjustable-rate mortgage", "adjustable rate mortgage", "adjustable-rate", "adjustable rate", "5/1 arm",
+    "arm", "arms", "arm loan", "arm loans", "adjustable-rate mortgage", "adjustable rate mortgage", "adjustable-rate", "adjustable rate",
+    "adjustable-rate loan", "5/1 arm",
   ],
     "An adjustable-rate mortgage, or ARM, has a rate that is fixed for an initial period and then adjusts, so the payment can change. " +
     "Broker Radar looks for ARM clients who could lock in a fixed rate before it adjusts."),
@@ -67,7 +69,7 @@ const GLOSSARY = Object.freeze([
 
   // The definition only. The limits (and what any program allows) are guideline questions: they hand off.
   entry("DTI", [
-    "dti", "debt-to-income", "debt-to-income ratio",
+    "dti", "dti ratio", "debt-to-income", "debt-to-income ratio",
   ],
     "DTI, or debt-to-income, compares what a borrower owes each month to what they earn: their monthly debt payments divided by " +
     "their gross monthly income."),

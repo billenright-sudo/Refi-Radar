@@ -1718,7 +1718,7 @@ async function checkTable(rows) {
       assert.deepStrictEqual(r.sources, tool ? [TOOL_SOURCE[tool]] : [], label);
     } else {
       assert.equal(r.reply, expected, label);
-      assert.deepStrictEqual(r.sources, [], label);
+      assert.deepStrictEqual(r.sources, opts.sources || [], label);
     }
     assert.equal(r.sideEffect, undefined, label);
   }
@@ -2248,6 +2248,7 @@ test("Task 4 pre-review fixes (C1 chain only through answers, C2 whole-question 
 // ── Task 4 pre-review fix C4: the synthetic opener and merged utterances ─────
 
 const { SESSION_STARTED } = require("../lib/assistant/history");
+const { GLOSSARY } = require("../lib/assistant/glossary");
 const GREETING_Q = "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. How long have you been originating?";
 
 test("C4: the synthetic '(Session started.)' opener is inert to the detectors", () => {
@@ -2444,8 +2445,17 @@ const SET_TABLE = [
   ...onBoth("about 20 years", "Want me to set your stage to Veteran?", PASS),
   ...onBoth("about 20 years", "I can set your stage once you confirm.", PASS),
   ...onBoth("about 20 years", "I'll set your stage once you say yes.", PASS),
-  // ACCEPTED COST (fail closed, like "rates are updated daily"): narration in the "is set to" form is replaced too
-  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and rates are set to update tomorrow.", NOTHING_CHANGED],
+  // I2 FLIP (was an ACCEPTED COST row, NOTHING_CHANGED): "set to / as" is a claim only when it sets a career STAGE
+  // ("is set to Veteran"), so narration like "rates are set to update tomorrow" is left alone
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and rates are set to update tomorrow.", PASS],
+  // I2: suggestions and narration that merely contain "set" are not claims (the first-person form has no free words)
+  ["Who should I call today?", "runSweepTool", `${SWEEP_NARRATION} I suggest you set up a call with them today.`, PASS, { ctx: sweepCtx }],
+  ["Who should I call today?", "runSweepTool", `${SWEEP_NARRATION} I'd recommend we set a follow-up for Thursday.`, PASS, { ctx: sweepCtx }],
+  ["Tell me about Chen", "findClient", "Their ARM is set to adjust, so lead with locking a fixed rate.", PASS],
+  ...onBoth("about 20 years", "Is it okay if I set your stage to Veteran?", PASS),
+  ...onBoth("about 20 years", "Mind if I set you as a Veteran?", PASS),
+  // ... while the first-person claim with the pronoun right next to the verb still is one
+  ...claimRows("about 20 years", ["I just set your stage to Veteran.", "I've already set it.", "We set that up for you.", "I've gone ahead and set you as a Veteran."]),
 
   // R7-b: "was / were set" is a claim on an ungrounded turn, like "was logged"
   ...[
@@ -2464,35 +2474,87 @@ test("Task 7: first-person 'set' and the 'is set to' / 'you're set as' forms are
   await checkTable(SET_TABLE);
 });
 
+// ── I1: the stage flows (the career question, or a user who talks about their stage) ────────────────────────
+
+const AFTER_CAREER_Q = (answer) => [
+  { role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: answer },
+];
+const STAGE_FLOW_TABLE = [
+  // after the career question, a reply that names a stage and is not a question is a stage claim: no sideEffect backs it
+  ...claimRows(AFTER_CAREER_Q("about 20 years"), [
+    "Your stage is now Veteran.", "Got it, you're a Veteran now.", "Twenty years! Veteran it is.",
+    "Great — I'll coach you as a Veteran from here on.", "Veteran, got it.", "That makes you Established.",
+  ]),
+  ...claimRows(AFTER_CAREER_Q("about two years"), ["Welcome — you're in the Developing stage."]),
+  ...claimRows(AFTER_CAREER_Q("a few months"), ["Great, you're New, so I'll keep it simple."]),
+  // a user who names a stage word, or the stage, outside the career question
+  ...claimRows("can you switch me to established?", ["I've switched you to Established.", "You're Established now."]),
+  ...claimRows("make me a veteran", ["You're a Veteran now.", "Done, Veteran it is."]),
+  ...claimRows("what's my career stage?", ["Your career stage is Veteran."]),
+  ...claimRows("I'm new to this", ["Welcome aboard, you're New."]),
+  ...claimRows("I'm brand new", ["Then you're New."]),
+  ...claimRows("switch me to new", ["You're New now."]),
+  // a question back to the user is not a claim (it may name the stages), nor is a reply that names none
+  ...onBoth(AFTER_CAREER_Q("about 20 years"), "Which stage fits — Established or Veteran?", PASS),
+  ...onBoth(AFTER_CAREER_Q("about 20 years"), "Is it okay if I set your stage to Veteran?", PASS),
+  ...onBoth(AFTER_CAREER_Q("about 20 years"), "Mind if I set you as a Veteran?", PASS),
+  ...onBoth(AFTER_CAREER_Q("about 20 years"), "Want me to set your stage to Veteran?", PASS),
+  ...onBoth("can you switch me to established?", "Do you want Established, or something else?", PASS),
+  ...onBoth(AFTER_CAREER_Q("about 20 years"), "Nice, that's a long run.", PASS),
+  ...onBoth(AFTER_CAREER_Q("hello"), "Hi there! What can I help with?", PASS),
+  // the same words outside a stage flow are ordinary conversation: the words 'new' etc. in the user's message do not open one
+  ["Is there anything new in the market?", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and there is a new reading today.", PASS],
+  ["any new opportunities today?", "runSweepTool", `${SWEEP_NARRATION} Start with the new ones.`, PASS, { ctx: sweepCtx }],
+  ["what's new?", null, "Not much — what can I help with?", PASS],
+  // ... nor does the career question: a user who skips it and asks for their book still hears "new opportunities"
+  [AFTER_CAREER_Q("who should I call today?"), "runSweepTool", `${SWEEP_NARRATION} Start with the new ones.`, PASS, { ctx: sweepCtx }],
+  [AFTER_CAREER_Q("what's the rate?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, a new reading today.", PASS],
+  // a reply naming a stage word with no stage flow behind it is not touched either
+  ["thanks", null, "Anytime, and that was a veteran move.", PASS],
+];
+
+test("I1: a stage-flow turn that ends in model text cannot say the stage is set, changed or chosen", async () => {
+  await checkTable(STAGE_FLOW_TABLE);
+});
+
 // ── R7-a: explainTerm (the fixed glossary) ───────────────────────────────────
 
-const LTV_DEF = "LTV, or loan-to-value, is the loan balance divided by what the home is worth, shown as a percentage. The lower it is, the more equity the borrower has.";
-const CASH_OUT_DEF = "A cash-out refinance replaces the loan with a larger one so the borrower can take some of their home equity as cash. Broker Radar estimates cash-out up to 80 percent of the home's value.";
-const DTI_DEF = "DTI, or debt-to-income, compares what a borrower owes each month to what they earn: their monthly debt payments divided by their gross monthly income.";
+const defOf = (term) => GLOSSARY.find((e) => e.term === term).definition;
+const GLOSSARY_SRC = ["Broker Radar glossary"];
 const gloss = (term) => ({ input: { term } });
+// a turn whose only citation is the glossary: the reply is the definition, code-authored (the model's text is discarded)
+const coded = (term) => ({ input: { term }, sources: GLOSSARY_SRC });
 
 const GLOSSARY_TABLE = [
-  // grounded: the glossary is a citation ("Broker Radar glossary"), and the definition's own figures are grounded
-  ["what does LTV mean?", "explainTerm", LTV_DEF, PASS],
-  ["what's a cash-out refi?", "explainTerm", CASH_OUT_DEF, PASS, gloss("cash out refi")],
-  ["what does DTI mean?", "explainTerm", DTI_DEF, PASS, gloss("DTI")],
-  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to 80 percent of the home's value.", PASS, gloss("cash-out")],
-  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to 85 percent of the home's value.", CANT_VERIFY, gloss("cash-out")],
-  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to eighty percent of the home's value.", CANT_VERIFY, gloss("cash-out")],
+  // I3: every citation is the glossary, so the reply IS the definition, whatever the model wrote
+  ["what does LTV mean?", "explainTerm", defOf("LTV"), defOf("LTV"), coded("LTV")],
+  ["what does LTV mean?", "explainTerm", "LTV is the loan balance over the home's worth.", defOf("LTV"), coded("LTV")],
+  ["what does DTI mean?", "explainTerm", defOf("DTI"), defOf("DTI"), coded("DTI")],
+  ["what's a cash-out refi?", "explainTerm", defOf("cash-out refinance"), defOf("cash-out refinance"), coded("cash out refi")],
+  // I3 + I4 FLIPS (were PASS / CANT_VERIFY): a paraphrase of the cash-out definition, right or wrong, is replaced by the definition
+  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to 80 percent of the home's value.", defOf("cash-out refinance"), coded("cash-out")],
+  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to 85 percent of the home's value.", defOf("cash-out refinance"), coded("cash-out")],
+  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to eighty percent of the home's value.", defOf("cash-out refinance"), coded("cash-out")],
+  // I3: a glossary citation does not carry a book claim, and its digits do not ground other figures
+  ["what does break-even mean for the Chens?", "explainTerm", "The Chens are well inside the limit, so call them today.", defOf("break-even"), coded("break-even")],
+  ["what does break-even mean for the Chens?", "explainTerm", "Break-even is 36 months, and the Chens' balance is 36 thousand dollars.", defOf("break-even"), coded("break-even")],
+  ["what does DTI mean?", "explainTerm", "DTI is the share of income that goes to debt, and FHA allows up to 56.9 percent.", defOf("DTI"), coded("DTI")],
+  // I3: a false 'done' from the model is discarded too, not just replaced when it is a claim
+  ["what does LTV mean?", "explainTerm", "Done, I logged it.", defOf("LTV"), coded("LTV")],
   // the guideline hand-off still runs first, with or without the tool
-  ["what's the max DTI for FHA?", "explainTerm", DTI_DEF, GUIDELINE_HANDOFF, gloss("DTI")],
+  ["what's the max DTI for FHA?", "explainTerm", defOf("DTI"), GUIDELINE_HANDOFF, gloss("DTI")],
   ["what's the max DTI for FHA?", null, "FHA allows a back-end DTI up to 56.9 percent.", GUIDELINE_HANDOFF],
-  ["what are the DTI limits?", "explainTerm", DTI_DEF, GUIDELINE_HANDOFF, gloss("DTI")],
+  ["what are the DTI limits?", "explainTerm", defOf("DTI"), GUIDELINE_HANDOFF, gloss("DTI")],
   // an unknown term: "(not found)" is not a citation, and nothing the model says may define it
   ["what's a buydown?", "explainTerm", "A buydown lowers the rate for a while.", CANT_VERIFY, gloss("buydown")],
   ["what's a buydown?", "explainTerm", "A buydown is a way to pay less up front.", CANT_VERIFY, gloss("buydown")],
   ["what's a buydown?", "explainTerm", CANT_VERIFY, CANT_VERIFY, gloss("buydown")],
   // the model defining a term WITHOUT the tool
-  ["what does LTV mean?", null, LTV_DEF, CANT_VERIFY],
+  ["what does LTV mean?", null, defOf("LTV"), CANT_VERIFY],
   ["what does LTV mean?", null, "It's how much of the home you've borrowed against.", CANT_VERIFY],
   ["what does DTI mean?", null, "DTI is monthly debt divided by gross income.", CANT_VERIFY],
   ["what's a break-even?", null, "It's how many months until the up-front costs are earned back.", CANT_VERIFY],
-  // a definition is no completion claim, but a false 'done' after the lookup still is
+  // an action request is still held to the backstop, and the guideline question to the hand-off
   ["log a call with Chen", "explainTerm", "Done, I logged it.", NOTHING_CHANGED],
   // small talk is untouched
   ["thanks", null, "Anytime!", PASS],
@@ -2506,4 +2568,10 @@ test("R7-a: explainTerm rows - cited definitions pass; the guideline hand-off, u
 test("R7-a: CHARLI_SYSTEM tells her to call explainTerm for a term and never define one from memory", () => {
   assert.match(CHARLI_SYSTEM, /To explain what a term means, call explainTerm and use its definition; never define a term from memory\./);
   assert.match(CHARLI_SYSTEM, /If explainTerm doesn't know the term, say you can't verify it\./);
+});
+
+test("Fix round 1: CHARLI_SYSTEM's confirmation rule names setCareerStageTool alongside addClientTool and logContactTool", () => {
+  assert.ok(CHARLI_SYSTEM.includes("addClientTool, logContactTool and setCareerStageTool only prepare an action, and nothing is saved until the user confirms."));
+  // the pinned sentences of the earlier rounds are untouched
+  assert.ok(CHARLI_SYSTEM.includes("Never say an action is done, logged, added or saved"));
 });

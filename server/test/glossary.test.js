@@ -75,8 +75,12 @@ test("GLOSSARY: few numbers, and a number is a Broker Radar product fact", () =>
     assert.doesNotMatch(def(term), /\d/, term);
   }
   // the engine's own numbers, said as product facts
-  assert.match(def("cash-out refinance"), /Broker Radar estimates cash-out up to 80 percent of the home's value/);
+  // I4: the engine computes 80% x value - balance (a new loan of up to 80% LTV); it is not 80% of the value in cash
+  assert.match(def("cash-out refinance"), /Broker Radar estimates the cash available up to a new loan of 80 percent of the home's value/);
+  assert.doesNotMatch(def("cash-out refinance"), /cash-out up to 80 percent/);
   assert.match(def("check-in"), /6 months/);
+  assert.match(def("break-even"), /months of savings it takes to earn back the closing costs/);
+  assert.doesNotMatch(def("break-even"), /new, lower payment/);
   assert.match(def("break-even"), /Broker Radar/);
   assert.match(def("break-even"), /36 months or less/);
   assert.match(def("points"), /1 percent of the loan amount/);
@@ -89,8 +93,11 @@ test("GLOSSARY: DTI is the definition only; its limits stay in the guideline han
   assert.doesNotMatch(dti, /\d|limit|maximum|\bmax\b|\bFHA\b|\bVA\b|conventional|allow|guideline|underwrit|cap\b/i);
 });
 
-test("GLOSSARY: no definition reads as a completion claim, so Charli can say each one verbatim", async () => {
+test("GLOSSARY: each definition comes back verbatim (code-authored), and none reads as a completion claim", async () => {
+  const { claimsCompletion } = require("../lib/assistant/orchestrator");
   for (const e of GLOSSARY) {
+    assert.equal(claimsCompletion(e.definition, false), false, e.term + ": a definition is no claim, grounded or not");
+    assert.equal(claimsCompletion(e.definition, true), false, e.term);
     const r = await runTurn({
       messages: userSays(`what does ${e.term} mean?`), ctx: ctxFor("new"),
       client: fakeClient([useTool("explainTerm", { term: e.term }), (params) => say(payloadOf(params).data.definition)]),
@@ -103,17 +110,23 @@ test("GLOSSARY: no definition reads as a completion claim, so Charli can say eac
 // ── lookup ───────────────────────────────────────────────────────────────────
 
 const ALIASES = {
-  "LTV": ["LTV", "ltv", "Loan-to-Value", "loan to value", "the LTV", "an LTV", "LTV?", "  ltv  ", "Loan-To-Value."],
-  "break-even": ["break-even", "Break Even", "breakeven", "break-even point", "the break even point"],
+  "LTV": ["LTV", "ltv", "Loan-to-Value", "loan to value", "the LTV", "an LTV", "LTV?", "  ltv  ", "Loan-To-Value.", "LTV ratio", "the LTV ratio"],
+  "break-even": ["break-even", "Break Even", "breakeven", "break-even point", "the break even point", "breakeven point", "Breakeven Point?"],
   "rate-and-term refinance": [
     "rate-and-term refinance", "rate and term", "Rate/Term", "rate/term refinance", "rate and term refi", "a rate-and-term refi", "rate-and-term",
+    "rate-and-term refinancing",
   ],
-  "cash-out refinance": ["cash-out refinance", "cash out", "Cash-Out", "cash out refi", "a cash-out refi", "cash-out refinance?"],
-  "ARM": ["ARM", "arm", "an ARM", "adjustable-rate mortgage", "Adjustable Rate Mortgage", "adjustable rate", "ARMs"],
+  "cash-out refinance": [
+    "cash-out refinance", "cash out", "Cash-Out", "cash out refi", "a cash-out refi", "cash-out refinance?", "cash-out refinancing", "Cash Out Refinancing",
+  ],
+  "ARM": [
+    "ARM", "arm", "an ARM", "adjustable-rate mortgage", "Adjustable Rate Mortgage", "adjustable rate", "ARMs", "ARM loan", "an ARM loan", "ARM loans",
+    "adjustable-rate loan", "adjustable rate loan", "5/1 ARM",
+  ],
   "term swap": ["term swap", "Term Swap", "15-year vs 30-year", "15 year vs 30 year", "switching terms", "changing terms", "a term swap"],
   "LLPA": ["LLPA", "llpa", "LLPAs", "loan-level price adjustment", "Loan Level Price Adjustment", "an LLPA"],
   "points": ["points", "point", "discount points", "Discount Point", "mortgage points"],
-  "DTI": ["DTI", "dti", "debt-to-income", "debt to income", "Debt-to-Income ratio", "the DTI"],
+  "DTI": ["DTI", "dti", "debt-to-income", "debt to income", "Debt-to-Income ratio", "the DTI", "DTI ratio", "the DTI ratio?"],
   "check-in": ["check-in", "Check In", "checkin", "check-ins", "6-month check-in"],
   "opportunity": ["opportunity", "Opportunities", "an opportunity", "the opportunity"],
 };
@@ -129,6 +142,7 @@ test("lookupTerm: an unknown or ambiguous term is not found (never a guess), and
   for (const q of [
     "buydown", "APR", "escrow", "PMI", "cash", "rate", "term", "loan", "what does LTV mean", "LTV and DTI", "cash-out vs rate and term",
     "", "   ", "?", null, undefined, 5, true, {}, [], ["LTV"], "ltvv", "x".repeat(500),
+    "LTV ratios", "my LTV ratio", "ARM loan rates", "DTI ratio limits", "cash-out refinancing options", "adjustable-rate loans for veterans", "ratio", "loan",
   ]) {
     assert.equal(lookupTerm(q), null, String(q).slice(0, 30));
   }
@@ -210,11 +224,15 @@ test("what does LTV mean? / what's a cash-out refi?: the narration is the tool's
   assert.match(r.reply, /80 percent of the home's value/);
   assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
   assert.equal(JSON.parse(client.calls[1].messages[2].content[0].content).data.term, "cash-out refinance");
-  r = await runTurn({
-    messages: userSays("what's a cash-out refi?"), ctx: ctxFor("new"),
-    client: fakeClient([useTool("explainTerm", { term: "cash out refi" }), say("It lets a borrower take cash from equity, up to 85 percent of the home's value.")]),
-  });
-  assert.equal(r.reply, CANT_VERIFY, "a figure the glossary didn't return is not grounded");
+  // I3: with the glossary as the only citation the reply is the definition, whatever the model wrote (an 85, or a claim)
+  for (const wrong of ["It lets a borrower take cash from equity, up to 85 percent of the home's value.", "Call them today.", ""]) {
+    r = await runTurn({
+      messages: userSays("what's a cash-out refi?"), ctx: ctxFor("new"),
+      client: fakeClient([useTool("explainTerm", { term: "cash out refi" }), say(wrong)]),
+    });
+    assert.equal(r.reply, GLOSSARY.find((e) => e.term === "cash-out refinance").definition, wrong);
+    assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
+  }
 });
 
 test("what's the max DTI for FHA? is still the guideline hand-off, even after explainTerm; what does DTI mean? is the definition", async () => {
@@ -230,12 +248,12 @@ test("what's the max DTI for FHA? is still the guideline hand-off, even after ex
   });
   assert.equal(r.reply, dti);
   assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
-  // the model cannot add the limits itself: a figure the glossary did not return is not grounded
+  // the model cannot add the limits itself: its text is discarded, so the limit never reaches the user
   r = await runTurn({
     messages: userSays("what does DTI mean?"), ctx: ctxFor(),
     client: fakeClient([useTool("explainTerm", { term: "DTI" }), say(dti + " FHA allows up to 56.9 percent.")]),
   });
-  assert.equal(r.reply, CANT_VERIFY);
+  assert.equal(r.reply, dti);
 });
 
 test("what's a buydown?: explainTerm says '(not found)' and nothing the model adds can define it", async () => {
@@ -309,13 +327,74 @@ test("the model defining a term WITHOUT calling the tool is the can't-verify lin
   assert.equal(screenUngroundedText("what does DTI mean?", "Which DTI do you mean?"), "Which DTI do you mean?", "a lone clarifying question still passes");
 });
 
-test("a glossary term in the question changes nothing for a grounded turn", async () => {
-  const r = await runTurn({
+test("I3: a glossary citation does not carry a book claim: when it is the only citation the reply is the definition", async () => {
+  // (was: "Robert and Linda Chen are your top opportunity." passed, cited to the glossary)
+  const dti = GLOSSARY.find((e) => e.term === "DTI").definition;
+  let r = await runTurn({
     messages: userSays("what does DTI mean?"), ctx: ctxFor(),
     client: fakeClient([useTool("explainTerm", { term: "DTI" }), say("Robert and Linda Chen are your top opportunity.")]),
   });
-  // grounded by the glossary citation: only claims and figures are screened, as before
-  assert.equal(r.reply, "Robert and Linda Chen are your top opportunity.");
+  assert.equal(r.reply, dti);
+  assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
+  // break-even and the Chens: the model's 'well inside the limit, call them today' is not said
+  const be = GLOSSARY.find((e) => e.term === "break-even").definition;
+  r = await runTurn({
+    messages: userSays("what does break-even mean for the Chens?"), ctx: ctxFor(),
+    client: fakeClient([useTool("explainTerm", { term: "break-even" }), say("The Chens are well inside the limit, so call them today.")]),
+  });
+  assert.equal(r.reply, be);
+  assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
+  // the glossary's digits ground nothing else: the 36 does not make 36 thousand dollars a fact
+  r = await runTurn({
+    messages: userSays("what does break-even mean?"), ctx: ctxFor(),
+    client: fakeClient([useTool("explainTerm", { term: "break-even" }), say("Break-even is 36 months, and the Chens owe 36 thousand dollars.")]),
+  });
+  assert.equal(r.reply, be);
+});
+
+test("I3: several terms are the definitions joined with a space, once each, in the order asked; a miss adds the can't-verify line", async () => {
+  const def = (term) => GLOSSARY.find((e) => e.term === term).definition;
+  const calls = (...terms) => resp(terms.map((term, i) => ({ type: "tool_use", id: "toolu_" + i, name: "explainTerm", input: { term } })), "tool_use");
+  const ask = (userText, first, narration = "whatever") => runTurn({ messages: userSays(userText), ctx: ctxFor(), client: fakeClient([first, say(narration)]) });
+
+  let r = await ask("what do LTV and DTI mean?", calls("LTV", "DTI"));
+  assert.equal(r.reply, def("LTV") + " " + def("DTI"));
+  assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
+  r = await ask("what do DTI and LTV mean?", calls("DTI", "loan-to-value", "LTV"));
+  assert.equal(r.reply, def("DTI") + " " + def("LTV"), "an alias of a term already given is not said twice");
+  r = await ask("what do LTV and a buydown mean?", calls("LTV", "buydown"));
+  assert.equal(r.reply, def("LTV") + " " + CANT_VERIFY, "what the glossary doesn't know is not dropped silently");
+  assert.deepStrictEqual(r.sources, ["Broker Radar glossary"]);
+  r = await ask("what do a buydown and LTV mean?", calls("buydown", "LTV"));
+  assert.equal(r.reply, def("LTV") + " " + CANT_VERIFY);
+  // a miss alone is still the can't-verify line, and no source
+  r = await ask("what's a buydown?", calls("buydown"), "A buydown is a way to pay less up front.");
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.deepStrictEqual(r.sources, []);
+});
+
+test("I3: a turn that also cites a book source keeps the model's text and the figure check", async () => {
+  const both = () => resp([
+    { type: "tool_use", id: "toolu_a", name: "getMarketUpdate", input: {} },
+    { type: "tool_use", id: "toolu_b", name: "explainTerm", input: { term: "LTV" } },
+  ], "tool_use");
+  let r = await runTurn({
+    messages: userSays("what's the rate, and what does LTV mean?"), ctx: ctxFor(),
+    client: fakeClient([both(), say("The thirty-year fixed is at 6.52 percent, and LTV is the loan balance over the home's value.")]),
+  });
+  assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent, and LTV is the loan balance over the home's value.");
+  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21", "Broker Radar glossary"]);
+  r = await runTurn({
+    messages: userSays("what's the rate, and what does LTV mean?"), ctx: ctxFor(),
+    client: fakeClient([both(), say("The thirty-year fixed is at 6.99 percent, and LTV is the loan balance over the home's value.")]),
+  });
+  assert.equal(r.reply, CANT_VERIFY, "the figure check still applies when a book source is cited");
+  // a glossary lookup in one model call and a book lookup in the next: still not glossary-only
+  r = await runTurn({
+    messages: userSays("what does LTV mean, and what's the rate?"), ctx: ctxFor(),
+    client: fakeClient([useTool("explainTerm", { term: "LTV" }), useTool("getMarketUpdate", {}, "toolu_2"), say("LTV is the loan balance over the home's value, and the thirty-year fixed is at 6.52 percent.")]),
+  });
+  assert.equal(r.reply, "LTV is the loan balance over the home's value, and the thirty-year fixed is at 6.52 percent.");
 });
 
 test("the New and Veteran runs of an explainTerm turn are identical but for the system prompt", async () => {

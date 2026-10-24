@@ -183,7 +183,10 @@ test("buildCharliSystem: four distinct staged prompts and a fifth for null, each
   }
   // CHARLI_SYSTEM itself is untouched: the five-line contract the rest of the suite pins
   assert.ok(CHARLI_SYSTEM.includes(CANT_VERIFY));
-  assert.doesNotMatch(CHARLI_SYSTEM, /career stage|setCareerStageTool/i);
+  // it names setCareerStageTool in the confirmation rule only (it only prepares a change); the ask-once instruction is not in it
+  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool and setCareerStageTool only prepare an action/);
+  assert.equal((CHARLI_SYSTEM.match(/setCareerStageTool/g) || []).length, 1);
+  assert.doesNotMatch(CHARLI_SYSTEM, /career stage|how long they've been originating|isn't set/i);
 });
 
 test("buildCharliSystem: only a recorded stage coaches as a stage; anything else is the null prompt (never assume)", () => {
@@ -203,7 +206,8 @@ test("the null prompt has the ask-once instruction; the four staged prompts do n
   assert.match(none, /setCareerStageTool/);
   for (const id of IDS) {
     const prompt = buildCharliSystem({ career_stage: id });
-    assert.doesNotMatch(prompt, /setCareerStageTool/, id);
+    assert.doesNotMatch(coachingStyle(id), /setCareerStageTool/, id);   // (CHARLI_SYSTEM names it in the confirmation rule)
+    assert.equal((prompt.match(/setCareerStageTool/g) || []).length, 1, id);
     assert.doesNotMatch(prompt, /how long they've been originating/, id);
     assert.doesNotMatch(prompt, /isn't set/, id);
     assert.ok(!prompt.includes(NULL_BLOCK), id);
@@ -457,9 +461,18 @@ test("[(Session started.), greeting asking for the years, 'about 20 years']: the
   const r = await runTurn({ messages, ctx, client: fakeClient([useTool("setCareerStageTool", { years: 20 })]) });
   assert.equal(r.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
   assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: "veteran" });
-  // not held to the backstop: a plain statement from the model reaches the user
+  // not held to the action backstop: a plain statement that names no stage reaches the user ...
   const plain = await runTurn({ messages, ctx, client: fakeClient([say("Nice, that's a long run.")]) });
   assert.equal(plain.reply, "Nice, that's a long run.");
+  // ... but I1: after the career question a statement that names a stage is a stage claim, and nothing backs it
+  for (const text of ["Your stage is now Veteran.", "Got it, you're a Veteran now.", "Twenty years! Veteran it is.", "Great — I'll coach you as a Veteran from here on."]) {
+    const blocked = await runTurn({ messages, ctx, client: fakeClient([say(text)]) });
+    assert.equal(blocked.reply, NOTHING_CHANGED, text);
+    assert.equal(blocked.sideEffect, undefined);
+  }
+  // a question back is fine, even one that names the stages
+  const asked = await runTurn({ messages, ctx, client: fakeClient([say("Which stage fits — Established or Veteran?")]) });
+  assert.equal(asked.reply, "Which stage fits — Established or Veteran?");
   // the model sees the greeting and the answer, with the null-stage prompt
   const client = fakeClient([useTool("setCareerStageTool", { years: 20 })]);
   await runTurn({ messages, ctx, client });
@@ -490,7 +503,9 @@ test("claimsCompletion: first-person 'set' and the every-turn 'is set to' / 'you
       "You're now set as Veteran.", "You're set as Veteran.", "You are now set as Veteran.", "You are set to Veteran.",
       "You’re set as Veteran.", "You're marked as a veteran.", "You're listed as Veteran.", "You are listed to the veteran track.",
       "Your stage is set to Veteran.", "Your stage is now set to Veteran.", "Your career stage has been set to Veteran (10+ years).",
-      "Your career stage's set to Veteran.", "Veterans are set as the top tier.", "They're set to Veteran.",
+      "Your career stage's set to Veteran.", "They're set to Veteran.", "Your stage has been set as an Established broker.",
+      "I just set your stage to Veteran.", "I've already set it.", "We set that up for you.", "I've gone ahead and set you as a Veteran.",
+      "I have just set your stage.", "I now set you as Veteran.",
     ]) {
       assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
     }
@@ -498,6 +513,12 @@ test("claimsCompletion: first-person 'set' and the every-turn 'is set to' / 'you
       "Want me to set your stage to Veteran?", "Should I set you as a veteran?", "I can set your stage once you confirm.",
       "I'll set your stage once you confirm.", "I will set it after you say yes.", "Nice, that's a long run.", "Set your sights on the Chens.",
       "That's a long time to be set in your ways.", "You're a veteran, then.",
+      // I2: suggestions and narration that merely contain 'set' (no free words are allowed between I / we and 'set')
+      "I suggest you set up a call with them today.", "I'd recommend we set a follow-up for Thursday.",
+      "Their ARM is set to adjust, so lead with locking a fixed rate.", "Rates are set to update tomorrow.", "Veterans are set as the top tier.",
+      "The meeting is set for Thursday.", "I see the Fed is set to meet Wednesday.", "I think you could set a reminder.",
+      "Is it okay if I set your stage to Veteran?", "Mind if I set you as a Veteran?", "Okay if we set it later?",
+      "Do you want me to set it, or should I wait?",
     ]) {
       assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
     }
@@ -952,4 +973,75 @@ test("POST /api/auth/accept-invite returns careerStage: null, or the stage the b
   body = await res.json();
   assert.equal(body.user.careerStage, "developing");
   assert.equal((await as(staged.id)("GET", "/api/auth/me")).data.user.careerStage, "developing");
+});
+
+// ── Fix round 1: the stage flows, and a stored stage that is not an id ───────
+
+test("I1: on the stage flows a setCareerStageTool call still returns its sideEffect and the code-authored read-back", async () => {
+  const ctx = ctxFor(ann, "broker", orgA, null);
+  const afterQuestion = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }];
+  for (const [messages, input, id] of [
+    [[...afterQuestion, { role: "user", content: "about 20 years" }], { years: 20 }, "veteran"],
+    [[...afterQuestion, { role: "user", content: "about two years" }], { years: 2 }, "developing"],
+    [userMsgs("can you switch me to established?"), { stage: "established" }, "established"],
+    [userMsgs("make me a veteran"), { stage: "veteran" }, "veteran"],
+    [userMsgs("what's my career stage?"), { stage: "veteran" }, "veteran"],
+    [userMsgs("I'm new to this"), { stage: "new" }, "new"],
+  ]) {
+    const client = fakeClient([useTool("setCareerStageTool", input)]);
+    const r = await runTurn({ messages, ctx, client });
+    assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`, JSON.stringify(messages[messages.length - 1]));
+    assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
+    assert.equal(client.calls.length, 1);
+  }
+});
+
+test("I1: the stage backstop is stage-independent (every user, every career stage, gets the same answer)", async () => {
+  const messages = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: "about 20 years" }];
+  for (const stage of [...IDS, null]) {
+    const r = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Your stage is now Veteran.")]) });
+    assert.equal(r.reply, NOTHING_CHANGED, String(stage));
+    const asked = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Which stage fits — Established or Veteran?")]) });
+    assert.equal(asked.reply, "Which stage fits — Established or Veteran?", String(stage));
+  }
+});
+
+test("I1 over HTTP: after the greeting, 'Your stage is now Veteran.' is the nothing-changed line and nothing is written", async () => {
+  const who = addUser(orgA, "broker", "Lena");
+  const greeting = await greet(who, { localHour: 9 });
+  assert.ok(greeting.data.reply.endsWith(CAREER_QUESTION));
+  setClient(fakeClient([say("Your stage is now Veteran.")]));
+  const r = await as(who)("POST", "/api/assistant/turn", {
+    rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "about 20 years" }],
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, NOTHING_CHANGED);
+  assert.equal("sideEffect" in r.data, false);
+  assert.equal(stageOf(who), null);
+});
+
+test("a stored stage that is not one of the four ids reads as null in /api/auth/me and GET /api/org/los", async () => {
+  const org = addOrg("BadStage");
+  const boss = addUser(org, "broker", "Bad");
+  const lo = addUser(org, "lo", "Lo");
+  for (const stored of ["guru", "Veteran", " veteran", ""]) {
+    db.prepare("UPDATE users SET career_stage = ? WHERE id IN (?, ?)").run(stored, boss, lo);
+    assert.equal((await as(boss)("GET", "/api/auth/me")).data.user.careerStage, null, JSON.stringify(stored));
+    assert.equal((await as(lo)("GET", "/api/auth/me")).data.user.careerStage, null, JSON.stringify(stored));
+    const list = await as(boss)("GET", "/api/org/los");
+    assert.equal(list.data.los.find((u) => u.id === lo).careerStage, null, JSON.stringify(stored));
+  }
+  db.prepare("UPDATE users SET career_stage = 'veteran' WHERE id IN (?, ?)").run(boss, lo);
+  assert.equal((await as(boss)("GET", "/api/auth/me")).data.user.careerStage, "veteran");
+  assert.equal((await as(boss)("GET", "/api/org/los")).data.los.find((u) => u.id === lo).careerStage, "veteran");
+});
+
+test("PATCH /api/org/los/:id/stage: the valid ids come from CAREER_STAGES, not a list of its own", async () => {
+  const lo = addUser(orgA, "lo", "Tess");
+  const r = await patchStage(ann, lo, { stage: "guru" });
+  assert.equal(r.status, 400);
+  for (const id of IDS) assert.ok(r.data.error.includes(id), `the error names ${id}`);
+  const source = fs.readFileSync(path.join(__dirname, "..", "routes", "org.js"), "utf8");
+  assert.doesNotMatch(source, /new, developing, established, veteran/);
+  assert.match(source, /CAREER_STAGES/);
 });
