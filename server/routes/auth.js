@@ -147,7 +147,7 @@ router.post("/accept-invite", (req, res) => {
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
   const jwtToken = signToken({ userId: updated.id });
   res.cookie("rr_token", jwtToken, { httpOnly: true, sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, secure: process.env.NODE_ENV === "production" });
-  res.json({ success: true, user: { id: updated.id, orgId: updated.org_id, role: updated.role, firstName: updated.first_name, lastName: updated.last_name, email: updated.email } });
+  res.json({ success: true, user: safeUser(updated) });
 });
 
 module.exports = router;

@@ -227,6 +227,7 @@ test("coaching content by stage", () => {
   assert.match(style.new, /New \(under 1 year/);
   assert.match(style.new, /first time/);
   assert.match(style.new, /plain sentence/);
+  assert.match(style.new, /call explainTerm and give its definition/);
   assert.match(style.new, /LTV, break-even/);
   assert.match(style.new, /rate-and-term/);
   assert.match(style.new, /one concrete next step at a time/);
@@ -237,6 +238,7 @@ test("coaching content by stage", () => {
   // developing: brief explanations for less common terms only
   assert.match(style.developing, /Developing/);
   assert.match(style.developing, /less common/);
+  assert.match(style.developing, /explainTerm/);
   assert.match(style.developing, /do not push/);
   // established: concise, ranked, explain only when asked
   assert.match(style.established, /Established/);
@@ -882,4 +884,72 @@ test("users.career_stage: a nullable TEXT column, added idempotently to a databa
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
   }
+});
+
+// ── R7-c: a broker can read each LO's careerStage; accept-invite returns it ──
+
+test("GET /api/org/los returns each LO's careerStage (null when unset), org-scoped and broker-only", async () => {
+  const org = addOrg("StageList");
+  const boss = addUser(org, "broker", "Boss");
+  const unset = addUser(org, "lo", "Una");
+  const set = addUser(org, "lo", "Sven", "developing");
+  const stranger = addUser(addOrg("StageListOther"), "lo", "Out", "veteran");
+
+  let r = await as(boss)("GET", "/api/org/los");
+  assert.equal(r.status, 200);
+  const byId = Object.fromEntries(r.data.los.map((lo) => [lo.id, lo]));
+  assert.deepStrictEqual(Object.keys(byId).map(Number).sort((a, b) => a - b), [unset, set], "only this org's LOs");
+  assert.equal(byId[unset].careerStage, null);
+  assert.equal("careerStage" in byId[unset], true, "present, not omitted");
+  assert.equal(byId[set].careerStage, "developing");
+  assert.equal(byId[set].firstName, "Sven", "the existing fields are unchanged");
+  assert.equal(typeof byId[set].clientCount, "number");
+  assert.equal(stranger in byId, false);
+
+  // a PATCH shows up in the list
+  assert.equal((await patchStage(boss, unset, { stage: "veteran" })).status, 200);
+  r = await as(boss)("GET", "/api/org/los");
+  assert.equal(r.data.los.find((lo) => lo.id === unset).careerStage, "veteran");
+  // an LO's own voice confirm shows up too
+  assert.equal((await confirmAs(set, { type: "setCareerStage", stage: "established" })).status, 200);
+  r = await as(boss)("GET", "/api/org/los");
+  assert.equal(r.data.los.find((lo) => lo.id === set).careerStage, "established");
+
+  assert.equal((await as(unset)("GET", "/api/org/los")).status, 403, "an LO may not list the org's LOs");
+  assert.equal((await as(null)("GET", "/api/org/los")).status, 401);
+});
+
+test("POST /api/auth/accept-invite returns careerStage: null, or the stage the broker already set for the invited LO", async () => {
+  const org = addOrg("Invites");
+  const boss = addUser(org, "broker", "Inviter");
+  const invite = () => {
+    const token = crypto.randomBytes(32).toString("hex");
+    const id = Number(db.prepare(
+      "INSERT INTO users (org_id, role, first_name, last_name, email, invite_token, invite_expires, invite_accepted) VALUES (?, 'lo', 'Ivan', 'Invited', ?, ?, ?, 0)"
+    ).run(org, `invited${++seq}@coach.test`, token, new Date(Date.now() + 3600 * 1000).toISOString()).lastInsertRowid);
+    return { token, id };
+  };
+  const accept = (token) => fetch(base + "/api/auth/accept-invite", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, password: "password123" }),
+  });
+
+  const plain = invite();
+  let res = await accept(plain.token);
+  assert.equal(res.status, 200);
+  let body = await res.json();
+  assert.equal(body.user.id, plain.id);
+  assert.equal(body.user.role, "lo");
+  assert.equal(body.user.careerStage, null);
+  assert.equal("careerStage" in body.user, true);
+  assert.deepStrictEqual(
+    Object.keys(body.user).sort(), ["careerStage", "email", "firstName", "id", "lastName", "orgId", "role"], "the same shape as login and /me"
+  );
+
+  // the broker sets the stage before the invitation is accepted (an LO row exists from the moment of the invite)
+  const staged = invite();
+  assert.equal((await patchStage(boss, staged.id, { stage: "developing" })).status, 200);
+  res = await accept(staged.token);
+  body = await res.json();
+  assert.equal(body.user.careerStage, "developing");
+  assert.equal((await as(staged.id)("GET", "/api/auth/me")).data.user.careerStage, "developing");
 });

@@ -1700,8 +1700,8 @@ test("R5-6: CHARLI_SYSTEM narrates a past contact as 'was logged on <date>', nev
 // change to the guards must keep every row.
 
 const PASS = "pass-through";
-const TOOL_INPUT = { findClient: { query: "chen" }, getMarketUpdate: {}, runSweepTool: {} };
-const TOOL_SOURCE = { findClient: "client record", getMarketUpdate: "live rates 2026-10-21", runSweepTool: "sweep engine" };
+const TOOL_INPUT = { findClient: { query: "chen" }, getMarketUpdate: {}, runSweepTool: {}, explainTerm: { term: "LTV" } };
+const TOOL_SOURCE = { findClient: "client record", getMarketUpdate: "live rates 2026-10-21", runSweepTool: "sweep engine", explainTerm: "Broker Radar glossary" };
 const onBoth = (user, reply, expected) => [[user, null, reply, expected], [user, "findClient", reply, expected]];
 const claimRows = (user, replies) => replies.flatMap((t) => onBoth(user, t, NOTHING_CHANGED));
 
@@ -2446,8 +2446,64 @@ const SET_TABLE = [
   ...onBoth("about 20 years", "I'll set your stage once you say yes.", PASS),
   // ACCEPTED COST (fail closed, like "rates are updated daily"): narration in the "is set to" form is replaced too
   ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and rates are set to update tomorrow.", NOTHING_CHANGED],
+
+  // R7-b: "was / were set" is a claim on an ungrounded turn, like "was logged"
+  ...[
+    "Your stage was set to Veteran.", "You were set as Veteran.", "Got it — your career stage was set to Veteran (10+ years).",
+    "The stage was set.", "Your stage was set as Veteran, as you asked.",
+  ].map((t) => ["about 20 years", null, t, NOTHING_CHANGED]),
+  // a grounded turn keeps the was / were narration exemption, for set as for logged
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Chen was logged on 2026-01-01.", PASS],
+  ["When did I last talk to Chen?", "findClient", "Your last contact with Chen was set to 2026-01-01.", PASS],
+  ["When did I last talk to Chen?", "findClient", "The date on record was set on 2026-01-01.", PASS],
+  // ACCEPTED RESIDUAL (ruled): the exemption is the same for a grounded reply that is not about the tool's fact
+  ["about 20 years", "findClient", "Your stage was set to Veteran.", PASS],
 ];
 
 test("Task 7: first-person 'set' and the 'is set to' / 'you're set as' forms are completion claims; the offer is not", async () => {
   await checkTable(SET_TABLE);
+});
+
+// ── R7-a: explainTerm (the fixed glossary) ───────────────────────────────────
+
+const LTV_DEF = "LTV, or loan-to-value, is the loan balance divided by what the home is worth, shown as a percentage. The lower it is, the more equity the borrower has.";
+const CASH_OUT_DEF = "A cash-out refinance replaces the loan with a larger one so the borrower can take some of their home equity as cash. Broker Radar estimates cash-out up to 80 percent of the home's value.";
+const DTI_DEF = "DTI, or debt-to-income, compares what a borrower owes each month to what they earn: their monthly debt payments divided by their gross monthly income.";
+const gloss = (term) => ({ input: { term } });
+
+const GLOSSARY_TABLE = [
+  // grounded: the glossary is a citation ("Broker Radar glossary"), and the definition's own figures are grounded
+  ["what does LTV mean?", "explainTerm", LTV_DEF, PASS],
+  ["what's a cash-out refi?", "explainTerm", CASH_OUT_DEF, PASS, gloss("cash out refi")],
+  ["what does DTI mean?", "explainTerm", DTI_DEF, PASS, gloss("DTI")],
+  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to 80 percent of the home's value.", PASS, gloss("cash-out")],
+  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to 85 percent of the home's value.", CANT_VERIFY, gloss("cash-out")],
+  ["what's a cash-out refi?", "explainTerm", "It lets a borrower take cash from equity, up to eighty percent of the home's value.", CANT_VERIFY, gloss("cash-out")],
+  // the guideline hand-off still runs first, with or without the tool
+  ["what's the max DTI for FHA?", "explainTerm", DTI_DEF, GUIDELINE_HANDOFF, gloss("DTI")],
+  ["what's the max DTI for FHA?", null, "FHA allows a back-end DTI up to 56.9 percent.", GUIDELINE_HANDOFF],
+  ["what are the DTI limits?", "explainTerm", DTI_DEF, GUIDELINE_HANDOFF, gloss("DTI")],
+  // an unknown term: "(not found)" is not a citation, and nothing the model says may define it
+  ["what's a buydown?", "explainTerm", "A buydown lowers the rate for a while.", CANT_VERIFY, gloss("buydown")],
+  ["what's a buydown?", "explainTerm", "A buydown is a way to pay less up front.", CANT_VERIFY, gloss("buydown")],
+  ["what's a buydown?", "explainTerm", CANT_VERIFY, CANT_VERIFY, gloss("buydown")],
+  // the model defining a term WITHOUT the tool
+  ["what does LTV mean?", null, LTV_DEF, CANT_VERIFY],
+  ["what does LTV mean?", null, "It's how much of the home you've borrowed against.", CANT_VERIFY],
+  ["what does DTI mean?", null, "DTI is monthly debt divided by gross income.", CANT_VERIFY],
+  ["what's a break-even?", null, "It's how many months until the up-front costs are earned back.", CANT_VERIFY],
+  // a definition is no completion claim, but a false 'done' after the lookup still is
+  ["log a call with Chen", "explainTerm", "Done, I logged it.", NOTHING_CHANGED],
+  // small talk is untouched
+  ["thanks", null, "Anytime!", PASS],
+  ["any talking points for the call?", null, "Sure, which client is it for?", PASS],
+];
+
+test("R7-a: explainTerm rows - cited definitions pass; the guideline hand-off, unknown terms and from-memory definitions do not", async () => {
+  await checkTable(GLOSSARY_TABLE);
+});
+
+test("R7-a: CHARLI_SYSTEM tells her to call explainTerm for a term and never define one from memory", () => {
+  assert.match(CHARLI_SYSTEM, /To explain what a term means, call explainTerm and use its definition; never define a term from memory\./);
+  assert.match(CHARLI_SYSTEM, /If explainTerm doesn't know the term, say you can't verify it\./);
 });

@@ -9,6 +9,7 @@
 const refi = require("../refi");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
+const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -82,6 +83,16 @@ function findClient(args, ctx) {
   return { data: { matches }, source: "client record" };
 }
 
+// What a term means, from the fixed glossary (lib/assistant/glossary.js): the model reads the definition as given
+// and never defines a term from memory. An unknown term is "(not found)", never a guess.
+function explainTerm(args, _ctx) {
+  const raw = args && typeof args === "object" && !Array.isArray(args) ? args.term : undefined;
+  if (typeof raw !== "string" || !raw.trim()) return fail("(invalid input)", "a term to explain is required");
+  const found = lookupTerm(raw);
+  if (!found) return fail("(not found)", "that term is not in the glossary");
+  return { data: { term: found.term, definition: found.definition }, source: GLOSSARY_SOURCE };
+}
+
 // ── Side-effect tools: package the intent, never write ───────────────────────
 
 function addClientTool(fields, _ctx) {
@@ -133,7 +144,9 @@ function setCareerStageTool(args, _ctx) {
 // Null-prototype map: a model-supplied tool name like "constructor" or "toString" must not
 // resolve to an inherited Object.prototype function.
 const tools = Object.freeze(
-  Object.assign(Object.create(null), { getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, setCareerStageTool })
+  Object.assign(Object.create(null), {
+    getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
+  })
 );
 
 // ── Anthropic tool definitions (names match the keys of `tools` exactly) ─────
@@ -170,6 +183,20 @@ const TOOL_SCHEMA = [
       type: "object",
       properties: { query: { type: "string", description: "Part of the client's name, e.g. 'chen'." } },
       required: ["query"],
+    },
+  },
+  {
+    name: "explainTerm",
+    description:
+      "Look up what a mortgage or Broker Radar term means in Broker Radar's own glossary: " +
+      GLOSSARY.map((e) => e.term).join(", ") + ". Use it whenever the user asks what a term means or a term " +
+      "needs explaining, and read the definition as given; never define a term from memory. Definitions only: " +
+      "it has no loan-guideline limits. A term it does not know comes back not found: say you can't verify it " +
+      "and never define it yourself.",
+    input_schema: {
+      type: "object",
+      properties: { term: { type: "string", description: "The term to explain, e.g. 'LTV' or 'cash-out refinance'." } },
+      required: ["term"],
     },
   },
   {
@@ -227,5 +254,5 @@ const TOOL_SCHEMA = [
 ];
 
 module.exports = {
-  tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, setCareerStageTool,
+  tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
 };

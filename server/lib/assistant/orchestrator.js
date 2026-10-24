@@ -20,6 +20,7 @@ const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
 } = require("./prompt");
 const { stageById } = require("./coaching");
+const { mentionsGlossaryTerm } = require("./glossary");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 const MAX_TOKENS = 600;      // replies are 1-3 spoken sentences
@@ -228,7 +229,7 @@ const isBareYesNoAnswer = (reply, userText) =>
 //   * "it's done", "is done", "has been done", "all set", "taken care of", anywhere in the sentence;
 //   * a career stage reported as set, on every turn: first-person "I've set you as a veteran" (set is a claim verb
 //     for "I" / "we"), "is / are / 's / 're / been (now) set to / as", and "you're (now) set / marked / listed as / to";
-//   * the simple past passive ("was logged", "were added") only on an ungrounded turn: it is the one
+//   * the simple past passive ("was logged", "were added", "was set") only on an ungrounded turn: it is the one
 //     form a grounded turn may use to narrate a tool fact ("your last contact with Chen was logged on
 //     2026-01-01"; the date still goes through the figure check);
 //   * a completion opener at the start of a later clause, after a comma, colon, ellipsis, "--", a
@@ -250,7 +251,7 @@ const FIRST_PERSON_CLAIM_RE = new RegExp(
 const IN_PROGRESS_RE =
   /\b(?:I['\u2019]m|I\s+am|we['\u2019]re|we\s+are)\s+(?:(?:now|just|going\s+ahead\s+and)\s+)?(?:logging|saving|adding|booking|recording|marking|noting|updating|scheduling|sending|creating)\b/i;
 const PASSIVE_RE = new RegExp("(?:\\b(?:is|are|been|got)|['\\u2019](?:s|re))\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
-const PASSIVE_PAST_RE = new RegExp("\\b(?:was|were)\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
+const PASSIVE_PAST_RE = new RegExp("\\b(?:was|were)\\s+(?:" + PASSIVE_VERBS + "|set)\\b", "i");   // "was set": a career stage reported as set
 const PASSIVE_JUST_RE = new RegExp(
   "(?:\\b(?:is|are|was|were|been|got|has|have|had)|['\\u2019](?:s|re|ve))\\s+(?:now|already|just|all)\\s+(?:been\\s+)?(?:" +
     PASSIVE_VERBS + ")\\b",
@@ -335,7 +336,9 @@ function isLoneClarifyingQuestion(reply, userText) {
 //   3. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
 //      and "what's their name?" must reach the user;
 //   4. the model's text has a digit or a spoken figure, or the user's message OR the model's
-//      own text names a book/market noun (rates, clients, pipeline, ...), or the model said
+//      own text names a book/market noun (rates, clients, pipeline, ...), or the user's message
+//      names a glossary term (DTI, break-even, LLPA, ...: a definition comes from explainTerm, never
+//      from the model's memory), or the model said
 //      nothing                      -> the fixed can't-verify line (with no cited tool result, a
 //      statement about the book can't be sourced, even if the user only said "good morning");
 //   5. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
@@ -351,7 +354,7 @@ function screenUngroundedText(userText, modelText) {
   if (isYesNoQuestion(user)) return isLoneClarifyingQuestion(text, user) ? text : CANT_VERIFY;
   if (isLoneClarifyingQuestion(text, user)) return text;
   if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0) return CANT_VERIFY;
-  if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text)) return CANT_VERIFY;
+  if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text) || mentionsGlossaryTerm(user)) return CANT_VERIFY;
   return text;
 }
 
@@ -591,6 +594,7 @@ async function runTurn({ messages, ctx, client } = {}) {
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents actually sent to the model this turn
+  let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   // CHARLI_SYSTEM plus the coaching block for this user's career stage: it tailors how she coaches, nothing the
   // screening below depends on (that runs on the model's text and this turn's tool results alone)
   const system = buildCharliSystem(ctx && ctx.user);
@@ -630,7 +634,12 @@ async function runTurn({ messages, ctx, client } = {}) {
       if (claimsCompletion(text, sources.length > 0)) return finish(NOTHING_CHANGED);
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
-      if (sources.length === 0) return finish(screenUngroundedText(userText, text));
+      if (sources.length === 0) {
+        // explainTerm came back empty-handed ("(not found)", invalid, failed): nothing may define the term instead
+        // of it, whatever words the definition is made of. Only a question back to the user is allowed through.
+        if (glossaryMiss && !isLoneClarifyingQuestion(text, userText)) return finish(CANT_VERIFY);
+        return finish(screenUngroundedText(userText, text));
+      }
       // Grounded: every figure the model speaks must be one the tools returned this turn.
       if (!text || ungroundedNumbers(text, payloads).length > 0) return finish(CANT_VERIFY);
       return finish(text, sources);
@@ -643,8 +652,9 @@ async function runTurn({ messages, ctx, client } = {}) {
 
     convo.push({ role: "assistant", content });
     // On the last allowed call no narration can follow, so only a change to confirm matters.
-    const outs = (lastCall ? toolUses.filter((b) => SIDE_EFFECT_TOOLS.has(b.name)) : toolUses)
-      .map((block) => runTool(block, ctx));
+    const runBlocks = lastCall ? toolUses.filter((b) => SIDE_EFFECT_TOOLS.has(b.name)) : toolUses;
+    const outs = runBlocks.map((block) => runTool(block, ctx));
+    if (runBlocks.some((b, i) => b.name === "explainTerm" && !isCitation(outs[i].source))) glossaryMiss = true;
 
     // The tools only package a change; here it is handed up for confirmation, not acted on.
     const changes = outs.filter((o) => o.sideEffect);

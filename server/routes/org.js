@@ -9,7 +9,7 @@ const router = express.Router();
 router.use(requireAuth, requireBroker);
 
 function toUser(u) {
-  return { id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, inviteAccepted: !!u.invite_accepted, createdAt: u.created_at };
+  return { id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, inviteAccepted: !!u.invite_accepted, createdAt: u.created_at, careerStage: u.career_stage == null ? null : u.career_stage };
 }
 
 // GET /api/org/los — list all LOs in this org

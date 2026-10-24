@@ -50,6 +50,9 @@ const CHARLI_SYSTEM = [
     "no tool can answer, or a tool returns an error or nothing, do not fill the gap. Say exactly: " +
     `"${CANT_VERIFY}"`,
 
+  "To explain what a term means, call explainTerm and use its definition; never define a term from memory. " +
+    "If explainTerm doesn't know the term, say you can't verify it.",
+
   "Estimates: when a tool result has estimated set to true, the figures are fallback estimates, " +
     "not live numbers. Say that they are estimates every time you give them, and never describe " +
     "them as live or as today's market.",

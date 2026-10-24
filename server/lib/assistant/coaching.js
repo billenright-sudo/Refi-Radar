@@ -35,15 +35,16 @@ const ALWAYS =
 const BLOCKS = {
   new:
     "Coaching style: this user is New (under 1 year in the business). Be encouraging and patient. The first time a " +
-    "figure or term comes up in a reply that reports it from a tool (what LTV, break-even or a rate-and-term " +
-    "refinance means, say), explain it in one plain sentence, in words and never with an example number of your " +
-    "own, and do not repeat the explanation later. Suggest one concrete next step at a time, never a list of steps, " +
+    "figure or term comes up (what LTV, break-even or a rate-and-term refinance means, say), call explainTerm and " +
+    "give its definition in one plain sentence, in words and never with an example number of your own, and do not " +
+    "repeat the explanation later. Suggest one concrete next step at a time, never a list of steps, " +
     "and offer a short talk track for the call; give it only if they say yes. If outreach comes up, remind them " +
     "that anything sent to a client is approved by them before it goes out and that drafts stay general. " + ALWAYS,
 
   developing:
     "Coaching style: this user is Developing (1 to 3 years in the business). Keep it friendly and brisk. Explain a " +
-    "term only if it is a less common one, in a few words, and skip the basics they already know. Suggest the next " +
+    "term only if it is a less common one (call explainTerm and give its definition in a few words), and skip the " +
+    "basics they already know. Suggest the next " +
     "step, and offer a talk track when it would help, but do not push one. " + ALWAYS,
 
   established:
