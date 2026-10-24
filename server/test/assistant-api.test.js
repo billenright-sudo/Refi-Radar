@@ -119,7 +119,7 @@ const withoutConfirmId = ({ confirmId, ...rest }) => rest;
 
 function buildApp(router) {
   const a = express();
-  a.use(express.json());
+  a.use(express.json({ limit: "20mb" }));   // as index.js mounts it: the message caps are the route's job, not the parser's
   a.use(cookieParser());
   a.use("/api/clients", clientRoutes);
   a.use("/api/assistant", router);
@@ -1309,4 +1309,51 @@ test("NOTHING_CHANGED still guards a false 'done' through the route (the Task 3 
   });
   assert.equal(r.data.reply, NOTHING_CHANGED);
   assert.equal(r.data.sideEffect, undefined);
+});
+
+// ── Task 7 Step 0: merged messages and long histories ────────────────────────
+
+test("Step 0: same-role messages merged by normalizeHistory are re-checked against the 4,000-character cap", async () => {
+  const client = fakeClient([say("Anytime!"), say("Anytime!"), say("Anytime!")]);
+  setClient(client);
+  const post = (messages) => as(ann)("POST", "/api/assistant/turn", { messages, rates: LIVE });
+
+  // 50 user messages of 4,000 characters each pass the per-item check, then merge into one 200,000-character message
+  const flood = Array.from({ length: 50 }, () => ({ role: "user", content: "x".repeat(4000) }));
+  let r = await post(flood);
+  assert.equal(r.status, 400);
+  assert.equal(r.data.success, false);
+  assert.match(r.data.error, /4,?000/);
+  // the boundary: merged content joins with one "\n", so 2,000 + 1 + 2,000 = 4,001 is over and 1,999 + 1 + 2,000 = 4,000 is not
+  r = await post([{ role: "user", content: "a".repeat(2000) }, { role: "user", content: "b".repeat(2000) }]);
+  assert.equal(r.status, 400);
+  r = await post([{ role: "assistant", content: "y".repeat(2500) }, { role: "assistant", content: "z".repeat(2500) }, { role: "user", content: "thanks" }]);
+  assert.equal(r.status, 400, "a merged assistant message counts too");
+  assert.equal(client.calls.length, 0, "no model call was made");
+
+  r = await post([{ role: "user", content: "a".repeat(1999) }, { role: "user", content: "b".repeat(2000) }]);
+  assert.equal(r.status, 200);
+  assert.equal(client.calls.length, 1);
+  assert.equal(client.calls[0].messages[0].content.length, 4000);
+});
+
+test("Step 0: a history of more than 100 messages is 400 with no model call; exactly 100 is fine", async () => {
+  const client = fakeClient([say("Anytime!"), say("Anytime!")]);
+  setClient(client);
+  const post = (messages) => as(ann)("POST", "/api/assistant/turn", { messages, rates: LIVE });
+  let r = await post(alternatingHistory(101));
+  assert.equal(r.status, 400);
+  assert.equal(r.data.success, false);
+  assert.match(r.data.error, /100/);
+  r = await post(Array.from({ length: 101 }, () => ({ role: "user", content: "hi" })));
+  assert.equal(r.status, 400, "counted as sent, before the messages merge");
+  assert.equal(client.calls.length, 0);
+
+  r = await post([{ role: "assistant", content: "Hello!" }, ...alternatingHistory(99)]);
+  assert.equal(r.status, 200, "100 messages are accepted (only the newest 20 are kept)");
+  assert.equal(client.calls.length, 1);
+  // a normal 20-turn history still passes
+  r = await post(alternatingHistory(21));
+  assert.equal(r.status, 200);
+  assert.equal(client.calls.length, 2);
 });

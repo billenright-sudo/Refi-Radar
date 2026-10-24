@@ -2405,3 +2405,24 @@ test("m4: isCitation is exported: only a non-blank string that is not a parenthe
     assert.equal(isCitation(s), false, String(s));
   }
 });
+
+// ── Task 7 Step 0: "remember" is a request filler only before "to" ───────────
+
+const REMEMBER_TABLE = [
+  // a question about the past: not an action request, so a grounded narration of a tool fact reaches the user
+  ["Can you remember logging a call with Chen?", "findClient", "Your last contact with Robert and Linda Chen was logged on 2026-01-01.", PASS],
+  ["Could you remember adding a client named Chen?", "findClient", "Your last contact with Robert and Linda Chen was logged on 2026-01-01.", PASS],
+  // "remember to <verb>" is still a polite request, so the false completion is replaced (grounded or not)
+  ...onBoth("Can you remember to log a call with Chen?", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED),
+  ...onBoth("Please remember to add a client", "Client added.", NOTHING_CHANGED),
+];
+
+test("Step 0: 'remember' counts as a request filler only before 'to'", async () => {
+  for (const u of ["Can you remember logging a call with Chen?", "Could you remember adding a client?", "Can you remember recording the call?"]) {
+    assert.equal(isActionRequest(u), false, u);
+  }
+  for (const u of ["Can you remember to log a call with Chen?", "Please remember to add a client", "Could you just remember to log it?"]) {
+    assert.equal(isActionRequest(u), true, u);
+  }
+  await checkTable(REMEMBER_TABLE);
+});

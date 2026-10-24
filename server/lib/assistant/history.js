@@ -11,6 +11,10 @@ const MAX_HISTORY = 20;   // messages kept, newest last (one synthetic opener ma
 // spoken turn or one of Charli's replies is a few hundred characters, so this only stops runaway input.
 const MAX_MESSAGE_CHARS = 4000;
 
+// A history longer than this (counted as the browser sent it, before anything is filtered or merged) is
+// refused: a real session keeps the newest MAX_HISTORY messages, so this only stops runaway input.
+const MAX_RAW_MESSAGES = 100;
+
 // Stands in for the user turn before an assistant-first history, so the greeting (and anything the user
 // was asked) stays in the model's context. The orchestrator treats it as inert: it is no action request
 // and no question, and a real user message always follows it, so it is never the latest user message.
@@ -48,4 +52,14 @@ function hasOversizedMessage(raw) {
     raw.some((m) => m && typeof m === "object" && typeof m.content === "string" && m.content.length > MAX_MESSAGE_CHARS);
 }
 
-module.exports = { normalizeHistory, hasOversizedMessage, SESSION_STARTED, MAX_HISTORY, MAX_MESSAGE_CHARS };
+// True if any message of an already-normalized history is longer than MAX_MESSAGE_CHARS. normalizeHistory merges
+// consecutive same-role messages AFTER the per-item check (hasOversizedMessage), so 50 messages of 4,000
+// characters would otherwise reach the model as one of 200,000. Pure.
+function hasOversizedNormalizedMessage(messages) {
+  return Array.isArray(messages) && messages.some((m) => m && typeof m.content === "string" && m.content.length > MAX_MESSAGE_CHARS);
+}
+
+module.exports = {
+  normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage,
+  SESSION_STARTED, MAX_HISTORY, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
+};

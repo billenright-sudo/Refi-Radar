@@ -18,7 +18,9 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
-const { normalizeHistory, hasOversizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS } = require("../lib/assistant/history");
+const {
+  normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
+} = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { createClientForUser, logContactForUser } = require("./clients");
 
@@ -191,13 +193,17 @@ function createAssistantRouter({ limiter = {} } = {}) {
       }
     }
 
-    if (hasOversizedMessage(body.messages)) {
-      return res.status(400).json({
-        success: false, error: `a message is longer than ${MAX_MESSAGE_CHARS.toLocaleString("en-US")} characters`,
-      });
+    const tooLong = () => res.status(400).json({
+      success: false, error: `a message is longer than ${MAX_MESSAGE_CHARS.toLocaleString("en-US")} characters`,
+    });
+    if (Array.isArray(body.messages) && body.messages.length > MAX_RAW_MESSAGES) {
+      return res.status(400).json({ success: false, error: `a history can't have more than ${MAX_RAW_MESSAGES} messages` });
     }
+    if (hasOversizedMessage(body.messages)) return tooLong();
     const messages = normalizeHistory(body.messages);
     if (!messages) return res.status(400).json({ success: false, error: "messages must be a history ending with the user's message" });
+    // normalizeHistory joins consecutive same-role messages, so the cap is checked again on what would be sent
+    if (hasOversizedNormalizedMessage(messages)) return tooLong();
 
     let out;
     try {

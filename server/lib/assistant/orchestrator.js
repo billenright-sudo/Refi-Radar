@@ -163,13 +163,14 @@ function isYesNoQuestion(text) {
 // form): "update me / us / on ..." ("update me on rates") and "put together" ("put together a call list").
 // The polite leads "would you mind" and a clause-initial "mind" ("mind logging a call") take the -ing form.
 // The filler list holds only words that cannot be a noun: "go log", "make sure to log", "try to log",
-// "remember to log", and "make a note" (the "a" counts only when "note" follows). Pure.
+// "remember to log", and "make a note" (the "a" counts only when "note" follows). "remember" counts only
+// before "to": "Can you remember logging a call with Chen?" asks about the past, it requests nothing. Pure.
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)";
 const ACTION_VERBS_ING =
   "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)";
 const REQUEST_FILLER =
-  "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember|try";
+  "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember(?=\\s+to\\b)|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
 const REQUEST_LEAD_RE = new RegExp(
   "\\b(?:^mind|can\\s+you|could\\s+you|would\\s+you\\s+mind|would\\s+you|will\\s+you|please|do\\s+you\\s+mind|do\\s+you\\s+want\\s+to" +
