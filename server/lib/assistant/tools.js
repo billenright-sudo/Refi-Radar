@@ -4,10 +4,11 @@
 // ctx = { user, rates, db } (user = the req.user row; rates = the flat current-rates object).
 //
 // Read tools query the CRM / the server sweep engine (lib/refi.js, the single math source).
-// Side-effect tools (addClientTool, logContactTool) only PACKAGE the intent in `sideEffect`
-// and return a preview — they never write. The write happens later, behind a confirmation.
+// Side-effect tools (addClientTool, logContactTool, setCareerStageTool) only PACKAGE the intent in
+// `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
 const refi = require("../refi");
 const { getMovement } = require("../rateHistory");
+const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -106,10 +107,33 @@ function logContactTool(args, ctx) {
   };
 }
 
+// A number of years as the model may pass it: a number, or a plain decimal string like logContactTool's digit-string
+// id ("20", "2.5"; not "1e1", "0x10" or " 5 "). NaN for anything else.
+const yearsOf = (raw) =>
+  typeof raw === "number" ? raw : typeof raw === "string" && /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : NaN;
+
+// Package the user's career stage for confirmation. The stage is either named (`stage`, one of the CAREER_STAGES
+// ids) or derived by code from a number of years (`years`, mapped at fixed cut-offs: under 1 new, 1 to under 3
+// developing, 3 to under 10 established, 10 or more veteran), never picked by the model. With both, they must
+// agree. Like the other side-effect tools it never writes: /api/assistant/confirm does, after the user says yes.
+function setCareerStageTool(args, _ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const invalid = () => fail("(invalid input)", "a career stage or a number of years from 0 to 70 is required");
+  const named = a.stage !== undefined && a.stage !== null;
+  const counted = a.years !== undefined && a.years !== null;
+  if (!named && !counted) return invalid();
+  const byName = named ? stageById(a.stage) : null;
+  const byYears = counted ? stageForYears(yearsOf(a.years)) : null;
+  if ((named && !byName) || (counted && !byYears)) return invalid();
+  if (byName && byYears && byName.id !== byYears.id) return invalid();
+  const { id, label } = byName || byYears;
+  return { data: { stage: id, label }, source: "(unsaved)", sideEffect: { type: "setCareerStage", stage: id } };
+}
+
 // Null-prototype map: a model-supplied tool name like "constructor" or "toString" must not
 // resolve to an inherited Object.prototype function.
 const tools = Object.freeze(
-  Object.assign(Object.create(null), { getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool })
+  Object.assign(Object.create(null), { getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, setCareerStageTool })
 );
 
 // ── Anthropic tool definitions (names match the keys of `tools` exactly) ─────
@@ -183,6 +207,25 @@ const TOOL_SCHEMA = [
       required: ["clientId"],
     },
   },
+  {
+    name: "setCareerStageTool",
+    description:
+      "Prepare to record the user's career stage, which only tailors how you coach them. This does NOT save " +
+      "anything: the user must confirm first. When the user says how many years they have been originating, pass " +
+      "`years` as that number exactly as they said it; the stage is chosen for you, so never map it yourself and " +
+      "never work years out from a date. Pass `stage` only when the user names a stage or asks to switch to one. " +
+      "Never guess either.",
+    input_schema: {
+      type: "object",
+      properties: {
+        years: { type: "number", description: "Years the user has been originating, as they said it, 0 to 70." },
+        stage: { type: "string", enum: CAREER_STAGES.map((s) => s.id), description: "A career stage the user named." },
+      },
+      required: [],
+    },
+  },
 ];
 
-module.exports = { tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool };
+module.exports = {
+  tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, setCareerStageTool,
+};

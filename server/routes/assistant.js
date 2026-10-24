@@ -7,7 +7,7 @@
 // /turn never writes and never 500s: a model or tool failure is a 200 error turn. A change Charli
 // proposes comes back as `sideEffect` with a code-authored read-back; the browser echoes it to
 // /confirm only after the user says yes. That body is UNTRUSTED browser input, so /confirm accepts
-// two action types, takes org/user from the session alone, and runs the same validation and checks
+// three action types, takes org/user from the session alone, and runs the same validation and checks
 // as the REST routes (createClientForUser / logContactForUser in routes/clients.js).
 const crypto = require("crypto");
 const express = require("express");
@@ -18,6 +18,7 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
+const { stageById } = require("../lib/assistant/coaching");
 const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
@@ -80,7 +81,11 @@ const partOfDay = (hour) => (hour < 12 ? "morning" : hour < 17 ? "afternoon" : "
 
 // "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. Want a
 // market update, a sweep of your book, or something else?" Every figure comes straight from the sweep
-// and market tools; a tool that failed leaves its clause out.
+// and market tools; a tool that failed leaves its clause out. A user with no career stage is asked how long
+// they've been originating instead (the greeting asks exactly one thing); their answer is what Charli maps to a
+// stage with setCareerStageTool.
+const WANT_MORE = "Want a market update, a sweep of your book, or something else?";
+const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
 function buildGreeting(user, ctx, localHour) {
   const sweep = runSafely(assistantTools.runSweepTool, ctx);
   const market = runSafely(assistantTools.getMarketUpdate, ctx);
@@ -105,7 +110,7 @@ function buildGreeting(user, ctx, localHour) {
   const name = typeof user.first_name === "string" ? user.first_name.trim() : "";
   const reply =
     `Good ${partOfDay(hourOf(localHour))}${name ? `, ${name}` : ""}.${facts}` +
-    " Want a market update, a sweep of your book, or something else?";
+    ` ${stageById(user.career_stage) ? WANT_MORE : CAREER_QUESTION}`;
   const sources = [sweep, market].filter((r) => r && isCitation(r.source)).map((r) => r.source);
   return { reply, sources };
 }
@@ -134,13 +139,26 @@ function clientFromFields(fields) {
 
 // What is kept per confirmId, and all the reply is built from: the client's id and name, nothing else.
 const receiptOf = (client) => ({ id: client.id, name: client.name });
+// A client write from the shared helpers, in the shape the transaction below works with: `result` is what the
+// response carries, `receipt` what is kept per confirmId and what the reply is built from. Errors pass through.
+const clientOutcome = (done) => (done.client ? { ...done, result: done.client, receipt: receiptOf(done.client) } : done);
 // The addClient fingerprint: the name, trimmed, with runs of whitespace collapsed, lower-cased.
 const fingerprintName = (name) => (typeof name === "string" ? name.trim().replace(/\s+/g, " ").toLowerCase() : "");
 
 // The code-authored sentence after a confirmed change; the browser speaks it and appends it to the
 // conversation as the assistant's turn (so the read-back is no longer the last thing Charli said).
-function confirmReply(type, { name }) {
-  return type === "logContact" ? `Done — I logged a contact for ${name}.` : `Done — I added ${name} as a new client.`;
+function confirmReply(type, receipt) {
+  if (type === "setCareerStage") return `Done — your career stage is set to ${receipt.label}.`;
+  return type === "logContact" ? `Done — I logged a contact for ${receipt.name}.` : `Done — I added ${receipt.name} as a new client.`;
+}
+
+// The setCareerStage write: ONLY the signed-in user's own row (never an id from the body), and the receipt kept per
+// confirmId is the stage and its label. It is idempotent, so a confirmId is optional here.
+function setCareerStageForUser(user, stage) {
+  const info = db.prepare("UPDATE users SET career_stage = ? WHERE id = ?").run(stage.id, user.id);
+  if (info.changes !== 1) return { status: 404, error: "User not found" };
+  const receipt = { stage: stage.id, label: stage.label };
+  return { result: receipt, receipt };
 }
 
 // ── The router ───────────────────────────────────────────────────────────────
@@ -225,12 +243,15 @@ function createAssistantRouter({ limiter = {} } = {}) {
   // for the browser to speak and append to the conversation as the assistant's turn ("Done — I logged a
   // contact for <name>."). A confirmId already confirmed by the same user for the same action comes back as
   // { success: true, result: { id, name }, reply, duplicate: true } and nothing is executed again.
+  //   * setCareerStage ({ type, stage, confirmId? }, stage one of the CAREER_STAGES ids, else 400) sets
+  //     users.career_stage for the signed-in user ONLY and replies "Done — your career stage is set to <label>."
+  //     (result { stage, label }); its confirmId is optional (the update is idempotent) and its target is the stage id.
   //   * addClient requires a confirmId; logContact may send one. A malformed one is 400.
   //   * a confirmId is bound to the user AND to the action it was recorded for (type + target); the same id
   //     from another user, or for another type or target, is 409 and nothing is executed.
   //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
   //     that fails (400 / 403 / 404) records nothing, so the id is still good for a corrected retry.
-  //   * what is kept per confirmId is { id, name } only (no email, phone or notes).
+  //   * what is kept per confirmId is { id, name } only (no email, phone or notes), or { stage, label }.
   router.post("/confirm", (req, res) => {
     const sideEffect = req.body && req.body.sideEffect;
     if (!sideEffect || typeof sideEffect !== "object" || Array.isArray(sideEffect)) {
@@ -246,12 +267,17 @@ function createAssistantRouter({ limiter = {} } = {}) {
       const parsed = clientFromFields(sideEffect.fields);
       if (parsed.errors) return res.status(400).json({ success: false, errors: parsed.errors });
       target = fingerprintName(parsed.body.name);
-      execute = () => createClientForUser(db, req.user, parsed.body);
+      execute = () => clientOutcome(createClientForUser(db, req.user, parsed.body));
     } else if (sideEffect.type === "logContact") {
       const id = sideEffect.clientId;
       if (!Number.isInteger(id) || id <= 0) return bad("a valid clientId is required");
       target = String(id);
-      execute = () => logContactForUser(db, req.user, id);
+      execute = () => clientOutcome(logContactForUser(db, req.user, id));
+    } else if (sideEffect.type === "setCareerStage") {
+      const stage = stageById(sideEffect.stage);
+      if (!stage) return bad("a valid career stage is required");
+      target = stage.id;
+      execute = () => setCareerStageForUser(req.user, stage);
     } else {
       return bad("unknown action");
     }
@@ -278,9 +304,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
           }
         }
         const done = execute();
-        if (done.client && confirmId) {
+        if (done.receipt && confirmId) {
           db.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target) VALUES (?, ?, ?, ?, ?)")
-            .run(confirmId, req.user.id, JSON.stringify(receiptOf(done.client)), type, target);
+            .run(confirmId, req.user.id, JSON.stringify(done.receipt), type, target);
         }
         return done;
       })();
@@ -290,7 +316,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
       }
       if (outcome.errors) return res.status(400).json({ success: false, errors: outcome.errors });
       if (outcome.error) return res.status(outcome.status).json({ success: false, error: outcome.error });
-      res.json({ success: true, result: outcome.client, reply: confirmReply(type, outcome.client) });
+      res.json({ success: true, result: outcome.result, reply: confirmReply(type, outcome.receipt) });
     } catch (err) {
       console.error("POST /api/assistant/confirm:", errText(err));
       res.status(500).json({ success: false, error: "Database error" });

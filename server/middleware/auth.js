@@ -18,7 +18,7 @@ function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     // Reload user from DB to get latest role/org
-    const user = db.prepare("SELECT id, org_id, role, first_name, last_name, email FROM users WHERE id = ?").get(payload.userId);
+    const user = db.prepare("SELECT id, org_id, role, first_name, last_name, email, career_stage FROM users WHERE id = ?").get(payload.userId);
     if (!user) return res.status(401).json({ success: false, error: "User not found" });
     req.user = user;
     next();

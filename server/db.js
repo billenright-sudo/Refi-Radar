@@ -76,6 +76,13 @@ if (!clientCols.some((c) => c.name === "last_contact")) {
   db.exec("UPDATE clients SET last_contact = close_date WHERE (last_contact IS NULL OR last_contact = '') AND close_date <> ''");
 }
 
+// How Charli coaches a user: new / developing / established / veteran (lib/assistant/coaching.js). NULL until the
+// user answers the greeting's question or their broker sets it; nothing assumes a stage.
+const userCols = db.prepare("PRAGMA table_info(users)").all();
+if (!userCols.some((c) => c.name === "career_stage")) {
+  db.exec("ALTER TABLE users ADD COLUMN career_stage TEXT");
+}
+
 // One row per UTC day of the market rates we served — the basis for "market movement".
 db.exec(`
   CREATE TABLE IF NOT EXISTS rate_snapshots (

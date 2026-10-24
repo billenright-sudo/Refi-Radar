@@ -19,7 +19,10 @@ const loginLimiter = rateLimit({
 
 // Helper: safe user object (no password hash)
 function safeUser(u) {
-  return { id: u.id, orgId: u.org_id, role: u.role, firstName: u.first_name, lastName: u.last_name, email: u.email };
+  return {
+    id: u.id, orgId: u.org_id, role: u.role, firstName: u.first_name, lastName: u.last_name, email: u.email,
+    careerStage: u.career_stage == null ? null : u.career_stage,   // null until set (see lib/assistant/coaching.js)
+  };
 }
 
 // POST /api/auth/register — broker registers their shop

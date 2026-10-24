@@ -72,6 +72,9 @@ const orgMix = addOrg("Mix");
 const max = addUser(orgMix, "broker", "max@mix.co", "Max");
 addClientRow(orgMix, max, { name: "Stale Refi", currentRate: 8.0, lastContact: STALE });
 addClientRow(orgMix, max, { name: "Fresh Refi", currentRate: 8.0, lastContact: TODAY });
+// Task 7: a user with no career stage is asked how long they've been originating instead of "Want a market update ...".
+// These four are established, so the greeting tests below keep pinning the existing close (coaching.test.js has the other).
+db.prepare("UPDATE users SET career_stage = 'established' WHERE id IN (?, ?, ?, ?)").run(sam, pat, zoe, max);
 
 // ── harness ──────────────────────────────────────────────────────────────────
 

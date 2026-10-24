@@ -17,8 +17,9 @@
 const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
-  CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
+  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
 } = require("./prompt");
+const { stageById } = require("./coaching");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 const MAX_TOKENS = 600;      // replies are 1-3 spoken sentences
@@ -28,7 +29,7 @@ const FIND_CLIENT_MAX_MATCHES = 5;
 
 // The tools that only PACKAGE a change (they never write; see tools.js). On the last allowed
 // model call these are the only tools run, because nothing else's result could be used.
-const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool"]);
+const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "setCareerStageTool"]);
 
 // Same fallback as routes/rates.js and index.js. Read per call so the env can change.
 const modelName = () => process.env.CLAUDE_MODEL || "claude-sonnet-4-5";
@@ -225,6 +226,8 @@ const isBareYesNoAnswer = (reply, userText) =>
 //     saved", "got that logged") and the just-happened adverb forms ("is now marked", "has already
 //     been logged", "was just saved", "it's now been logged"), on every turn;
 //   * "it's done", "is done", "has been done", "all set", "taken care of", anywhere in the sentence;
+//   * a career stage reported as set, on every turn: first-person "I've set you as a veteran" (set is a claim verb
+//     for "I" / "we"), "is / are / 's / 're / been (now) set to / as", and "you're (now) set / marked / listed as / to";
 //   * the simple past passive ("was logged", "were added") only on an ungrounded turn: it is the one
 //     form a grounded turn may use to narrate a tool fact ("your last contact with Chen was logged on
 //     2026-01-01"; the date still goes through the figure check);
@@ -238,7 +241,7 @@ const isBareYesNoAnswer = (reply, userText) =>
 // later clauses included (R5-4): "Should I get that marked as contacted?" is not a claim, "Would you
 // like me to set a follow-up now that I've logged the call?" is. "changed" is not a claim verb: "I see
 // rates changed overnight" is narration.
-const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done";
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done|set";
 const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled";
 const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
 const FIRST_PERSON_CLAIM_RE = new RegExp(
@@ -253,6 +256,10 @@ const PASSIVE_JUST_RE = new RegExp(
     PASSIVE_VERBS + ")\\b",
   "i"
 );
+// Setting a career stage is a change too: "is set to Veteran", "has been set as Veteran", and "You're now set /
+// marked / listed as Veteran" are false on every turn (the first-person "I've set you ..." is in CLAIM_VERBS).
+const SET_PASSIVE_RE = /(?:\b(?:is|are|been)|['\u2019](?:s|re))\s+(?:now\s+)?set\s+(?:to|as)\b/i;
+const YOURE_SET_RE = /\byou(?:['\u2019]re|\s+are)\s+(?:now\s+)?(?:set|marked|listed)\s+(?:as|to)\b/i;
 const GOT_IT_DONE_RE = new RegExp("\\bgot\\s+(?:\\S+\\s+){1,3}?(?:" + PASSIVE_VERBS + ")\\b", "i");
 const DONE_RE =
   /\b(?:it|that)['\u2019]s\s+(?:all\s+)?done\b|\b(?:is|been)\s+(?:all\s+)?done\b|\ball\s+set\b|\b(?:taken|took)\s+care\s+of\b/i;
@@ -280,6 +287,7 @@ function claimsCompletion(text, grounded) {
     return COMPLETION_OPENER_RE.test(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
+      SET_PASSIVE_RE.test(s) || YOURE_SET_RE.test(s) ||
       (!grounded && PASSIVE_PAST_RE.test(s)) ||
       laterClauseClaims(s);
   });
@@ -545,6 +553,11 @@ function readBack(out) {
       return `Just to confirm — log a contact for ${cleanName(out.data && out.data.client && out.data.client.name) || "that client"}?`;
     case "addClient":
       return `Just to confirm — add ${se.fields.name} as a new client?`;
+    case "setCareerStage": {
+      // the label comes from the stage the tool packaged, so what is read back is what would be saved
+      const stage = stageById(se.stage);
+      return stage ? `Just to confirm — set your career stage to ${stage.label}?` : "Just to confirm — go ahead with that?";
+    }
     default:
       return "Just to confirm — go ahead with that?";
   }
@@ -578,13 +591,16 @@ async function runTurn({ messages, ctx, client } = {}) {
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents actually sent to the model this turn
+  // CHARLI_SYSTEM plus the coaching block for this user's career stage: it tailors how she coaches, nothing the
+  // screening below depends on (that runs on the model's text and this turn's tool results alone)
+  const system = buildCharliSystem(ctx && ctx.user);
 
   for (let call = 0; call < MAX_MODEL_CALLS; call++) {
     const lastCall = call === MAX_MODEL_CALLS - 1;
     // No temperature / tool_choice / thinking: CLAUDE_MODEL is configurable and newer models
     // reject forced tool use and non-default sampling.
     const response = await client.messages.create({
-      model: modelName(), max_tokens: MAX_TOKENS, system: CHARLI_SYSTEM, tools: TOOL_SCHEMA,
+      model: modelName(), max_tokens: MAX_TOKENS, system, tools: TOOL_SCHEMA,
       messages: convo.slice(),
     });
     // A missing response is a fault upstream, not an answer: the route turns the throw into the error turn.

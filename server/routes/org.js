@@ -3,6 +3,7 @@ const express = require("express");
 const db      = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
 const { sendRefiAlert } = require("../email");
+const { stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
 router.use(requireAuth, requireBroker);
@@ -37,6 +38,28 @@ router.get("/los/:id/clients", (req, res) => {
     closeDate: row.close_date, creditScore: row.credit_score,
     notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at,
   })) });
+});
+
+// PATCH /api/org/los/:id/stage — broker sets how Charli coaches one of their LOs (their career stage)
+// Body: { stage } — one of the CAREER_STAGES ids (new, developing, established, veteran).
+// -> { success: true, stage, label }. 400 for any other stage; 404 unless the target is an LO in the caller's org.
+router.patch("/los/:id/stage", (req, res) => {
+  const stage = stageById(req.body && req.body.stage);
+  if (!stage) return res.status(400).json({ success: false, error: "stage must be one of: new, developing, established, veteran" });
+
+  const loId = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
+  const lo = Number.isSafeInteger(loId)
+    ? db.prepare("SELECT id FROM users WHERE id = ? AND org_id = ? AND role = 'lo'").get(loId, req.user.org_id)
+    : undefined;
+  if (!lo) return res.status(404).json({ success: false, error: "LO not found in your org" });
+
+  try {
+    db.prepare("UPDATE users SET career_stage = ? WHERE id = ? AND org_id = ? AND role = 'lo'").run(stage.id, lo.id, req.user.org_id);
+    res.json({ success: true, stage: stage.id, label: stage.label });
+  } catch (err) {
+    console.error("PATCH /api/org/los/:id/stage:", err.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
 });
 
 // POST /api/org/alert — broker sends refi alert to LO for a specific client

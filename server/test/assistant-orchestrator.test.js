@@ -16,7 +16,7 @@ const db = require("../db");
 const refi = require("../lib/refi");
 const { TOOL_SCHEMA } = require("../lib/assistant/tools");
 const {
-  CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH,
+  CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, buildCharliSystem,
 } = require("../lib/assistant/prompt");
 const {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
@@ -368,7 +368,9 @@ test("request shape: env model with the documented fallback, system prompt, tool
     await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client });
     const p = client.calls[0];
     assert.equal(p.model, "claude-sonnet-4-5");
-    assert.equal(p.system, CHARLI_SYSTEM);
+    // Task 7: the system prompt is CHARLI_SYSTEM plus the coaching block for the user's career stage (brokerCtx's user has none)
+    assert.equal(p.system, buildCharliSystem(brokerCtx.user));
+    assert.ok(p.system.startsWith(CHARLI_SYSTEM + "\n\n"));
     assert.deepStrictEqual(p.tools, TOOL_SCHEMA);
     assert.equal(p.max_tokens, 600);
     assert.equal(p.tool_choice, undefined, "no forced tool use: newer models reject it");
@@ -2425,4 +2427,27 @@ test("Step 0: 'remember' counts as a request filler only before 'to'", async () 
     assert.equal(isActionRequest(u), true, u);
   }
   await checkTable(REMEMBER_TABLE);
+});
+
+// ── Task 7: "set" is a completion claim ("I've set you as a veteran") ────────
+
+const SET_CLAIMS = [
+  "Got it — I've set you as a veteran.", "You're now set as Veteran.", "Your stage is set to Veteran.",
+  "I set your stage to Veteran.", "We've set you as a veteran.", "Your career stage has been set to Veteran (10+ years).",
+  "You are now set as Veteran.", "You’re set as Veteran.", "You're marked as a veteran.", "You're listed as Veteran.",
+  "Your career stage is now set to Veteran.",
+];
+const SET_TABLE = [
+  // "about 20 years" is no action request, so only the claim guard stops these: grounded or not
+  ...claimRows("about 20 years", SET_CLAIMS),
+  // the offer, and a statement of what she could do, still pass
+  ...onBoth("about 20 years", "Want me to set your stage to Veteran?", PASS),
+  ...onBoth("about 20 years", "I can set your stage once you confirm.", PASS),
+  ...onBoth("about 20 years", "I'll set your stage once you say yes.", PASS),
+  // ACCEPTED COST (fail closed, like "rates are updated daily"): narration in the "is set to" form is replaced too
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and rates are set to update tomorrow.", NOTHING_CHANGED],
+];
+
+test("Task 7: first-person 'set' and the 'is set to' / 'you're set as' forms are completion claims; the offer is not", async () => {
+  await checkTable(SET_TABLE);
 });
