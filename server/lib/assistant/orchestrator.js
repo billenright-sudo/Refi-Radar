@@ -94,8 +94,9 @@ const FILLER_RE = new RegExp(
   "i"
 );
 const afterFiller = (s) => String(s == null ? "" : s).replace(FILLER_RE, "").trim();
-// A break between the user's own clauses: . ! ? ; : , an em or en dash, an ellipsis, "--" or a spaced hyphen.
-const USER_CLAUSE_BREAK_RE = /[.!?;:,\u2014\u2013\u2026]|--|\s-\s/;
+// A break between the user's own clauses: . ! ? ; : , a newline (consecutive utterances are joined with one),
+// an em or en dash, an ellipsis, "--" or a spaced hyphen.
+const USER_CLAUSE_BREAK_RE = /[.!?;:,—–…\n]|--|\s-\s/;
 
 // R5-1. The user's message is a yes/no question only if ALL hold:
 //   (a) the message ends with "?" (a clause in the middle of the message never counts on its own);
@@ -103,24 +104,34 @@ const USER_CLAUSE_BREAK_RE = /[.!?;:,\u2014\u2013\u2026]|--|\s-\s/;
 //       / am / was / were / do / does / did / has / have / had (or the n't form), or the message ends
 //       with a state tag: right? correct? isn't it? isn't he? isn't she? aren't they? true?;
 //   (c) it is not a request or a mic check: the message (after filler) does not open with an
-//       imperative action verb ("Add a client for me, yeah?"), and neither the message nor the question
-//       opens with one of the closed list of leads in NOT_YES_NO_LEAD_RE ("are you there", "is this thing
-//       on", "do you mind", "is it possible", "do me a favor", ...).
+//       imperative action verb ("Add a client for me, yeah?"), neither the message nor the question
+//       opens with one of the request leads in NOT_YES_NO_LEAD_RE ("do you mind", "is it possible",
+//       "do me a favor", ...), and neither the message nor the question IS a mic check (MIC_CHECK_RE: the
+//       whole question, "are you there?", "is this thing on?", "did you get that?").
 // A reply's leading "Sure" / "Absolutely" / "Right" would BE the answer to such a question, so the
 // lone-question predicate does not strip it, and on an ungrounded turn nothing else may answer it
 // (R5-2, in screenUngroundedText). Pure.
 const YES_NO_AUX_RE = /^(?:is|are|am|was|were|do|does|did|has|have|had)(?:n['\u2019]t)?\b/i;
 const STATE_TAG_RE = /\b(?:right|correct|isn['\u2019]t\s+(?:it|he|she)|aren['\u2019]t\s+they|true)\s*\?\s*$/i;
-// Mic checks ("are you on", "is this working", "do you hear me", "did you get that") are on the list. "Is it on"
-// is excluded only as the whole question ("is it on?"), so "Is it on the schedule?" stays a yes/no question.
+// Requests phrased as questions: a message or question that OPENS with one of these is no yes/no question.
 const NOT_YES_NO_LEAD_RE = new RegExp(
-  "^(?:(?:are\\s+you\\s+(?:there|ready|awake|listening|around|up|with\\s+me|able|free|on|working)" +
-    "|is\\s+(?:this|it|everything)\\s+working|can\\s+you\\s+hear\\s+me" +
-    "|(?:do|did)\\s+you\\s+(?:hear|get|catch)" +
+  "^(?:are\\s+you\\s+(?:able|free)" +
     "|do\\s+you\\s+(?:mind|want\\s+to|have\\s+time|think\\s+you\\s+could)" +
     "|have\\s+you\\s+got\\s+a\\s+(?:minute|sec|second)|is\\s+it\\s+possible|is\\s+there\\s+a\\s+way" +
-    "|do\\s+me\\s+a\\s+favou?r)\\b" +
-    "|is\\s+(?:this\\s+thing|this|it)\\s+on\\s*\\?)",
+    "|do\\s+me\\s+a\\s+favou?r)\\b",
+  "i"
+);
+// Mic checks. Unlike the leads above, a mic check must be the WHOLE question: one of these openings, an
+// optional "now / today / right now / ok / okay", an optional trailing "Charli", and the "?". So "Is this
+// working?" and "Did you get that?" are mic checks, while "Did you get Chen's file?", "Are you on the Chen
+// file?" and "Is it on the schedule?" are yes/no questions. Tested on the message (after filler) and on the
+// question (its last sentence, or the last clause of that) with its "?" put back.
+const MIC_CHECK_RE = new RegExp(
+  "^(?:(?:do|did)\\s+you\\s+(?:hear|get|catch)(?:\\s+(?:me|that|it|this|what\\s+i\\s+said))?" +
+    "|is\\s+(?:this\\s+thing|this|it|everything)\\s+(?:on|working)" +
+    "|are\\s+you\\s+(?:on|working|there|ready|awake|listening|around|up|with\\s+me)" +
+    "|can\\s+you\\s+hear\\s+me)" +
+    "(?:\\s+(?:now|today|right\\s+now|ok|okay))?(?:[\\s,]+(?:charli|charlie))?\\s*\\?$",
   "i"
 );
 const IMPERATIVE_LEAD_RE =
@@ -129,11 +140,12 @@ function isYesNoQuestion(text) {
   const t = String(text == null ? "" : text).trim();
   if (!t.endsWith("?")) return false;
   const opening = afterFiller(t);
-  if (IMPERATIVE_LEAD_RE.test(opening) || NOT_YES_NO_LEAD_RE.test(opening)) return false;
+  if (IMPERATIVE_LEAD_RE.test(opening) || NOT_YES_NO_LEAD_RE.test(opening) || MIC_CHECK_RE.test(opening)) return false;
   const body = t.replace(/[?\s]+$/, "");
-  const questions = [body.split(/[.!?;]/).pop(), body.split(USER_CLAUSE_BREAK_RE).pop()].map(afterFiller);
-  // `q` has lost its "?" with the body, and the "is it on" exclusion is anchored on one, so put it back
-  return STATE_TAG_RE.test(t) || questions.some((q) => YES_NO_AUX_RE.test(q) && !NOT_YES_NO_LEAD_RE.test(q + "?"));
+  const questions = [body.split(/[.!?;\n]/).pop(), body.split(USER_CLAUSE_BREAK_RE).pop()].map(afterFiller);
+  // `q` has lost its "?" with the body, and a mic check is anchored on it, so put it back
+  return STATE_TAG_RE.test(t) ||
+    questions.some((q) => YES_NO_AUX_RE.test(q) && !NOT_YES_NO_LEAD_RE.test(q) && !MIC_CHECK_RE.test(q + "?"));
 }
 
 // R5-3. An action request: some clause of the user's message, after filler, that is not a past-state or
@@ -406,19 +418,37 @@ function latestUserText(messages) {
   return "";
 }
 
+// A user message that ANSWERS rather than asks: it does not end with "?" and, after filler, does not open
+// with a question or auxiliary word ("Robert and Linda", "The first one", "Chen"; not "Robert and Linda?",
+// "what are rates today", "Is Chen my best?"). Pure.
+function isAnswerShaped(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t || t.endsWith("?")) return false;
+  const opening = afterFiller(t);
+  return !QUESTION_START_RE.test(opening) && !YES_NO_AUX_RE.test(opening);
+}
+
 // The action backstop must also hold while the user is answering a clarifying question about an action:
-// "log a call with Chen" -> "Which Chen?" -> "Robert and Linda" is no action request on its own. It is
-// when the assistant message just before the latest user message ends with "?" and the user message
-// just before THAT one was an action request. Walks back through such question/answer pairs (an earlier
-// question in the same chain, "log a call" -> "Who did you talk to?" -> "Chen" -> "Which Chen?" ->
-// "Robert and Linda", counts too); any message that breaks the pattern ends the chain. Pure.
+// "log a call with Chen" -> "Which Chen?" -> "Robert and Linda" is no action request on its own. The chain
+// applies only while the user is ANSWERING: the latest user message must be answer-shaped (after an
+// unconfirmed read-back, "what are rates today?" is a new request and is not held to the backstop). Walking
+// back, each step is an (assistant message ending "?", user message) pair: if that user message is an
+// action request, it is the origin and the backstop applies; otherwise the walk continues only if that user
+// message is answer-shaped too ("log a call" -> "Who did you talk to?" -> "Chen" -> "Which Chen?" ->
+// "Robert and Linda"). At most MAX_CHAIN_HOPS pairs are examined; anything that breaks the pattern, or a
+// chain that does not reach an action request within the cap, does not apply the backstop. Pure.
+const MAX_CHAIN_HOPS = 4;
 function answersActionQuestion(messages) {
-  for (let i = messages.length - 1; i >= 2; i -= 2) {
+  const latest = messages[messages.length - 1];
+  if (!latest || latest.role !== "user" || !isAnswerShaped(messageText(latest))) return false;
+  for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 2; hop++, i -= 2) {
     const asked = messages[i - 1];
     const before = messages[i - 2];
     if (!asked || asked.role !== "assistant" || !messageText(asked).trim().endsWith("?")) return false;
     if (!before || before.role !== "user") return false;
-    if (isActionRequest(messageText(before))) return true;
+    const text = messageText(before);
+    if (isActionRequest(text)) return true;
+    if (!isAnswerShaped(text)) return false;
   }
   return false;
 }

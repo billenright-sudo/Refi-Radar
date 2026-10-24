@@ -10,8 +10,9 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "br-assist-api-"));
 process.env.JWT_SECRET = "test-secret-" + Math.random().toString(16).slice(2);
 process.env.NODE_ENV = "test";
 
+const crypto = require("crypto");
 const test = require("node:test");
-const { before, after } = require("node:test");
+const { before, after, afterEach } = require("node:test");
 const assert = require("node:assert");
 const express = require("express");
 const cookieParser = require("cookie-parser");
@@ -22,6 +23,7 @@ const refi = require("../lib/refi");
 const assistantTools = require("../lib/assistant/tools");
 const { ERROR_TURN, NOTHING_CHANGED } = require("../lib/assistant/prompt");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
+const { normalizeHistory, SESSION_STARTED, MAX_HISTORY } = require("../lib/assistant/history");
 const clientRoutes = require("../routes/clients");
 const assistantRoutes = require("../routes/assistant");
 
@@ -74,12 +76,30 @@ addClientRow(orgMix, max, { name: "Fresh Refi", currentRate: 8.0, lastContact: T
 // ── harness ──────────────────────────────────────────────────────────────────
 
 // `script[i]` answers the (i+1)th messages.create() call: a response object, or a function (params) => response.
+// The Messages API answers 400 unless the FIRST message is the user's and the roles ALTERNATE. The fake
+// enforces both on every call it receives (and the afterEach hook below fails the test that sent one), so a
+// regression in the history shaping fails loudly instead of being masked as the route's error turn.
+const shapeViolations = [];
+const apiShapeProblems = (messages) => {
+  const problems = [];
+  if (!Array.isArray(messages) || !messages.length) return ["no messages"];
+  if (messages[0].role !== "user") problems.push(`the first message is ${messages[0].role}, not user`);
+  for (let i = 1; i < messages.length; i++) {
+    if (messages[i].role === messages[i - 1].role) problems.push(`messages ${i - 1} and ${i} are both ${messages[i].role}`);
+  }
+  return problems;
+};
 function fakeClient(script) {
   const calls = [];
   return {
     calls,
     messages: {
       create: async (params) => {
+        const problems = apiShapeProblems(params.messages);
+        if (problems.length) {
+          shapeViolations.push(...problems);
+          throw new Error("the Messages API would answer 400: " + problems.join("; "));
+        }
         calls.push(JSON.parse(JSON.stringify(params)));
         const next = script[calls.length - 1];
         if (next === undefined) throw new Error("fake client: script exhausted at call " + calls.length);
@@ -94,6 +114,8 @@ const resp = (content, stop_reason, usage = { input_tokens: 100, output_tokens: 
 const say = (t, usage) => resp([{ type: "text", text: t }], "end_turn", usage);
 const useTool = (name, input = {}, id = "toolu_1", usage) => resp([{ type: "tool_use", id, name, input }], "tool_use", usage);
 const userMsgs = (...texts) => texts.map((content) => ({ role: "user", content }));
+const newId = () => crypto.randomUUID();
+const withoutConfirmId = ({ confirmId, ...rest }) => rest;
 
 function buildApp(router) {
   const a = express();
@@ -124,6 +146,10 @@ before(async () => {
   const listening = await listen(app);
   server = listening.server;
   as = asUser(listening.base);
+});
+afterEach(() => {
+  const violations = shapeViolations.splice(0);
+  assert.deepStrictEqual(violations, [], "a model call was sent a history the Messages API rejects");
 });
 after(() => {
   server.close();
@@ -232,7 +258,8 @@ test("turn that proposes logContact returns the sideEffect and writes nothing; c
   const turn = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("log a call with Chen"), rates: LIVE });
   assert.equal(turn.status, 200);
   assert.equal(turn.data.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
-  assert.deepStrictEqual(turn.data.sideEffect, { type: "logContact", clientId: chen });
+  assert.match(turn.data.sideEffect.confirmId, UUID, "/turn stamps every sideEffect with a server-generated confirmId");
+  assert.deepStrictEqual(withoutConfirmId(turn.data.sideEffect), { type: "logContact", clientId: chen });
   assert.deepStrictEqual(turn.data.sources, ["client record"]);
   assert.equal(clientRow(chen).last_contact, before, "the turn is read-only");
 
@@ -250,7 +277,8 @@ test("turn that proposes addClient returns the sideEffect and inserts nothing; c
   setClient(fakeClient([useTool("addClientTool", fields)]));
   const turn = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("add Jane Doe as a client"), rates: LIVE });
   assert.equal(turn.data.reply, "Just to confirm — add Jane Doe as a new client?");
-  assert.deepStrictEqual(turn.data.sideEffect, { type: "addClient", fields });
+  assert.match(turn.data.sideEffect.confirmId, UUID);
+  assert.deepStrictEqual(withoutConfirmId(turn.data.sideEffect), { type: "addClient", fields });
   assert.equal(clientCount(), count);
 
   const confirm = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: turn.data.sideEffect });
@@ -397,28 +425,131 @@ test("turn: only plain { role, content: string } messages reach the model; tool 
   ]);
 });
 
-test("turn: only the last 20 messages are kept, and the history sent starts with a user message", async () => {
-  // 31 alternating messages ending with the user: the last 20 would open with an assistant turn, which is dropped
+const alternatingHistory = (n) => Array.from({ length: n }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: "msg " + i }));
+
+test("turn: only the last 20 messages are kept; a trim that leaves the assistant first gets the synthetic opener (<= 21 sent)", async () => {
+  // 25 alternating messages (user first and last): the last 20 are msg 5..24 and open with an assistant turn
   let client = fakeClient([say("Anytime!")]);
   setClient(client);
-  const alternating = Array.from({ length: 31 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: "msg " + i }));
-  let r = await as(ann)("POST", "/api/assistant/turn", { messages: alternating, rates: LIVE });
+  let r = await as(ann)("POST", "/api/assistant/turn", { messages: alternatingHistory(25), rates: LIVE });
   assert.equal(r.status, 200);
   let sent = client.calls[0].messages;
-  assert.ok(sent.length <= 20 && sent.length >= 19, "sent " + sent.length);
-  assert.equal(sent[0].role, "user");
-  assert.equal(sent[sent.length - 1].content, "msg 30", "the newest messages are the ones kept");
-  assert.equal(sent[0].content, "msg 12");
+  assert.equal(sent.length, 21);
+  assert.deepStrictEqual(sent[0], { role: "user", content: SESSION_STARTED });
+  assert.equal(sent[1].content, "msg 5", "the newest 20 are the ones kept");
+  assert.equal(sent[1].role, "assistant");
+  assert.equal(sent[20].content, "msg 24");
 
-  // exactly 20 kept when the 20th from the end is already a user message
+  // a history that fits is sent as it is
   client = fakeClient([say("Anytime!")]);
   setClient(client);
-  const users = Array.from({ length: 25 }, (_, i) => ({ role: "user", content: "u" + i }));
-  r = await as(ann)("POST", "/api/assistant/turn", { messages: users, rates: LIVE });
+  r = await as(ann)("POST", "/api/assistant/turn", { messages: alternatingHistory(19), rates: LIVE });
   sent = client.calls[0].messages;
-  assert.equal(sent.length, 20);
-  assert.equal(sent[0].content, "u5");
-  assert.equal(sent[19].content, "u24");
+  assert.equal(sent.length, 19);
+  assert.deepStrictEqual(sent, alternatingHistory(19));
+});
+
+test("turn: Charli's greeting opens the session, so the history starts with the assistant: a synthetic user turn goes in front", async () => {
+  const greeting = "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. Want a market update, a sweep of your book, or something else?";
+  const client = fakeClient([say("Anytime!")]);
+  setClient(client);
+  const r = await as(ann)("POST", "/api/assistant/turn", {
+    messages: [{ role: "assistant", content: greeting }, { role: "user", content: "thanks" }], rates: LIVE,
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, "Anytime!");
+  assert.equal("error" in r.data, false, "no longer masked as the error turn");
+  assert.deepStrictEqual(client.calls[0].messages, [
+    { role: "user", content: SESSION_STARTED },
+    { role: "assistant", content: greeting },
+    { role: "user", content: "thanks" },
+  ]);
+});
+
+test("turn: after the greeting's question the synthetic opener keeps the action backstop where it belongs", async () => {
+  const greeting = "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. How long have you been originating?";
+  // a plain answer to the greeting's question is not held to the backstop ...
+  setClient(fakeClient([say("Nice, that's a long run.")]));
+  let r = await as(ann)("POST", "/api/assistant/turn", {
+    messages: [{ role: "assistant", content: greeting }, { role: "user", content: "about 20 years" }], rates: LIVE,
+  });
+  assert.equal(r.data.reply, "Nice, that's a long run.");
+  // ... but an action request in the same position is
+  setClient(fakeClient([useTool("findClient", { query: "chen" }), say("Call logged for Robert and Linda Chen.")]));
+  r = await as(ann)("POST", "/api/assistant/turn", {
+    messages: [{ role: "assistant", content: greeting }, { role: "user", content: "log a call with Chen" }], rates: LIVE,
+  });
+  assert.equal(r.data.reply, NOTHING_CHANGED);
+});
+
+test("turn: consecutive messages of the same role are merged with a newline, and the model sees strict alternation", async () => {
+  const client = fakeClient([say("Anytime!")]);
+  setClient(client);
+  const r = await as(ann)("POST", "/api/assistant/turn", {
+    rates: LIVE,
+    messages: [
+      { role: "user", content: " first " }, { role: "user", content: "second" },
+      { role: "assistant", content: "Hello." }, { role: "assistant", content: "Anything else?" },
+      { role: "user", content: "thanks" },
+    ],
+  });
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual(client.calls[0].messages, [
+    { role: "user", content: "first\nsecond" },
+    { role: "assistant", content: "Hello.\nAnything else?" },
+    { role: "user", content: "thanks" },
+  ]);
+});
+
+test("the fake client rejects a history the Messages API would reject (the guard under every route test)", async () => {
+  const client = fakeClient([say("x")]);
+  await assert.rejects(client.messages.create({ messages: [{ role: "assistant", content: "hi" }, { role: "user", content: "yo" }] }), /400/);
+  await assert.rejects(client.messages.create({ messages: [{ role: "user", content: "a" }, { role: "user", content: "b" }] }), /400/);
+  assert.equal(shapeViolations.splice(0).length, 2, "both were recorded for the afterEach hook");
+});
+
+test("normalizeHistory: filter, merge, require a user last, keep 20, open with a user message", () => {
+  const u = (content) => ({ role: "user", content });
+  const a = (content) => ({ role: "assistant", content });
+  assert.equal(SESSION_STARTED, "(Session started.)");
+  assert.equal(MAX_HISTORY, 20);
+  // [user, user, assistant, assistant, user] -> [user(merged), assistant(merged), user]
+  assert.deepStrictEqual(normalizeHistory([u("a"), u("b"), a("c"), a("d"), u("e")]), [u("a\nb"), a("c\nd"), u("e")]);
+  // assistant first -> the synthetic user message in front
+  assert.deepStrictEqual(normalizeHistory([a("Hi, Bill."), u("hello")]), [u(SESSION_STARTED), a("Hi, Bill."), u("hello")]);
+  // merging happens after the filter, so blanks and tool shapes between two messages of a role do not split them
+  assert.deepStrictEqual(
+    normalizeHistory([u("a"), u("  "), { role: "user", content: [{ type: "text", text: "x" }] }, null, u("b")]), [u("a\nb")]
+  );
+  assert.deepStrictEqual(normalizeHistory([a("one"), { role: "assistant", content: [] }, a("two"), u("go")]), [u(SESSION_STARTED), a("one\ntwo"), u("go")]);
+  // the latest message must be the user's
+  for (const raw of [undefined, null, "hi", 5, {}, [], [a("x")], [u("a"), a("b")], [u("a"), a("b"), u("   ")], [u("a"), { role: "tool", content: "b" }, a("c")], [null]]) {
+    assert.equal(normalizeHistory(raw), null, JSON.stringify(raw));
+  }
+  // the trim keeps the newest 20, then a leading assistant gets the opener (so at most 21)
+  const long = alternatingHistory(41);
+  const out = normalizeHistory(long);
+  assert.equal(out.length, 21);
+  assert.deepStrictEqual(out[0], u(SESSION_STARTED));
+  assert.equal(out[1].content, "msg 21");
+  assert.equal(out[20].content, "msg 40");
+  assert.deepStrictEqual(normalizeHistory(alternatingHistory(21)).slice(0, 2), [u(SESSION_STARTED), { role: "assistant", content: "msg 1" }]);
+  // merging counts before the trim: 30 users in a row are one message
+  assert.deepStrictEqual(normalizeHistory(Array.from({ length: 30 }, (_, i) => u("u" + i))).length, 1);
+  // always strictly alternating, user first, user last
+  for (const raw of [alternatingHistory(1), alternatingHistory(2 * 7 + 1), alternatingHistory(41), [a("g"), u("a"), u("b"), a("c"), a("d"), u("e")]]) {
+    const n = normalizeHistory(raw);
+    assert.deepStrictEqual(apiShapeProblems(n), []);
+    assert.equal(n[n.length - 1].role, "user");
+  }
+  // the caller's array and objects are not mutated
+  const raw = [u("a"), u("b")];
+  const snapshot = JSON.stringify(raw);
+  normalizeHistory(raw);
+  assert.equal(JSON.stringify(raw), snapshot);
+  // the route module exports the same function and constant
+  assert.equal(assistantRoutes.normalizeHistory, normalizeHistory);
+  assert.equal(assistantRoutes.SESSION_STARTED, SESSION_STARTED);
 });
 
 // ── the error turn ───────────────────────────────────────────────────────────
@@ -482,7 +613,7 @@ test("confirm addClient: org and user come from the session, never from the body
   const count = clientCount();
   const r = await as(ann)("POST", "/api/assistant/confirm", {
     sideEffect: {
-      type: "addClient", org_id: orgB, user_id: bea, id: 1,
+      type: "addClient", confirmId: newId(), org_id: orgB, user_id: bea, id: 1,
       fields: {
         name: "  Mallory Smith  ", loanType: "15yr_fixed", currentRate: "6.9", loanBalance: "250000", propertyValue: 400000,
         email: " m@x.co ", org_id: orgB, orgId: orgB, user_id: bea, userId: bea, id: beaClient,
@@ -504,7 +635,7 @@ test("confirm addClient: org and user come from the session, never from the body
 
   // an LO's client is the LO's
   const lo = await as(lou)("POST", "/api/assistant/confirm", {
-    sideEffect: { type: "addClient", fields: { name: "Lou New", loanType: "30yr_fixed", currentRate: 7, loanBalance: 100000, propertyValue: 200000, user_id: ann } },
+    sideEffect: { type: "addClient", confirmId: newId(), fields: { name: "Lou New", loanType: "30yr_fixed", currentRate: 7, loanBalance: 100000, propertyValue: 200000, user_id: ann } },
   });
   assert.equal(lo.status, 200);
   assert.deepStrictEqual([clientRow(lo.data.result.id).org_id, clientRow(lo.data.result.id).user_id], [orgA, lou]);
@@ -520,7 +651,7 @@ test("confirm addClient: invalid fields are 400 and write nothing", async () => 
     [{ ...ok, name: 42 }, "name"], [{ ...ok, name: "Jane", email: 5 }, "email"], [{ ...ok, name: "Jane", notes: { a: 1 } }, "notes"],
     [null, "name"], ["Jane Doe", "name"], [[{ name: "Jane" }], "name"], [undefined, "name"],
   ]) {
-    const r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "addClient", fields } });
+    const r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "addClient", confirmId: newId(), fields } });
     assert.equal(r.status, 400, JSON.stringify(fields));
     assert.equal(r.data.success, false);
     assert.ok(r.data.errors && r.data.errors[key], `${JSON.stringify(fields)} -> ${JSON.stringify(r.data)}`);
@@ -575,6 +706,191 @@ test("confirm: unknown or malformed sideEffects are 400 and change nothing", asy
   }
   assert.equal(clientCount(), count);
   assert.deepStrictEqual([chen, louClient, beaClient].map((id) => clientRow(id).last_contact), stamps);
+});
+
+// ── confirm is idempotent (confirmId) ────────────────────────────────────────
+
+const newClientFields = (name) => ({ name, loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 450000 });
+const confirmation = (id) => db.prepare("SELECT * FROM assistant_confirmations WHERE confirm_id = ?").get(id);
+const confirmAs = (userId, sideEffect) => as(userId)("POST", "/api/assistant/confirm", { sideEffect });
+const namedCount = (name) => db.prepare("SELECT COUNT(*) AS n FROM clients WHERE name = ?").get(name).n;
+
+test("assistant_confirmations: the migration creates the dedupe table", () => {
+  const cols = db.prepare("PRAGMA table_info(assistant_confirmations)").all();
+  assert.deepStrictEqual(cols.map((c) => c.name), ["confirm_id", "user_id", "result_json", "created_at"]);
+  assert.equal(cols.find((c) => c.name === "confirm_id").pk, 1);
+  assert.equal(cols.find((c) => c.name === "user_id").notnull, 1);
+  assert.equal(cols.find((c) => c.name === "result_json").notnull, 1);
+});
+
+test("turn: every sideEffect it returns carries its own server-generated confirmId", async () => {
+  setClient(fakeClient([
+    useTool("logContactTool", { clientId: chen }),
+    useTool("addClientTool", newClientFields("Turn Ids")),
+  ]));
+  const a = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("log a call with Chen"), rates: LIVE });
+  const b = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("add Turn Ids"), rates: LIVE });
+  assert.match(a.data.sideEffect.confirmId, UUID);
+  assert.match(b.data.sideEffect.confirmId, UUID);
+  assert.notEqual(a.data.sideEffect.confirmId, b.data.sideEffect.confirmId);
+  assert.equal(confirmation(a.data.sideEffect.confirmId), undefined, "issuing an id records nothing");
+  assert.equal(namedCount("Turn Ids"), 0);
+});
+
+test("confirm addClient twice with the same confirmId: one client, the second response is duplicate:true", async () => {
+  const confirmId = newId();
+  const count = clientCount();
+  const sideEffect = { type: "addClient", confirmId, fields: newClientFields("Idem Potent") };
+  const first = await confirmAs(ann, sideEffect);
+  assert.equal(first.status, 200);
+  assert.equal(first.data.success, true);
+  assert.equal("duplicate" in first.data, false);
+  const second = await confirmAs(ann, sideEffect);
+  assert.equal(second.status, 200);
+  assert.equal(second.data.success, true);
+  assert.equal(second.data.duplicate, true);
+  assert.deepStrictEqual(second.data.result, first.data.result, "the stored result is returned");
+  assert.equal(clientCount(), count + 1);
+  assert.equal(namedCount("Idem Potent"), 1);
+  const stored = confirmation(confirmId);
+  assert.equal(stored.user_id, ann);
+  assert.deepStrictEqual(JSON.parse(stored.result_json), first.data.result);
+  assert.match(stored.created_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+
+  // the id is case-insensitive: the same UUID in capitals is the same confirmation
+  const upper = await confirmAs(ann, { ...sideEffect, confirmId: confirmId.toUpperCase() });
+  assert.equal(upper.data.duplicate, true);
+  assert.equal(namedCount("Idem Potent"), 1);
+});
+
+test("confirm: two simultaneous taps with the same confirmId still write once", async () => {
+  const sideEffect = { type: "addClient", confirmId: newId(), fields: newClientFields("Double Tap") };
+  const [x, y] = await Promise.all([confirmAs(ann, sideEffect), confirmAs(ann, sideEffect)]);
+  assert.deepStrictEqual([x.status, y.status], [200, 200]);
+  assert.equal(namedCount("Double Tap"), 1);
+  assert.equal([x, y].filter((r) => r.data.duplicate === true).length, 1, "exactly one of the two is the duplicate");
+  assert.equal(x.data.result.id, y.data.result.id);
+});
+
+test("confirm addClient without a valid confirmId is 400 and writes nothing", async () => {
+  const count = clientCount();
+  const good = newId();
+  for (const confirmId of [
+    undefined, null, "", " ", "abc", 42, true, {}, [good], good + "x", " " + good, good.replace(/-/g, ""), good.slice(1),
+    "gggggggg-gggg-gggg-gggg-gggggggggggg",
+  ]) {
+    const r = await confirmAs(ann, { type: "addClient", confirmId, fields: newClientFields("No Confirm Id") });
+    assert.equal(r.status, 400, JSON.stringify(confirmId));
+    assert.equal(r.data.success, false);
+    assert.equal("duplicate" in r.data, false);
+  }
+  assert.equal(clientCount(), count);
+  assert.equal(namedCount("No Confirm Id"), 0);
+});
+
+test("confirm: a confirmId used by one user is 409 for another, and the second user's write does not happen", async () => {
+  const confirmId = newId();
+  const first = await confirmAs(ann, { type: "addClient", confirmId, fields: newClientFields("Ann Only") });
+  assert.equal(first.status, 200);
+  const count = clientCount();
+  const clash = await confirmAs(bea, { type: "addClient", confirmId, fields: newClientFields("Bea Clash") });
+  assert.equal(clash.status, 409);
+  assert.equal(clash.data.success, false);
+  assert.equal(clientCount(), count);
+  assert.equal(namedCount("Bea Clash"), 0);
+  assert.equal(confirmation(confirmId).user_id, ann, "the record still belongs to the first user");
+
+  // the same for a logContact: bea cannot ride on ann's confirmId
+  const logId = newId();
+  assert.equal((await confirmAs(ann, { type: "logContact", confirmId: logId, clientId: chen })).status, 200);
+  const beaBefore = clientRow(beaClient).last_contact;
+  const log409 = await confirmAs(bea, { type: "logContact", confirmId: logId, clientId: beaClient });
+  assert.equal(log409.status, 409);
+  assert.equal(clientRow(beaClient).last_contact, beaBefore);
+});
+
+test("confirm logContact: works without a confirmId; with one, a replay returns the stored result and writes nothing", async () => {
+  // no confirmId: as before, and nothing is recorded
+  const before = db.prepare("SELECT COUNT(*) AS n FROM assistant_confirmations").get().n;
+  const plain = await confirmAs(ann, { type: "logContact", clientId: chen });
+  assert.equal(plain.status, 200);
+  assert.equal("duplicate" in plain.data, false);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM assistant_confirmations").get().n, before);
+
+  const confirmId = newId();
+  const first = await confirmAs(ann, { type: "logContact", confirmId, clientId: chen });
+  assert.equal(first.status, 200);
+  assert.equal("duplicate" in first.data, false);
+  db.prepare("UPDATE clients SET last_contact = '2000-01-01' WHERE id = ?").run(chen);
+  const replay = await confirmAs(ann, { type: "logContact", confirmId, clientId: chen });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.data.duplicate, true);
+  assert.deepStrictEqual(replay.data.result, first.data.result);
+  assert.equal(clientRow(chen).last_contact, "2000-01-01", "the replay executed nothing");
+  assert.equal(confirmation(confirmId).user_id, ann);
+});
+
+test("confirm: a malformed confirmId is 400 on any type, and an unknown type records nothing", async () => {
+  const chenBefore = clientRow(chen).last_contact;
+  for (const confirmId of ["abc", 42, "", {}, [], true]) {
+    const r = await confirmAs(ann, { type: "logContact", confirmId, clientId: chen });
+    assert.equal(r.status, 400, JSON.stringify(confirmId));
+  }
+  assert.equal(clientRow(chen).last_contact, chenBefore);
+  const id = newId();
+  assert.equal((await confirmAs(ann, { type: "deleteClient", confirmId: id, clientId: chen })).status, 400);
+  assert.equal(confirmation(id), undefined);
+});
+
+test("confirm: a confirmId only dedupes; validation and authorization still apply, and a failure does not consume the id", async () => {
+  // validation: a bad body is 400 and records nothing, so the same id works for the corrected body
+  const id = newId();
+  const bad = await confirmAs(ann, { type: "addClient", confirmId: id, fields: { ...newClientFields(""), name: "" } });
+  assert.equal(bad.status, 400);
+  assert.ok(bad.data.errors && bad.data.errors.name);
+  assert.equal(confirmation(id), undefined);
+  const ok = await confirmAs(ann, { type: "addClient", confirmId: id, fields: newClientFields("Retry After Fix") });
+  assert.equal(ok.status, 200);
+  assert.equal("duplicate" in ok.data, false);
+  assert.equal(namedCount("Retry After Fix"), 1);
+
+  // a replay with a body that fails the shape checks is 400, not a stored result
+  const shape = await confirmAs(ann, { type: "logContact", confirmId: id, clientId: "chen" });
+  assert.equal(shape.status, 400);
+
+  // authorization: another org's client is 403 and records nothing
+  const forbidden = newId();
+  const beaBefore = clientRow(beaClient).last_contact;
+  const r403 = await confirmAs(ann, { type: "logContact", confirmId: forbidden, clientId: beaClient });
+  assert.equal(r403.status, 403);
+  assert.equal(confirmation(forbidden), undefined);
+  assert.equal(clientRow(beaClient).last_contact, beaBefore);
+  const r404 = await confirmAs(ann, { type: "logContact", confirmId: forbidden, clientId: 99999999 });
+  assert.equal(r404.status, 404);
+  assert.equal(confirmation(forbidden), undefined);
+  // an LO's replay of their own confirmation is fine; an LO cannot use it to reach the broker's client
+  const loId = newId();
+  assert.equal((await confirmAs(lou, { type: "logContact", confirmId: loId, clientId: louClient })).status, 200);
+  assert.equal((await confirmAs(lou, { type: "logContact", confirmId: newId(), clientId: chen })).status, 403);
+});
+
+test("confirm: the write and its record commit together (a failing record rolls the client back)", async () => {
+  const count = clientCount();
+  const original = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    if (/INSERT INTO assistant_confirmations/.test(sql)) throw new Error("disk full");
+    return original(sql);
+  };
+  try {
+    await capturingErrors(async () => {
+      const r = await confirmAs(ann, { type: "addClient", confirmId: newId(), fields: newClientFields("Rolled Back") });
+      assert.equal(r.status, 500);
+    });
+  } finally {
+    delete db.prepare;
+  }
+  assert.equal(clientCount(), count);
+  assert.equal(namedCount("Rolled Back"), 0);
 });
 
 // ── metering ─────────────────────────────────────────────────────────────────

@@ -100,4 +100,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_assistant_usage_user_created ON assistant_usage (user_id, created_at);
 `);
 
+// One row per confirmed voice action: POST /api/assistant/confirm records the confirmId it executed under, so
+// a repeated confirm (a double tap, a retry) returns the stored result instead of writing again.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS assistant_confirmations (
+    confirm_id  TEXT    PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    result_json TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
 module.exports = db;

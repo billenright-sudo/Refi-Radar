@@ -18,10 +18,10 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
+const { normalizeHistory, SESSION_STARTED } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { createClientForUser, logContactForUser } = require("./clients");
 
-const MAX_HISTORY = 20;          // messages sent to the model, newest last
 const DEFAULT_USAGE_DAYS = 30;
 const MAX_USAGE_DAYS = 365;
 
@@ -62,23 +62,8 @@ function cleanRates(raw) {
   return rates;
 }
 
-// The history from the browser, rebuilt as plain { role, content } text messages: anything that is not a
-// non-empty user/assistant string (tool_use / tool_result blocks, other roles, blanks) is dropped. Keeps
-// the last MAX_HISTORY, and starts at a user message (the Messages API rejects a history that opens
-// with an assistant turn). null unless the newest kept message is the user's.
-function sanitizeMessages(raw) {
-  if (!Array.isArray(raw)) return null;
-  const kept = [];
-  for (const m of raw) {
-    if (!m || typeof m !== "object" || (m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string") continue;
-    const content = m.content.trim();
-    if (content) kept.push({ role: m.role, content });
-  }
-  if (!kept.length || kept[kept.length - 1].role !== "user") return null;
-  const recent = kept.slice(-MAX_HISTORY);
-  while (recent[0].role !== "user") recent.shift();
-  return recent;
-}
+// A confirmId is a UUID (case-insensitive; stored lowercase).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ── The greeting (no model call) ─────────────────────────────────────────────
 
@@ -196,7 +181,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
       }
     }
 
-    const messages = sanitizeMessages(body.messages);
+    const messages = normalizeHistory(body.messages);
     if (!messages) return res.status(400).json({ success: false, error: "messages must be a history ending with the user's message" });
 
     let out;
@@ -209,33 +194,65 @@ function createAssistantRouter({ limiter = {} } = {}) {
     }
     meter(req.user.id, turnId, out.usage || {});
     const payload = { reply: out.reply, sources: out.sources, turnId };
-    if (out.sideEffect) payload.sideEffect = out.sideEffect;
+    // Each proposed change gets its own id; /confirm uses it so a double tap cannot write twice.
+    if (out.sideEffect) payload.sideEffect = { ...out.sideEffect, confirmId: crypto.randomUUID() };
     res.json(payload);
   });
 
-  // POST /api/assistant/confirm — Body: { sideEffect } as /turn returned it, after the user said yes.
-  // -> { success: true, result: <client> }
+  // POST /api/assistant/confirm — Body: { sideEffect } as /turn returned it (confirmId included), after the
+  // user said yes. -> { success: true, result: <client> }, plus duplicate: true when this confirmId was
+  // already confirmed by the same user (the stored result comes back and nothing is executed again).
+  //   * addClient requires a confirmId; logContact may send one. A malformed one is 400.
+  //   * the same confirmId from a different user is 409.
+  //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
+  //     that fails (400 / 403 / 404) records nothing, so the id is still good for a corrected retry.
   router.post("/confirm", (req, res) => {
     const sideEffect = req.body && req.body.sideEffect;
     if (!sideEffect || typeof sideEffect !== "object" || Array.isArray(sideEffect)) {
       return res.status(400).json({ success: false, error: "sideEffect required" });
     }
+    const bad = (error) => res.status(400).json({ success: false, error });
+
+    // Shape checks first; they leave `execute`, the write to run if this is not a duplicate.
+    let execute;
+    if (sideEffect.type === "addClient") {
+      const parsed = clientFromFields(sideEffect.fields);
+      if (parsed.errors) return res.status(400).json({ success: false, errors: parsed.errors });
+      execute = () => createClientForUser(db, req.user, parsed.body);
+    } else if (sideEffect.type === "logContact") {
+      const id = sideEffect.clientId;
+      if (!Number.isInteger(id) || id <= 0) return bad("a valid clientId is required");
+      execute = () => logContactForUser(db, req.user, id);
+    } else {
+      return bad("unknown action");
+    }
+    let confirmId = null;
+    if (sideEffect.confirmId != null) {
+      if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return bad("confirmId must be a UUID");
+      confirmId = sideEffect.confirmId.toLowerCase();
+    } else if (sideEffect.type === "addClient") {
+      return bad("confirmId required");
+    }
+
     try {
-      if (sideEffect.type === "addClient") {
-        const parsed = clientFromFields(sideEffect.fields);
-        if (parsed.errors) return res.status(400).json({ success: false, errors: parsed.errors });
-        const result = createClientForUser(db, req.user, parsed.body);
-        if (result.errors) return res.status(400).json({ success: false, errors: result.errors });
-        return res.json({ success: true, result: result.client });
-      }
-      if (sideEffect.type === "logContact") {
-        const id = sideEffect.clientId;
-        if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ success: false, error: "a valid clientId is required" });
-        const result = logContactForUser(db, req.user, id);
-        if (result.error) return res.status(result.status).json({ success: false, error: result.error });
-        return res.json({ success: true, result: result.client });
-      }
-      return res.status(400).json({ success: false, error: "unknown action" });
+      // One transaction: the duplicate check, the write and its record commit (or roll back) together.
+      const outcome = db.transaction(() => {
+        if (confirmId) {
+          const prior = db.prepare("SELECT user_id, result_json FROM assistant_confirmations WHERE confirm_id = ?").get(confirmId);
+          if (prior) return prior.user_id === req.user.id ? { duplicate: JSON.parse(prior.result_json) } : { conflict: true };
+        }
+        const done = execute();
+        if (done.client && confirmId) {
+          db.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json) VALUES (?, ?, ?)")
+            .run(confirmId, req.user.id, JSON.stringify(done.client));
+        }
+        return done;
+      })();
+      if (outcome.conflict) return res.status(409).json({ success: false, error: "confirmId already used" });
+      if (outcome.duplicate) return res.json({ success: true, result: outcome.duplicate, duplicate: true });
+      if (outcome.errors) return res.status(400).json({ success: false, errors: outcome.errors });
+      if (outcome.error) return res.status(outcome.status).json({ success: false, error: outcome.error });
+      res.json({ success: true, result: outcome.client });
     } catch (err) {
       console.error("POST /api/assistant/confirm:", errText(err));
       res.status(500).json({ success: false, error: "Database error" });
@@ -257,4 +274,4 @@ function createAssistantRouter({ limiter = {} } = {}) {
   return router;
 }
 
-module.exports = Object.assign(createAssistantRouter(), { createAssistantRouter });
+module.exports = Object.assign(createAssistantRouter(), { createAssistantRouter, normalizeHistory, SESSION_STARTED });

@@ -1293,6 +1293,12 @@ test("isYesNoQuestion (R5-1): ends with '?', opens with an auxiliary or ends wit
     // the "is it on" mic-check exclusion is anchored on the "?": a question that goes on is a real yes/no question
     "Is it on the schedule?", "Is this on the list?", "Hey Charli, is it on the schedule?",
     "Okay. Is it on the schedule?",
+    // Pre-review fix (C2): a mic check must be the WHOLE question; "did you get / hear / catch" or "are you on"
+    // followed by anything else is a real yes/no question
+    "Did you get Chen's file?", "Did you get the call from Chen?", "Did you hear Chen's voicemail?",
+    "Are you on the Chen file?", "Is this working capital?", "Is it working on Chen's file?",
+    // ... and so is a real question after a mic check (the message does not open with a mic check alone)
+    "Are you there? Is Chen my best?",
   ]) {
     assert.equal(isYesNoQuestion(u), true, u);
   }
@@ -1316,8 +1322,13 @@ test("isYesNoQuestion (R5-1): ends with '?', opens with an auxiliary or ends wit
     "Is this working?", "Do you hear me?", "Did you hear me?", "Did you get that?", "Did you catch that?",
     "Are you on?", "Are you working?", "Is everything working?", "Is it working?", "Hey Charli, is this working?",
     "Okay. Is it on?", "Hey Charli, thanks. Is this thing on?",
-    // the message itself opens with a mic-check lead (the ruled message-level exclusion)
-    "Are you there? Is Chen my best?",
+    // Pre-review fix (C2): the whole-question mic checks, with the optional tail and a trailing "Charli".
+    // ("Are you there? Is Chen my best?" used to be here, as "the message opens with a mic-check lead"; it is a
+    // real yes/no question after the mic check, so it moved to the yes/no list above.)
+    "Can you hear me, Charli?", "Do you hear me now?", "Are you there, Charli?", "Sorry, did you hear me?",
+    "Did you catch what I said?", "Is everything working okay?", "Are you there right now?", "Did you get this?",
+    "Did you hear that?", "Is it working today?", "Are you with me?", "Hey Charli, are you ready?",
+    "Are you there??", "Is this on okay?",
     // R5-1 (c): the first word after filler is an imperative action verb, even with a trailing tag
     "Add a client for me, yeah?", "Add a client, is that ok?", "Log a call with Chen, did it this morning?",
     "Hey Charli, log it, right?", "Pull up Chen, is he due?", "Run a sweep, is that possible?",
@@ -2149,4 +2160,135 @@ test("CHARLI_SYSTEM tells her to reply with ONE question, starting with the ques
   ));
   assert.ok(CHARLI_SYSTEM.includes("'Which Chen — Robert and Linda, or Chen Wei?'"));
   assert.ok(CHARLI_SYSTEM.includes("'Who did you mean — I don't see a Zed?'"));
+});
+
+// ── Task 4 pre-review fixes ──────────────────────────────────────────────────
+
+const READ_BACK = "Just to confirm — log a contact for Robert & Linda Chen?";
+const FIVE_HOPS = [
+  "log a call", "Who did you talk to?", "x", "Who did you talk to?", "Chen", "Which Chen?", "Robert and Linda",
+  "Which number?", "the first", "Which day?", "Monday",
+];
+
+const PREREVIEW_TABLE = [
+  // C1: the chain backstop applies only while the user is ANSWERING. After an unconfirmed read-back a new
+  // question is a new request, whatever the history says
+  [history("log a call with Chen", READ_BACK, "what are rates today?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [history("log a call with Chen", READ_BACK, "what are rates today"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [history("log a call with Chen", READ_BACK, "what's Chen's balance?"), "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+  [history("log a call with Chen", READ_BACK, "How is the market?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [history("log a call with Chen", READ_BACK, "Can you give me the rates?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [history("log a call with Chen", READ_BACK, "Is Chen my best?"), "findClient", "Robert and Linda Chen owe $485,000 at 7.85 percent.", PASS],
+  // ... while an answer-shaped reply to the read-back ("yes") is still held to the backstop
+  [history("log a call with Chen", READ_BACK, "yes"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  // every earlier chain row still blocks, including the multi-hop one
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "The first one"), null, "Robert and Linda Chen marked as contacted for today.", NOTHING_CHANGED],
+  [history("log a call", "Who did you talk to?", "Chen", "Which Chen — Robert and Linda, or Chen Wei?", "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  // an answer phrased as a question ends the chain: ACCEPTED COST, the false "done" is not caught here
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda?"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  [history("log a call", "Who did you talk to?", "Chen?", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  // an answer that opens with a question or auxiliary word is not answer-shaped either (accepted cost)
+  [history("log a call with Chen", WHICH_CHEN, "Do the first one"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  // a free-form request without a "?" is answer-shaped, so it is still held to the backstop (accepted cost)
+  [history("log a call with Chen", READ_BACK, "tell me the rates"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", NOTHING_CHANGED],
+  // at most four hops back: the origin in the 4th pair blocks, in the 5th it does not (accepted cost)
+  [history("log a call", "Who did you talk to?", "Chen", "Which Chen?", "Robert and Linda", "Which number?", "the first", "Which day?", "Monday"),
+    "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history(...FIVE_HOPS), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  // the walk stops at an assistant message that is not a question
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda", "Okay, noted.", "Monday"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  // an origin phrased as a question still starts the chain
+  [history("Can you log a call with Chen?", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+
+  // C2: the mic-check exclusions match the whole question
+  ["Did you get Chen's file?", null, "Yes, I did.", CANT_VERIFY],
+  ["Did you get the call from Chen?", null, "Yes, I did.", CANT_VERIFY],
+  ["Did you hear Chen's voicemail?", null, "I did.", CANT_VERIFY],
+  ["Are you on the Chen file?", null, "Yes.", CANT_VERIFY],
+  ["Is it on the schedule?", null, "Yes, it is.", CANT_VERIFY],
+  ["Is this working capital?", null, "Yes, it is.", CANT_VERIFY],
+  ["Are you there? Is Chen my best?", null, "Yes, he is.", CANT_VERIFY],
+  ["Are you there? Is Chen my best?", null, "Which Chen do you mean?", PASS],
+  ["Is this working?", null, "I'm here! What can I help with?", PASS],
+  ["Do you hear me?", null, "Yes, I hear you! What can I do for you?", PASS],
+  ["Are you on?", null, "I'm on — what do you need?", PASS],
+  ["Is everything working?", null, "Everything's working — what can I help with?", PASS],
+  ["Did you get that?", null, "I did — what would you like to do?", PASS],
+  ["Did you hear me?", null, "I did — what would you like to do?", PASS],
+  ["Are you there?", null, "Yes, I'm here! What can I do for you?", PASS],
+  ["Is this thing on?", null, "Yep, I'm listening. What do you need?", PASS],
+  ["Good morning Charli, are you ready?", null, "Yes! Good morning, Bill. What can I help with?", PASS],
+  ["Can you hear me, Charli?", null, "Loud and clear! What can I do for you?", PASS],
+  ["Do you hear me now?", null, "Yes, loud and clear! What can I do for you?", PASS],
+  ["Are you there, Charli?", null, "I'm here! What can I help with?", PASS],
+  ["Sorry, did you hear me?", null, "I did — what would you like to do?", PASS],
+  ["I'm back. Are you there?", null, "Yes, I'm here! What can I do for you?", PASS],
+];
+
+test("Task 4 pre-review fixes (C1 chain only through answers, C2 whole-question mic checks)", async () => {
+  await checkTable(PREREVIEW_TABLE);
+});
+
+// ── Task 4 pre-review fix C4: the synthetic opener and merged utterances ─────
+
+const { SESSION_STARTED } = require("../lib/assistant/history");
+const GREETING_Q = "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. How long have you been originating?";
+
+test("C4: the synthetic '(Session started.)' opener is inert to the detectors", () => {
+  assert.equal(isActionRequest(SESSION_STARTED), false);
+  assert.equal(isYesNoQuestion(SESSION_STARTED), false);
+  assert.equal(isQuestionShaped(SESSION_STARTED), false);
+  assert.equal(isLoneClarifyingQuestion(SESSION_STARTED, SESSION_STARTED), false);
+  assert.equal(claimsCompletion(SESSION_STARTED, true), false);
+  assert.equal(claimsCompletion(SESSION_STARTED, false), false);
+});
+
+test("C4: [synthetic, greeting ending '?', user answer] does not engage the action backstop; an action request still does", async () => {
+  // not engaged: a plain statement reply reaches the user (it would be NOTHING_CHANGED if the chain applied)
+  let r = await runTurn({
+    messages: [
+      { role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q },
+      { role: "user", content: "about 20 years" },
+    ],
+    ctx: brokerCtx, client: fakeClient([say("Nice, that's a long run.")]),
+  });
+  assert.equal(r.reply, "Nice, that's a long run.");
+  assert.equal(r.sideEffect, undefined);
+
+  // engaged normally: the user's own request is an action request
+  r = await runTurn({
+    messages: [
+      { role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q },
+      { role: "user", content: "log a call with Chen" },
+    ],
+    ctx: brokerCtx, client: fakeClient([useTool("findClient", { query: "chen" }), say("Call logged for Robert and Linda Chen.")]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+
+  // ... and with the synthetic opener present, the model is sent the real user message as the latest turn
+  const client = fakeClient([say("Which Chen do you mean?")]);
+  await runTurn({
+    messages: [
+      { role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q },
+      { role: "user", content: "log a call with Chen" },
+    ],
+    ctx: brokerCtx, client,
+  });
+  const sent = client.calls[0].messages;
+  assert.deepStrictEqual(sent.map((m) => m.role), ["user", "assistant", "user"]);
+  assert.equal(sent[2].content, "log a call with Chen");
+});
+
+test("C4: consecutive utterances are joined with a newline, and a newline is a clause break for the detectors", async () => {
+  assert.equal(isActionRequest("I talked to Chen\nlog it"), true);
+  assert.equal(isActionRequest("Chen called\nwhat are rates"), false);
+  assert.equal(isYesNoQuestion("Thanks\nIs Chen my best?"), true);
+  assert.equal(isYesNoQuestion("Robert\nLinda?"), false);
+  // the false 'done' on the second utterance is caught
+  for (const tool of [null, "findClient"]) {
+    const script = tool ? [useTool(tool, { query: "chen" }), say("Call logged for Robert and Linda Chen.")] : [say("Call logged for Robert and Linda Chen.")];
+    const r = await runTurn({ messages: userSays("I talked to Chen\nlog it"), ctx: brokerCtx, client: fakeClient(script) });
+    assert.equal(r.reply, NOTHING_CHANGED, String(tool));
+  }
 });
