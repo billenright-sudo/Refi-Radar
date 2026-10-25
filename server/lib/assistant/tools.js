@@ -47,6 +47,13 @@ function toClient(row) {
 
 // ── Read tools ───────────────────────────────────────────────────────────────
 
+// The rates and their moves as the model sees, speaks and cites them: every finite number to two decimals, in a NEW object
+// (FRED publishes three, and "7.251" read aloud is noise). Rounding happens here, at the tool boundary, so the figure check
+// matches "7.25" against 7.25 exactly; ctx.rates itself, which the sweep engine prices from, is never touched.
+const twoDecimals = (obj) => (obj && typeof obj === "object"
+  ? Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, Number.isFinite(v) ? Number(v.toFixed(2)) : v]))
+  : obj);
+
 function getMarketUpdate(_args, ctx) {
   const rates = ctx && ctx.rates;
   if (!hasRates(rates)) return fail("(unavailable)", "current rates are unavailable");
@@ -55,12 +62,12 @@ function getMarketUpdate(_args, ctx) {
   // snapshot (that would invent a day-over-day move): report it as estimated with no history.
   if (isEstimated(rates)) {
     return {
-      data: { rates, deltas: null, hasHistory: false, estimated: true },
+      data: { rates: twoDecimals(rates), deltas: null, hasHistory: false, estimated: true },
       source: `estimated rates ${date}`,
     };
   }
   const { current, deltas, hasHistory } = getMovement(rates);
-  return { data: { rates: current, deltas, hasHistory }, source: `live rates ${date}` };
+  return { data: { rates: twoDecimals(current), deltas: twoDecimals(deltas), hasHistory }, source: `live rates ${date}` };
 }
 
 function runSweepTool(_args, ctx) {

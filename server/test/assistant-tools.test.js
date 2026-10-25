@@ -115,6 +115,30 @@ test("getMarketUpdate on estimated rates never fabricates a delta, even with a p
   assert.equal(getMarketUpdate({}, brokerCtx).data.estimated, undefined);
 });
 
+test("A4: getMarketUpdate presents rates and deltas to two decimals in a new object; ctx.rates and the sweep keep the raw rates", () => {
+  const raw = { rate_30yr_fixed: 7.251, rate_15yr_fixed: 6.564, rate_5_1_arm: 6.15, rate_30yr_top_tier: 6.9875, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
+  const frozen = JSON.stringify(raw);
+  recordSnapshot({ ...raw, rate_30yr_fixed: 7.236, rate_15yr_fixed: 6.601, source: "Optimal Blue lock data (2000-01-01)" }, "2000-01-01");
+  const ctx = { ...brokerCtx, rates: raw };
+  const sweepBefore = runSweepTool({}, ctx);
+  const r = getMarketUpdate({}, ctx);
+  assert.deepStrictEqual(r.data.rates, { rate_30yr_fixed: 7.25, rate_15yr_fixed: 6.56, rate_5_1_arm: 6.15, rate_30yr_top_tier: 6.99, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" });
+  assert.equal(r.data.deltas.rate_30yr_fixed, 0.01, "0.015 to two decimals");
+  assert.equal(r.data.deltas.rate_15yr_fixed, -0.04, "-0.037 to two decimals");
+  for (const v of [...Object.values(r.data.rates), ...Object.values(r.data.deltas)]) {
+    if (typeof v === "number") assert.ok(Number.isInteger(Math.round(v * 100)) && Math.abs(v * 100 - Math.round(v * 100)) < 1e-9, `${v} has at most two decimals`);
+  }
+  assert.notStrictEqual(r.data.rates, raw, "a new object");
+  assert.equal(JSON.stringify(raw), frozen, "ctx.rates is not mutated");
+  const priced = (out) => { const { ranAt, ...rest } = out.data || out; return rest; };
+  assert.deepStrictEqual(priced(runSweepTool({}, ctx)), priced(sweepBefore), "the sweep still prices from the raw rates");
+  assert.deepStrictEqual(priced(runSweepTool({}, ctx)), priced(refi.runSweep(db.prepare("SELECT * FROM clients WHERE org_id = ? ORDER BY name ASC").all(orgA), raw)));
+  // the estimated path is rounded too, and still a new object
+  const est = getMarketUpdate({}, { ...brokerCtx, rates: { ...raw, source: "Estimated — live fetch unavailable" } });
+  assert.equal(est.data.rates.rate_30yr_fixed, 7.25);
+  assert.equal(est.data.estimated, true);
+});
+
 test("getMarketUpdate refuses to answer without rates (never invents a number)", () => {
   const r = getMarketUpdate({}, { ...brokerCtx, rates: null });
   assert.ok(r.data.error);

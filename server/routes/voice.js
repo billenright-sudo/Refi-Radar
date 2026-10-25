@@ -194,6 +194,9 @@ function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
 
       meter({ userId: req.user.id, kind: "tts", turnId, ttsChars: spoken.length });
       res.status(200).set({ "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
+      // A browser that hangs up while upstream is stalled: pipeline rejects at once and the finally below disarms the
+      // per-read timer, so nothing would cancel the pending read until undici's own body timeout. Cancel it here.
+      res.once("close", () => { if (!res.writableFinished) reader.cancel().catch(() => {}); });
       await pipeline(Readable.from(audioChunks(first.value, reader, deadline), { objectMode: false }), res);
       return undefined;
     } catch (err) {

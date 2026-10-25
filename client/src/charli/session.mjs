@@ -24,6 +24,9 @@ export const stageById = (id) => (typeof id === "string" && CAREER_STAGES.find((
 // Code-authored lines (never model output).
 export const LEAVE_THAT = "Okay — I'll leave that.";
 export const DIDNT_CATCH = "I didn't catch that — could you say it again?";
+// Shown (never spoken, never sent) when a spoken yes / no comes back from speech-to-text after the change it was said to
+// had already been confirmed, cancelled or replaced on screen.
+export const LATE_ANSWER = "That answer came in after the change was already handled, so I left it alone.";
 
 // The server keeps the last 20 messages and refuses a body of more than 100; send comfortably under that.
 const MAX_SENT_MESSAGES = 30;
@@ -293,8 +296,18 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
     });
   }
 
-  // What speech-to-text heard; "" means it heard nothing.
-  async function heard(text) {
+  // What speech-to-text heard; "" means it heard nothing. `pendingAtStart` (optional) is getState().pending at the moment the
+  // recording went to speech-to-text. A bare yes or no (classifyReply) that comes back after that change was confirmed or
+  // cancelled with a button, or replaced, answers nothing the user can still see: it is shown as a notice and sent nowhere
+  // (a late "yes" must never reach /turn as an ordinary answer, nor confirm a change the user has not seen).
+  async function heard(text, { pendingAtStart } = {}) {
+    if (String(text ?? "").trim() && pendingAtStart !== undefined && state.pending !== pendingAtStart && !disposed) {
+      const answer = classifyReply(text);
+      if (answer === "yes" || answer === "no") {
+        addNotice(LATE_ANSWER);
+        return { ok: true, action: "late-answer" };
+      }
+    }
     if (String(text ?? "").trim()) return submit(text);
     if (disposed) return { ok: false, reason: "closed" };
     if (state.busy) return { ok: false, reason: "busy" };

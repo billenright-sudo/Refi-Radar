@@ -1193,6 +1193,10 @@ const CLAIM_TABLE = [
   // fix round 5 (#5): "that's STAGE" with no article, where the clause ends
   ["That's Veteran.", "veteran"], ["Twenty years — that's Veteran.", "veteran"], ["Six years? That's Established.", "established"],
   ["That’s Veteran, so I'll keep it terse.", "veteran"],
+  // fix wave A1: "already" wherever "now" is allowed in (e), and the gotYouSet form (f)
+  ["Your career stage is already set to Veteran.", "veteran"], ["I've got you set as a Veteran.", "veteran"],
+  ["Your stage is already Established.", "established"], ["I've got your stage set to Developing.", "developing"],
+  ["Got you marked as a Veteran.", "veteran"], ["We've got you listed as New.", "new"],
 ];
 
 const NOT_CLAIMS = [
@@ -1264,6 +1268,33 @@ test("claimsStage: user-directed stage claims (forms a-e and the acknowledgement
 test("claimsStage: exclusions, non-user subjects, other uses of 'set', offers and non-text are null", () => {
   for (const text of NOT_CLAIMS) assert.equal(claimsStage(text), null, text);
   for (const bad of [null, undefined, 5, {}, [], true]) assert.equal(claimsStage(bad), null, String(bad));
+});
+
+// Fix wave A1: the two Task 7 leaks. Each is a truth check against the stored stage, through runTurn and claimsCompletion alike,
+// and the VA narration beside them is still no claim.
+const A1_LEAKS = ["Your career stage is already set to Veteran.", "I've got you set as a Veteran."];
+test("A1: 'already set to' and 'got you set as' pass for a stored veteran and are the nothing-changed line for every other stage", async () => {
+  for (const text of A1_LEAKS) {
+    for (const stage of [...IDS, null]) {
+      const expected = stage === "veteran" ? text : NOTHING_CHANGED;
+      const ungrounded = await runTurn({ messages: userMsgs("about 20 years"), ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say(text)]) });
+      assert.equal(ungrounded.reply, expected, `ungrounded ${stage}: ${text}`);
+      const grounded = await runTurn({
+        messages: userMsgs("about 20 years"), ctx: ctxFor(ann, "broker", orgA, stage),
+        client: fakeClient([useTool("findClient", { query: "chen" }), say(text)]),
+      });
+      assert.equal(grounded.reply, expected, `grounded ${stage}: ${text}`);
+    }
+  }
+  // the set-claim form of the first one is a truth check inside claimsCompletion too
+  for (const grounded of [false, true]) {
+    assert.equal(claimsCompletion(A1_LEAKS[0], grounded, "veteran"), false);
+    for (const other of ["new", "developing", "established", null]) assert.equal(claimsCompletion(A1_LEAKS[0], grounded, other), true, String(other));
+  }
+  // the VA protections hold
+  for (const text of ["That counts as a veteran for VA purposes.", "Robert served six years in the Guard, and that counts as a veteran for VA purposes."]) {
+    assert.equal(claimsStage(text), null, text);
+  }
 });
 
 test("claimsStage: plural and 'seasoned vet' are veteran, brand-new and new are new, and the first claim wins", () => {

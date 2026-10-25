@@ -349,6 +349,14 @@ test("greeting: morning before noon, afternoon before 5pm, evening after (from t
   }
 });
 
+test("A4: the greeting speaks a three-decimal FRED rate to two decimals", async () => {
+  const r = await greet(sam, { localHour: 9, rates: { ...LIVE, rate_30yr_fixed: 7.251 } });
+  assert.match(r.data.reply, /; the 30-year is at 7\.25%\. /);
+  assert.doesNotMatch(r.data.reply, /7\.251/);
+  // a two-decimal rate reads the same as before
+  assert.match((await greet(sam, { localHour: 9 })).data.reply, /the 30-year is at 6\.52%\./);
+});
+
 test("greeting: estimated rates say so, and cite the estimated sources", async () => {
   const r = await greet(sam, { localHour: 9, rates: EST });
   assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due; the 30-year is at 6.52% (estimated). ${WANT_MORE}`);

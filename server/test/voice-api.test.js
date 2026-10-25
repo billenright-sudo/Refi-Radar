@@ -432,6 +432,38 @@ test("timeout: no response within the deadline is 504; a stall mid-stream ends t
   }
 });
 
+test("A2: a browser that hangs up while upstream is stalled cancels the upstream read at once, not at the stall deadline", { timeout: 20000 }, async () => {
+  const STALL_MS = 10_000;
+  const slow = buildApp(voiceRoutes.createVoiceRouter({ limiter: { max: 100000 }, timeoutMs: STALL_MS }));
+  const { server: s, base: b } = await listen(slow);
+  let cancelledAt = null;
+  // one chunk, then a read that never resolves (no abort listener: only a cancel ends it)
+  setFetch(() => {
+    let sent = false;
+    return new Response(new ReadableStream({
+      pull(c) { if (!sent) { sent = true; c.enqueue(bytesOf(9, 9)); return undefined; } return new Promise(() => {}); },
+      cancel() { cancelledAt = Date.now(); },
+    }), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }, slow);
+  try {
+    const ac = new AbortController();
+    const res = await within(3000, fetch(b + "/api/voice/tts", {
+      method: "POST", signal: ac.signal,
+      headers: { "content-type": "application/json", cookie: "rr_token=" + signToken({ userId: ann }) },
+      body: JSON.stringify({ text: "Hang up on me." }),
+    }), "the response headers");
+    const first = await within(3000, res.body.getReader().read(), "the first chunk");
+    assert.deepStrictEqual([...first.value], [9, 9]);
+    const hungUpAt = Date.now();
+    ac.abort();   // the browser goes away mid-clip, while upstream is stalled
+    for (let i = 0; i < 100 && cancelledAt === null; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.notEqual(cancelledAt, null, "the upstream read was cancelled");
+    assert.ok(cancelledAt - hungUpAt < 2000, `cancelled ${cancelledAt - hungUpAt} ms after the hang-up (the stall deadline is ${STALL_MS} ms)`);
+  } finally {
+    s.close();
+  }
+});
+
 test("timeout: the default deadline is 20 seconds", () => {
   assert.equal(voiceRoutes.TIMEOUT_MS, 20_000);
 });

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
-  createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH,
+  createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -352,6 +352,47 @@ test("a spoken yes is never sent to /turn while a change is pending, however it 
     assert.equal(server.confirms().length, 0, `"${said}" writes nothing`);
     assert.equal(messagesOf(server.turns()[1]).at(-1).content, said);
   }
+});
+
+test("A3: a spoken yes that lands after a button Confirm (STT still in flight) never reaches /turn and confirms nothing again", async () => {
+  const { session, server } = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done — I logged a contact for Robert and Linda Chen." }) });
+  const pendingAtStart = session.getState().pending;   // the recording went to speech-to-text with this on screen
+  assert.deepEqual(await session.confirmPending(), { ok: true, action: "confirm" });   // ... then the button was clicked
+  const late = await session.heard("yes", { pendingAtStart });
+  assert.deepEqual(late, { ok: true, action: "late-answer" });
+  assert.equal(server.turns().length, 1, "the late yes never reached /turn");
+  assert.equal(server.confirms().length, 1, "and confirmed nothing a second time");
+  assert.equal(lastTurn(session).content, LATE_ANSWER);
+  assert.equal(lastTurn(session).kind, "notice");
+  assert.equal(lastTurn(session).inHistory, false);
+
+  // the same after a Cancel, for a late no as well; and a late answer that is not a bare yes / no is an ordinary message
+  for (const said of ["Yes please.", "no"]) {
+    const c = await withPending();
+    const at = c.session.getState().pending;
+    await c.session.cancelPending();
+    assert.deepEqual(await c.session.heard(said, { pendingAtStart: at }), { ok: true, action: "late-answer" }, said);
+    assert.equal(c.server.turns().length, 1, said);
+    assert.equal(c.server.confirms().length, 0, said);
+  }
+  const other = await withPending();
+  const at = other.session.getState().pending;
+  await other.session.cancelPending();
+  assert.deepEqual(await other.session.heard("what are rates today", { pendingAtStart: at }), { ok: true, action: "turn" });
+  assert.equal(messagesOf(other.server.turns()[1]).at(-1).content, "what are rates today");
+
+  // a read-back that arrived while the clip was being transcribed is never answered by it either
+  const fresh = setup({ routes: pendingRoutes() });
+  const before = fresh.session.getState().pending;   // nothing pending when the recording went off
+  await fresh.session.submit("log a contact for the Chens");   // typed meanwhile; the read-back is now on screen
+  assert.deepEqual(await fresh.session.heard("yes", { pendingAtStart: before }), { ok: true, action: "late-answer" });
+  assert.equal(fresh.server.confirms().length, 0);
+  assert.notEqual(fresh.session.getState().pending, null, "the read-back is still waiting for an answer the user gives to it");
+
+  // unchanged pending: the spoken yes confirms as before
+  const same = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
+  assert.deepEqual(await same.session.heard("yes", { pendingAtStart: same.session.getState().pending }), { ok: true, action: "confirm" });
+  assert.equal(same.server.confirms().length, 1);
 });
 
 test("a yes with nothing pending is an ordinary answer to Charli's question and goes to /turn", async () => {

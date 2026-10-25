@@ -98,8 +98,9 @@ function buildGreeting(user, ctx, localHour) {
     ? `You have ${opportunities} ${opportunities === 1 ? "opportunity" : "opportunities"} and ${checkIns} ` +
       `${checkIns === 1 ? "check-in" : "check-ins"} due`
     : "";
+  // two decimals, as getMarketUpdate presents it (FRED publishes three: "7.251" would be spoken digit by digit)
   const rateClause = Number.isFinite(rate)
-    ? `the 30-year is at ${rate}%${market.data.estimated ? " (estimated)" : ""}`
+    ? `the 30-year is at ${Number(rate).toFixed(2)}%${market.data.estimated ? " (estimated)" : ""}`
     : "";
   let facts = "";
   if (countsClause && rateClause) facts = ` ${countsClause}; ${rateClause}.`;

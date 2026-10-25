@@ -110,10 +110,12 @@ export default function CharliView({ rates, user, ui }) {
 
     const handleUtterance = async (blob) => {
       setTranscribing(true);
+      // the change on screen when this recording went off: a yes / no that comes back after it was handled is dropped
+      const pendingAtStart = session.getState().pending;
       try {
         const text = await transcribe(blob);
         if (pausedRef.current) return;   // paused while it was being transcribed: drop it
-        const result = await session.heard(text);
+        const result = await session.heard(text, { pendingAtStart });
         if (!result.ok && (result.reason === "busy" || result.reason === "not-ready")) {
           session.notice("I was still working on your last message. Could you say that again?");
         }
@@ -268,10 +270,11 @@ export default function CharliView({ rates, user, ui }) {
               <div style={{ color: C.amber, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 6 }}>Waiting for your OK</div>
               <div style={{ fontSize: 14.5, lineHeight: 1.5, marginBottom: 12 }}>{snap.pending.readBack}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <button data-testid="charli-confirm" disabled={snap.busy} onClick={() => act(session.confirmPending)} style={{ ...primary, opacity: snap.busy ? 0.6 : 1 }}>
+                {/* disabled while anything is in flight, speech-to-text included: a spoken answer may be on its way */}
+                <button data-testid="charli-confirm" disabled={working} onClick={() => act(session.confirmPending)} style={{ ...primary, opacity: working ? 0.6 : 1 }}>
                   <Icon name="check" size={15} color="#0f2040" />Confirm
                 </button>
-                <button data-testid="charli-cancel" disabled={snap.busy} onClick={() => act(session.cancelPending)} style={{ ...ghost, opacity: snap.busy ? 0.6 : 1 }}>Cancel</button>
+                <button data-testid="charli-cancel" disabled={working} onClick={() => act(session.cancelPending)} style={{ ...ghost, opacity: working ? 0.6 : 1 }}>Cancel</button>
                 <span style={{ color: C.muted, fontSize: 12.5 }}>or say yes / no</span>
               </div>
             </div>
