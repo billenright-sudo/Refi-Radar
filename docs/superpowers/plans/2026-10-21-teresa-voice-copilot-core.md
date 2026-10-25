@@ -190,8 +190,9 @@
 ### Task 6: Charli live-session voice UI
 
 **Files:**
-- Modify: `client/src/App.jsx` (add `CharliView` component + nav item + render-switch; greet-on-open hook)
-- Verify: browser preview (this task is UI/audio — verified in the Browser pane, not node:test)
+- Create: `client/src/charli/session.mjs` (pure, tested session state machine) + `session.test.mjs`, `vad.mjs` + `vad.test.mjs` (end-of-utterance detection), `audio.js` (mic capture, MediaRecorder, TTS playback), `CharliView.jsx` _(as built — the view lives in its own files, not inside `App.jsx`)_
+- Modify: `client/src/App.jsx` (4 lines: import, `mic` icon, nav item, render line passing `ui={{ C, card, mono, Icon, $c }}`)
+- Verify: `cd client && npm test` (node:test over `src/charli/`) + browser preview for the audio path
 
 **Interfaces:**
 - Consumes: `POST /api/assistant/turn`, `POST /api/assistant/confirm`, `POST /api/voice/tts`, `POST /api/voice/stt` (same-origin cookie auth).
@@ -203,7 +204,7 @@
   - **Career-stage selector** (New / Developing / Established / Veteran — labels from Task 7's `CAREER_STAGES`) in the Charli panel, showing the user's current stage; choosing one posts `{ sideEffect: { type: "setCareerStage", stage } }` to `/api/assistant/confirm` (the click is the confirmation).
   - Reuses module-scope `C`, `card`, `mono`, `Icon`, `$c`; matches the Sweeps view's styling.
 
-- [ ] **Step 1: Add** `CharliView` + a `{ id:"charli", label:"Charli", icon:"mic" }` nav item (after `sweeps`) + the render-switch line, following the `SweepsView` pattern already in `App.jsx`.
+- [x] **Step 1: Add** the `client/src/charli/` module set and the four `App.jsx` lines (nav item `{ id:"charli", label:"Charli", icon:"mic" }` after `sweeps` + the render line), following the `SweepsView` pattern. _(Done 2026-10-25; typed path verified in the Browser pane — the spoken path is Bill's first live session.)_
 
 - [ ] **Step 2: Build the client** — `cd client && npx vite build` → exit 0.
 

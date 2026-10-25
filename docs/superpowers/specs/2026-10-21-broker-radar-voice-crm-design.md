@@ -35,7 +35,10 @@ it is the concrete realization of the broker/LO CRM from the UWM pitch.
   draft a Gmail outreach for approval.
 - **Every answer is grounded and citeable.** Charli's replies trace to a real source (a
   client record, a live rate, the sweep engine, a calendar event, an email). Nothing stated
-  as fact is invented.
+  as fact is invented. _(Enforced in code in v1 for figures, completion claims and
+  career-stage claims — the orchestrator's screens. A non-numeric invention on a turn where a
+  tool WAS called, e.g. "the Chens are VA eligible", is not caught by code in v1; the source
+  chip and the guideline hand-off are the mitigations. Flagged in the final review 2026-10-25.)_
 - The experience feels **natural and low-latency** — real turn-taking, Charli's real voice,
   not a robotic toy.
 
@@ -160,11 +163,16 @@ to Cloud Run, SQLite on the GCS volume. No rewrite.
 ### 7.1 Voice pipeline (decided — data stays on our infra)
 
 **ElevenLabs for voice only (speech-to-text + Charli's TTS); Claude orchestrates
-server-side.** Borrower data stays on our infrastructure — client names, balances, rates, and
-every tool result are reasoned over by Claude on our own server and **never flow through a
-third-party conversational-AI model.** ElevenLabs transcribes the broker's speech and speaks
-Charli's replies; it does not see the CRM lookups. We own the turn-taking / barge-in loop in
-the browser.
+server-side.** Borrower data is reasoned over by Claude on our own server, and **no
+third-party conversational-AI product sees the CRM.** Precisely what leaves our
+infrastructure _(wording corrected 2026-10-25 after the final review)_: the broker's **audio**
+and Charli's **reply text** go to ElevenLabs (speech only — it never receives tool results or
+CRM lookups); the tool results Charli reasons over (client names, balances, rates — never
+phone, email or notes, which are stripped before the model sees a record) go to the Anthropic
+Messages API as part of the conversation. The data-retention terms of both vendors are Bill's
+to confirm before launch (ElevenLabs' zero-retention option; Anthropic's API data policy). We
+own the turn-taking loop in the browser (half-duplex in v1 — Charli's mic is off while she
+speaks; barge-in is a later refinement).
 
 _(Bill chose this over ElevenLabs' all-in-one Conversational AI, which would have routed
 borrower NPI through their model and servers. The tradeoff is that we build the turn-taking
@@ -213,7 +221,8 @@ instructed never to answer a factual/quantitative question except via a tool res
 
 Every turn shows in an on-screen transcript with the **source** behind each answer (which tool
 / record / rate produced it), so a spoken claim is always inspectable. When no tool can answer,
-the transcript shows "Unable to verify" rather than a generated answer.
+the transcript shows "Unable to verify" rather than a generated answer. _(Built as the
+"unable to verify" chip on can't-verify and guideline hand-off replies.)_
 
 ### 7.5 Daily rate snapshot (new)
 

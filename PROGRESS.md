@@ -3,9 +3,27 @@
 Living status file. **Update at the end of every major task** so work resumes
 cleanly after compaction / a new session. Newest notes at the top of each list.
 
-_Last updated: 2026-10-21_
+_Last updated: 2026-10-25_
 
 ## Done
+- **Charli v1 — BUILT + reviewed, NOT deployed** (branch `feature/teresa-voice-crm`,
+  40 commits over `9b761ef`; **server 386/386 + client 52/52 node:tests**; whole-branch
+  Opus review 2026-10-25 "ready to merge with fixes" → 9-commit fix wave applied; scoped
+  re-review pending at the time of writing). Voice-first AI CRM co-pilot:
+  `POST /api/assistant/turn` (orchestrator: number-grounding against tool payloads,
+  guideline hand-off, completion-claim + career-stage truth checks, action backstop;
+  code-authored greeting from live sweep + market data), `POST /api/assistant/confirm`
+  (the ONLY write path; idempotent `confirmId`; code-authored read-backs of every field
+  written and "Done —" lines), `GET /api/assistant/usage`; `POST /api/voice/tts`
+  (ElevenLabs streaming, voice **Bella**, `toSpeech` number-to-words, per-user daily
+  character budget) + `/api/voice/stt` (Scribe v2); glossary `explainTerm`; career-stage
+  coaching (new/developing/established/veteran — asked once, confirmed, never inferred;
+  changes coaching style only); `rate_snapshots` with provider gating + "since <day>";
+  `client/src/charli/` live-session UI (half-duplex mic, pending-change card with the
+  fields, "Type instead", "unable to verify" chip). Typed path browser-verified;
+  **the spoken path (mic + Bella) is Bill's first live session.** Design:
+  `docs/superpowers/specs/2026-10-21-broker-radar-voice-crm-design.md`; plan:
+  `docs/superpowers/plans/2026-10-21-teresa-voice-copilot-core.md`.
 - **Sweeps Phase 1 — LIVE** (rev `refi-radar-00036-85j`, deployed 2026-10-21):
   `server/lib/refi.js` deterministic engine (rate-term, cash-out, ARM→fixed, term-swap
   lenses + 6-month check-in), `POST /api/sweeps` (org-scoped), `last_contact` migration
@@ -36,14 +54,40 @@ _Last updated: 2026-10-21_
 ## Key decisions
 - **Deterministic math, AI for the human layer only.** No LLM computes a
   savings/payment/LTV/break-even number — ever.
-- **"Sweeps"** = the AI opportunity engine; **Broker Radar** = the platform.
+- **Charli's laws:** retrieve-and-cite, never guess — every spoken figure must match a
+  tool payload; guideline questions hand off ("I can't verify guidelines yet"); no false
+  "I logged it"; side effects only via `/confirm` after a code-authored read-back of every
+  field that will be written; borrower PII (phone/email/notes) never reaches the model;
+  ElevenLabs gets the broker's audio + Charli's reply text only; the model never rounds —
+  rates are rounded to 2 decimals at the tool boundary, movement is computed in code and
+  only between same-provider snapshots.
+- **Charli's voice = ElevenLabs Bella** (`hpp4J3VqNfWAUOO0d1Us`, `eleven_v4_turbo`);
+  HeyGen's Teresa voice was measured at 4.5–9 s of silence per reply and rejected.
+- **"Sweeps"** = the AI opportunity engine; **Broker Radar** = the platform; **Charli**
+  = the voice co-pilot on top of both.
 - Sweeps works the book two ways: **opportunities** (refi/cash-out/MI-drop) **+
   relationships** (6-month check-ins). Sweeps reminds/drafts; **the broker sends.**
 - Local dev runs on **Node 20** (better-sqlite3 prebuilds); Node 24 won't compile it.
-- `feature/accurate-refi-scoring` is the working + deployed line.
+- `feature/accurate-refi-scoring` is the deployed line; `feature/teresa-voice-crm`
+  (Charli v1) awaits Bill's merge decision.
 
 ## Open issues
-- `main` is behind `feature/accurate-refi-scoring` (not merged).
+- **Charli deploy prerequisites (Bill's go):** `ELEVENLABS_API_KEY` → Secret Manager (a
+  speech-only key with a character quota is preferred; the current key is unrestricted and
+  one review subagent once echoed it into its own transcript — rotation is Bill's call);
+  `ELEVENLABS_VOICE_ID_CHARLI`, `ELEVENLABS_TTS_MODEL`, `ELEVENLABS_STT_MODEL`,
+  `CHARLI_TTS_DAILY_CHARS` as Cloud Run env (without them Charli answers text-only);
+  vendor data-retention terms (Anthropic API + ElevenLabs) to confirm; first real curl of
+  `/api/voice/tts` and `/stt` against the service.
+- **Charli follow-ups from the final review:** 25 s per-turn deadline + client abort (a slow
+  turn holds the mic); a session.mjs ↔ real-router integration test; orchestrator tidy into
+  one `screenReply` decision function (replace shape regexes with a verb-presence rule);
+  `assistant_confirmations` 30-day prune; a completion claim after a mid-sentence "and"
+  ("…and Chen marked as contacted") is not caught; `POST /api/clients` still writes 700 for
+  an unusable credit score while the voice tool rejects it; talk-track tool for brand-new
+  LOs (product call); glossary-only turns make a second model call; non-numeric inventions
+  on tool turns ("the Chens are VA eligible") are not code-checked in v1.
+- `main` is behind both feature branches (not merged).
 - Garbled org-1 name on Bill's real account (`wenright1@gmail.com`) — no org-rename
   API; needs a small DB fix.
 - Data gaps blocking Sweeps Phase 2: **loan program, MI status, and today's home
@@ -52,13 +96,16 @@ _Last updated: 2026-10-21_
 - gcloud auth tokens expire often → deploys intermittently need `gcloud auth login`.
 
 ## Next steps
-1. **Sweeps Phase 1 — verify + deploy**: browser-test the Sweeps view locally (login
-   demo@refiradar.com, run a sweep, open an opportunity, log a contact), fix anything,
-   then deploy on Bill's go. The server + UI are built; only verification + deploy remain.
-2. **Sweeps Phase 2:** add program/MI fields + an AVM feed → the **drop-MI** lens
+1. **Bill's first spoken session with Charli** (mic + Bella, local dev servers): time
+   end-of-speech → first audio; run the plan's Task 6 live check (greeting, "what are rates
+   today", a sweep, "log a contact for the Chens" → spoken yes).
+2. **Merge decision** — `feature/teresa-voice-crm` → `feature/accurate-refi-scoring`
+   (Bill's call), then `main`.
+3. **Deploy on Bill's go** once the secrets/env above are set.
+4. **Charli Plan B — Google Calendar + Gmail draft-and-approve** (design §7.3; per-user
+   OAuth, draft-only email, general drafts without figures).
+5. **Sweeps Phase 2:** add program/MI fields + an AVM feed → the **drop-MI** lens
    and accurate cash-out.
-3. **Sweeps Phase 3:** "Talk to Sweeps" chat + morning briefing + draft outreach
-   (reuses `ANTHROPIC_API_KEY`; keep math deterministic).
-4. Add the import + fuller auth integration tests (needs a temp test DB harness).
-5. Housekeeping when convenient: merge to `main`, fix org-1 name, sync one-pager
+6. Add the import + fuller auth integration tests (needs a temp test DB harness).
+7. Housekeeping when convenient: merge to `main`, fix org-1 name, sync one-pager
    math, PDF/PPTX deck exports.
