@@ -76,6 +76,119 @@ test("getMovement skips non-finite values so a NaN can't produce a NaN delta", (
   for (const v of Object.values(m.deltas)) assert.ok(Number.isFinite(v), "every delta is finite");
 });
 
+// ── B3 (final review I1): provenance, the 5/1 ARM, and "since when" ───────────────────────────────────────────────────────
+
+const { providerOf, sinceLabel } = require("../lib/rateHistory");
+const FRED_SOURCE = "Optimal Blue lock data (2026-10-20) · ARM via Mortgage News Daily";
+const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+
+test("B3: providerOf reads the source label: FRED, the hard-coded estimate, and everything else is the web-search fallback", () => {
+  assert.equal(providerOf({ source: FRED_SOURCE }), "fred");
+  assert.equal(providerOf({ source: "Optimal Blue lock data (2026-10-20) · ARM estimated" }), "fred");
+  assert.equal(providerOf({ source: "Estimated — live fetch unavailable" }), "estimated");
+  assert.equal(providerOf({ source: "Mortgage News Daily" }), "claude");
+  assert.equal(providerOf({ rate_30yr_fixed: 6.5 }), "claude");
+  assert.equal(providerOf(null), "claude");
+});
+
+test("B3: a move is computed only between snapshots from the same provider", () => {
+  const cases = [
+    ["fred", "fred", { source: FRED_SOURCE }, { source: FRED_SOURCE }, true],
+    ["claude", "claude", { source: "Mortgage News Daily" }, { source: "Freddie Mac" }, true],
+    ["claude", "fred", { source: "Mortgage News Daily" }, { source: FRED_SOURCE }, false],
+    ["fred", "claude", { source: FRED_SOURCE }, { source: "Mortgage News Daily" }, false],
+    ["fred", "estimated", { source: FRED_SOURCE }, { source: "Estimated — live fetch unavailable" }, false],
+  ];
+  for (const [before, now, prevTag, curTag, moves] of cases) {
+    db.prepare("DELETE FROM rate_snapshots").run();
+    recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, ...prevTag }, daysAgo(1));
+    const m = getMovement({ rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7, ...curTag });
+    const label = `${before} -> ${now}`;
+    assert.equal(m.hasHistory, moves, label);
+    if (moves) {
+      assert.ok(Math.abs(m.deltas.rate_30yr_fixed - -0.1) < 1e-9, label);
+      assert.equal(m.since, "yesterday", label);
+    } else {
+      assert.deepStrictEqual([m.deltas, m.previous, m.since, m.sinceDate], [null, null, null, null], label);
+    }
+  }
+  // the provider is stored with the row
+  db.prepare("DELETE FROM rate_snapshots").run();
+  recordSnapshot({ rate_30yr_fixed: 7.5, source: FRED_SOURCE }, daysAgo(2));
+  recordSnapshot({ rate_30yr_fixed: 7.5, source: "Mortgage News Daily" }, daysAgo(1));
+  assert.deepStrictEqual(db.prepare("SELECT provider FROM rate_snapshots ORDER BY day").all().map((r) => r.provider), ["fred", "claude"]);
+  // ... and it is the most recent prior snapshot that counts: a web-search day between two FRED days means no move
+  assert.equal(getMovement({ rate_30yr_fixed: 7.4, source: FRED_SOURCE }).hasHistory, false);
+});
+
+test("B3: a row stored before the provider column (provider '') is read by its stored source label", () => {
+  db.prepare("INSERT INTO rate_snapshots (day, rates, captured_at) VALUES (?, ?, ?)")
+    .run(daysAgo(1), JSON.stringify({ rate_30yr_fixed: 7.5, source: FRED_SOURCE }), new Date().toISOString());
+  assert.equal(db.prepare("SELECT provider FROM rate_snapshots").get().provider, "");
+  assert.equal(getMovement({ rate_30yr_fixed: 7.4, source: FRED_SOURCE }).hasHistory, true);
+  assert.equal(getMovement({ rate_30yr_fixed: 7.4, source: "Mortgage News Daily" }).hasHistory, false);
+});
+
+test("B3: the provider migration is idempotent and keeps the rows a database already had", () => {
+  const { execFileSync } = require("child_process");
+  const Database = require("better-sqlite3");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "br-ratehist-migrate-"));
+  try {
+    const legacy = new Database(path.join(dir, "refi-radar.db"));
+    legacy.exec(`CREATE TABLE rate_snapshots (day TEXT PRIMARY KEY, rates TEXT NOT NULL, captured_at TEXT NOT NULL);
+      INSERT INTO rate_snapshots (day, rates, captured_at) VALUES ('2026-10-20', '{"rate_30yr_fixed":6.5}', 'then');`);
+    legacy.close();
+    const boot = () => execFileSync(process.execPath, ["-e", "require('./db'); require('./db');"], {
+      cwd: path.join(__dirname, ".."), env: { ...process.env, DATA_DIR: dir }, stdio: "pipe",
+    });
+    boot();
+    boot();   // a second start finds the column and leaves it alone
+    const check = new Database(path.join(dir, "refi-radar.db"));
+    const cols = check.prepare("PRAGMA table_info(rate_snapshots)").all().filter((c) => c.name === "provider");
+    assert.equal(cols.length, 1);
+    assert.deepStrictEqual([cols[0].type, cols[0].notnull, cols[0].dflt_value], ["TEXT", 1, "''"]);
+    assert.deepStrictEqual({ ...check.prepare("SELECT day, rates, provider FROM rate_snapshots").get() }, { day: "2026-10-20", rates: '{"rate_30yr_fixed":6.5}', provider: "" });
+    check.close();
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
+  }
+});
+
+test("B3: estimated rates are never snapshotted, by the route or by recordSnapshot itself", () => {
+  recordSnapshot({ rate_30yr_fixed: 6.87, source: "Estimated — live fetch unavailable" });
+  recordSnapshot({ rate_30yr_fixed: 6.87, source: "estimated rates" }, daysAgo(1));
+  assert.equal(countRows(), 0);
+});
+
+test("B3: the 5/1 ARM has no delta; its level is still the current one", () => {
+  recordSnapshot({ rate_30yr_fixed: 7.5, rate_5_1_arm: 7.4, source: FRED_SOURCE }, daysAgo(1));
+  const m = getMovement({ rate_30yr_fixed: 7.4, rate_5_1_arm: 7.1, source: FRED_SOURCE });
+  assert.equal(m.hasHistory, true);
+  assert.equal("rate_5_1_arm" in m.deltas, false);
+  assert.equal(m.current.rate_5_1_arm, 7.1);
+});
+
+test("B3: since is 'yesterday' for one day, the weekday for two to six, the date beyond (with the year when it differs)", () => {
+  assert.equal(sinceLabel("2026-10-24", "2026-10-25"), "yesterday");
+  assert.equal(sinceLabel("2026-10-22", "2026-10-25"), "Thursday", "3 days");
+  assert.equal(sinceLabel("2026-10-23", "2026-10-25"), "Friday", "2 days");
+  assert.equal(sinceLabel("2026-10-19", "2026-10-25"), "Monday", "6 days");
+  assert.equal(sinceLabel("2026-10-15", "2026-10-25"), "October 15", "10 days");
+  assert.equal(sinceLabel("2026-10-18", "2026-10-25"), "October 18", "7 days");
+  assert.equal(sinceLabel("2025-12-30", "2026-01-02"), "Tuesday", "across a year end, within six days");
+  assert.equal(sinceLabel("2025-12-20", "2026-01-02"), "December 20, 2025");
+  // through getMovement, against today's real date
+  for (const [n, expected] of [[1, "yesterday"], [3, sinceLabel(daysAgo(3))], [10, sinceLabel(daysAgo(10))]]) {
+    db.prepare("DELETE FROM rate_snapshots").run();
+    recordSnapshot({ rate_30yr_fixed: 7.5, source: FRED_SOURCE }, daysAgo(n));
+    const m = getMovement({ rate_30yr_fixed: 7.4, source: FRED_SOURCE });
+    assert.equal(m.since, expected, `${n} days`);
+    assert.equal(m.sinceDate, daysAgo(n));
+  }
+  assert.match(sinceLabel(daysAgo(3)), /^(?:Sun|Mon|Tues|Wednes|Thurs|Fri|Satur)day$/);
+  assert.match(sinceLabel(daysAgo(10)), /^[A-Z][a-z]+ \d{1,2}(?:, \d{4})?$/);
+});
+
 // ── Capture-on-fetch wiring in POST /api/rates ──────────────────────────────
 // Each test gets a FRESH copy of the rates router so the module-level ratesCache never
 // leaks between tests (results are independent of execution order).
@@ -137,6 +250,7 @@ test("a live FRED resolve is snapshotted", async () => {
     assert.equal(countRows(), 1, "live resolve writes today's snapshot");
     const stored = JSON.parse(db.prepare("SELECT rates FROM rate_snapshots").get().rates);
     assert.equal(stored.rate_30yr_fixed, 6.5);
+    assert.equal(db.prepare("SELECT provider FROM rate_snapshots").get().provider, "fred", "B3: stored with its provider");
   } finally {
     app.close();
     restore();

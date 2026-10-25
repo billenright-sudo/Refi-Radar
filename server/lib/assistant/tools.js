@@ -63,12 +63,17 @@ function getMarketUpdate(_args, ctx) {
   // snapshot (that would invent a day-over-day move): report it as estimated with no history.
   if (isEstimated(rates)) {
     return {
-      data: { rates: twoDecimals(rates), deltas: null, hasHistory: false, estimated: true },
+      data: { rates: twoDecimals(rates), deltas: null, hasHistory: false, since: null, sinceDate: null, estimated: true },
       source: `estimated rates ${date}`,
     };
   }
-  const { current, deltas, hasHistory } = getMovement(rates);
-  return { data: { rates: twoDecimals(current), deltas: twoDecimals(deltas), hasHistory }, source: `live rates ${date}` };
+  // deltas only against a prior snapshot from the same provider, never for the 5/1 ARM; `since` is the code-computed spoken
+  // label of that snapshot's day ("yesterday", "Thursday", "October 18") and `sinceDate` its date (lib/rateHistory.js)
+  const { current, deltas, hasHistory, since, sinceDate } = getMovement(rates);
+  return {
+    data: { rates: twoDecimals(current), deltas: twoDecimals(deltas), hasHistory, since, sinceDate },
+    source: `live rates ${date}`,
+  };
 }
 
 function runSweepTool(_args, ctx) {
@@ -189,9 +194,9 @@ const TOOL_SCHEMA = [
     description:
       "Today's mortgage rates (30-yr fixed, 15-yr fixed, 30-yr top-tier, 5/1 ARM) and how they moved " +
       "since the most recent prior-day snapshot. Use for any question about current rates or the market. " +
-      "`deltas` is null when no prior day has been recorded yet: say there is no history, never guess a move. " +
-      "Only report non-zero changes. The 5/1 ARM figure comes from a different source and may be an " +
-      "estimate, so do not report its movement on its own.",
+      "`deltas` is null when there is no comparable prior day: say there is no history, never guess a move. " +
+      "Only report non-zero changes. When you report a change, say since when with the `since` label exactly as given " +
+      "(for example \"since Thursday\"). The 5/1 ARM has no change: its figure comes from a different source.",
     input_schema: NO_ARGS,
   },
   {

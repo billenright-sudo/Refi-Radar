@@ -83,14 +83,21 @@ if (!userCols.some((c) => c.name === "career_stage")) {
   db.exec("ALTER TABLE users ADD COLUMN career_stage TEXT");
 }
 
-// One row per UTC day of the market rates we served — the basis for "market movement".
+// One row per UTC day of the market rates we served — the basis for "market movement". `provider` (fred / claude) is where
+// that day's set came from (lib/rateHistory.js): a move is only ever computed between two sets from the same provider.
 db.exec(`
   CREATE TABLE IF NOT EXISTS rate_snapshots (
     day         TEXT PRIMARY KEY,
     rates       TEXT NOT NULL,
-    captured_at TEXT NOT NULL
+    captured_at TEXT NOT NULL,
+    provider    TEXT NOT NULL DEFAULT ''
   );
 `);
+// provider arrived after the table did (an older row keeps '' and is read by its stored source label).
+const snapshotCols = db.prepare("PRAGMA table_info(rate_snapshots)").all();
+if (!snapshotCols.some((c) => c.name === "provider")) {
+  db.exec("ALTER TABLE rate_snapshots ADD COLUMN provider TEXT NOT NULL DEFAULT ''");
+}
 
 // What Charli cost: one 'turn' row per turn (including greetings and error turns), plus a row of its own for
 // each spoken reply ('tts', tts_chars = the text sent to speech synthesis) and each recording ('stt',

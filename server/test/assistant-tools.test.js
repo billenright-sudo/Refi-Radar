@@ -84,11 +84,39 @@ test("getMarketUpdate returns the rates, a cited source, and no deltas before an
 });
 
 test("getMarketUpdate reports day-over-day deltas once a prior-day snapshot exists", () => {
-  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9 }, "2000-01-01");
+  // B3 FIXTURE CHANGE: the prior snapshot carries the FRED source label the live path writes. A move is only computed
+  // between two sets from the same provider, and a source-less set reads as the web-search fallback, not FRED.
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, source: "Optimal Blue lock data (2000-01-01)" }, "2000-01-01");
   const r = getMarketUpdate({}, brokerCtx);
   assert.equal(r.data.hasHistory, true);
   assert.equal(r.data.deltas.rate_30yr_fixed, -0.08);
   assert.equal(r.data.deltas.rate_15yr_fixed, 0.01);
+  assert.equal(r.data.since, "January 1, 2000");
+  assert.equal(r.data.sinceDate, "2000-01-01");
+});
+
+test("B3: getMarketUpdate gives no move against a snapshot from another provider, none for the 5/1 ARM, and a code-computed since", () => {
+  const day = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+  // the web-search fallback yesterday, FRED today: no move
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, source: "Mortgage News Daily" }, day(1));
+  let r = getMarketUpdate({}, brokerCtx);
+  assert.deepStrictEqual([r.data.deltas, r.data.hasHistory, r.data.since, r.data.sinceDate], [null, false, null, null]);
+  // FRED yesterday and today: a move, no ARM entry, since yesterday
+  db.prepare("DELETE FROM rate_snapshots").run();
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, source: "Optimal Blue lock data (x) · ARM via Bankrate" }, day(1));
+  r = getMarketUpdate({}, brokerCtx);
+  assert.equal(r.data.hasHistory, true);
+  assert.equal(r.data.deltas.rate_30yr_fixed, -0.08);
+  assert.equal("rate_5_1_arm" in r.data.deltas, false, "the ARM level is reported, its move never is");
+  assert.equal(r.data.rates.rate_5_1_arm, RATES.rate_5_1_arm);
+  assert.equal(r.data.since, "yesterday");
+  assert.equal(r.data.sinceDate, day(1));
+  // the prompt and the tool description tell the model to use the label, never to work one out
+  const { CHARLI_SYSTEM } = require("../lib/assistant/prompt");
+  assert.ok(CHARLI_SYSTEM.includes("When you report how rates moved, say since when using getMarketUpdate's `since` label as given; never say \"since yesterday\" or name a day on your own."));
+  const desc = TOOL_SCHEMA.find((t) => t.name === "getMarketUpdate").description;
+  assert.match(desc, /`since` label exactly as given/);
+  assert.match(desc, /The 5\/1 ARM has no change/);
 });
 
 test("getMarketUpdate cites a dated 'live rates' source, and labels the estimated fallback honestly", () => {

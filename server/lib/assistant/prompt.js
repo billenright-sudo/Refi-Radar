@@ -50,6 +50,9 @@ const CHARLI_SYSTEM = [
     "no tool can answer, or a tool returns an error or nothing, do not fill the gap. Say exactly: " +
     `"${CANT_VERIFY}"`,
 
+  "When you report how rates moved, say since when using getMarketUpdate's `since` label as given; never say " +
+    "\"since yesterday\" or name a day on your own.",
+
   "To explain what a term means, call explainTerm and use its definition; never define a term from memory. " +
     "If explainTerm doesn't know the term, say you can't verify it.",
 
