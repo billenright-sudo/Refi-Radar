@@ -267,12 +267,18 @@ test("a failed lookup on a book-keyword question still resolves to the can't-ver
 
 // ── side effects ─────────────────────────────────────────────────────────────
 
+// The fields a valid addClientTool call needs (B2: the tool runs validateClient, so a name alone is invalid input).
+const JANE_DOE = { name: "Jane Doe", loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 450000 };
+const JANE_DOE_READ_BACK =
+  "Just to confirm — add Jane Doe, 30-year fixed at 7.1 percent, balance $300,000, value $450,000; no credit score given, so 700 will be used?";
+
 test("addClientTool is returned as a sideEffect with a code-authored read-back, and nothing is inserted", async () => {
   const before = clientCount();
-  const fields = { name: "Jane Doe", loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 450000 };
+  const fields = { ...JANE_DOE };
   const client = fakeClient([useTool("addClientTool", fields)]);
   const r = await runTurn({ messages: userSays("add Jane Doe as a client"), ctx: brokerCtx, client });
-  assert.equal(r.reply, "Just to confirm — add Jane Doe as a new client?");
+  // B2 FLIP (was "Just to confirm — add Jane Doe as a new client?"): every field that will be written is read back
+  assert.equal(r.reply, JANE_DOE_READ_BACK);
   assert.deepStrictEqual(r.sideEffect, { type: "addClient", fields });
   assert.deepStrictEqual(r.sources, [], "(unsaved) is not a citation");
   assert.equal(clientCount(), before);
@@ -307,9 +313,63 @@ test("addClientTool's sideEffect.fields.name is the same cleaned name the read-b
   const fields = { name: "  Jane \n  Doe ", loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 450000 };
   const client = fakeClient([useTool("addClientTool", fields)]);
   const r = await runTurn({ messages: userSays("add Jane Doe"), ctx: brokerCtx, client });
-  assert.equal(r.reply, "Just to confirm — add Jane Doe as a new client?");
+  assert.equal(r.reply, JANE_DOE_READ_BACK, "(B2 FLIP: the full read-back, with the cleaned name)");
   assert.equal(r.sideEffect.fields.name, "Jane Doe");
   assert.equal(r.sideEffect.fields.loanBalance, 300000, "other fields pass through untouched");
+});
+
+test("B2: the addClient read-back speaks every field that will be written; the 700 default is said; contact details are named, never read", async () => {
+  const readBackOf = async (fields) => {
+    const r = await runTurn({ messages: userSays("add a client"), ctx: brokerCtx, client: fakeClient([useTool("addClientTool", fields)]) });
+    assert.ok(r.sideEffect, JSON.stringify(fields));
+    return r;
+  };
+  let r = await readBackOf({ ...JANE_DOE, closeDate: "2024-03-01" });
+  assert.equal(r.reply, "Just to confirm — add Jane Doe, 30-year fixed at 7.1 percent, balance $300,000, value $450,000, closed 2024-03-01; no credit score given, so 700 will be used?");
+  r = await readBackOf({ ...JANE_DOE, loanType: "5_1_arm", currentRate: 6.125, loanBalance: 1250000.5, propertyValue: 2000000, creditScore: 742 });
+  assert.equal(r.reply, "Just to confirm — add Jane Doe, 5/1 ARM at 6.125 percent, balance $1,250,000.5, value $2,000,000, credit score 742?");
+  r = await readBackOf({ ...JANE_DOE, loanType: "15yr_fixed", creditScore: 700, email: "jane@example.test", phone: "555-0100", notes: "Call after 6" });
+  assert.equal(r.reply, "Just to confirm — add Jane Doe, 15-year fixed at 7.1 percent, balance $300,000, value $450,000, credit score 700; plus the email, phone and notes shown on screen?");
+  assert.doesNotMatch(r.reply, /jane@|555|after 6/, "borrower contact details and notes are not read into the conversation");
+  // the card rows: every packaged field, from the same object /confirm is sent
+  assert.deepStrictEqual(r.details, [
+    { label: "Name", value: "Jane Doe" }, { label: "Loan type", value: "15-year fixed" }, { label: "Rate", value: "7.1%" },
+    { label: "Balance", value: "$300,000" }, { label: "Property value", value: "$450,000" }, { label: "Credit score", value: "700" },
+    { label: "Email", value: "jane@example.test" }, { label: "Phone", value: "555-0100" }, { label: "Notes", value: "Call after 6" },
+  ]);
+  r = await readBackOf({ ...JANE_DOE });
+  assert.deepStrictEqual(r.details.find((d) => d.label === "Credit score"), { label: "Credit score", value: "700 (none given)" });
+  // a number in a string is read back as it will be written (parsed)
+  r = await readBackOf({ ...JANE_DOE, currentRate: "7.10", loanBalance: "300000" });
+  assert.equal(r.reply, JANE_DOE_READ_BACK);
+  assert.equal(r.sideEffect.fields.currentRate, 7.1);
+});
+
+test("B2: an addClientTool call with a missing field hands up no change; the model is told which field, and its question reaches the user", async () => {
+  const client = fakeClient([useTool("addClientTool", { name: "Jane Doe", loanType: "30yr_fixed", currentRate: 7.1, propertyValue: 450000 }), say("What's their loan balance?")]);
+  const r = await runTurn({ messages: userSays("add Jane Doe as a client"), ctx: brokerCtx, client });
+  assert.equal(r.sideEffect, undefined);
+  assert.equal(r.reply, "What's their loan balance?");
+  const sent = toolResultPayload(client.calls[1]);
+  assert.equal(sent.source, "(invalid input)");
+  assert.match(sent.data.error, /loanBalance/);
+  assert.deepStrictEqual(Object.keys(sent.data.errors), ["loanBalance"]);
+  // the backstop still holds: a statement instead of the question is the nothing-changed line
+  const claimed = await runTurn({
+    messages: userSays("add Jane Doe as a client"), ctx: brokerCtx,
+    client: fakeClient([useTool("addClientTool", { name: "Jane Doe" }), say("Jane Doe added to your book.")]),
+  });
+  assert.equal(claimed.reply, NOTHING_CHANGED);
+});
+
+test("B2: the logContact and setCareerStage card rows name the client and the date, and the stage", async () => {
+  let r = await runTurn({ messages: userSays("log a call with Chen"), ctx: brokerCtx, client: fakeClient([useTool("logContactTool", { clientId: chenId })]) });
+  assert.deepStrictEqual(r.details, [{ label: "Client", value: "Robert & Linda Chen" }, { label: "Contact date", value: "Today" }]);
+  r = await runTurn({ messages: userSays("make me a veteran"), ctx: brokerCtx, client: fakeClient([useTool("setCareerStageTool", { stage: "veteran" })]) });
+  assert.deepStrictEqual(r.details, [{ label: "Career stage", value: "Veteran (10+ years)" }]);
+  // no change, no rows
+  r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client: fakeClient([say("Good morning!")]) });
+  assert.equal("details" in r, false);
 });
 
 // ── tool-name safety, loop cap, usage ────────────────────────────────────────
@@ -664,7 +724,7 @@ test("a side-effect turn cites only the side-effect tool's own source, not the r
 
   client = fakeClient([resp([
     { type: "tool_use", id: "toolu_a", name: "findClient", input: { query: "chen" } },
-    { type: "tool_use", id: "toolu_b", name: "addClientTool", input: { name: "Jane Doe" } },
+    { type: "tool_use", id: "toolu_b", name: "addClientTool", input: JANE_DOE },
   ], "tool_use")]);
   r = await runTurn({ messages: userSays("add Jane Doe"), ctx: brokerCtx, client });
   assert.equal(r.sideEffect.type, "addClient");
@@ -674,7 +734,7 @@ test("a side-effect turn cites only the side-effect tool's own source, not the r
 test("more than one side-effect call in a response returns no sideEffect and asks to go one at a time", async () => {
   const client = fakeClient([resp([
     { type: "tool_use", id: "toolu_a", name: "logContactTool", input: { clientId: chenId } },
-    { type: "tool_use", id: "toolu_b", name: "addClientTool", input: { name: "Jane Doe" } },
+    { type: "tool_use", id: "toolu_b", name: "addClientTool", input: JANE_DOE },
   ], "tool_use")]);
   const before = clientCount();
   const r = await runTurn({ messages: userSays("log Chen and add Jane Doe"), ctx: brokerCtx, client });

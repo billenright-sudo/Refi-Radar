@@ -797,6 +797,35 @@ function runTool(block, ctx) {
   }
 }
 
+// The loan types as they are said ("30yr_fixed" is the stored id).
+const LOAN_TYPE_WORDS = { "30yr_fixed": "30-year fixed", "15yr_fixed": "15-year fixed", "5_1_arm": "5/1 ARM" };
+// 300000 -> "300,000", 300000.5 -> "300,000.5": every digit kept, so what is read back is the number that is written.
+const withCommas = (n) => {
+  const [whole, fraction] = String(n).split(".");
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (fraction ? "." + fraction : "");
+};
+const spokenList = (words) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`);
+// The addClient read-back speaks every field that will be written (addClientTool packaged exactly those), in the order a broker
+// says them: "Just to confirm — add Jane Doe, 30-year fixed at 7.1 percent, balance $300,000, value $450,000, closed 2024-03-01;
+// no credit score given, so 700 will be used?". An optional field that is absent is left out, except the credit score, whose 700
+// default IS written and so is said. The email, phone and notes are named, never read out (borrower contact details and notes do
+// not go into the conversation the model is sent): "...; plus the email and phone shown on screen?"; the card shows their values.
+function addClientReadBack(fields) {
+  const said = [
+    `add ${fields.name}`,
+    `${LOAN_TYPE_WORDS[fields.loanType] || fields.loanType} at ${fields.currentRate} percent`,
+    `balance $${withCommas(fields.loanBalance)}`,
+    `value $${withCommas(fields.propertyValue)}`,
+  ];
+  if (fields.closeDate) said.push(`closed ${fields.closeDate}`);
+  if (fields.creditScore != null) said.push(`credit score ${fields.creditScore}`);
+  let text = `${READ_BACK_PREFIX} ${said.join(", ")}`;
+  if (fields.creditScore == null) text += "; no credit score given, so 700 will be used";
+  const contact = ["email", "phone", "notes"].filter((key) => fields[key]);
+  if (contact.length) text += `; plus the ${spokenList(contact)} shown on screen`;
+  return text + "?";
+}
+
 // Code-authored confirmation question, built from the tool's own data (never from anything the
 // model wrote), so what is read back is what would be saved. Every read-back opens with READ_BACK_PREFIX
 // (answersActionQuestion keys on it).
@@ -806,7 +835,7 @@ function readBack(out) {
     case "logContact":
       return `${READ_BACK_PREFIX} log a contact for ${cleanName(out.data && out.data.client && out.data.client.name) || "that client"}?`;
     case "addClient":
-      return `${READ_BACK_PREFIX} add ${se.fields.name} as a new client?`;
+      return addClientReadBack(se.fields);
     case "setCareerStage": {
       // the label comes from the stage the tool packaged, so what is read back is what would be saved
       const stage = stageById(se.stage);
@@ -817,21 +846,55 @@ function readBack(out) {
   }
 }
 
+// What the pending card shows under the read-back: [{ label, value }], code-authored from the same packaged change. addClient
+// lists every field of sideEffect.fields (the object /confirm will write), the credit-score default included; logContact the
+// client and the date (the write sets the last contact to now); setCareerStage the stage. Never sent to the model.
+const CLIENT_FIELD_LABELS = [
+  ["name", "Name"], ["loanType", "Loan type"], ["currentRate", "Rate"], ["loanBalance", "Balance"], ["propertyValue", "Property value"],
+  ["closeDate", "Close date"], ["creditScore", "Credit score"], ["email", "Email"], ["phone", "Phone"], ["notes", "Notes"],
+];
+function changeDetails(out) {
+  const se = out.sideEffect;
+  if (se.type === "addClient") {
+    const f = se.fields;
+    const shown = {
+      loanType: LOAN_TYPE_WORDS[f.loanType] || f.loanType, currentRate: `${f.currentRate}%`,
+      loanBalance: `$${withCommas(f.loanBalance)}`, propertyValue: `$${withCommas(f.propertyValue)}`,
+      creditScore: f.creditScore == null ? "700 (none given)" : f.creditScore,
+    };
+    return CLIENT_FIELD_LABELS.filter(([key]) => key === "creditScore" || (f[key] != null && f[key] !== ""))
+      .map(([key, label]) => ({ label, value: String(key in shown ? shown[key] : f[key]) }));
+  }
+  if (se.type === "logContact") {
+    return [
+      { label: "Client", value: cleanName(out.data && out.data.client && out.data.client.name) || "that client" },
+      { label: "Contact date", value: "Today" },
+    ];
+  }
+  if (se.type === "setCareerStage") {
+    const stage = stageById(se.stage);
+    return stage ? [{ label: "Career stage", value: stage.label }] : [];
+  }
+  return [];
+}
+
 // ── The turn ─────────────────────────────────────────────────────────────────
 
-// runTurn({ messages, ctx, client }) -> { reply, sources, sideEffect?, usage }
+// runTurn({ messages, ctx, client }) -> { reply, sources, sideEffect?, details?, usage }
 //   messages: Messages API history ending with the user's latest message (not mutated)
 //   ctx:      { user, rates, db }, handed to the tools
 //   sources:  citing `source` strings of the tool results used (error labels are not cited)
+//   details:  with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
 async function runTurn({ messages, ctx, client } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
     throw new TypeError("runTurn: client must provide messages.create()");
   }
   const usage = { inputTokens: 0, outputTokens: 0 };
-  const finish = (reply, cited, sideEffect) => {
+  const finish = (reply, cited, sideEffect, details) => {
     const out = { reply, sources: cited || [], usage };
     if (sideEffect) out.sideEffect = sideEffect;
+    if (sideEffect && details) out.details = details;
     return out;
   };
 
@@ -937,7 +1000,7 @@ async function runTurn({ messages, ctx, client } = {}) {
     if (changes.length > 1) return finish(ONE_AT_A_TIME);
     if (changes.length === 1) {
       const change = changes[0];
-      return finish(readBack(change), isCitation(change.source) ? [change.source] : [], change.sideEffect);
+      return finish(readBack(change), isCitation(change.source) ? [change.source] : [], change.sideEffect, changeDetails(change));
     }
     if (lastCall) break;
 

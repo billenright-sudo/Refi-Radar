@@ -191,7 +191,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
 
   // POST /api/assistant/turn
   // Body: { rates, messages } or { rates, greeting: true, localHour? }.
-  // -> { reply, sources, sideEffect?, turnId }; a failed turn -> 200 { reply, error: true, sources: [], turnId }
+  // -> { reply, sources, sideEffect?, details?, turnId }; a failed turn -> 200 { reply, error: true, sources: [], turnId }
   router.post("/turn", async (req, res) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const rates = cleanRates(body.rates);
@@ -233,8 +233,10 @@ function createAssistantRouter({ limiter = {} } = {}) {
     }
     meter(req.user.id, turnId, out.usage || {});
     const payload = { reply: out.reply, sources: out.sources, turnId };
-    // Each proposed change gets its own id; /confirm uses it so a double tap cannot write twice.
+    // Each proposed change gets its own id; /confirm uses it so a double tap cannot write twice. `details` are the rows the
+    // pending card shows under the read-back (display only: /confirm never reads them).
     if (out.sideEffect) payload.sideEffect = { ...out.sideEffect, confirmId: crypto.randomUUID() };
+    if (out.sideEffect && Array.isArray(out.details)) payload.details = out.details;
     res.json(payload);
   });
 

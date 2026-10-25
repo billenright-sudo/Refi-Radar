@@ -291,6 +291,53 @@ test("addClientTool previews the new client and does NOT write", () => {
   assert.equal(clientCount(), n, "no row inserted");
 });
 
+test("B2: addClientTool runs validateClient (POST /api/clients') itself: a missing or invalid field is an error naming it, no sideEffect", () => {
+  const ok = { name: "Priya Shah", loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 420000 };
+  const { validateClient } = require("../routes/clients");
+  for (const [fields, bad] of [
+    [{ name: "Priya Shah" }, ["currentRate", "loanBalance", "loanType", "propertyValue"]],
+    [{ ...ok, loanBalance: undefined }, ["loanBalance"]],
+    [{ ...ok, propertyValue: 0 }, ["propertyValue"]],
+    [{ ...ok, currentRate: 31 }, ["currentRate"]],
+    [{ ...ok, loanType: "40yr_fixed" }, ["loanType"]],
+    [{ ...ok, name: "  " }, ["name"]],
+    [{ ...ok, name: 42 }, ["name"]],
+    [{ ...ok, email: 5 }, ["email"]],
+    [{ ...ok, closeDate: 20240301 }, ["closeDate"]],
+    [{ ...ok, creditScore: "abc" }, ["creditScore"]],
+    [{ ...ok, creditScore: 0 }, ["creditScore"]],
+    [{}, ["currentRate", "loanBalance", "loanType", "name", "propertyValue"]],
+  ]) {
+    const n = clientCount();
+    const r = addClientTool(fields, brokerCtx);
+    const label = JSON.stringify(fields);
+    assert.equal(r.sideEffect, undefined, label);
+    assert.match(r.source, NON_CITING, label);
+    assert.deepStrictEqual(Object.keys(r.data.errors).sort(), bad, label);
+    for (const key of bad) assert.ok(r.data.error.includes(key), `${label}: the error names ${key}`);
+    assert.equal(clientCount(), n);
+  }
+  // the same validator as the REST route, not a copy: whatever it refuses, the tool refuses
+  assert.deepStrictEqual(Object.keys(addClientTool({ name: "X" }, brokerCtx).data.errors).sort(), Object.keys(validateClient({ name: "X" })).sort());
+});
+
+test("B2: addClientTool packages exactly what createClientForUser will write: known fields, parsed numbers, empty optionals left out", () => {
+  const r = addClientTool({
+    name: "Priya Shah", loanType: "15yr_fixed", currentRate: "6.875", loanBalance: "300000.5", propertyValue: 420000,
+    closeDate: "2024-03-01", creditScore: "742", email: "priya@example.test", phone: "", notes: "  ", org_id: 99, id: 7,
+  }, brokerCtx);
+  assert.deepStrictEqual(r.sideEffect, {
+    type: "addClient",
+    fields: {
+      name: "Priya Shah", loanType: "15yr_fixed", currentRate: 6.875, loanBalance: 300000.5, propertyValue: 420000,
+      closeDate: "2024-03-01", creditScore: 742, email: "priya@example.test",
+    },
+  });
+  assert.deepStrictEqual(r.data.preview, r.sideEffect.fields);
+  // no credit score given: none is packaged (createClientForUser writes its 700 default, and the read-back says so)
+  assert.equal("creditScore" in addClientTool({ name: "A", loanType: "30yr_fixed", currentRate: 7, loanBalance: 1, propertyValue: 2 }, brokerCtx).sideEffect.fields, false);
+});
+
 // ── TOOL_SCHEMA ─────────────────────────────────────────────────────────────
 
 test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the tool fns", () => {

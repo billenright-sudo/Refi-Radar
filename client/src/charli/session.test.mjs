@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
-  createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER,
+  createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -412,6 +412,34 @@ test("A3: a spoken yes that lands after a button Confirm (STT still in flight) n
   const same = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
   assert.deepEqual(await same.session.heard("yes", { pendingAtStart: same.session.getState().pending }), { ok: true, action: "confirm" });
   assert.equal(same.server.confirms().length, 1);
+});
+
+test("B2: the pending card's rows are the server's details (every field to be written); they never go to /confirm", async () => {
+  const ADD = { type: "addClient", fields: { name: "Jane Doe", loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 450000 }, confirmId: "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f" };
+  const ROWS = [
+    { label: "Name", value: "Jane Doe" }, { label: "Loan type", value: "30-year fixed" }, { label: "Rate", value: "7.1%" },
+    { label: "Balance", value: "$300,000" }, { label: "Property value", value: "$450,000" }, { label: "Credit score", value: "700 (none given)" },
+  ];
+  const ADD_READ_BACK = "Just to confirm — add Jane Doe, 30-year fixed at 7.1 percent, balance $300,000, value $450,000; no credit score given, so 700 will be used?";
+  const { session, server } = setup({
+    routes: {
+      "POST /api/assistant/turn": queue(turnReply(ADD_READ_BACK, {
+        sideEffect: ADD, details: [...ROWS, { label: "", value: "x" }, { label: "Bad", value: { nested: true } }, null, "junk"],
+      })),
+      "POST /api/assistant/confirm": () => reply(200, { success: true, result: { id: 1, name: "Jane Doe" }, reply: "Done — I added Jane Doe as a new client." }),
+    },
+  });
+  await session.submit("add Jane Doe as a client");
+  assert.deepEqual(session.getState().pending, { sideEffect: ADD, readBack: ADD_READ_BACK, details: ROWS }, "only label/value string pairs are kept");
+  assert.deepEqual(pendingRows(session.getState().pending), ROWS);
+  await session.confirmPending();
+  assert.deepEqual(server.confirms()[0].body, { sideEffect: ADD }, "the sideEffect verbatim, no details");
+
+  // no details from the server: no rows, and the pending shape is unchanged
+  const plain = await withPending();
+  assert.deepEqual(plain.session.getState().pending, { sideEffect: SIDE_EFFECT, readBack: READ_BACK });
+  assert.deepEqual(pendingRows(plain.session.getState().pending), []);
+  assert.deepEqual(pendingRows(null), []);
 });
 
 test("a yes with nothing pending is an ordinary answer to Charli's question and goes to /turn", async () => {

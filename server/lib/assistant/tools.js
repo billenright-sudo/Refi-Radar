@@ -10,6 +10,7 @@ const refi = require("../refi");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
+const { validateClient } = require("../../routes/clients");   // the one POST /api/clients runs
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -102,12 +103,34 @@ function explainTerm(args, _ctx) {
 
 // ── Side-effect tools: package the intent, never write ───────────────────────
 
+// Package a new client for confirmation. It is checked here with the same validateClient POST /api/clients runs (and the
+// "text fields are text" rule /api/assistant/confirm adds), so a missing or invalid field comes back to the model as an error
+// naming it, and the model asks for it, instead of the user confirming a record that would then be refused. What is packaged
+// is exactly what createClientForUser will write: the known fields only, numbers as it parses them (parseFloat; the credit
+// score parseInt), an empty optional field left out. A credit score that is given must be a whole positive number (one that is
+// not would be written as the 700 default without anyone saying so); none given is written as 700, and the read-back says so.
+const CLIENT_TEXT_FIELDS = ["name", "email", "phone", "loanType", "closeDate", "notes"];
 function addClientTool(fields, _ctx) {
-  const f = fields || {};
+  const f = fields && typeof fields === "object" && !Array.isArray(fields) ? fields : {};
+  const errors = {};
+  for (const key of CLIENT_TEXT_FIELDS) if (f[key] != null && typeof f[key] !== "string") errors[key] = "Must be text";
+  for (const [key, message] of Object.entries(validateClient(f))) if (!errors[key]) errors[key] = message;
+  if (f.creditScore != null && !(parseInt(f.creditScore, 10) > 0)) errors.creditScore = "Valid credit score required";
+  const bad = Object.keys(errors);
+  if (bad.length) {
+    return { data: { error: `missing or invalid: ${bad.join(", ")} (ask the user for ${bad.length === 1 ? "it" : "them"})`, errors }, source: "(invalid input)" };
+  }
+  const out = {
+    name: f.name, loanType: f.loanType,
+    currentRate: parseFloat(f.currentRate), loanBalance: parseFloat(f.loanBalance), propertyValue: parseFloat(f.propertyValue),
+  };
+  if (f.closeDate) out.closeDate = f.closeDate;
+  if (f.creditScore != null) out.creditScore = parseInt(f.creditScore, 10);
+  for (const key of ["email", "phone", "notes"]) if (typeof f[key] === "string" && f[key].trim()) out[key] = f[key];
   return {
-    data: { preview: { ...f } },
+    data: { preview: { ...out } },
     source: "(unsaved)",
-    sideEffect: { type: "addClient", fields: { ...f } },
+    sideEffect: { type: "addClient", fields: { ...out } },
   };
 }
 
@@ -211,7 +234,7 @@ const TOOL_SCHEMA = [
     description:
       "Prepare a NEW client record for the user to confirm. This does NOT save anything: it returns a " +
       "preview, and the client is only created after the user confirms. Ask for any missing required " +
-      "field rather than guessing it.",
+      "field rather than guessing it; a missing or invalid field comes back as an error naming it, so ask for that field.",
     input_schema: {
       type: "object",
       properties: {

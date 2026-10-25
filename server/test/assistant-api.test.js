@@ -279,7 +279,8 @@ test("turn that proposes addClient returns the sideEffect and inserts nothing; c
   const count = clientCount();
   setClient(fakeClient([useTool("addClientTool", fields)]));
   const turn = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("add Jane Doe as a client"), rates: LIVE });
-  assert.equal(turn.data.reply, "Just to confirm — add Jane Doe as a new client?");
+  // B2 FLIP (was "Just to confirm — add Jane Doe as a new client?"): every field that will be written is read back
+  assert.equal(turn.data.reply, "Just to confirm — add Jane Doe, 30-year fixed at 7.1 percent, balance $300,000, value $450,000; no credit score given, so 700 will be used?");
   assert.match(turn.data.sideEffect.confirmId, UUID);
   assert.deepStrictEqual(withoutConfirmId(turn.data.sideEffect), { type: "addClient", fields });
   assert.equal(clientCount(), count);
@@ -295,6 +296,41 @@ test("turn that proposes addClient returns the sideEffect and inserts nothing; c
   );
   assert.equal(confirm.data.result.orgId, orgA);
   assert.equal(confirm.data.result.userId, ann);
+});
+
+test("B2: a confirmed voice add-client writes exactly the fields its read-back spoke; /turn carries the card rows", async () => {
+  const fields = {
+    name: "Read Back", loanType: "15yr_fixed", currentRate: "6.875", loanBalance: 412000.5, propertyValue: 610000,
+    closeDate: "2024-03-01", creditScore: 742, email: "rb@example.test",
+  };
+  setClient(fakeClient([useTool("addClientTool", fields)]));
+  const turn = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("add Read Back as a client"), rates: LIVE });
+  assert.equal(turn.data.reply,
+    "Just to confirm — add Read Back, 15-year fixed at 6.875 percent, balance $412,000.5, value $610,000, closed 2024-03-01, credit score 742; plus the email shown on screen?");
+  assert.deepStrictEqual(turn.data.details, [
+    { label: "Name", value: "Read Back" }, { label: "Loan type", value: "15-year fixed" }, { label: "Rate", value: "6.875%" },
+    { label: "Balance", value: "$412,000.5" }, { label: "Property value", value: "$610,000" }, { label: "Close date", value: "2024-03-01" },
+    { label: "Credit score", value: "742" }, { label: "Email", value: "rb@example.test" },
+  ]);
+  const confirm = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: turn.data.sideEffect });
+  assert.equal(confirm.status, 200);
+  const row = clientRow(confirm.data.result.id);
+  assert.deepStrictEqual(
+    { name: row.name, loan_type: row.loan_type, current_rate: row.current_rate, loan_balance: row.loan_balance, property_value: row.property_value,
+      close_date: row.close_date, credit_score: row.credit_score, email: row.email, phone: row.phone, notes: row.notes },
+    { name: "Read Back", loan_type: "15yr_fixed", current_rate: 6.875, loan_balance: 412000.5, property_value: 610000,
+      close_date: "2024-03-01", credit_score: 742, email: "rb@example.test", phone: "", notes: "" }
+  );
+  // every figure the read-back spoke is the figure in the row
+  for (const figure of ["6.875", "412,000.5", "610,000", "742"]) assert.ok(turn.data.reply.includes(figure), figure);
+  assert.equal(row.loan_balance, 412000.5);
+
+  // an incomplete call never reaches a read-back, so nothing can be confirmed into a 400
+  setClient(fakeClient([useTool("addClientTool", { name: "Half Done", loanType: "30yr_fixed" }), say("What's their rate, balance and property value?")]));
+  const half = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("add Half Done as a client"), rates: LIVE });
+  assert.equal(half.data.reply, "What's their rate, balance and property value?");
+  assert.equal("sideEffect" in half.data, false);
+  assert.equal("details" in half.data, false);
 });
 
 // ── the greeting ─────────────────────────────────────────────────────────────

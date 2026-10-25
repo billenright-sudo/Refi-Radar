@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { createSession, CAREER_STAGES } from "./session.mjs";
+import { createSession, CAREER_STAGES, pendingRows } from "./session.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
 // Charli, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and
@@ -269,6 +269,17 @@ export default function CharliView({ rates, user, ui }) {
             <div data-testid="charli-pending" style={{ ...card, borderColor: C.amber, background: C.amberBg, marginTop: 12, padding: "1rem 1.25rem" }}>
               <div style={{ color: C.amber, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 6 }}>Waiting for your OK</div>
               <div style={{ fontSize: 14.5, lineHeight: 1.5, marginBottom: 12 }}>{snap.pending.readBack}</div>
+              {/* every field the change will write, as the server packaged it */}
+              {pendingRows(snap.pending).length > 0 && (
+                <dl data-testid="charli-pending-details" style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "4px 14px", margin: "0 0 12px", fontSize: 13 }}>
+                  {pendingRows(snap.pending).map(({ label, value }) => (
+                    <div key={label} style={{ display: "contents" }}>
+                      <dt style={{ color: C.muted }}>{label}</dt>
+                      <dd style={{ margin: 0, color: C.text, overflowWrap: "anywhere" }}>{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 {/* disabled while anything is in flight, speech-to-text included: a spoken answer may be on its way */}
                 <button data-testid="charli-confirm" disabled={working} onClick={() => act(session.confirmPending)} style={{ ...primary, opacity: working ? 0.6 : 1 }}>

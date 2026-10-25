@@ -7,7 +7,7 @@
 // a spoken or typed "yes" is never sent to /turn (the model would just propose the change again).
 //
 // Server contracts (server/routes/assistant.js):
-//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour } -> { reply, sources, sideEffect?, turnId, error? }
+//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour } -> { reply, sources, sideEffect?, details?, turnId, error? }
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
@@ -86,6 +86,16 @@ export function classifyReply(text) {
 const cleanSources = (sources) =>
   (Array.isArray(sources) ? sources : []).filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim());
 
+// The rows the pending card shows under the read-back (/turn's `details`: every field the change will write, code-authored by
+// the server from the same sideEffect that goes to /confirm). Only { label, value } string pairs are kept; display only.
+const cleanDetails = (details) =>
+  (Array.isArray(details) ? details : [])
+    .filter((d) => d && typeof d === "object" && typeof d.label === "string" && d.label.trim() && (typeof d.value === "string" || typeof d.value === "number"))
+    .map((d) => ({ label: d.label.trim(), value: String(d.value) }));
+
+// The rows to draw under a pending read-back (CharliView): the server's details, or none. Pure.
+export const pendingRows = (pending) => (pending && Array.isArray(pending.details) ? pending.details : []);
+
 // What a failed request says to the user. `res` is what request() returned.
 function failureText(res) {
   if (res.network) return "Sorry — I couldn't reach the server. Check your connection and try again.";
@@ -115,7 +125,7 @@ const isRetryable = (res) => res.network || res.status >= 500 || res.status === 
 //
 // getState() -> { turns, pending, busy, opening, hasRates, careerStage }
 //   turns    [{ id, role, content, sources, turnId, kind: "message" | "error" | "notice", inHistory }]
-//   pending  { sideEffect, readBack } | null
+//   pending  { sideEffect, readBack, details? } | null   (details: [{ label, value }] for the card, when the server sent them)
 // Only turns with inHistory are sent to /turn, as plain { role, content }.
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
@@ -206,7 +216,8 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
         kind: failed ? "error" : "message",
       });
       if (!failed && data.sideEffect && typeof data.sideEffect === "object" && !Array.isArray(data.sideEffect)) {
-        set({ pending: { sideEffect: data.sideEffect, readBack: data.reply } });
+        const details = cleanDetails(data.details);
+        set({ pending: details.length ? { sideEffect: data.sideEffect, readBack: data.reply, details } : { sideEffect: data.sideEffect, readBack: data.reply } });
       }
       speak(data.reply, data.turnId);
       return;
