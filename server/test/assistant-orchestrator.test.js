@@ -3073,3 +3073,55 @@ test("B6: FINAL_I4_TABLE - the reviewer's figure-check probes through runTurn, a
   assert.equal(r.reply, "the 30-year is at 7.25 percent");
   assert.equal(toolResultPayload(client.calls[1]).data.rates.rate_30yr_fixed, 7.25);
 });
+
+// ── Fix round 2 (re-review 1) ────────────────────────────────────────────────────────────────────────────────────────────
+
+// #1: a contact report is an action request only in a message that asks nothing (no "?", no clause opening with a question
+// word); the subject-drop forms and the other ways of saying it are reports too.
+const CONTACT_REPORTS = [
+  "Called the Chens this morning.", "Talked to the Chens", "Spoke with Robert Chen earlier", "I just had a call with the Chens",
+  "I was just on the phone with the Chens", "Just hung up with the Chens", "I caught up with the Chens", "I touched base with the Chens",
+  "I left the Chens a voicemail",
+];
+const AT_626 = { ctx: { ...brokerCtx, rates: { ...LIVE, rate_30yr_fixed: 6.26 } } };
+const CURRENT_NOW = "You got it — the Chens are current now.";
+
+test("R2-1: a contact report counts only when the message asks nothing; the subject-drop and other report forms count", () => {
+  for (const text of [
+    ...CONTACT_REPORTS, "I called the Chens this morning", "Phoned Robert", "Texted Linda Chen", "Met with the Chens yesterday",
+    "I left Robert and Linda a message", "um, called the Chens", "I called the Chens, need to log that",
+  ]) assert.equal(isActionRequest(text), true, text);
+  for (const text of [
+    // the reviewer's mixed report + question rows, and the same without the "?" (a clause that opens with a question word)
+    "I just spoke with the Chens, what's their balance?", "I just met with my manager, who should I call first?",
+    "I texted my wife — anyway, what are rates today?", "I talked to the Chens yesterday; are they still my best opportunity?",
+    "I just spoke with the Chens, what's their balance", "Called the Chens. Is that logged", "Talked to the Chens, how are rates",
+    // not reports
+    "The Chens called me", "Left the office early", "I left my phone in the car", "Spoke too soon",
+  ]) assert.equal(isActionRequest(text), false, text);
+  // a request in the same message is still a request, question or not
+  assert.equal(isActionRequest("I called the Chens, can you log it?"), true);
+  assert.equal(isActionRequest("I talked to the Chens. Log it, what are rates?"), true);
+});
+
+const R2_CONTACT_TABLE = [
+  // the reviewer's rows: a question with news in front is answered like any question (NOTHING_CHANGED at d3149db)
+  ["I just spoke with the Chens, what's their balance?", "findClient", "Their balance is $485,000.", PASS],
+  ["I just met with my manager, who should I call first?", "runSweepTool", "Call the Chens first.", PASS],
+  ["I texted my wife — anyway, what are rates today?", "getMarketUpdate", "The 30-year is at 6.26 percent.", PASS, AT_626],
+  ["I talked to the Chens yesterday; are they still my best opportunity?", "runSweepTool", "Yes, the Chens are still your best opportunity.", PASS],
+  // ... while a claim on such a turn is still the nothing-changed line, and an unbacked figure still can't be verified
+  ...onBoth("I just spoke with the Chens, what's their balance?", "Contact logged — anything else?", NOTHING_CHANGED),
+  ["I just spoke with the Chens, what's their balance?", "findClient", "Their balance is $499,000.", CANT_VERIFY],
+  // the pure report stays an action request (FINAL_C1_TABLE pins "I called the Chens this morning"); the new forms join it
+  ...onBoth("Called the Chens this morning.", CURRENT_NOW, NOTHING_CHANGED),
+  ...CONTACT_REPORTS.flatMap((u) => onBoth(u, CURRENT_NOW, NOTHING_CHANGED)),
+  ["Called the Chens this morning.", "findClient", "Robert and Linda Chen are at 7.85 percent.", NOTHING_CHANGED],
+  // a question back still passes on a report
+  ["Called the Chens this morning.", "findClient", "Want me to log a contact for Robert and Linda Chen?", PASS],
+  ["I left the Chens a voicemail", null, "Want me to log that?", PASS],
+];
+
+test("R2-1: R2_CONTACT_TABLE - questions after a contact report are normal turns; reports (any form) hold the backstop", async () => {
+  await checkTable(R2_CONTACT_TABLE);
+});

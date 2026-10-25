@@ -172,10 +172,17 @@ function isYesNoQuestion(text) {
 // "remember to log", and "make a note" (the "a" counts only when "note" follows). "remember" counts only
 // before "to": "Can you remember logging a call with Chen?" asks about the past, it requests nothing.
 // A first-person contact REPORT is an action request too (CONTACT_REPORT_RE): a clause that opens with "I (just / already)" or
-// "I've" or "Just", then called / phoned / rang / talked to / talked with / spoke with / spoke to / met with / texted / emailed /
-// left a message (or voicemail) for / got off the phone with ("I called the Chens this morning", "Just got off the phone with the
-// Chens"). Saying it is how a broker asks for the contact to be logged, so the backstop then lets through only a question ("Want
-// me to log that?") or the logContactTool read-back. Pure.
+// "I've" or "Just", or with the verb itself (the subject dropped: "Called the Chens this morning.", "Talked to the Chens", "Spoke
+// with Robert Chen earlier"), then called / phoned / rang / talked to / talked with / spoke with / spoke to / met with / texted /
+// emailed / left a message (or voicemail) for / left <someone> a message (or voicemail) / got off the phone with / had a call
+// with / was (just) on the phone with / hung up with / caught up with / touched base with ("I called the Chens this morning",
+// "Just got off the phone with the Chens", "I left the Chens a voicemail"). Saying it is how a broker asks for the contact to be
+// logged, so the backstop then lets through only a question ("Want me to log that?") or the logContactTool read-back.
+// A report counts only in a message that asks nothing (reportOnly): no "?" anywhere (audio tags removed first), and no clause
+// that opens, after filler, with a question or auxiliary word (ASKING_START_RE: what / who / which / when / where / how / why /
+// is / are / should / can / do / does ...). "I just spoke with the Chens, what's their balance?" and "I texted my wife — anyway,
+// what are rates today?" are questions with a bit of news in front, not requests. "want" and "need" do not count as asking
+// here: in the user's words they open a request ("I called the Chens, need to log that"), so such a report stays one. Pure.
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)";
 const ACTION_VERBS_ING =
@@ -192,17 +199,29 @@ const REQUEST_LEAD_RE = new RegExp(
   "i"
 );
 const CONTACT_REPORT_RE = new RegExp(
-  "^(?:I(?:['\\u2019]ve|\\s+have)?\\s+(?:(?:just|already)\\s+)?|just\\s+)" +
+  "^(?:I(?:['\\u2019]ve|\\s+have)?\\s+(?:(?:just|already)\\s+)?|just\\s+)?" +
     "(?:called|phoned|rang|talked\\s+(?:to|with)|spoke\\s+(?:with|to)|met\\s+with|texted|emailed" +
-    "|left\\s+(?:a\\s+)?(?:message|voicemail)\\s+for|got\\s+off\\s+the\\s+phone\\s+with)\\b",
+    "|left\\s+(?:a\\s+)?(?:message|voicemail)\\s+for|left\\s+(?:(?!an?\\b)[\\w&'\\u2019.-]+\\s+){1,4}?an?\\s+(?:message|voicemail)" +
+    "|got\\s+off\\s+the\\s+phone\\s+with|had\\s+a\\s+call\\s+with|was\\s+(?:just\\s+)?on\\s+the\\s+phone\\s+with" +
+    "|hung\\s+up\\s+with|caught\\s+up\\s+with|touched\\s+base\\s+with)\\b",
   "i"
 );
+const ASKING_START_RE = new RegExp(
+  "^(?:(?:and|or|so)\\s+)?(?:" + QUESTION_WORDS.split("|").filter((w) => w !== "want" && w !== "need").join("|") + ")\\b", "i"
+);
+const reportOnly = (text) => {
+  const t = text.replace(AUDIO_TAG_RE, " ");
+  return !t.includes("?") && !t.split(USER_CLAUSE_BREAK_RE).some((clause) => ASKING_START_RE.test(afterFiller(clause)));
+};
 const STATE_QUESTION_LEAD_RE = /^(?:when|what|which|who|how|did|has|have|had|was|were)\b/i;
-const isActionRequest = (text) =>
-  String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).some((clause) => {
+const isActionRequest = (text) => {
+  const t = String(text == null ? "" : text);
+  const reports = reportOnly(t);
+  return t.split(USER_CLAUSE_BREAK_RE).some((clause) => {
     const c = afterFiller(clause);
-    return !STATE_QUESTION_LEAD_RE.test(c) && (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c) || CONTACT_REPORT_RE.test(c));
+    return !STATE_QUESTION_LEAD_RE.test(c) && (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c) || (reports && CONTACT_REPORT_RE.test(c)));
   });
+};
 
 // R5-3's pass condition: after at most one opener strip, the reply's first clause (the text before
 // its first . ! ; em dash, en dash or spaced hyphen) opens with a question/auxiliary word, and the
