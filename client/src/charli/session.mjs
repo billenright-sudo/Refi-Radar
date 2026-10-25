@@ -48,7 +48,11 @@ const PHRASES = [
   ...FILLER_WORDS.map((p) => [[p], "filler"]),
 ];
 
-const normalize = (text) => String(text ?? "")
+// Speech-to-text audio-event tags ("(background noise)", "[laughter]") are not the user's words: they go before anything is read.
+const AUDIO_TAG_RE = /\([^()]*\)|\[[^[\]]*\]/g;
+export const withoutAudioTags = (text) => String(text ?? "").replace(AUDIO_TAG_RE, " ");
+
+const normalize = (text) => withoutAudioTags(text)
   .toLowerCase()
   .replace(/[’‘`]/g, "'")
   .replace(/[^a-z0-9'\s]/g, " ")
@@ -300,15 +304,17 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   // recording went to speech-to-text. A bare yes or no (classifyReply) that comes back after that change was confirmed or
   // cancelled with a button, or replaced, answers nothing the user can still see: it is shown as a notice and sent nowhere
   // (a late "yes" must never reach /turn as an ordinary answer, nor confirm a change the user has not seen).
+  // A transcript that is only audio-event tags ("(background noise)") heard nothing either.
   async function heard(text, { pendingAtStart } = {}) {
-    if (String(text ?? "").trim() && pendingAtStart !== undefined && state.pending !== pendingAtStart && !disposed) {
+    const said = withoutAudioTags(text).trim();
+    if (said && pendingAtStart !== undefined && state.pending !== pendingAtStart && !disposed) {
       const answer = classifyReply(text);
       if (answer === "yes" || answer === "no") {
         addNotice(LATE_ANSWER);
         return { ok: true, action: "late-answer" };
       }
     }
-    if (String(text ?? "").trim()) return submit(text);
+    if (said) return submit(text);
     if (disposed) return { ok: false, reason: "closed" };
     if (state.busy) return { ok: false, reason: "busy" };
     addNotice(DIDNT_CATCH, { say: true });

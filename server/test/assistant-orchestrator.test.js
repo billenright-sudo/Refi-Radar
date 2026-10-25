@@ -1943,7 +1943,10 @@ const REVIEW_TABLE = [
   ["Tell me about Chen", "findClient", "Robert and Linda Chen have a 30yr_fixed loan at 7.85 percent, with $485,000 left.", PASS],
   ["Tell me about Chen", "findClient", "Robert and Linda Chen are at 7.85 percent. Your notes say they prefer evening calls.", PASS],
   ["Tell me about Chen", "findClient", "Robert and Linda Chen, last contacted on 2026-01-01, are at 7.85 percent.", PASS],
-  ["Tell me about Chen", "findClient", "Robert and Linda Chen — last contact logged on 2026-01-01.", PASS],
+  // FIX-WAVE B1 FLIP (was PASS): "last contact logged on <date>" is the shortened passive, and only the was/were form of a
+  // dated narration is exempt (the prompt asks for "was logged on <date>"); the was form beside it still passes
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen — last contact logged on 2026-01-01.", NOTHING_CHANGED],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen — their last contact was logged on 2026-01-01.", PASS],
   ["Tell me about Chen", "findClient", "Robert and Linda Chen: balance $485,000, rate 7.85 percent, last contact 2026-01-01.", PASS],
   ["Tell me about Chen", "findClient", "Found them — Robert and Linda Chen, and their last contact was 2026-01-01.", PASS],
   ["Tell me about Chen", "findClient", "Robert and Linda Chen's last contact is recorded as 2026-01-01.", NOTHING_CHANGED],
@@ -2200,19 +2203,28 @@ const PREREVIEW_TABLE = [
   [history("log a call with Chen", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
   [history("log a call with Chen", WHICH_CHEN, "The first one"), null, "Robert and Linda Chen marked as contacted for today.", NOTHING_CHANGED],
   [history("log a call", "Who did you talk to?", "Chen", "Which Chen — Robert and Linda, or Chen Wei?", "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
-  // an answer phrased as a question ends the chain: ACCEPTED COST, the false "done" is not caught here
-  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda?"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
-  [history("log a call", "Who did you talk to?", "Chen?", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
-  // an answer that opens with a question or auxiliary word is not answer-shaped either (accepted cost)
-  [history("log a call with Chen", WHICH_CHEN, "Do the first one"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  // an answer phrased as a question ends the chain: ACCEPTED COST of the walk. FIX-WAVE B1 FLIPS (were PASS): the false
+  // "done" these rows let through is now caught by claimsCompletion's shortened-passive form on any turn. The chain itself
+  // is still pinned by the neutral-narration rows right after each (the walk does not apply, so the narration passes).
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda?"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda?"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  [history("log a call", "Who did you talk to?", "Chen?", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call", "Who did you talk to?", "Chen?", WHICH_CHEN, "Robert and Linda"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  // an answer that opens with a question or auxiliary word is not answer-shaped either (accepted cost; B1 FLIP as above)
+  [history("log a call with Chen", WHICH_CHEN, "Do the first one"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "Do the first one"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
   // a free-form request without a "?" is answer-shaped, so it is still held to the backstop (accepted cost)
   [history("log a call with Chen", READ_BACK, "tell me the rates"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", NOTHING_CHANGED],
-  // at most four hops back: the origin in the 4th pair blocks, in the 5th it does not (accepted cost)
+  // at most four hops back: the origin in the 4th pair blocks, in the 5th it does not (accepted cost; B1 FLIP as above)
   [history("log a call", "Who did you talk to?", "Chen", "Which Chen?", "Robert and Linda", "Which number?", "the first", "Which day?", "Monday"),
     "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
-  [history(...FIVE_HOPS), "findClient", "Call logged for Robert and Linda Chen.", PASS],
-  // the walk stops at an assistant message that is not a question
-  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda", "Okay, noted.", "Monday"), "findClient", "Call logged for Robert and Linda Chen.", PASS],
+  [history("log a call", "Who did you talk to?", "Chen", "Which Chen?", "Robert and Linda", "Which number?", "the first", "Which day?", "Monday"),
+    "findClient", "Robert and Linda Chen are at 7.85 percent.", NOTHING_CHANGED],
+  [history(...FIVE_HOPS), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history(...FIVE_HOPS), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  // the walk stops at an assistant message that is not a question (B1 FLIP as above)
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda", "Okay, noted.", "Monday"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
+  [history("log a call with Chen", WHICH_CHEN, "Robert and Linda", "Okay, noted.", "Monday"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
   // an origin phrased as a question still starts the chain
   [history("Can you log a call with Chen?", WHICH_CHEN, "Robert and Linda"), "findClient", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED],
 
@@ -2866,4 +2878,108 @@ const R5_TABLE = [
 
 test("Fix round 5: set-claim objects, a lone stage after a dash / semicolon / colon, VA eligibility, the vocative's comma, that's STAGE", async () => {
   await checkTable(R5_TABLE);
+});
+
+// ── Fix wave B1 (final review C1): false "logged" claims when the action backstop is off ──────────────────────────────────
+
+// The browser's "Okay — I'll leave that." after a read-back the user did not answer with a plain yes or no, merged into one
+// assistant message by normalizeHistory (routes/assistant.js) as it reaches runTurn.
+const CANCELLED = `${READ_BACK}\nOkay — I'll leave that.`;
+const CONFIRMED = `${READ_BACK}\nDone — I logged a contact for Robert & Linda Chen.`;
+const SHORT_PASSIVES = [
+  "Call logged for the Chens.", "Contact logged — anything else?", "Chens marked as contacted.", "Jane Doe added to your book.",
+  "All recorded — anything else?", "That's in for the Chens.", "The Chens are up to date now.",
+];
+const SHORT_PASSIVE_NEIGHBOURS = [
+  "Nothing logged yet — want me to?", "No contact logged since January.", "Anything logged for the Chens?", "Call logged?",
+  "Rates updated this morning.", "The thirty-year fixed is at 6.52 percent, updated this morning.",
+  "You've got Robert and Linda Chen marked as a rate and term opportunity.", "That's in your pipeline.",
+  "Rates are in for a rough week.", "The Chens are up to date on their payments.",
+];
+
+test("B1.1: claimsCompletion catches the shortened passive (and 'is in' / 'up to date now') on every turn; its neighbours are no claims", () => {
+  for (const grounded of [false, true]) {
+    for (const text of [
+      ...SHORT_PASSIVES,
+      // the probe replies
+      "Call logged for the Chens — they're due again in six months.", "Got it — contact logged for Robert and Linda.",
+      "Nice — Chens marked as contacted.", "Call logged for Robert and Linda Chen.",
+      // nearby forms: a name joined by "and", "&", a later clause, the other participles, "now up to date"
+      "Robert and Linda Chen marked as contacted.", "Robert & Linda Chen marked as contacted for today.", "Sure thing, call logged.",
+      "Follow-up booked for Thursday.", "Everything saved.", "Your note on the Chens noted.", "Record updated for the Chens.",
+      "Got it: everything recorded.", "It's in now.", "Everything's in.", "Your book is now up to date.",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of SHORT_PASSIVE_NEIGHBOURS) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+  // the dated narration a grounded turn may use is still the was/were form only
+  assert.equal(claimsCompletion("Your last contact was logged on 2026-01-01.", true), false);
+  assert.equal(claimsCompletion("Your last contact was logged on 2026-01-01.", false), true, "(unchanged: ungrounded, the past passive claims)");
+  assert.equal(claimsCompletion("Last contact logged on 2026-01-01.", true), true);
+});
+
+test("B1.2: a first-person contact report is an action request; a question about one, a plan, or someone else's call is not", () => {
+  for (const text of [
+    "Just got off the phone with the Chens", "I called the Chens this morning", "I talked to the Chens today", "I just spoke with the Chens",
+    "I've talked to the Chens", "Just spoke with Robert Chen", "I already called them", "I phoned the Chens", "I rang Robert",
+    "I spoke to Linda Chen", "I met with the Chens yesterday", "I texted Robert Chen", "I emailed the Chens", "I talked with Robert",
+    "I left a message for the Chens", "I left a voicemail for Robert", "hey Charli, I just got off the phone with the Chens",
+    "Good news. I called the Chens and they're in.",
+  ]) assert.equal(isActionRequest(text), true, text);
+  for (const text of [
+    "Did I call the Chens this week?", "When did I talk to the Chens?", "I'll call the Chens later", "I need to call the Chens",
+    "The Chens called me", "I think the Chens called", "Should I call the Chens?", "What did I talk to the Chens about?",
+  ]) assert.equal(isActionRequest(text), false, text);
+});
+
+test("B1.3: audio-event tags are not the user's words: they never hide a request or a yes/no question", () => {
+  for (const text of [
+    "(background noise) Log a call with the Chens.", "[music] can you log a call with Chen", "Can you (cough) log a call with Chen",
+    "(laughter) (background noise) I called the Chens this morning", "um (cough) log it",
+  ]) assert.equal(isActionRequest(text), true, text);
+  assert.equal(isYesNoQuestion("(background noise) Is Chen my best?"), true);
+  assert.equal(isYesNoQuestion("[noise] hey Charli, is Chen my best?"), true);
+  // a tag alone is no request and no question
+  assert.equal(isActionRequest("(background noise)"), false);
+  assert.equal(isYesNoQuestion("(background noise)?"), false);
+});
+
+const FINAL_C1_TABLE = [
+  // probe3: contact reports, and a request behind an audio tag (the reviewer's replies, with the source chip and without)
+  ...onBoth("Just got off the phone with the Chens", "Call logged for the Chens — they're due again in six months.", NOTHING_CHANGED),
+  ...onBoth("I called the Chens this morning", "Got it — contact logged for Robert and Linda.", NOTHING_CHANGED),
+  ...onBoth("I talked to the Chens today", "Nice — Chens marked as contacted.", NOTHING_CHANGED),
+  ...onBoth("(background noise) Log a call with the Chens.", "Call logged for Robert and Linda Chen.", NOTHING_CHANGED),
+  // probe1: after a cancelled read-back, an unrecognised yes
+  ...["All recorded — anything else?", "That's in for the Chens.", "The Chens are up to date now."]
+    .flatMap((t) => onBoth(history("log a call with the Chens", CANCELLED, "absolutely"), t, NOTHING_CHANGED)),
+  // the shortened passive needs no backstop: on a turn that asks for nothing it is still the nothing-changed line
+  ...SHORT_PASSIVES.flatMap((t) => onBoth("how are the Chens doing?", t, NOTHING_CHANGED)),
+  // ... and on a question the backstop is off for
+  ...SHORT_PASSIVES.flatMap((t) => onBoth(history("log a call with the Chens", CANCELLED, "what are rates today?"), t, NOTHING_CHANGED)),
+
+  // neighbours: a question back passes on a contact report, and the walk after a cancelled read-back is only for answers
+  ["I called the Chens this morning", null, "Want me to log that?", PASS],
+  ["Just got off the phone with the Chens", "findClient", "Want me to log a contact for Robert and Linda Chen?", PASS],
+  ["(background noise) Log a call with the Chens.", "findClient", "Which Chen — Robert and Linda, or Chen Wei?", PASS],
+  [history("log a call with the Chens", CANCELLED, "absolutely"), "findClient", "Should I log a contact for Robert and Linda Chen?", PASS],
+  [history("log a call with the Chens", CANCELLED, "absolutely"), "findClient", "Robert and Linda Chen are at 7.85 percent.", NOTHING_CHANGED],
+  [history("log a call with the Chens", CANCELLED, "what are rates today?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [history("log a call with the Chens", CANCELLED, "what are rates today"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [history("log a call with the Chens", CANCELLED, "run a sweep"), "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+  [history("log a call with the Chens", CANCELLED, "give me a market update"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  // a confirmed read-back is not a question
+  [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome! Anything else?", PASS],
+  [history("log a call with the Chens", CONFIRMED, "great"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  // narration and the dated was-form
+  ["Tell me about Chen", "findClient", "Your last contact was logged on 2026-01-01.", PASS],
+  ["what's the latest with the Chens?", "findClient", "Nothing logged yet — want me to?", PASS],
+  ["Did I call the Chens this week?", "findClient", "Your last contact was logged on 2026-01-01.", PASS],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, updated this morning.", PASS],
+  ["Run a sweep", "runSweepTool", "You've got Robert and Linda Chen marked as a rate and term opportunity.", PASS],
+  // ACCEPTED COST (pinned): a contact report holds the turn to the backstop, so a statement in answer to it is replaced
+  ["I called the Chens this morning", "findClient", "Robert and Linda Chen are at 7.85 percent.", NOTHING_CHANGED],
+];
+
+test("B1.6: FINAL_C1_TABLE - every probe row of the final review's C1, and the neighbours that must still pass", async () => {
+  await checkTable(FINAL_C1_TABLE);
 });

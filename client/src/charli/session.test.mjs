@@ -74,6 +74,25 @@ test("classifyReply: short bare yes, no, and everything else", () => {
   for (const t of other) assert.equal(classifyReply(t), "other", `"${t}" should be other`);
 });
 
+test("B1.3: audio-event tags are stripped before a reply is read, and a transcript that is only tags heard nothing", async () => {
+  for (const [t, kind] of [
+    ["(background noise) Yes.", "yes"], ["[laughter] no", "no"], ["yes (cough)", "yes"], ["(background noise) okay never mind", "no"],
+    ["(background noise)", "other"], ["(cough) what about the Chens", "other"],
+  ]) assert.equal(classifyReply(t), kind, t);
+  const { session, server, spoken } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sure.")) } });
+  assert.deepEqual(await session.heard("(background noise)"), { ok: true, action: "didnt-catch" });
+  assert.deepEqual(await session.heard("  [music]  (laughter) "), { ok: true, action: "didnt-catch" });
+  assert.equal(server.turns().length, 0);
+  assert.equal(spoken[0].text, DIDNT_CATCH);
+  // words around a tag are a message, sent as heard (the server strips the tag for its own tests)
+  assert.deepEqual(await session.heard("(background noise) run a sweep"), { ok: true, action: "turn" });
+  assert.equal(messagesOf(server.turns()[0]).at(-1).content, "(background noise) run a sweep");
+  // and a tagged yes confirms a pending change
+  const p = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
+  assert.deepEqual(await p.session.heard("(background noise) Yes."), { ok: true, action: "confirm" });
+  assert.equal(p.server.turns().length, 1);
+});
+
 // ── greeting ─────────────────────────────────────────────────────────────────
 
 test("greeting: waits for rates, then asks /turn once with greeting:true, rates and localHour", async () => {

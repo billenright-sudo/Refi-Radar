@@ -478,6 +478,7 @@ test("stt: one audio upload is forwarded to Scribe as multipart; { text } comes 
     const file = init.body.get("file");
     seen = {
       model: init.body.get("model_id"),
+      tags: init.body.get("tag_audio_events"),
       fields: [...init.body.keys()].sort(),
       bytes: Buffer.from(await file.arrayBuffer()),
       type: file.type,
@@ -502,7 +503,10 @@ test("stt: one audio upload is forwarded to Scribe as multipart; { text } comes 
   assert.equal(headers.get("xi-api-key"), KEY);
   assert.equal(headers.get("content-type"), null, "fetch sets the multipart boundary itself");
   assert.ok(init.signal instanceof AbortSignal);
-  assert.deepStrictEqual(seen.fields, ["file", "model_id"], "no forced language, nothing else");
+  // B1: tag_audio_events=false, so no "(background noise)" reaches the orchestrator as the user's words (FLIP: this list was
+  // ["file", "model_id"] before the fix wave)
+  assert.deepStrictEqual(seen.fields, ["file", "model_id", "tag_audio_events"], "no forced language, audio-event tags off, nothing else");
+  assert.equal(seen.tags, "false");
   assert.equal(seen.model, "scribe_v2");
   assert.ok(seen.isFile);
   assert.deepStrictEqual([...seen.bytes], [...CLIP], "the audio, byte for byte");

@@ -95,7 +95,11 @@ const FILLER_RE = new RegExp(
     "\\b[\\s,\\u2014\\u2013-]*)*",
   "i"
 );
-const afterFiller = (s) => String(s == null ? "" : s).replace(FILLER_RE, "").trim();
+// Speech-to-text audio-event tags, "(background noise)", "[laughter]", anywhere in the text: they are not the user's words, and
+// one at the start would hide the request behind it ("(background noise) Log a call with the Chens."). Removed, with the filler,
+// before every test that reads how a sentence or clause opens.
+const AUDIO_TAG_RE = /\([^()]*\)|\[[^[\]]*\]/g;
+const afterFiller = (s) => String(s == null ? "" : s).replace(AUDIO_TAG_RE, " ").replace(FILLER_RE, "").trim();
 // A break between the user's own clauses: . ! ? ; : , a newline (consecutive utterances are joined with one),
 // an em or en dash, an ellipsis, "--" or a spaced hyphen.
 const USER_CLAUSE_BREAK_RE = /[.!?;:,—–…\n]|--|\s-\s/;
@@ -166,7 +170,12 @@ function isYesNoQuestion(text) {
 // The polite leads "would you mind" and a clause-initial "mind" ("mind logging a call") take the -ing form.
 // The filler list holds only words that cannot be a noun: "go log", "make sure to log", "try to log",
 // "remember to log", and "make a note" (the "a" counts only when "note" follows). "remember" counts only
-// before "to": "Can you remember logging a call with Chen?" asks about the past, it requests nothing. Pure.
+// before "to": "Can you remember logging a call with Chen?" asks about the past, it requests nothing.
+// A first-person contact REPORT is an action request too (CONTACT_REPORT_RE): a clause that opens with "I (just / already)" or
+// "I've" or "Just", then called / phoned / rang / talked to / talked with / spoke with / spoke to / met with / texted / emailed /
+// left a message (or voicemail) for / got off the phone with ("I called the Chens this morning", "Just got off the phone with the
+// Chens"). Saying it is how a broker asks for the contact to be logged, so the backstop then lets through only a question ("Want
+// me to log that?") or the logContactTool read-back. Pure.
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)";
 const ACTION_VERBS_ING =
@@ -182,11 +191,17 @@ const REQUEST_LEAD_RE = new RegExp(
     "(?:\\s+(?:" + REQUEST_FILLER + ")\\b){0,4}?\\s+(?:" + ACTION_VERBS + "|" + ACTION_VERBS_ING + ")(?![\\w'\\u2019-])",
   "i"
 );
+const CONTACT_REPORT_RE = new RegExp(
+  "^(?:I(?:['\\u2019]ve|\\s+have)?\\s+(?:(?:just|already)\\s+)?|just\\s+)" +
+    "(?:called|phoned|rang|talked\\s+(?:to|with)|spoke\\s+(?:with|to)|met\\s+with|texted|emailed" +
+    "|left\\s+(?:a\\s+)?(?:message|voicemail)\\s+for|got\\s+off\\s+the\\s+phone\\s+with)\\b",
+  "i"
+);
 const STATE_QUESTION_LEAD_RE = /^(?:when|what|which|who|how|did|has|have|had|was|were)\b/i;
 const isActionRequest = (text) =>
   String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).some((clause) => {
     const c = afterFiller(clause);
-    return !STATE_QUESTION_LEAD_RE.test(c) && (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c));
+    return !STATE_QUESTION_LEAD_RE.test(c) && (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c) || CONTACT_REPORT_RE.test(c));
   });
 
 // R5-3's pass condition: after at most one opener strip, the reply's first clause (the text before
@@ -240,7 +255,9 @@ const isBareYesNoAnswer = (reply, userText) =>
 //     spaced hyphen, "and" or "then" ("Sure thing, done!", "Yep, logged it.", "Found Chen and logged
 //     the call", and in an offer "Should I set a follow-up, logged it already?"). There "updated" and
 //     "marked" count only when an object or nothing follows them ("updated the record", "marked as
-//     contacted"), so narration like "6.52 percent, updated this morning" is left alone.
+//     contacted"), so narration like "6.52 percent, updated this morning" is left alone;
+//   * the shortened passive, a clause that opens with a short noun phrase and the participle ("Call logged for the Chens.",
+//     "Chens marked as contacted."), plus "That's in for the Chens." and "... up to date now" (shortPassiveClaims), on every turn.
 // An offer (a sentence that starts with a question/auxiliary word and ends with "?") loses only its
 // question word and subject pronoun ("Should I", "Would you"), and the rest gets the same test,
 // later clauses included (R5-4): "Should I get that marked as contacted?" is not a claim, "Would you
@@ -304,6 +321,44 @@ const laterClauseClaims = (sentence) =>
     CLAUSE_CLAIM_RE.test(stripOpener(c.trim().replace(LEADING_CONJ_RE, "")).trim().replace(TRAILING_PUNCT_RE, ""))
   );
 
+// The shortened passive: a clause (the sentence, and each piece of it after a comma, colon, ellipsis, "--" or spaced hyphen, one
+// opener and a leading so / but / plus / and / then stripped; not split on a bare "and", which joins names: "Robert and Linda Chen
+// marked as contacted.", "You've got Robert and Linda Chen marked as a rate and term opportunity.") that OPENS with a short noun
+// phrase (an optional article and one to five words) directly
+// followed by logged / recorded / marked / added / saved / noted / booked / updated: "Call logged for the Chens.", "Contact logged
+// — anything else?", "Chens marked as contacted.", "Jane Doe added to your book.", "All recorded — anything else?", "Got it,
+// contact logged for Robert and Linda.". Such a clause is a claim on every turn. Not one:
+//   * the phrase holds no auxiliary, modal or subject pronoun (NOT_IN_SHORT_NP), so "Your last contact was logged on 2026-01-01."
+//     stays the was/were narration a grounded turn may use (PASSIVE_PAST_RE), and "You logged a call on Monday" reports the user;
+//   * the phrase opens with a negative or "any" ("Nothing logged yet — want me to?", "No contact logged since January", "Anything
+//     logged for the Chens?");
+//   * a clause that is itself a question ("Call logged?");
+//   * "updated" counts only where the clause ends or "for" / "to" / "with" follows ("Record updated for the Chens."), so "Rates
+//     updated this morning" is narration.
+// Two narrow forms of the same claim sit beside it: a demonstrative or the call itself "is in" (IN_FOR_RE: "That's in for the
+// Chens.", "It's in now.", "Everything's in."; not "That's in your pipeline" or "Rates are in for a rough week"), and "up to date"
+// with "now" (UP_TO_DATE_NOW_RE, anywhere in the sentence: "The Chens are up to date now.", "Your book is now up to date."; the bare
+// "up to date" can narrate a check-in that is not due).
+const NOT_IN_SHORT_NP = "was|were|is|are|am|be|been|being|has|have|had|will|would|can|could|should|shall|may|might|must|do|does|did|get|gets|got|i|we|you|they|he|she";
+const NP_WORD = "(?!(?:" + NOT_IN_SHORT_NP + ")\\b)(?:[A-Za-z\\u00c0-\\u024f][\\w'\\u2019-]*|&)";
+const SHORT_PASSIVE_RE = new RegExp(
+  "^(?!(?:no|not|nothing|none|never|neither|nobody|any|anything|anyone)\\b)(?:(?:a|an|the)\\s+)?(?:" + NP_WORD + "\\s+){0,4}" + NP_WORD +
+    "\\s+(?:logged|recorded|marked|added|saved|noted|booked|updated(?=\\s*(?:$|[.!?,;:\\u2014\\u2013])|\\s+(?:for|to|with)\\b))\\b",
+  "i"
+);
+const IN_FOR_RE =
+  /^(?:that|it|this|everything|all(?:\s+of\s+(?:it|that))?|the\s+(?:call|contact|note|record))(?:['’]s|\s+is|\s+are)\s+(?:all\s+)?in(?=\s*(?:$|[.!,;:—–])|\s+(?:for|now)\b)/i;
+const UP_TO_DATE_NOW_RE =
+  /\b(?:is|are|['’](?:s|re))\s+(?:all\s+)?(?:now\s+(?:all\s+)?up\s+to\s+date|up\s+to\s+date\s+now)\b/i;
+const SHORT_CLAUSE_SPLIT_RE = /,|:|…|--|\s-\s/;
+const SHORT_LEADING_CONJ_RE = /^(?:(?:so|but|plus|and|then)\s+)+/i;
+const shortPassiveClaims = (sentence) =>
+  UP_TO_DATE_NOW_RE.test(sentence) ||
+  sentence.split(SHORT_CLAUSE_SPLIT_RE).some((piece) => {
+    const c = stripOpener(piece.trim().replace(SHORT_LEADING_CONJ_RE, "")).trim();
+    return !/\?\s*$/.test(c) && (SHORT_PASSIVE_RE.test(c) || IN_FOR_RE.test(c));
+  });
+
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set).
 // Pure: no I/O, no state.
 function claimsCompletion(text, grounded, storedStage) {
@@ -315,7 +370,7 @@ function claimsCompletion(text, grounded, storedStage) {
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
       (!grounded && PASSIVE_PAST_RE.test(s)) ||
-      laterClauseClaims(s);
+      laterClauseClaims(s) || shortPassiveClaims(s);
   });
 }
 
@@ -479,15 +534,29 @@ function isAnswerShaped(text) {
 // action request, it is the origin and the backstop applies; otherwise the walk continues only if that user
 // message is answer-shaped too ("log a call" -> "Who did you talk to?" -> "Chen" -> "Which Chen?" ->
 // "Robert and Linda"). At most MAX_CHAIN_HOPS pairs are examined; anything that breaks the pattern, or a
-// chain that does not reach an action request within the cap, does not apply the backstop. Pure.
+// chain that does not reach an action request within the cap, does not apply the backstop.
+// A code-authored read-back counts as the question even when it no longer ends in "?": the browser appends its own
+// "Okay — I'll leave that." when the user's reply was not a plain yes or no, and the two assistant lines merge
+// ("Just to confirm — log a contact for ...?\nOkay — I'll leave that."). So an assistant message that CONTAINS
+// READ_BACK_PREFIX and not CONFIRMED_PREFIX (the change was confirmed: routes/assistant.js confirmReply) is asked, as
+// long as the user's reply to it is not a new instruction (it does not open with an imperative, IMPERATIVE_LEAD_RE): an
+// unrecognised "absolutely" after a read-back stays held to the backstop, while "run a sweep" or "what are rates
+// today?" after it is a normal turn. Pure.
 const MAX_CHAIN_HOPS = 4;
+const READ_BACK_PREFIX = "Just to confirm —";
+const CONFIRMED_PREFIX = "Done —";
+const askedOf = (asked, answer) => {
+  const said = messageText(asked);
+  return said.trim().endsWith("?") ||
+    (said.includes(READ_BACK_PREFIX) && !said.includes(CONFIRMED_PREFIX) && !IMPERATIVE_LEAD_RE.test(afterFiller(messageText(answer))));
+};
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];
   if (!latest || latest.role !== "user" || !isAnswerShaped(messageText(latest))) return false;
   for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 2; hop++, i -= 2) {
     const asked = messages[i - 1];
     const before = messages[i - 2];
-    if (!asked || asked.role !== "assistant" || !messageText(asked).trim().endsWith("?")) return false;
+    if (!asked || asked.role !== "assistant" || !askedOf(asked, messages[i])) return false;
     if (!before || before.role !== "user") return false;
     const text = messageText(before);
     if (isActionRequest(text)) return true;
@@ -729,21 +798,22 @@ function runTool(block, ctx) {
 }
 
 // Code-authored confirmation question, built from the tool's own data (never from anything the
-// model wrote), so what is read back is what would be saved.
+// model wrote), so what is read back is what would be saved. Every read-back opens with READ_BACK_PREFIX
+// (answersActionQuestion keys on it).
 function readBack(out) {
   const se = out.sideEffect;
   switch (se.type) {
     case "logContact":
-      return `Just to confirm — log a contact for ${cleanName(out.data && out.data.client && out.data.client.name) || "that client"}?`;
+      return `${READ_BACK_PREFIX} log a contact for ${cleanName(out.data && out.data.client && out.data.client.name) || "that client"}?`;
     case "addClient":
-      return `Just to confirm — add ${se.fields.name} as a new client?`;
+      return `${READ_BACK_PREFIX} add ${se.fields.name} as a new client?`;
     case "setCareerStage": {
       // the label comes from the stage the tool packaged, so what is read back is what would be saved
       const stage = stageById(se.stage);
-      return stage ? `Just to confirm — set your career stage to ${stage.label}?` : "Just to confirm — go ahead with that?";
+      return stage ? `${READ_BACK_PREFIX} set your career stage to ${stage.label}?` : `${READ_BACK_PREFIX} go ahead with that?`;
     }
     default:
-      return "Just to confirm — go ahead with that?";
+      return `${READ_BACK_PREFIX} go ahead with that?`;
   }
 }
 

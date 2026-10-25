@@ -232,6 +232,9 @@ function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
 
     const form = new FormData();
     form.append("model_id", setting("ELEVENLABS_STT_MODEL", DEFAULT_STT_MODEL));
+    // Scribe tags audio events by default ("(laughter)", "(background noise)"); those are not the user's words, and one at the
+    // start of a transcript would hide the request behind it from the orchestrator's opening tests.
+    form.append("tag_audio_events", "false");
     form.append("file", new Blob([file.buffer], { type: file.mimetype }), uploadName(file.mimetype));
 
     const send = req.app.get("voiceFetch") || globalThis.fetch;
