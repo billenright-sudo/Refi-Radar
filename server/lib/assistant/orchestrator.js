@@ -634,12 +634,18 @@ function isAnswerShaped(text) {
 // "Okay — I'll leave that." when the user's reply was not a plain yes or no, and the two assistant lines merge
 // ("Just to confirm — log a contact for ...?\nOkay — I'll leave that."). So an assistant message that CONTAINS
 // READ_BACK_PREFIX and not CONFIRMED_PREFIX (the change was confirmed: routes/assistant.js confirmReply) is asked, as
-// long as the user's reply to it is not a new instruction (isNewInstruction): an unrecognised "absolutely" after a read-back
-// stays held to the backstop, while "run a sweep" or "what are rates today?" after it is a normal turn.
+// long as the user's reply to it is not a new instruction (isNewInstruction) or an acknowledgement (isAcknowledgement): an
+// unrecognised "absolutely" after a read-back stays held to the backstop, while "run a sweep", "thanks" or "what are rates
+// today?" after it is a normal turn.
 // A new instruction opens with an imperative (IMPERATIVE_LEAD_RE, or "tell": "run a sweep", "pull up the Chens", "tell me about
 // Patel", "give me a market update") whose object is more than a lone it / that / this / them (PRONOUN_OBJECT_RE): "send it",
 // "send that", "run that" and "tell them" point back at the change just read back, so they answer it and the walk goes on
-// ("do it" is held the same way: see isAnswerShaped). Pure.
+// ("do it" is held the same way: see isAnswerShaped).
+// Nor is an acknowledgement an answer to it (isAcknowledgement): thanks / thank you / ok / okay / got it / never mind / nevermind
+// / no worries / cool / alright (one or more; a leading oh / um / uh / well and a trailing "so much" or "Charli" allowed), alone or
+// followed by a new request, which is a question (it ends with "?" or opens with a question word, "do it" being none) or a new
+// instruction: "thanks" and "never mind, what are rates" are normal turns (the every-turn claim screens still run), while "okay,
+// send it" and "alright, absolutely" still answer the read-back. A bare name ("Patel") is held, like any answer. Pure.
 const MAX_CHAIN_HOPS = 4;
 const READ_BACK_PREFIX = "Just to confirm —";
 const CONFIRMED_PREFIX = "Done —";
@@ -649,10 +655,26 @@ const isNewInstruction = (text) => {
   const a = afterFiller(text);
   return (IMPERATIVE_LEAD_RE.test(a) || TELL_LEAD_RE.test(a)) && !PRONOUN_OBJECT_RE.test(a);
 };
+const ACK_LEAD_RE = new RegExp(
+  "^(?:(?:oh|um|uh|well)[\\s,]+)*" +
+    "(?:(?:thanks|thank\\s+you|ok|okay|got\\s+it|never\\s*mind|no\\s+worries|cool|alright)(?![\\w'\\u2019-])" +
+    "(?:\\s+(?:so\\s+much|charli|charlie)(?![\\w'\\u2019-]))?[\\s,.!;:\\u2014\\u2013-]*)+",
+  "i"
+);
+const isAcknowledgement = (text) => {
+  const t = String(text == null ? "" : text).replace(AUDIO_TAG_RE, " ").trim();
+  const lead = t.match(ACK_LEAD_RE);
+  if (!lead) return false;
+  const rest = t.slice(lead[0].length).trim();
+  if (!rest) return true;
+  const opening = afterFiller(rest);
+  return isNewInstruction(rest) || ((rest.endsWith("?") || QUESTION_START_RE.test(opening)) && !DO_PRONOUN_RE.test(opening));
+};
 const askedOf = (asked, answer) => {
   const said = messageText(asked);
+  const reply = messageText(answer);
   return said.trim().endsWith("?") ||
-    (said.includes(READ_BACK_PREFIX) && !said.includes(CONFIRMED_PREFIX) && !isNewInstruction(messageText(answer)));
+    (said.includes(READ_BACK_PREFIX) && !said.includes(CONFIRMED_PREFIX) && !isNewInstruction(reply) && !isAcknowledgement(reply));
 };
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];

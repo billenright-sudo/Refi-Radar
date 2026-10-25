@@ -3285,3 +3285,31 @@ const R2_COUNT_TABLE = [
 test("R2-6: R2_COUNT_TABLE - sweep count narration passes; a claim after a number does not", async () => {
   await checkTable(R2_COUNT_TABLE);
 });
+
+// #7: an acknowledgement after a cancelled read-back (alone, or ahead of a new request) does not answer it: the walk stays off and
+// the turn is screened as a normal turn; the every-turn claim screens still run.
+const ACKS = [
+  "thanks", "thank you", "ok", "okay", "got it", "never mind", "nevermind", "no worries", "cool", "alright", "Thanks!", "thank you so much",
+  "thanks Charli", "got it, thanks", "Okay cool.", "um, thanks", "(background noise) thanks",
+];
+
+test("R2-7: R2_ACK_TABLE - an acknowledgement after a cancelled read-back is a normal turn; an answer behind one is still held", async () => {
+  await checkTable([
+    // the brief's rows
+    [AFTER_CANCEL("thanks"), null, "You're welcome — anything else?", PASS],
+    [AFTER_CANCEL("never mind, what are rates"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+    ...onBoth(AFTER_CANCEL("thanks"), "All recorded — anything else?", NOTHING_CHANGED),
+    // every acknowledgement, and the new requests after one
+    ...ACKS.map((a) => [AFTER_CANCEL(a), null, "You're welcome — anything else?", PASS]),
+    [AFTER_CANCEL("thanks, run a sweep"), "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+    [AFTER_CANCEL("okay, pull up the Chens"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+    [AFTER_CANCEL("no worries — how are rates?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+    // ... with the claim screens on: a claim after an acknowledgement is still the nothing-changed line
+    ...["Sent!", "Contact logged — anything else?", "Done — the Chens are logged."].flatMap((t) => onBoth(AFTER_CANCEL("thanks"), t, NOTHING_CHANGED)),
+    // held: an answer behind an acknowledgement, and a bare name (accepted)
+    ...["okay, send it", "alright, absolutely", "ok, do it", "cool, go ahead", "thanks, log it", "Patel", "absolutely"]
+      .flatMap((a) => onBoth(AFTER_CANCEL(a), CURRENT_NOW, NOTHING_CHANGED)),
+    // a confirmed read-back was never a question
+    [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome — anything else?", PASS],
+  ]);
+});
