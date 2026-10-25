@@ -16,6 +16,7 @@ const ratesRoutes  = require("./routes/rates");
 const importRoutes = require("./routes/import");
 const sweepsRoutes = require("./routes/sweeps");
 const assistantRoutes = require("./routes/assistant");
+const voiceRoutes = require("./routes/voice");
 
 const PORT         = process.env.PORT || 8080;
 const CLIENT_BUILD = path.join(__dirname, "client/build");
@@ -38,6 +39,7 @@ app.use("/api",               ratesRoutes);   // mounts /api/rates and /api/trea
 app.use("/api/import",        importRoutes);
 app.use("/api/sweeps",        sweepsRoutes);
 app.use("/api/assistant",     assistantRoutes);
+app.use("/api/voice",         voiceRoutes);
 
 // Health check
 app.get("/health", (req, res) => {

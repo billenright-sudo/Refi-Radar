@@ -93,7 +93,8 @@ db.exec(`
 `);
 
 // One row per Charli turn (including greetings and error turns): what the turn cost. tts_chars is the
-// text sent to speech synthesis, filled by whichever code path synthesizes it.
+// text sent to speech synthesis and stt_seconds the audio sent to transcription; both are filled by the
+// voice proxy (routes/voice.js), which writes a row of its own for each spoken reply and each recording.
 db.exec(`
   CREATE TABLE IF NOT EXISTS assistant_usage (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,10 +103,16 @@ db.exec(`
     input_tokens  INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     tts_chars     INTEGER NOT NULL DEFAULT 0,
+    stt_seconds   REAL    NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_assistant_usage_user_created ON assistant_usage (user_id, created_at);
 `);
+// stt_seconds arrived after the table did (a table made before it existed gets it added).
+const usageCols = db.prepare("PRAGMA table_info(assistant_usage)").all();
+if (!usageCols.some((c) => c.name === "stt_seconds")) {
+  db.exec("ALTER TABLE assistant_usage ADD COLUMN stt_seconds REAL NOT NULL DEFAULT 0");
+}
 
 // One row per confirmed voice action: POST /api/assistant/confirm records the confirmId it executed under, so
 // a repeated confirm (a double tap, a retry) returns the stored result instead of writing again.
