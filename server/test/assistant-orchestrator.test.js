@@ -2810,3 +2810,60 @@ const R4_TABLE = [
 test("Fix round 4: the wider claim forms, the established / brand-new allow-lists, the leading form's scope and set-claims naming a stage", async () => {
   await checkTable(R4_TABLE);
 });
+
+// ── Fix round 5: set-claim objects, a lone stage after a dash / semicolon / colon, VA eligibility, the vocative's comma, "that's STAGE" ──
+
+// a claim of `id`, three ways: false for an unstaged user and for a different stored stage (grounded or not), true for the stored stage
+// (with findClient, and ungrounded too when the reply has no digit: screenUngroundedText refuses any digit)
+const threeWays = (history, reply, id) => [
+  ...onBoth(history, reply, NOTHING_CHANGED).map(withCtx(ctxAs(null))),
+  [history, "findClient", reply, PASS, { ctx: ctxAs(id) }],
+  ...(/\d/.test(reply) ? [] : [[history, null, reply, PASS, { ctx: ctxAs(id) }]]),
+  ...onBoth(history, reply, NOTHING_CHANGED).map(withCtx(ctxAs(OTHER_STAGE[id]))),
+];
+// a reply that claims nothing about the user: it passes for every stored stage, and none
+const everyStage = (user, tool, reply) => STAGES_AND_NONE.map((stage) => [user, tool, reply, PASS, { ctx: ctxAs(stage) }]);
+
+const R5_TABLE = [
+  // #1: a set-claim takes its stage from the object of "set" only. The stored stage named elsewhere (a client who is a veteran) does
+  // not make "I've set that" true: nothing was set, for a stored veteran too
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    ...onBoth("Robert's a veteran, keep that in mind", "Got it — I've set that, Robert's a veteran.", NOTHING_CHANGED),
+    ...onBoth("Robert's a veteran, by the way", "Thanks — I've set that for Robert, the veteran.", NOTHING_CHANGED),
+    ["tell me about Robert", "findClient", "I've set your follow-up with Robert, a veteran, for Friday.", NOTHING_CHANGED],
+  ].map(withCtx(ctxAs(stage)))),
+  // ... while a set whose object is the stored stage is still true for that stage
+  ...threeWays("what's my career stage?", "Your career stage is set to Veteran.", "veteran"),
+  ...threeWays("what's my career stage?", "I've set you as a veteran.", "veteran"),
+
+  // #2: a piece after an em / en dash, a semicolon or a colon that is only a stage word, and a trailing ", so STAGE"
+  ...[
+    "Twenty years — Veteran.", "Twenty years — Veteran. I'll keep it tight from here.", "About twenty years — Veteran!",
+    "Twenty years – Veteran.", "Twenty years; Veteran.", "Twenty years — so, Veteran.", "Twenty years: Veteran.", "Twenty years, so Veteran.",
+  ].flatMap((t) => threeWays(AFTER_CAREER_Q("about 20 years"), t, "veteran")),
+  // ... never an offer, nor a piece with more than the stage word (both also in R4_TABLE)
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    ["Who should I call today?", "runSweepTool", "Call the Chens first — established, low-risk, and due for a check-in.", PASS, { ctx: sweepAs(stage) }],
+    ...onBoth(AFTER_CAREER_Q("about 20 years"), "Veteran, Established, or Developing — which fits?", PASS).map(withCtx(ctxAs(stage))),
+  ]),
+
+  // #3: VA eligibility on a client lookup is no stage claim ("that counts as a veteran", "that qualifies as veteran service",
+  // "that's veteran status confirmed"), for every stored stage and none
+  ...everyStage("tell me about Robert", "findClient", "Robert served six years in the Guard, and that counts as a veteran for VA purposes."),
+  ...everyStage("tell me about Robert", "findClient", "Robert served in the Guard — that qualifies as veteran service for the VA."),
+  ...everyStage("tell me about Robert", "findClient", "His discharge papers are on file, so that's veteran status confirmed for the IRRRL."),
+  ...everyStage("tell me about Robert", "findClient", "Robert served six years in the Guard, so that counts as a veteran."),
+
+  // #4: the vocative needs its comma
+  ...everyStage("tell me about Robert", "findClient", "Lenders that welcome veterans with lower scores are your best bet for Robert."),
+  ...threeWays(AFTER_CAREER_Q("about 20 years"), "Welcome aboard, Veteran!", "veteran"),
+
+  // #5: "that's STAGE" with no article, where the clause ends, is a claim; with an article it is about someone else
+  ...threeWays(AFTER_CAREER_Q("about 20 years"), "That's Veteran.", "veteran"),
+  ...threeWays(AFTER_CAREER_Q("about 20 years"), "Twenty years — that's Veteran.", "veteran"),
+  ...everyStage("tell me about Robert", "findClient", "That's a veteran — VA streamline is his best path."),
+];
+
+test("Fix round 5: set-claim objects, a lone stage after a dash / semicolon / colon, VA eligibility, the vocative's comma, that's STAGE", async () => {
+  await checkTable(R5_TABLE);
+});

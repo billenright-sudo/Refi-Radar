@@ -564,6 +564,48 @@ test("claimsCompletion: a set-claim that names a stage is a truth check against 
   assert.equal(claimsCompletion("Your stage was set to Veteran.", false, "veteran"), true);
 });
 
+test("fix round 5 (#1): a set-claim takes its stage only from the object of 'set', and nothing set-like may be left beside it", () => {
+  for (const grounded of [false, true]) {
+    // the stored stage named ELSEWHERE in the sentence (a client who is a veteran) makes no set-claim true
+    for (const text of [
+      "Got it — I've set that, Robert's a veteran.", "Thanks — I've set that for Robert, the veteran.",
+      "I've set your follow-up with Robert, a veteran, for Friday.", "I've set it so Robert's veteran benefits come first.",
+      "We've set your reminder to call the veteran on Friday.", "I've set your follow-up for the veteran.",
+      "I've set that up for the veterans in your book.",
+      // the object is the stored stage, but a second set-claim is left once it is removed
+      "Your career stage is set to Veteran and I've set your follow-up for Friday.",
+      "I've set you as a veteran and set your reminder for Friday, so your career stage is set.",
+    ]) {
+      for (const stage of [...IDS, null]) assert.equal(claimsCompletion(text, grounded, stage), true, `${grounded} ${stage}: ${text}`);
+    }
+    // the object of "set" is the stored stage and nothing else is set: a true statement
+    for (const text of [
+      "Your career stage is set to Veteran.", "I've set you as a veteran.", "I set your stage to Veteran.", "We've set your career stage to Veteran.",
+      "Your stage is set to: “Veteran (10+ years)”.", "They're set as a \"Veteran\".",
+    ]) {
+      assert.equal(claimsCompletion(text, grounded, "veteran"), false, `${grounded} veteran: ${text}`);
+      for (const other of ["new", "developing", "established", null]) assert.equal(claimsCompletion(text, grounded, other), true, `${grounded} ${other}: ${text}`);
+    }
+    // (cost, outside the ruled object form: "set you UP as" has no stage object, so it claims even for a stored veteran)
+    assert.equal(claimsCompletion("I've set you up as a Veteran.", grounded, "veteran"), true);
+  }
+});
+
+// Pinned so that a later ruling shows up as a flip; these are the CURRENT outcomes of the fix-round-5 forms, not endorsements.
+test("fix round 5: the costs and residuals of the lone-stage, ', so STAGE' and that's-STAGE forms (pinned)", () => {
+  // fail-closed: a label colon or a dash before a lone stage word in narration (VA borrowers, a developing story) reads as a claim
+  for (const [text, id] of [
+    ["Borrower: veteran.", "veteran"], ["Robert's status: veteran.", "veteran"], ["Veteran: Robert qualifies for the IRRRL.", "veteran"],
+    ["The Fed story — developing.", "developing"], ["Fed decision: developing.", "developing"], ["Robert served twenty years, so veteran.", "veteran"],
+    ["The Fed story? That's developing.", "developing"], ["That's brand new.", "new"], ["Developing — or is it Established?", "developing"],
+  ]) assert.deepStrictEqual(stageClaims(text).slice(0, 1), [id], text);
+  // leaks: a bare "new" is never a lone or that's-STAGE stage, a stage word followed by more than punctuation is no lone piece, the
+  // vocative needs its comma and "that counts as STAGE" needs the clause end
+  for (const text of [
+    "Six months — New.", "A few months — that's New.", "Twenty years — Veteran, then.", "That counts as Veteran now.", "Congratulations veteran!",
+  ]) assert.deepStrictEqual(stageClaims(text), [], text);
+});
+
 // ── /api/assistant/confirm: setCareerStage ───────────────────────────────────
 
 const DONE = (id) => `Done — your career stage is set to ${LABEL[id]}.`;
@@ -1140,6 +1182,17 @@ const CLAIM_TABLE = [
   ["Twenty years. Veteran, got it.", "veteran"], ["Twenty years! Established.", "established"],
   // a possessive is the stage before a stage noun
   ["Welcome to the veterans' club.", "veteran"], ["That puts you in the veterans' bracket.", "veteran"], ["You have veteran status.", "veteran"],
+  // fix round 5 (#2): a piece after an em / en dash, a semicolon or a colon that is only a stage word (an opener allowed), and a
+  // trailing ", so STAGE" where the clause ends
+  ["Twenty years — Veteran.", "veteran"], ["Twenty years — Veteran. I'll keep it tight from here.", "veteran"],
+  ["About twenty years — Veteran!", "veteran"], ["Twenty years – Veteran.", "veteran"], ["Twenty years; Veteran.", "veteran"],
+  ["Twenty years — so, Veteran.", "veteran"], ["Twenty years: Veteran.", "veteran"], ["Twenty years, so Veteran.", "veteran"],
+  ["Six years — Established.", "established"], ["Two years; okay, Developing.", "developing"], ["Six years, so Established (3–10 years).", "established"],
+  // (round 4 had stopped this one claiming; the dash piece before the question is a lone stage word, and only an offer is skipped)
+  ["Veteran — want the sweep?", "veteran"],
+  // fix round 5 (#5): "that's STAGE" with no article, where the clause ends
+  ["That's Veteran.", "veteran"], ["Twenty years — that's Veteran.", "veteran"], ["Six years? That's Established.", "established"],
+  ["That’s Veteran, so I'll keep it terse.", "veteran"],
 ];
 
 const NOT_CLAIMS = [
@@ -1178,6 +1231,25 @@ const NOT_CLAIMS = [
   // (narrowed: a possessive veteran's / veterans' before a noun that is not a stage noun, and "status" that is not where the clause ends)
   "I'll see you at the veterans' breakfast.", "You're likely a veteran's best option.", "You've earned established status with the Chens.",
   "Your veteran status with the VA helps with the Chens.",
+  // fix round 5 (#3): "that / this ... qualifies / counts as" takes no article and needs the stage where the clause ends (VA
+  // eligibility on a client lookup is no stage), and "status" is no longer a thatsLevel noun
+  "Robert served six years in the Guard, and that counts as a veteran for VA purposes.",
+  "Robert served in the Guard — that qualifies as veteran service for the VA.",
+  "His discharge papers are on file, so that's veteran status confirmed for the IRRRL.",
+  "His DD-214 is on file, so that's veteran status confirmed for the IRRRL.", "That counts as a veteran for VA purposes.",
+  "This qualifies as veteran service.", "That's veteran status for Robert.", "Robert served six years in the Guard, so that counts as a veteran.",
+  "This qualifies as an established client.",
+  // (#4) the vocative needs its comma
+  "Lenders that welcome veterans with lower scores are your best bet for Robert.", "We welcome veterans every day.",
+  "Congrats veterans on the new VA rates.",
+  // (#5) "that's" + an article is about someone else; a bare "new" is an everyday word (never the stage in this form)
+  "That's a veteran — VA streamline is his best path.", "That's a veteran, so lead with the IRRRL.", "That's new.",
+  "Rates dropped overnight — that's new.", "That's veteran pricing for Robert.",
+  // (#2) a dash / colon piece with more than the stage word, or a stage word inside a question, is not a lone stage
+  "Veteran, Established, or Developing — which fits?", "Which fits — Veteran?", "Six years — Established, or still Developing?",
+  "Twenty years — Veteran borrowers like Robert come first.", "So, veteran pricing applies.", "Robert's a veteran, so veteran pricing applies.",
+  // (an offer's colon pieces are never lone stages)
+  "Should I note it like this: Veteran: twenty years?",
   // not text
   "", "   ", "Sure.",
 ];

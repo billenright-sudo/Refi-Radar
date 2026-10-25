@@ -230,8 +230,9 @@ const isBareYesNoAnswer = (reply, userText) =>
 //   * a career stage reported as set, on every turn: first-person "I've set you as a veteran" (FIRST_PERSON_SET_RE: the
 //     pronoun right next to "set"), "is / are / 's / 're / been (now) set to / as <a stage>", the bare "your (career) stage
 //     is set / updated" (STAGE_SET_BARE_RE), and "you're (now) set / marked / listed as / to". The first three are a truth
-//     check against `storedStage` (falseSetClaim): one that names only the stored stage is true and is no claim ("Your
-//     career stage is set to Veteran." for a stored veteran); one that names no stage, or another, is a claim;
+//     check against `storedStage` (falseSetClaim): one whose object of "set" is the stored stage, with nothing else set and no
+//     other stage named, is true and is no claim ("Your career stage is set to Veteran." for a stored veteran); any other is a
+//     claim ("I've set that, Robert's a veteran." names the stage, but did not set it);
 //   * the simple past passive ("was logged", "were added", "was set") only on an ungrounded turn: it is the one
 //     form a grounded turn may use to narrate a tool fact ("your last contact with Chen was logged on
 //     2026-01-01"; the date still goes through the figure check);
@@ -518,6 +519,8 @@ const STAGE_SRC =
   "|(?<=\\b(?:an?|the)\\s)" + EVERYDAY_STAGE_WORDS + STAGE_NOUN_AHEAD +
   "|" + VETERAN_WORD + "|seasoned\\s+vets?)\\b";
 const STAGE_WORDS_BARE = "(brand[\\s-]new|new|developing|established|veterans?|seasoned\\s+vets?)";
+// where a clause ends, right after a stage word ("That counts as Veteran.", "That's Veteran, so ...", "so Veteran (10+ years)")
+const STAGE_CLAUSE_END = "(?=\\s*(?:[.!?;:,\\u2014\\u2013(]|$))";
 const STAGE_FORM_SRC = {
   // (a) you're / you are (+ now / still / all / any -ly adverb) (+ a / in the / one of the / at (the)) STAGE
   youAre: "\\byou(?:['\\u2019]re|\\s+are)\\s+(?:(?:now|still|all|\\w+ly)\\s+)*(?:(?:an?|in\\s+the|one\\s+of\\s+(?:the|our)|at(?:\\s+the)?)\\s+)?" + STAGE_SRC,
@@ -528,18 +531,25 @@ const STAGE_FORM_SRC = {
     "\\s+you(?:rself)?\\s+(?:(?:up|down|back)\\s+)?(?:as|like|in(?:to)?|to|at)\\s+(?:(?:an?|the|one\\s+of\\s+(?:the|our))\\s+)?" + STAGE_SRC,
   // (b2) make / call / consider you(rself) STAGE (no preposition: "That makes you Established.", "Consider yourself a Veteran.")
   makeYou: "\\b(?:makes?|making|call(?:s|ing)?|consider(?:s|ing)?)\\s+you(?:rself)?\\s+(?:(?:an?|the)\\s+)?" + STAGE_SRC,
-  // you / that / this qualify / count as STAGE ("You qualify as a Veteran.", "That counts as Veteran.")
-  qualifyAs: "\\b(?:you|that|this)\\s+(?:qualif(?:y|ies|ied)|count(?:s|ed)?)\\s+as\\s+(?:an?\\s+)?" + STAGE_SRC,
+  // you qualify / count as (a) STAGE ("You qualify as a Veteran."); that / this ... with no article and only where the clause ends
+  // ("That counts as Veteran."): on a client lookup "that counts as a veteran for VA purposes" and "that qualifies as veteran
+  // service" are VA eligibility, not the user's stage
+  qualifyAs: "\\byou\\s+(?:qualif(?:y|ies|ied)|count(?:s|ed)?)\\s+as\\s+(?:an?\\s+)?" + STAGE_SRC,
+  qualifyAsThat: "\\b(?:that|this)\\s+(?:qualif(?:y|ies|ied)|count(?:s|ed)?)\\s+as\\s+" + STAGE_SRC + STAGE_CLAUSE_END,
   // (c) STAGE it is, (d) STAGE coaching (a bare "new coaching" is a tip, not a stage)
   itIs: "\\b" + STAGE_WORDS_BARE + "\\s+it\\s+is\\b",
   coaching: "\\b(brand[\\s-]new|developing|established|veterans?|seasoned\\s+vets?)\\s+coaching\\b",
   // (e) your (career) stage is / 's / has been / was / will be (now) (set to / as) STAGE
   yourStage: "\\byour\\s+(?:career\\s+)?stage(?:\\s+(?:is|has\\s+been|was|will\\s+be)|['\\u2019]s)\\s+(?:now\\s+)?(?:set\\s+(?:to|as))?[\\s:\"'\\u201c\\u2018]*(?:(?:an?|the)\\s+)?" + STAGE_SRC,
-  // that's / that is STAGE level / tier / territory / stage / bracket / status ("That's Veteran level, so I'll keep it terse."). An
+  // that's / that is STAGE level / tier / territory / stage / bracket ("That's Veteran level, so I'll keep it terse."). An
   // article only before veteran(s) / seasoned vet(s): "that's a new level for rates", "the established level for cash-out" are not
-  // stages; and bare new / developing / established keep their own allow-list ("that's new territory" is not one either)
+  // stages; and bare new / developing / established keep their own allow-list ("that's new territory" is not one either). Not
+  // "status": "so that's veteran status confirmed for the IRRRL" is a client's VA eligibility (the `status` form below is the user's)
   thatsLevel: "\\bthat(?:['\\u2019]s|\\s+is)\\s+(?:(?:an?|the)\\s+(?=(?:veterans?|seasoned\\s+vets?)\\b))?" + STAGE_SRC +
-    "\\s+(?:level|tier|territory|stage|bracket|status)\\b",
+    "\\s+(?:level|tier|territory|stage|bracket)\\b",
+  // that's STAGE with no article, where the clause ends ("That's Veteran.", "Twenty years — that's Veteran."): "That's a veteran —
+  // VA streamline is his best path." is about a client, and a bare "new" is never the stage here ("Rates dropped — that's new.")
+  thatsStage: "\\bthat['\\u2019]s\\s+(brand[\\s-]new|developing|established|veterans?|seasoned\\s+vets?)\\b" + STAGE_CLAUSE_END,
   // STAGE status, said to the user only and where the clause ends ("You've got veteran status now."): "Robert's veteran status"
   // is VA eligibility, and "established status with the Chens" or "your veteran status with the VA" is no stage
   status: "\\b(?:you(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:now|officially|already|just|got|earned|hit|reached|have))*|your" +
@@ -552,7 +562,10 @@ const STAGE_FORM_SRC = {
   // `leading` is tested on whole sentences only (see stageClaims): an opener may be followed by "," or ":" ("Got it: Veteran."),
   // and the stage word by "(" ("Veteran (10+ years).")
   welcome: "\\bwelcome\\s+to\\s+(?:the\\s+)?" + STAGE_SRC,
-  vocative: "\\b(?:welcome(?:\\s+aboard)?|congrats|congratulations)\\s*,?\\s+" + STAGE_SRC,
+  // (the vocative needs its comma: "Lenders that welcome veterans with lower scores" addresses no one)
+  vocative: "\\b(?:welcome(?:\\s+aboard)?|congrats|congratulations)\\s*,\\s*" + STAGE_SRC,
+  // a trailing ", so STAGE" where the clause ends ("Twenty years, so Veteran."), the comma form of LONE_STAGE_RE below
+  soStage: ",\\s*so[\\s,]+(brand[\\s-]new|veteran|established|developing)\\b" + STAGE_CLAUSE_END,
   leading: "^\\s*(?:(?:ok|okay|alright|great|got\\s+it|perfect|so|right|sure|yes|yep)[\\s,:]+)*(brand[\\s-]new|veteran|established|developing)\\s*(?:[,.!\\u2014\\u2013(]|$)",
 };
 const STAGE_FORMS = Object.fromEntries(Object.entries(STAGE_FORM_SRC).map(([name, src]) => [name, new RegExp(src, "gi")]));
@@ -561,6 +574,12 @@ const OFFER_STAGE_FORMS = [STAGE_FORMS.youAre, STAGE_FORMS.yourStage];
 const STATEMENT_STAGE_FORMS = Object.entries(STAGE_FORMS).filter(([name]) => name !== "leading").map(([, re]) => re);
 // Sentences in the leading form's sense: split only after . ! ? (an em or en dash, or a semicolon, starts no sentence).
 const wholeSentencesOf = (text) => String(text).match(/[^.!?]+[.!?]*/g) || [];
+// A piece of a sentence (split on . ! ? ; an em or en dash, and a colon) that is ONLY a stage word, an opener allowed: "Twenty
+// years — Veteran.", "Twenty years; Veteran.", "Twenty years: Veteran.", "Twenty years — so, Veteran." (never a bare "new", and
+// never in an offer). "Call the Chens first — established, low-risk, ..." and "Veteran, Established, or Developing — which fits?"
+// have more than the stage word in the piece.
+const LONE_STAGE_RE =
+  /^(?:(?:ok|okay|alright|great|got\s+it|perfect|so|right|sure|yes|yep)[\s,:]+)*(brand[\s-]new|veteran|established|developing)\s*[.!,;:\u2014\u2013]*$/gi;
 
 // "veterans" / "seasoned vet" are veteran, "brand-new" / "new" are new
 function stageIdOf(word) {
@@ -577,8 +596,9 @@ function stageIdOf(word) {
 // only the assertion forms (a) and (e): "Want me to coach you as a Veteran?" proposes, "...now that you're a Veteran?" asserts.
 // The leading form is tested on whole sentences only (the reply's first, or one after . ! ?), after one opener strip, and never
 // on a sentence ending "?": "Call the Chens first — established, low-risk, ..." and "Veteran, Established, or Developing — which
-// fits?" claim nothing. Subjects other than the user ("Chen is an established client", "VA loans for veterans", "a developing
-// story", "Robert's veteran status") are not claims.
+// fits?" claim nothing. A part that is not an offer is also split on ":" and each piece tested with LONE_STAGE_RE ("Twenty
+// years — Veteran.", "Twenty years: Veteran."). Subjects other than the user ("Chen is an established client", "VA loans for
+// veterans", "a developing story", "Robert's veteran status", "that counts as a veteran for VA purposes") are not claims.
 function stageClaims(text) {
   const claims = [];
   const add = (re, s) => {
@@ -596,6 +616,7 @@ function stageClaims(text) {
       const offer = isOffer(s);
       if (offer) s = s.replace(OFFER_LEAD_RE, "").trim();
       for (const re of offer ? OFFER_STAGE_FORMS : STATEMENT_STAGE_FORMS) add(re, s);
+      if (!offer) for (const piece of s.split(":")) add(LONE_STAGE_RE, piece.trim());
     }
   }
   return claims;
@@ -603,14 +624,26 @@ function stageClaims(text) {
 // The first stage id a reply claims for the user, or null. Pure.
 const claimsStage = (text) => stageClaims(text)[0] || null;
 
-// A set-claim (FIRST_PERSON_SET_RE, SET_PASSIVE_RE, STAGE_SET_BARE_RE) in one sentence part that is false for this user: it
-// names no stage ("Your career stage is set.", "I've already set it."), or it names a stage other than the stored one (null or
-// undefined = not set). "Your career stage is set to Veteran." is true for a stored veteran, like the stage claims above. Pure.
+// A set-claim (FIRST_PERSON_SET_RE, SET_PASSIVE_RE, STAGE_SET_BARE_RE) in one sentence part that is false for this user. It is
+// true only when the OBJECT of "set" is a stage (SET_STAGE_OBJECT_RE: "set (you / your (career) stage) to / as (a / the) STAGE"),
+// every such object and every other stage named in the part is the stored stage (null or undefined = not set), and once those
+// objects are removed nothing set-like is left. So "Your career stage is set to Veteran." and "I've set you as a veteran." are true
+// for a stored veteran, like the stage claims above, while "I've set that, Robert's a veteran." (the stage is not what was set),
+// "Your career stage is set." (no stage) and "... set to Veteran and I've set your follow-up" (a second set) are false for every
+// user. Pure.
 const STAGE_NAMED_RE = new RegExp("\\b" + STAGE_SRC, "gi");
+const SET_STAGE_OBJECT_RE = new RegExp(
+  "\\bset\\s+(?:(?:you|your\\s+(?:career\\s+)?stage)\\s+)?(?:to|as)[\\s:\"'\\u201c\\u2018]*(?:(?:an?|the)[\\s:\"'\\u201c\\u2018]+)?" + STAGE_SRC, "gi"
+);
+const isSetClaim = (s) => FIRST_PERSON_SET_RE.test(s) || SET_PASSIVE_RE.test(s) || STAGE_SET_BARE_RE.test(s);
 function falseSetClaim(sentence, storedStage) {
-  if (!FIRST_PERSON_SET_RE.test(sentence) && !SET_PASSIVE_RE.test(sentence) && !STAGE_SET_BARE_RE.test(sentence)) return false;
-  const named = [...sentence.matchAll(STAGE_NAMED_RE)].map((m) => stageIdOf(m[1])).filter(Boolean);
-  return named.length === 0 || named.some((id) => id !== storedStage);
+  if (!isSetClaim(sentence)) return false;
+  const stagesIn = (re) => [...sentence.matchAll(re)].map((m) => stageIdOf(m[1])).filter(Boolean);
+  // every stage in the part, the objects of "set" among them, is the stored one ("Your stage is set to Veteran, not Established.")
+  if (stagesIn(STAGE_NAMED_RE).some((id) => id !== storedStage)) return true;
+  // and nothing set-like is left once the stage objects are removed ("... set to Veteran and I've set your follow-up"). With no
+  // stage object nothing is removed, so the set-claim is still there: "I've set that, Robert's a veteran.", "Your career stage is set."
+  return isSetClaim(sentence.replace(SET_STAGE_OBJECT_RE, " "));
 }
 
 // ── Tool execution ───────────────────────────────────────────────────────────
