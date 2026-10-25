@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import CharliView from "./charli/CharliView.jsx";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -169,6 +170,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     bell:      "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0",
     upload:    "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
     logout:    "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
+    mic:       "M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8",
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -382,6 +384,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
   const nav = [
     { id: "dashboard", label: "Dashboard",      icon: "dashboard" },
     { id: "sweeps",    label: "Sweeps",         icon: "search" },
+    { id: "charli",    label: "Charli",         icon: "mic" },
     { id: "clients",   label: "All Clients",    icon: "users" },
     { id: "rates",     label: "Rate Watch",     icon: "trending" },
     { id: "add",       label: "Add Client",     icon: "plus" },
@@ -2139,6 +2142,7 @@ export default function App() {
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
             {view === "dashboard"     && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
+            {view === "charli"        && <CharliView rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}
