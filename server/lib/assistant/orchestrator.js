@@ -374,13 +374,32 @@ function claimsCompletion(text, grounded, storedStage) {
   });
 }
 
-// Spoken figures that no payload can ground: hundred / thousand / million / billion / percent, or
-// "point" followed by a digit word ("six point five", "six-point-two"). A numeral consumes its own
-// multiplier and percent word first (see figureWords), so "6.52 percent" and "70 thousand" are left
-// to the numeric check. Other number words ("thirty") are deliberately not on the list.
-const FIGURE_WORD_RE =
-  /\b(?:hundred|thousand|million|billion|percent)\b|\bpoint[\s-]+(?:zero|one|two|three|four|five|six|seven|eight|nine)\b/gi;
-const figureWords = (text) => String(text).replace(FIGURE_RE, " ").match(FIGURE_WORD_RE) || [];
+// Spoken figures that no payload can ground: hundred / thousand / million / billion / percent, "point"
+// followed by a digit word ("six point five", "six-point-two"), the number words eleven to ninety-nine
+// ("twenty", "forty-five", "thirty one"), and a fraction after a number or number word ("seven and a half",
+// "6 and a quarter", "five and three quarters"). A numeral consumes its own multiplier and percent word first
+// (see figureWords), so "6.52 percent" and "70 thousand" are left to the numeric check. One to ten stay
+// counts ("one at a time", "two Chens"), and the product labels "thirty-year" and "fifteen-year" (singular
+// "year", hyphen or space) name a loan, not a figure, so they are taken out first.
+const TEENS_AND_TENS =
+  "eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety";
+const DIGIT_WORD = "one|two|three|four|five|six|seven|eight|nine";
+const FIGURE_WORD_RE = new RegExp(
+  "\\b(?:hundred|thousand|million|billion|percent)\\b|\\bpoint[\\s-]+(?:zero|" + DIGIT_WORD + ")\\b" +
+    "|\\b(?:" + TEENS_AND_TENS + ")(?:[\\s-](?:" + DIGIT_WORD + "))?\\b",
+  "gi"
+);
+const FRACTION_WORDS_RE = new RegExp(
+  "(?:\\b\\d+(?:\\.\\d+)?|\\b(?:zero|ten|" + DIGIT_WORD + "|" + TEENS_AND_TENS + ")(?:[\\s-](?:" + DIGIT_WORD + "))?)" +
+    "\\s+and\\s+(?:a\\s+half|a\\s+quarter|three\\s+quarters)\\b",
+  "gi"
+);
+const LABEL_WORDS_RE = /\b(?:thirty|fifteen)[\s-](?:year|yr)(?![a-z])/gi;
+function figureWords(text) {
+  const t = String(text).replace(LABEL_WORDS_RE, " ");
+  const fractions = t.match(FRACTION_WORDS_RE) || [];
+  return [...fractions, ...(t.replace(FRACTION_WORDS_RE, " ").replace(FIGURE_RE, " ").match(FIGURE_WORD_RE) || [])];
+}
 
 // True only for a reply that is ONE short question and asserts nothing: after one content-free
 // opener is stripped it starts with a question/auxiliary word, ends with "?", has no sentence or
@@ -449,18 +468,40 @@ const FIGURE_RE = new RegExp(
   "(\\$)?" + NUMBER_SRC + "(?:\\s*(hundred|thousand|million|billion|k|m)\\b)?(\\s*%|\\s+(?:percent|dollars?)\\b)?", "gi"
 );
 
-// Every number appearing anywhere in the payload text (values, dates inside strings, even the
-// digits in a key like rate_30yr_fixed), unsigned so a reply of "down 0.10" matches a delta
-// of -0.1.
+// Every number in the payloads' JSON VALUES: a number value, and every number inside a string value (a date like
+// "2026-01-01", a "since" label like "October 18", a loan type like "30yr_fixed"), unsigned so a reply of "down 0.10"
+// matches a delta of -0.1. Never the digits of a KEY: rate_30yr_fixed grounds no "30" ("about 30 basis points under where
+// the Chens are" is a figure no tool gave). A payload is a tool_result content string (parsed as JSON; one that does not
+// parse is a single string value) or an object.
 function payloadNumbers(payloads) {
   const out = [];
+  const walk = (v) => {
+    if (typeof v === "number") { if (Number.isFinite(v)) out.push(Math.abs(v)); }
+    else if (typeof v === "string") {
+      for (const m of v.matchAll(new RegExp(NUMBER_SRC, "g"))) out.push(Number(m[1].replace(/,/g, "") + (m[2] || "")));
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
   for (const p of payloads) {
-    const s = typeof p === "string" ? p : JSON.stringify(p);
-    for (const m of String(s).matchAll(new RegExp(NUMBER_SRC, "g"))) {
-      out.push(Number(m[1].replace(/,/g, "") + (m[2] || "")));
-    }
+    let value = p;
+    if (typeof p === "string") { try { value = JSON.parse(p); } catch (_err) { value = p; } }
+    walk(value);
   }
   return out;
+}
+
+// The tool labels a reply may use as names, not figures: "30-year" / "30-yr" / "30yr" / "30 year" (singular) and the same for
+// 15, when a payload this turn names that product (a rate key such as rate_30yr_fixed, or a loan type value such as
+// "30yr_fixed"). Only the label is allowed, never the bare number. ("5/1 ARM" needs nothing: 5 and 1 are counts under the 0-10
+// exemption.)
+const DIGIT_LABEL_RE = /\b(30|15)[\s-]?(?:year|yr)(?![a-z]|-old\b)/gi;
+function payloadLabels(payloads) {
+  const named = new Set();
+  for (const p of payloads) {
+    const s = typeof p === "string" ? p : JSON.stringify(p);
+    for (const n of ["30", "15"]) if (new RegExp(`${n}yr`, "i").test(String(s))) named.add(n);
+  }
+  return named;
 }
 
 // The figures in `replyText` that are NOT backed by a number in `payloads` (the tool_result
@@ -471,12 +512,16 @@ function payloadNumbers(payloads) {
 //     485,000 and $485K match 485000; ties round either way);
 //   * a standalone integer 0-10 (counts, ordinals) is exempt, unless it sits next to a $, a %,
 //     "percent", "dollars" or a multiplier;
-//   * a figure spoken in words (hundred, thousand, million, billion, percent, "point five") can't
-//     be matched to anything, so it is always returned.
+//   * only JSON values ground a figure (payloadNumbers); a "30-year" / "15-year" label is not a figure when a payload
+//     names that product (payloadLabels);
+//   * a figure spoken in words (hundred, thousand, million, billion, percent, "point five", eleven to ninety-nine,
+//     "seven and a half") can't be matched to anything, so it is always returned.
 // Pure: no I/O, no state.
 function ungroundedNumbers(replyText, payloads) {
-  const known = payloadNumbers(Array.isArray(payloads) ? payloads : []);
-  const text = String(replyText == null ? "" : replyText);
+  const list = Array.isArray(payloads) ? payloads : [];
+  const known = payloadNumbers(list);
+  const labels = payloadLabels(list);
+  const text = String(replyText == null ? "" : replyText).replace(DIGIT_LABEL_RE, (label, n) => (labels.has(n) ? " " : label));
   const bad = [];
   for (const m of text.matchAll(FIGURE_RE)) {
     const [whole, dollar, int, frac, mult, suffix] = m;

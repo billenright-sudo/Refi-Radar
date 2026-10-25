@@ -2887,10 +2887,14 @@ test("Fix round 4: the wider claim forms, the established / brand-new allow-list
 
 // a claim of `id`, three ways: false for an unstaged user and for a different stored stage (grounded or not), true for the stored stage
 // (with findClient, and ungrounded too when the reply has no digit: screenUngroundedText refuses any digit)
+// FIX-WAVE B6 FLIP: a true claim that SPELLS a number from eleven to ninety-nine ("Twenty years — Veteran." for a stored veteran) was
+// a pass-through; such a number word is now an ungroundable figure (no tool returned it; the user's own "20" is no tool result), so
+// the stored-stage rows of those replies are the can't-verify line. The false-claim rows are unchanged (the stage check runs first).
+const SPELLED_FIGURE = /\b(?:eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b/i;
 const threeWays = (history, reply, id) => [
   ...onBoth(history, reply, NOTHING_CHANGED).map(withCtx(ctxAs(null))),
-  [history, "findClient", reply, PASS, { ctx: ctxAs(id) }],
-  ...(/\d/.test(reply) ? [] : [[history, null, reply, PASS, { ctx: ctxAs(id) }]]),
+  [history, "findClient", reply, SPELLED_FIGURE.test(reply) ? CANT_VERIFY : PASS, { ctx: ctxAs(id) }],
+  ...(/\d/.test(reply) ? [] : [[history, null, reply, SPELLED_FIGURE.test(reply) ? CANT_VERIFY : PASS, { ctx: ctxAs(id) }]]),
   ...onBoth(history, reply, NOTHING_CHANGED).map(withCtx(ctxAs(OTHER_STAGE[id]))),
 ];
 // a reply that claims nothing about the user: it passes for every stored stage, and none
@@ -3042,4 +3046,72 @@ const FINAL_C1_TABLE = [
 
 test("B1.6: FINAL_C1_TABLE - every probe row of the final review's C1, and the neighbours that must still pass", async () => {
   await checkTable(FINAL_C1_TABLE);
+});
+
+// ── Fix wave B6 (final review I4): holes in the figure check ─────────────────────────────────────────────────────────────
+
+test("B6: only JSON values ground a figure; a key's digits never do, but a 30-year / 15-year label named by the payload is no figure", () => {
+  assert.deepStrictEqual(ungroundedNumbers("about 30 basis points under where the Chens are", [MARKET_PAYLOAD]), ["30"]);
+  assert.deepStrictEqual(ungroundedNumbers("15 basis points lower", [MARKET_PAYLOAD]), ["15"]);
+  assert.deepStrictEqual(ungroundedNumbers("The 30-year is at 6.52 percent, the 15-year at 5.91 percent.", [MARKET_PAYLOAD]), []);
+  for (const label of ["30-year", "30-yr", "30yr", "30 year", "15-year"]) {
+    assert.deepStrictEqual(ungroundedNumbers(`The ${label} fixed is at 6.52 percent.`, [MARKET_PAYLOAD]), [], label);
+  }
+  // a label the payload does not name, a plural duration and an age are figures
+  assert.deepStrictEqual(ungroundedNumbers("The 30-year is at 6.52 percent.", [{ a: 6.52 }]), ["30"]);
+  assert.deepStrictEqual(ungroundedNumbers("They have 30 years left.", [MARKET_PAYLOAD]), ["30"]);
+  assert.deepStrictEqual(ungroundedNumbers("A 30-year-old borrower.", [MARKET_PAYLOAD]), ["30"]);
+  // a loan type value names the label too (findClient's "30yr_fixed")
+  assert.deepStrictEqual(ungroundedNumbers("They're on a 30-year fixed.", [{ matches: [{ loanType: "30yr_fixed" }] }]), []);
+  // the reviewer's pass row: 7.25 in a value
+  assert.deepStrictEqual(ungroundedNumbers("the 30-year is at 7.25 percent", [{ rates: { rate_30yr_fixed: 7.25 } }]), []);
+  // dates and labels inside string values stay grounded
+  assert.deepStrictEqual(ungroundedNumbers("down 0.10 since October 18", [{ deltas: { rate_30yr_fixed: -0.1 }, since: "October 18", sinceDate: "2026-10-18" }]), []);
+  assert.deepStrictEqual(ungroundedNumbers("as of 2026-10-21", [JSON.stringify({ source: "live rates 2026-10-21" })]), []);
+  // an object payload, nested arrays, and a string payload that is not JSON
+  assert.deepStrictEqual(ungroundedNumbers("$485,000", [{ matches: [{ loanBalance: 485000 }] }]), []);
+  assert.deepStrictEqual(ungroundedNumbers("412", ["not json, 412 inside"]), []);
+});
+
+test("B6: eleven to ninety-nine in words, and 'and a half / a quarter / three quarters' after a number, are ungroundable figures", () => {
+  for (const [text, words] of [
+    ["Rates are around seven and a half.", ["seven and a half"]],
+    ["The 30-year is at six and a quarter.", ["six and a quarter"]],
+    ["It's 6 and three quarters.", ["6 and three quarters"]],
+    ["You have twenty clients.", ["twenty"]],
+    ["About forty-five of them.", ["forty-five"]],
+    ["Thirty one are due.", ["Thirty one"]],
+    ["Ninety-nine percent sure.", ["Ninety-nine", "percent"]],
+    ["Fifteen years left.", ["Fifteen"]],
+  ]) assert.deepStrictEqual(ungroundedNumbers(text, [MARKET_PAYLOAD]).filter((x) => !/^\d/.test(x) || /and/.test(x)), words, text);
+  // one to ten are counts, and the product labels in words are names
+  for (const text of ["One at a time — which first?", "You have two Chens.", "Ten minutes, tops.", "The thirty-year fixed is at 6.52 percent.",
+    "The fifteen-year is at 5.91 percent.", "Call the Chens first, then Patel."]) {
+    assert.deepStrictEqual(ungroundedNumbers(text, [MARKET_PAYLOAD]), [], text);
+  }
+});
+
+const FINAL_I4_TABLE = [
+  ["how are rates versus the Chens?", "getMarketUpdate", "Rates are about 30 basis points under where the Chens are.", CANT_VERIFY],
+  ["how are rates versus the Chens?", "getMarketUpdate", "about 30 basis points under where the Chens are", CANT_VERIFY],
+  ...onBoth("what are rates today?", "Rates are around seven and a half.", CANT_VERIFY),
+  ["what are rates today?", "getMarketUpdate", "Rates are around seven and a half.", CANT_VERIFY],
+  ["what are rates today?", "getMarketUpdate", "The 30-year is at six and a quarter.", CANT_VERIFY],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent, and twenty basis points lower than last week.", CANT_VERIFY],
+  // neighbours that must still pass
+  ["what's the rate", "getMarketUpdate", "The 30-year is at 6.52 percent.", PASS],
+  ["what's the rate", "getMarketUpdate", "The 30-year fixed is at 6.52 percent and the 15-year is at 5.91 percent.", PASS],
+  ["what's the rate", "getMarketUpdate", "The thirty-year fixed is at 6.52 percent.", PASS],
+  ["Who should I call today?", "runSweepTool", "Call the Chens first, then Patel.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen have a 30yr_fixed loan at 7.85 percent, with $485,000 left.", PASS],
+  ["Tell me about Chen", "findClient", "Robert and Linda Chen are on a 30-year fixed at 7.85 percent.", PASS],
+];
+
+test("B6: FINAL_I4_TABLE - the reviewer's figure-check probes through runTurn, and the narration that must still pass", async () => {
+  await checkTable(FINAL_I4_TABLE);
+  // "the 30-year is at 7.25 percent" with 7.25 in the market payload (a three-decimal FRED rate presented to two decimals)
+  const client = fakeClient([useTool("getMarketUpdate"), say("the 30-year is at 7.25 percent")]);
+  const r = await runTurn({ messages: userSays("what's the rate"), ctx: { ...brokerCtx, rates: { ...LIVE, rate_30yr_fixed: 7.251 } }, client });
+  assert.equal(r.reply, "the 30-year is at 7.25 percent");
+  assert.equal(toolResultPayload(client.calls[1]).data.rates.rate_30yr_fixed, 7.25);
 });
