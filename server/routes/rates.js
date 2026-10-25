@@ -33,11 +33,13 @@ let ratesCache = null; // { payload, expires, day }
 const utcDay = () => new Date().toISOString().slice(0, 10);
 
 // Persist a genuinely resolved (FRED / Claude web-search) rate set for market-movement
-// tracking. Never throws — snapshotting must not break the rates response — and is
-// required lazily so merely loading this router doesn't open the database.
-function captureSnapshot(rates) {
+// tracking, with the provider of the code path that produced it ("fred" | "claude"): the
+// label is no proof, since a web-search result can call itself anything. Never throws —
+// snapshotting must not break the rates response — and is required lazily so merely
+// loading this router doesn't open the database. The hard-coded estimate is never recorded.
+function captureSnapshot(rates, provider) {
   try {
-    require("../lib/rateHistory").recordSnapshot(rates);
+    require("../lib/rateHistory").recordSnapshot(rates, undefined, provider);
   } catch (err) {
     console.error("Rate snapshot error:", err.message);
   }
@@ -133,7 +135,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
       },
     };
     ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
-    captureSnapshot(payload.rates);
+    captureSnapshot(payload.rates, "fred");
     return res.json(payload);
   } catch (err) {
     console.error("OBMMI rates error:", err.name === "AbortError" ? "FRED timeout" : err.message);
@@ -152,7 +154,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
     if (typeof rates.rate_30yr_fixed !== "number") throw new Error("Unexpected rate format");
     const payload = { success: true, rates };
     ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
-    captureSnapshot(rates);
+    captureSnapshot(rates, "claude");
     res.json(payload);
   } catch (err) {
     const isTimeout = err.name === "AbortError";

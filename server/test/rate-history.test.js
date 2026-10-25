@@ -15,6 +15,9 @@ const db = require("../db");
 const { recordSnapshot, getMovement } = require("../lib/rateHistory");
 
 const PRIOR_DAY = "2000-01-01"; // always earlier than "today"
+// R2-9 FIXTURE CHANGE: the delta-math tests below give every set the same web-search label. A set with no label reads as the
+// web-search fallback ("claude"), and two of those are compared only when both carry the same, non-empty label.
+const MND = { source: "Mortgage News Daily" };
 const countRows = () => db.prepare("SELECT COUNT(*) AS n FROM rate_snapshots").get().n;
 
 test.beforeEach(() => {
@@ -46,8 +49,8 @@ test("getMovement reports no history and null deltas when only today's snapshot 
 });
 
 test("getMovement computes deltas against the most recent prior-day snapshot", () => {
-  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7 }, PRIOR_DAY);
-  const today = { rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7 };
+  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, ...MND }, PRIOR_DAY);
+  const today = { rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7, ...MND };
   recordSnapshot(today);
 
   const m = getMovement(today);
@@ -59,17 +62,17 @@ test("getMovement computes deltas against the most recent prior-day snapshot", (
 });
 
 test("getMovement uses the most recent prior day, not an older one", () => {
-  recordSnapshot({ rate_30yr_fixed: 8.0 }, "1999-12-30");
-  recordSnapshot({ rate_30yr_fixed: 7.5 }, PRIOR_DAY);
+  recordSnapshot({ rate_30yr_fixed: 8.0, ...MND }, "1999-12-30");
+  recordSnapshot({ rate_30yr_fixed: 7.5, ...MND }, PRIOR_DAY);
 
-  const m = getMovement({ rate_30yr_fixed: 7.4 });
+  const m = getMovement({ rate_30yr_fixed: 7.4, ...MND });
   assert.ok(Math.abs(m.deltas.rate_30yr_fixed - -0.1) < 1e-9);
 });
 
 test("getMovement skips non-finite values so a NaN can't produce a NaN delta", () => {
-  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7 }, PRIOR_DAY);
+  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, ...MND }, PRIOR_DAY);
 
-  const m = getMovement({ rate_30yr_fixed: NaN, rate_15yr_fixed: 6.6 });
+  const m = getMovement({ rate_30yr_fixed: NaN, rate_15yr_fixed: 6.6, ...MND });
   assert.equal(m.hasHistory, true);
   assert.ok(!("rate_30yr_fixed" in m.deltas), "NaN current value yields no delta");
   assert.ok(Math.abs(m.deltas.rate_15yr_fixed - -0.1) < 1e-9);
@@ -94,7 +97,9 @@ test("B3: providerOf reads the source label: FRED, the hard-coded estimate, and 
 test("B3: a move is computed only between snapshots from the same provider", () => {
   const cases = [
     ["fred", "fred", { source: FRED_SOURCE }, { source: FRED_SOURCE }, true],
-    ["claude", "claude", { source: "Mortgage News Daily" }, { source: "Freddie Mac" }, true],
+    ["claude", "claude", { source: "Mortgage News Daily" }, { source: "Mortgage News Daily" }, true],
+    // R2-9 FLIP (was true): two web-search sets from different publishers are no market move
+    ["claude", "claude", { source: "Mortgage News Daily" }, { source: "Freddie Mac" }, false],
     ["claude", "fred", { source: "Mortgage News Daily" }, { source: FRED_SOURCE }, false],
     ["fred", "claude", { source: FRED_SOURCE }, { source: "Mortgage News Daily" }, false],
     ["fred", "estimated", { source: FRED_SOURCE }, { source: "Estimated — live fetch unavailable" }, false],
@@ -311,5 +316,83 @@ test("the rates cache does not outlive the UTC day, so every served response has
     app.close();
     restore();
     delete process.env.FRED_API_KEY;
+  }
+});
+
+// ── Fix round 2 #9: the provider comes from the route's code path, not the label ────────────────────────────────────────
+
+const WEB_LABELLED_FRED = "Optimal Blue lock data (2026-10-20) via web search";
+
+test("R2-9: recordSnapshot stores the route's provider over the label's; estimated is never stored; an unknown value falls back to the label", () => {
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: WEB_LABELLED_FRED }, daysAgo(3), "claude");
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: "Mortgage News Daily" }, daysAgo(2), "fred");
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: FRED_SOURCE }, daysAgo(1), "nonsense");
+  assert.deepStrictEqual(db.prepare("SELECT provider FROM rate_snapshots ORDER BY day").all().map((r) => r.provider), ["claude", "fred", "fred"]);
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: FRED_SOURCE }, daysAgo(4), "estimated");
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: "Estimated — live fetch unavailable" }, daysAgo(5), "claude");
+  assert.equal(countRows(), 3, "an estimate, by the route's word or by its label, is never stored");
+});
+
+test("R2-9: a web-search set labelled 'Optimal Blue' is stored as claude and never diffed against a FRED row, either way round", () => {
+  // yesterday the web search (labelled like FRED), today FRED: no move
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: WEB_LABELLED_FRED }, daysAgo(1), "claude");
+  assert.equal(getMovement({ rate_30yr_fixed: 6.8, source: FRED_SOURCE }).hasHistory, false);
+  assert.equal(getMovement({ rate_30yr_fixed: 6.8, source: FRED_SOURCE }, "fred").hasHistory, false);
+  // yesterday FRED, today the web search (labelled like FRED) as the route stored it: the current set's provider is the one
+  // stored today for this same set, not its label
+  db.prepare("DELETE FROM rate_snapshots").run();
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: FRED_SOURCE }, daysAgo(1), "fred");
+  const web = { rate_30yr_fixed: 6.8, rate_15yr_fixed: 6.1, date: "2026-10-20", source: WEB_LABELLED_FRED };
+  recordSnapshot(web, undefined, "claude");
+  assert.equal(getMovement(web).hasHistory, false);
+  assert.equal(getMovement(web, "claude").hasHistory, false, "the caller's provider wins");
+  // ... and a set that is not today's stored one is read by its label (the fallback)
+  assert.equal(getMovement({ ...web, rate_30yr_fixed: 6.7 }).hasHistory, true);
+});
+
+test("R2-9: two web-search (claude) snapshots are diffed only when both carry the same, non-empty source label", () => {
+  for (const [prev, cur, moves] of [
+    ["Mortgage News Daily", "Mortgage News Daily", true],
+    ["Mortgage News Daily", "Freddie Mac", false],
+    [WEB_LABELLED_FRED, WEB_LABELLED_FRED, true],
+    [WEB_LABELLED_FRED, "Mortgage News Daily", false],
+    ["", "", false],
+    [undefined, undefined, false],
+  ]) {
+    db.prepare("DELETE FROM rate_snapshots").run();
+    recordSnapshot({ rate_30yr_fixed: 6.9, source: prev }, daysAgo(1), "claude");
+    const m = getMovement({ rate_30yr_fixed: 6.8, source: cur }, "claude");
+    assert.equal(m.hasHistory, moves, `${prev} -> ${cur}`);
+    if (moves) assert.ok(Math.abs(m.deltas.rate_30yr_fixed - -0.1) < 1e-9);
+  }
+});
+
+test("R2-9: POST /api/rates stores its web-search fallback as claude, whatever the label says", async () => {
+  const sdkPath = require.resolve("@anthropic-ai/sdk");
+  require(sdkPath);
+  const sdk = require.cache[sdkPath];
+  const realSdk = sdk.exports;
+  const WEB_SET = { rate_30yr_fixed: 6.91, rate_15yr_fixed: 6.02, rate_5_1_arm: 6.4, date: "2026-10-20", source: WEB_LABELLED_FRED };
+  // the route builds its client from this module when it is loaded (startRatesApp loads it fresh)
+  sdk.exports = class FakeAnthropic {
+    constructor() { this.messages = { create: async () => ({ content: [{ type: "text", text: JSON.stringify(WEB_SET) }] }) }; }
+  };
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.FRED_API_KEY;   // FRED fails, so the web-search fallback answers
+  process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+  recordSnapshot({ rate_30yr_fixed: 7.1, rate_15yr_fixed: 6.2, source: FRED_SOURCE }, daysAgo(1), "fred");
+  const app = await startRatesApp();
+  try {
+    const data = await app.post();
+    assert.equal(data.success, true);
+    assert.deepStrictEqual(data.rates, WEB_SET);
+    assert.equal(db.prepare("SELECT provider FROM rate_snapshots WHERE day = ?").get(daysAgo(0)).provider, "claude");
+    // the browser sends the served set back: no move against yesterday's FRED row
+    assert.equal(getMovement(data.rates).hasHistory, false);
+  } finally {
+    app.close();
+    sdk.exports = realSdk;
+    delete require.cache[require.resolve("../routes/rates")];
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prevKey;
   }
 });
