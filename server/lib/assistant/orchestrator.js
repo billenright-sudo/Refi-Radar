@@ -75,6 +75,26 @@ const OPENER_RE = new RegExp(
 // "Surely, ..." and "Right now, ..." are left alone. Pure.
 const stripOpener = (text) => String(text == null ? "" : text).replace(OPENER_RE, "");
 
+// Process narration ahead of the answer: "I (actually) need to back up —", "Let me start fresh —", "Let me try that again —"
+// (followed by , . ! : an em or en dash or a spaced hyphen), the model talking about its own earlier turns or retries, not about
+// the book. On a GROUNDED turn only (a cited tool result this turn) such openers are removed from the start of the reply
+// before it is screened, and the reply then gets every screen in full, so nothing they hide can carry a claim or a figure past
+// them: "I actually need to back up — here are today's live rates: ..." is said "Here are today's live rates: ...". On an
+// ungrounded turn they stay, and the ungrounded screens see the whole reply. Only the opener goes: a narration sentence after
+// it is the model's own (the prompt tells it never to narrate its process). Pure.
+const PROCESS_OPENER_RE = new RegExp(
+  "^\\s*(?:I\\s+(?:actually\\s+)?need\\s+to\\s+back\\s+up|let\\s+me\\s+start\\s+fresh|let\\s+me\\s+try\\s+that\\s+again)" +
+    "(?:\\s*[,.!:\\u2014\\u2013]|\\s+-(?=\\s))\\s*",
+  "i"
+);
+function stripProcessOpeners(text) {
+  const raw = String(text == null ? "" : text);
+  let s = raw;
+  while (PROCESS_OPENER_RE.test(s)) s = s.replace(PROCESS_OPENER_RE, "");
+  // what is left is a sentence of its own: "here are today's live rates" -> "Here are today's live rates"
+  return s && s !== raw ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
 // Words that open a question or an offer. A leading and/or/so (no comma) is allowed.
 const QUESTION_WORDS =
   "what|which|who|whom|whose|when|where|why|how|do|does|did|is|are|was|were|can|could|would|should|will|shall|may|might|want|need";
@@ -1089,11 +1109,14 @@ async function runTurn({ messages, ctx, client } = {}) {
 
     // Final answer in text.
     if (toolUses.length === 0) {
-      const text = content
+      const said = content
         .filter((b) => b && b.type === "text" && typeof b.text === "string")
         .map((b) => b.text)
         .join(" ")
         .trim();
+      // grounded turns only: process narration ahead of the answer is not said (stripProcessOpeners), and every screen below
+      // runs on what is left
+      const text = sources.length > 0 ? stripProcessOpeners(said).trim() : said;
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
       // R5-3, the action backstop: an action was asked for (now, or in the question this message
       // answers), and no change is being handed up for confirmation (a turn that ends in text never

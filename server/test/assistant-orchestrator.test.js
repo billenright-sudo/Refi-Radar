@@ -3176,3 +3176,57 @@ const R2_PRONOUN_TABLE = [
 test("R2-2: R2_PRONOUN_TABLE - 'send it' / 'run that' / 'do it' after a cancelled read-back stay held; new instructions do not", async () => {
   await checkTable(R2_PRONOUN_TABLE);
 });
+
+// #4: process narration. The prompt forbids it; on a grounded turn its opener is removed from the reply and the rest is screened
+// in full; on an ungrounded turn it stays.
+const NEVER_NARRATE =
+  "Never narrate your own process, earlier turns, tool calls, retries or errors — a cancelled read-back is not a mistake; answer the question as if asked fresh.";
+const LIVE_NARRATION =
+  "I actually need to back up — I made several errors before fetching the right data, so let me start fresh. Here are today's live rates: the 30-year is at 6.52 percent.";
+
+test("R2-4: CHARLI_SYSTEM tells her never to narrate her own process", () => {
+  assert.ok(CHARLI_SYSTEM.includes(NEVER_NARRATE));
+  assert.ok(buildCharliSystem({ career_stage: "veteran" }).includes(NEVER_NARRATE));
+});
+
+test("R2-4: a grounded reply loses a process-narration opener and is then screened in full; an ungrounded one keeps it", async () => {
+  for (const [user, tool, reply, said, opts = {}] of [
+    ["what are rates today?", "getMarketUpdate", "I actually need to back up — here are today's live rates: the 30-year is at 6.52 percent.",
+      "Here are today's live rates: the 30-year is at 6.52 percent."],
+    ["what are rates today?", "getMarketUpdate", "I need to back up — the 30-year is at 6.52 percent.", "The 30-year is at 6.52 percent."],
+    ["what are rates today?", "getMarketUpdate", "Let me start fresh — the 30-year is at 6.52 percent.", "The 30-year is at 6.52 percent."],
+    ["what are rates today?", "getMarketUpdate", "Let me try that again — the 30-year is at 6.52 percent.", "The 30-year is at 6.52 percent."],
+    ["what are rates today?", "getMarketUpdate", "Let me start fresh. The 30-year is at 6.52 percent.", "The 30-year is at 6.52 percent."],
+    ["what are rates today?", "getMarketUpdate", "I actually need to back up — let me start fresh: the 30-year is at 6.52 percent.", "The 30-year is at 6.52 percent."],
+    // a question behind the opener on an action turn is question-shaped once the opener is gone
+    ["log a call with Chen", "findClient", "Let me try that again — which Chen do you mean?", "Which Chen do you mean?", { ctx: twoChensCtx }],
+    // after two cancelled read-backs (the observed case)
+    [history("log a call with the Chens", CANCELLED, "never mind", CANCELLED, "what are rates today?"), "getMarketUpdate",
+      "I actually need to back up — here are today's live rates: the 30-year is at 6.52 percent.", "Here are today's live rates: the 30-year is at 6.52 percent."],
+    // PINNED RESIDUAL: only the opener goes; the narration sentence after it is the model's own words (no claim, no figure), and
+    // the prompt line above is what stops it
+    ["what are rates today?", "getMarketUpdate", LIVE_NARRATION, LIVE_NARRATION.replace("I actually need to back up — I made", "I made")],
+  ]) {
+    const r = await runTurn({ messages: Array.isArray(user) ? user : userSays(user), ctx: opts.ctx || brokerCtx,
+      client: fakeClient([useTool(tool, TOOL_INPUT[tool]), say(reply)]) });
+    assert.equal(r.reply, said, reply);
+    assert.deepStrictEqual(r.sources, [TOOL_SOURCE[tool]], reply);
+  }
+  await checkTable([
+    // the same opener before an unbacked figure, a claim, or on a turn with no tool result
+    ["what are rates today?", "getMarketUpdate", "Let me start fresh — the 30-year is at 7.5 percent.", CANT_VERIFY],
+    ["what are rates today?", "getMarketUpdate", "I actually need to back up — rates are around seven and a half.", CANT_VERIFY],
+    ...onBoth("what are rates today?", "Let me start fresh — the 30-year is at 7.5 percent.", CANT_VERIFY),
+    ["what are rates today?", null, "Let me start fresh — the 30-year is at 6.52 percent.", CANT_VERIFY],
+    ...onBoth("how are the Chens doing?", "Let me try that again — logged the call for the Chens.", NOTHING_CHANGED),
+    ...onBoth("how are the Chens doing?", "I need to back up — the Chens are up to date now.", NOTHING_CHANGED),
+    ["log a call with Chen", "findClient", "Let me start fresh — you got it, the Chens are current now.", NOTHING_CHANGED],
+    // ungrounded: the opener is not removed, so the action backstop sees it and the question is not question-shaped
+    ["add a client", null, "Let me start fresh — what's their name?", NOTHING_CHANGED],
+    // a reply that is only the opener says nothing
+    ["what are rates today?", "getMarketUpdate", "Let me try that again.", CANT_VERIFY],
+    // neighbours: no process opener, nothing removed
+    ["what's the rate", "getMarketUpdate", "the 30-year is at 6.52 percent", PASS],
+    ["what are rates today?", "getMarketUpdate", "Let me know if you want the 15-year too — the 30-year is at 6.52 percent.", PASS],
+  ]);
+});
