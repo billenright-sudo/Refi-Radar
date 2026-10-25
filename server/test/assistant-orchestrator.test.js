@@ -20,7 +20,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped, isCitation,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -706,7 +706,8 @@ test("the action-claim guard catches the first-person completion phrasings and l
 });
 
 test("the new fixed lines are pinned", () => {
-  assert.equal(NOTHING_CHANGED, "I haven't changed anything yet — tell me what to do and I'll confirm it with you first.");
+  // B8: reworded so it stays true after a change confirmed earlier in the session (was "I haven't changed anything yet — ...")
+  assert.equal(NOTHING_CHANGED, "I haven't made that change — tell me what to do and I'll confirm it with you first.");
   assert.equal(ONE_AT_A_TIME, "Let's do those one at a time — which first?");
   assert.equal(DIDNT_CATCH, "I didn't catch that — could you say it again?");
 });
@@ -1431,51 +1432,8 @@ test("an affirming opener is not stripped when the user asked a yes/no or tag qu
 
 // ── round 6b: an unsourced yes / no ──────────────────────────────────────────
 
-test("isBareYesNoAnswer: a yes/no or tag question answered by a first-word yes or no", () => {
-  const yesNo = "Is Chen my best?";
-  // the ruled pairs and the accepted cost
-  for (const [u, reply] of [
-    ["Is Chen my best?", "Absolutely — want me to pull their numbers?"],
-    ["Do I have anything due today?", "Yes, a few — want the list?"],
-    ["Is the market up?", "Nope, pretty flat. Want details?"],
-    ["Chen's my top pick, right?", "Exactly."],
-    ["Is Chen my best?", "Yes — what's their name?"],
-  ]) {
-    assert.equal(isBareYesNoAnswer(reply, u), true, `${u} / ${reply}`);
-  }
-  // every listed word, case-insensitive, with or without punctuation after it
-  for (const w of [
-    "yes", "yeah", "yep", "yup", "no", "nope", "nah", "absolutely", "right", "correct", "sure", "of course",
-    "certainly", "definitely", "indeed", "exactly", "true", "false",
-  ]) {
-    for (const reply of [w, w + ".", w + "!", w + ", he is.", w + " — want the numbers?", w.toUpperCase() + " he is"]) {
-      assert.equal(isBareYesNoAnswer(reply, yesNo), true, reply);
-    }
-  }
-  // optional leading whitespace and filler; "of  course" with extra spaces
-  for (const reply of ["   Yes.", "Well, no — not yet.", "Oh yes!", "Hmm, nope.", "Um, sure.", "So yeah, he is.", "Of  course."]) {
-    assert.equal(isBareYesNoAnswer(reply, yesNo), true, reply);
-  }
-  // not the first word, a longer word, or no yes/no question
-  for (const [u, reply] of [
-    ["Is Chen my best?", "Which Chen do you mean?"],
-    ["Is Chen my best?", "I think yes."],
-    ["Is Chen my best?", "Yesterday was busy."],
-    ["Is Chen my best?", "Surely you jest."],
-    ["Is Chen my best?", "Nobody has told me."],
-    ["Is Chen my best?", "Truthfully, I can't say."],
-    ["Is Chen my best?", "Indeedy."],
-    ["can you log a call", "Sure, who did you talk to?"],
-    ["add a client", "Sure, what's their name?"],
-    ["could you add a client", "Absolutely — what's their name?"],
-    ["good morning", "Yes, good morning!"],
-    ["Is Chen my best?", ""],
-  ]) {
-    assert.equal(isBareYesNoAnswer(reply, u), false, `${u} / ${reply}`);
-  }
-  assert.equal(isBareYesNoAnswer(null, yesNo), false);
-  assert.equal(isBareYesNoAnswer("Yes.", null), false);
-});
+// (B8: the isBareYesNoAnswer helper and its test were removed: nothing called it, and R5-2 in screenUngroundedText, pinned
+// by the next test, is the stricter rule that subsumed it)
 
 test("ungrounded: a first-word yes or no to a yes/no question is the can't-verify line; requests, lone questions and grounded turns are untouched", async () => {
   for (const [u, reply] of [

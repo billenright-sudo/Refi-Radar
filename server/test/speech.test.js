@@ -160,6 +160,20 @@ test("ISO dates are read as a month, an ordinal day and a spoken year", () => {
   ]);
 });
 
+test("B8: a time right after an ISO date is dropped; the date alone is read (a stored last contact is a datetime)", () => {
+  table([
+    ["2026-10-14 14:03:11", "October fourteenth, twenty twenty-six"],
+    ["Last contact was logged on 2026-10-14 14:03:11.", "Last contact was logged on October fourteenth, twenty twenty-six."],
+    ["2026-10-14T14:03:11", "October fourteenth, twenty twenty-six"],
+    ["2026-10-14T14:03:11Z", "October fourteenth, twenty twenty-six"],
+    ["2026-10-14T14:03:11.250Z, then", "October fourteenth, twenty twenty-six, then"],
+    ["2026-10-14 09:30", "October fourteenth, twenty twenty-six"],
+    // a time on its own, or one that is not a time, is unchanged (read as the plain numbers it contains)
+    ["at 14:03:11", "at fourteen:zero three:eleven"],
+    ["2026-10-14 25:00:00", "October fourteenth, twenty twenty-six twenty-five:zero zero:zero zero"],
+  ]);
+});
+
 test("a hyphenated run of numbers that is not a real date is not read as one", () => {
   table([
     ["2026-13-01", "two thousand twenty-six-thirteen-zero one"],

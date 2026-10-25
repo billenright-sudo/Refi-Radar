@@ -19,7 +19,7 @@ const { tools, TOOL_SCHEMA } = require("./tools");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK,
 } = require("./prompt");
-const { CAREER_STAGES, CAREER_QUESTION, stageById } = require("./coaching");
+const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
@@ -213,21 +213,6 @@ function isQuestionShaped(reply) {
   const s = stripOpener(reply).trim();
   return s.endsWith("?") && QUESTION_START_RE.test(s);
 }
-
-// The first word of a reply (after leading whitespace, an opening quote and the fillers oh / ah /
-// um / uh / er / erm / hmm / well / so) is an affirming or negating word. Tested on the raw reply,
-// before any opener strip, because "Sure" / "Absolutely" / "Right" are openers too.
-const YES_NO_WORD_RE = new RegExp(
-  "^[\\s\"'\\u201c\\u2018]*(?:(?:oh|ah|um|uh|er|erm|hmm|well|so)\\b[\\s,.!\\u2014\\u2013\\u2026-]*)*" +
-    "(?:yes|yeah|yep|yup|no|nope|nah|absolutely|right|correct|sure|of\\s+course|certainly|definitely|indeed|exactly|true|false)\\b",
-  "i"
-);
-// The user asked a yes/no or tag question (isYesNoQuestion) and the reply opens with a yes or a
-// no: that first word IS the answer ("Is Chen my best?" + "Absolutely — want me to pull their
-// numbers?"). Kept as a helper: R5-2 in screenUngroundedText is stricter and subsumes it (on an
-// ungrounded yes/no turn only a lone clarifying question passes), so the guards no longer call it. Pure.
-const isBareYesNoAnswer = (reply, userText) =>
-  isYesNoQuestion(userText) && YES_NO_WORD_RE.test(String(reply == null ? "" : reply));
 
 // A completion claim. runTurn never performs an action, so by construction anything the model
 // says that reads as "it's done" is false. Each sentence (split on . ! ? ; and em/en dashes) is
@@ -960,9 +945,10 @@ function readBack(out) {
     case "addClient":
       return addClientReadBack(se.fields);
     case "setCareerStage": {
-      // the label comes from the stage the tool packaged, so what is read back is what would be saved
-      const stage = stageById(se.stage);
-      return stage ? `${READ_BACK_PREFIX} set your career stage to ${stage.label}?` : `${READ_BACK_PREFIX} go ahead with that?`;
+      // the label comes from the stage the tool packaged, so what is read back is what would be saved; it is the spoken
+      // label ("Veteran, ten or more years"), the screen's "(10+ years)" being no way to say it
+      const spoken = spokenStageLabel(se.stage);
+      return spoken ? `${READ_BACK_PREFIX} set your career stage to ${spoken}?` : `${READ_BACK_PREFIX} go ahead with that?`;
     }
     default:
       return `${READ_BACK_PREFIX} go ahead with that?`;
@@ -1156,5 +1142,5 @@ async function runTurn({ messages, ctx, client } = {}) {
 
 module.exports = {
   runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isBareYesNoAnswer, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims,
 };

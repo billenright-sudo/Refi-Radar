@@ -33,13 +33,19 @@ const Turn = ({ turn, ui: { C, mono } }) => {
       </div>
       <div data-testid={mine ? "charli-user-turn" : failed ? "charli-error-turn" : "charli-turn"} style={{ ...bubble, borderRadius: 12, padding: "10px 14px", fontSize: 14, lineHeight: 1.5, maxWidth: "88%", whiteSpace: "pre-wrap" }}>
         {turn.content}
-        {!mine && turn.sources.length > 0 && (
+        {!mine && (turn.sources.length > 0 || turn.kind === "unverified") && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
             {turn.sources.map((source, i) => (
               <span key={i} style={{ ...mono, fontSize: 10.5, color: C.mutedHi, background: C.surfaceHi, border: `1px solid ${C.border}`, borderRadius: 6, padding: "2px 8px" }}>
                 source: {source}
               </span>
             ))}
+            {/* spec §7.4: a can't-verify or guideline hand-off reply is marked as such */}
+            {turn.kind === "unverified" && (
+              <span data-testid="charli-unverified" style={{ ...mono, fontSize: 10.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 6, padding: "2px 8px" }}>
+                unable to verify
+              </span>
+            )}
           </div>
         )}
       </div>

@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
+  CANT_VERIFY, GUIDELINE_HANDOFF,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -527,7 +528,7 @@ test("a /confirm that may be retried (network, 500, 429) keeps the change; sayin
 // ── silence, one thing at a time ─────────────────────────────────────────────
 
 test("empty speech-to-text shows and speaks 'I didn't catch that', is not sent anywhere and is not in the history", async () => {
-  const { session, server, spoken } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Rates are 6.5%.")) } });
+  const { session, server, spoken } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Rates are 6.5%."), turnReply("Sure.")) } });
   for (const empty of ["", "   ", undefined]) {
     assert.deepEqual(await session.heard(empty), { ok: true, action: "didnt-catch" });
   }
@@ -535,11 +536,44 @@ test("empty speech-to-text shows and speaks 'I didn't catch that', is not sent a
   const notices = session.getState().turns;
   assert.equal(notices.length, 3);
   assert.ok(notices.every((t) => t.content === DIDNT_CATCH && t.kind === "notice" && !t.inHistory));
-  assert.deepEqual(spoken.map((s) => s.text), [DIDNT_CATCH, DIDNT_CATCH, DIDNT_CATCH]);
+  // B8 FLIP (was spoken three times): only the first empty transcript of a run is spoken; the rest are shown silently
+  assert.deepEqual(spoken.map((s) => s.text), [DIDNT_CATCH]);
   assert.equal(server.turns().length, 0);
 
   await session.heard("what are rates today");
   assert.deepEqual(messagesOf(server.turns()[0]), [{ role: "user", content: "what are rates today" }], "the notice never reaches /turn");
+
+  // a transcript with words ends the run: the next empty one is spoken again, once
+  await session.heard("");
+  await session.heard("(background noise)");
+  assert.deepEqual(spoken.map((s) => s.text), [DIDNT_CATCH, "Rates are 6.5%.", DIDNT_CATCH]);
+  assert.equal(session.getState().turns.filter((t) => t.content === DIDNT_CATCH).length, 5, "every one is still shown");
+});
+
+test("B8: a can't-verify or guideline hand-off reply is marked 'unverified' (the 'unable to verify' chip); other replies are not", async () => {
+  const { session } = setup({
+    routes: {
+      "POST /api/assistant/turn": queue(
+        turnReply(CANT_VERIFY), turnReply(GUIDELINE_HANDOFF), turnReply("The 30-year is at 6.5%.", { sources: ["live rates 2026-10-25"] }),
+        turnReply(`LTV is loan to value. ${CANT_VERIFY}`, { sources: ["Broker Radar glossary"] }),
+      ),
+    },
+  });
+  await session.submit("what's Chen's balance?");
+  assert.equal(lastTurn(session).kind, "unverified");
+  assert.equal(lastTurn(session).inHistory, true, "it is still Charli's turn in the conversation");
+  await session.submit("what's the max DTI?");
+  assert.equal(lastTurn(session).kind, "unverified");
+  await session.submit("rates?");
+  assert.equal(lastTurn(session).kind, "message");
+  await session.submit("what's LTV and DSCR?");
+  assert.equal(lastTurn(session).kind, "message", "only a reply that IS the line is marked");
+});
+
+test("B8: the client's can't-verify and guideline lines match the server's prompt.js", { skip: !existsSync(new URL("../../../server/lib/assistant/prompt.js", import.meta.url)) }, () => {
+  const server = createRequire(import.meta.url)("../../../server/lib/assistant/prompt.js");
+  assert.equal(CANT_VERIFY, server.CANT_VERIFY);
+  assert.equal(GUIDELINE_HANDOFF, server.GUIDELINE_HANDOFF);
 });
 
 test("heard(text) with words is a normal submit", async () => {

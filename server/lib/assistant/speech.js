@@ -12,7 +12,8 @@
 //   compounds  30-year -> thirty-year (the hyphen stays)
 //   ARM names  5/1 ARM -> five one ARM (any other slash stays between the spoken numbers: 5/1 -> five/one)
 //   ordinals   1st -> first
-//   dates      2026-01-01 -> January first, twenty twenty-six
+//   dates      2026-01-01 -> January first, twenty twenty-six; a time right after the date (2026-01-01 14:03:11,
+//              2026-01-01T14:03:11Z, as a stored last contact reads) is dropped: the date alone is read
 //   negatives  -3 -> minus three
 //   also       "&" -> "and", markdown symbols (* _ # `) dropped, whitespace collapsed
 //
@@ -89,7 +90,9 @@ function replaceNumbers(text, pattern, render) {
   });
 }
 
-const ISO_DATE = /(?<!\d)((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/g;
+// (the optional " HH:MM:SS" / "THH:MM:SS" tail, with fractional seconds and a zone, is matched so that it is dropped)
+const ISO_DATE =
+  /(?<!\d)((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?:[ T](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?(?!\d)/g;
 const ORDINAL = /(?<![\d.,])(\d+)(?:st|nd|rd|th)\b/gi;
 const MINUS = /(^|[\s(])-(?=\$?\d)/g;
 // The loan type "5/1 ARM" (also 7/6, 10/6): brokers say "five one ARM", not "five slash one".

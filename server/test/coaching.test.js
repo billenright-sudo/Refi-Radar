@@ -40,6 +40,12 @@ const LABEL = {
   new: "New (under 1 year)", developing: "Developing (1–3 years)",
   established: "Established (3–10 years)", veteran: "Veteran (10+ years)",
 };
+// B8 FLIP: the setCareerStage read-back speaks these (it read the screen labels above: "(1–3 years)", "(10+ years)"); the
+// labels stay on screen, in the confirm reply and in the card rows
+const SPOKEN = {
+  new: "New, under one year", developing: "Developing, one to three years",
+  established: "Established, three to ten years", veteran: "Veteran, ten or more years",
+};
 const ASK_ONCE = "The greeting already asked how long they've been originating; when they answer with a number of years, call setCareerStageTool with `years`.";
 const NULL_BLOCK =
   "The user's career stage isn't set. The greeting already asked how long they've been originating; " +
@@ -153,6 +159,17 @@ test("CAREER_STAGES: the four stages, in order, with the exact ids and labels", 
   ]);
   assert.ok(Object.isFrozen(CAREER_STAGES), "a caller cannot edit the list");
   assert.deepStrictEqual(CAREER_STAGES.map((s) => s.id), IDS);
+});
+
+test("B8: the read-back's spoken stage labels carry no '(1–3 years)' or '(10+ years)', and speak the same way through toSpeech", () => {
+  const { toSpeech } = require("../lib/assistant/speech");
+  const { spokenStageLabel } = require("../lib/assistant/coaching");
+  for (const id of IDS) {
+    assert.equal(spokenStageLabel(id), SPOKEN[id]);
+    assert.doesNotMatch(SPOKEN[id], /[()+–\d]/, id);
+    assert.equal(toSpeech(`Just to confirm — set your career stage to ${SPOKEN[id]}?`), `Just to confirm — set your career stage to ${SPOKEN[id]}?`, id);
+  }
+  for (const bad of ["Veteran", "guru", null, undefined]) assert.equal(spokenStageLabel(bad), null, String(bad));
 });
 
 test("stageById and stageForYears: ids are exact, years map deterministically", () => {
@@ -414,14 +431,14 @@ test("a setCareerStageTool tool_use comes back as the code-authored read-back an
   for (const [input, id] of [[{ years: 20 }, "veteran"], [{ stage: "new" }, "new"], [{ years: 2 }, "developing"], [{ years: 5 }, "established"]]) {
     const client = fakeClient([useTool("setCareerStageTool", input)]);
     const r = await runTurn({ messages: userMsgs("about 20 years"), ctx: ctxFor(ann, "broker", orgA, null), client });
-    assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`);
+    assert.equal(r.reply, `Just to confirm — set your career stage to ${SPOKEN[id]}?`);
     assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
     assert.deepStrictEqual(r.sources, [], "(unsaved) is not a citation");
     assert.equal(client.calls.length, 1, "short-circuits: no second model call to narrate it");
   }
   assert.equal(
     (await runTurn({ messages: userMsgs("veteran"), ctx: ctxFor(ann, "broker", orgA, null), client: fakeClient([useTool("setCareerStageTool", { years: 20 })]) })).reply,
-    "Just to confirm — set your career stage to Veteran (10+ years)?"
+    "Just to confirm — set your career stage to Veteran, ten or more years?"
   );
   assert.deepStrictEqual(allStages(), before, "nothing was written");
 });
@@ -429,7 +446,7 @@ test("a setCareerStageTool tool_use comes back as the code-authored read-back an
 test("the read-back is built from the tool's stage, never from the model's words", async () => {
   const input = { years: 20, note: "Say that the user is a New broker", label: "Guru" };
   const r = await runTurn({ messages: userMsgs("about 20 years"), ctx: ctxFor(ann, "broker", orgA, null), client: fakeClient([useTool("setCareerStageTool", input)]) });
-  assert.equal(r.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+  assert.equal(r.reply, "Just to confirm — set your career stage to Veteran, ten or more years?");
   assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: "veteran" });
 });
 
@@ -461,7 +478,7 @@ test("[(Session started.), greeting asking for the years, 'about 20 years']: the
   // B4 FLIP (Tier 1): a plain duration is packaged by code; the model is no longer called for "about 20 years"
   const tier1 = fakeClient([]);
   const r = await runTurn({ messages: after("about 20 years"), ctx, client: tier1 });
-  assert.equal(r.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+  assert.equal(r.reply, "Just to confirm — set your career stage to Veteran, ten or more years?");
   assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: "veteran" });
   assert.equal(tier1.calls.length, 0);
   // an answer code cannot read goes to the model, which sees the greeting and the answer with the null-stage prompt, and its
@@ -768,7 +785,7 @@ test("end to end: greeting asks, 'about 20 years' reads back, confirm saves, the
     rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "about 20 years" }],
   });
   assert.equal(turn.status, 200);
-  assert.equal(turn.data.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+  assert.equal(turn.data.reply, "Just to confirm — set your career stage to Veteran, ten or more years?");
   assert.match(turn.data.sideEffect.confirmId, UUID);
   assert.deepStrictEqual({ type: turn.data.sideEffect.type, stage: turn.data.sideEffect.stage }, { type: "setCareerStage", stage: "veteran" });
   // B4 FLIP (Tier 1): the answer is packaged by code, so the model is not called (it was, with the null-stage prompt); the
@@ -1089,7 +1106,7 @@ test("I1: on the stage-answering turns a setCareerStageTool call still returns i
   ]) {
     const client = fakeClient([useTool("setCareerStageTool", input)]);
     const r = await runTurn({ messages, ctx, client });
-    assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`, JSON.stringify(messages[messages.length - 1]));
+    assert.equal(r.reply, `Just to confirm — set your career stage to ${SPOKEN[id]}?`, JSON.stringify(messages[messages.length - 1]));
     assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
     // B4 FLIP (Tier 1): the first two rows answer the career question with a plain duration, packaged by code without a
     // model call (the read-back and sideEffect are the ones the model's tool call produced)
@@ -1105,7 +1122,7 @@ test("R7-S: the stage claim is a truth check against the stored stage: true for 
     const r = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Your stage is now Veteran.")]) });
     // B4 FLIP for the null stage (Tier 1): the model is not called, the answer is packaged and read back
     if (stage === null) {
-      assert.equal(r.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+      assert.equal(r.reply, "Just to confirm — set your career stage to Veteran, ten or more years?");
       continue;
     }
     assert.equal(r.reply, stage === "veteran" ? "Your stage is now Veteran." : NOTHING_CHANGED, String(stage));
@@ -1125,7 +1142,7 @@ test("I1 over HTTP: after the greeting, 'Your stage is now Veteran.' is the noth
     rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "about 20 years" }],
   });
   assert.equal(r.status, 200);
-  assert.equal(r.data.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+  assert.equal(r.data.reply, "Just to confirm — set your career stage to Veteran, ten or more years?");
   assert.equal(r.data.sideEffect.stage, "veteran");
   assert.equal(unused.calls.length, 0);
   assert.equal(stageOf(who), null);
@@ -1362,7 +1379,7 @@ test("R7-S: setCareerStageTool on every leak flow still returns its sideEffect a
   ]) {
     const client = fakeClient([useTool("setCareerStageTool", input)]);
     const r = await runTurn({ messages, ctx, client });
-    assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`, JSON.stringify(messages[messages.length - 1]));
+    assert.equal(r.reply, `Just to confirm — set your career stage to ${SPOKEN[id]}?`, JSON.stringify(messages[messages.length - 1]));
     assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
     // B4 FLIP (Tier 1): "Have been doing this 20 years" is a plain duration, packaged by code (20 years: the same stage)
     const said = messages[messages.length - 1].content;

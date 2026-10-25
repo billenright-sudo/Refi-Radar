@@ -21,6 +21,12 @@ export const CAREER_STAGES = Object.freeze([
 
 export const stageById = (id) => (typeof id === "string" && CAREER_STAGES.find((s) => s.id === id)) || null;
 
+// Keep in sync with CANT_VERIFY and GUIDELINE_HANDOFF in server/lib/assistant/prompt.js: a reply that is exactly one of these
+// is marked "unable to verify" in the transcript (kind "unverified"; spec §7.4).
+export const CANT_VERIFY = "I can't verify that from what I have, so I won't guess.";
+export const GUIDELINE_HANDOFF = "That's a loan-guideline question, and I can't verify guidelines yet, so I won't guess.";
+const UNVERIFIED_REPLIES = new Set([CANT_VERIFY, GUIDELINE_HANDOFF]);
+
 // Code-authored lines (never model output).
 export const LEAVE_THAT = "Okay — I'll leave that.";
 export const DIDNT_CATCH = "I didn't catch that — could you say it again?";
@@ -138,7 +144,8 @@ const isRetryable = (res) => res.network || res.status >= 500 || res.status === 
 //           notice, dispose }.
 //
 // getState() -> { turns, pending, busy, opening, hasRates, careerStage }
-//   turns    [{ id, role, content, sources, turnId, kind: "message" | "error" | "notice", inHistory }]
+//   turns    [{ id, role, content, sources, turnId, kind: "message" | "unverified" | "error" | "notice", inHistory }]
+//            ("unverified": Charli's reply is exactly the can't-verify or guideline hand-off line)
 //   pending  { sideEffect, readBack, details? } | null   (details: [{ label, value }] for the card, when the server sent them)
 // Only turns with inHistory are sent to /turn, as plain { role, content }.
 //
@@ -150,6 +157,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   let nextId = 1;
   let disposed = false;
   let openPromise = null;
+  let emptyRun = false;   // the last transcript was empty and "I didn't catch that" was already said (see heard)
   let releaseRates;
   const ratesArrived = new Promise((resolve) => { releaseRates = resolve; });
   if (currentRates) releaseRates();
@@ -227,7 +235,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
       const failed = data.error === true;
       addTurn({
         role: "assistant", content: data.reply, sources: cleanSources(data.sources), turnId: data.turnId || null,
-        kind: failed ? "error" : "message",
+        kind: failed ? "error" : UNVERIFIED_REPLIES.has(data.reply.trim()) ? "unverified" : "message",
       });
       if (!failed && data.sideEffect && typeof data.sideEffect === "object" && !Array.isArray(data.sideEffect)) {
         const details = cleanDetails(data.details);
@@ -329,9 +337,12 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   // recording went to speech-to-text. A bare yes or no (classifyReply) that comes back after that change was confirmed or
   // cancelled with a button, or replaced, answers nothing the user can still see: it is shown as a notice and sent nowhere
   // (a late "yes" must never reach /turn as an ordinary answer, nor confirm a change the user has not seen).
-  // A transcript that is only audio-event tags ("(background noise)") heard nothing either.
+  // A transcript that is only audio-event tags ("(background noise)") heard nothing either. In a noisy room every burst of
+  // noise is an empty transcript: "I didn't catch that" is SPOKEN only for the first of a run of them (each one is still
+  // shown), and the run ends with the next transcript that has words in it.
   async function heard(text, { pendingAtStart } = {}) {
     const said = withoutAudioTags(text).trim();
+    if (said) emptyRun = false;
     if (said && pendingAtStart !== undefined && state.pending !== pendingAtStart && !disposed) {
       const answer = classifyReply(text);
       if (answer === "yes" || answer === "no") {
@@ -342,7 +353,8 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
     if (said) return submit(text);
     if (disposed) return { ok: false, reason: "closed" };
     if (state.busy) return { ok: false, reason: "busy" };
-    addNotice(DIDNT_CATCH, { say: true });
+    addNotice(DIDNT_CATCH, { say: !emptyRun });
+    emptyRun = true;
     return { ok: true, action: "didnt-catch" };
   }
 

@@ -15,6 +15,16 @@ const CAREER_STAGES = Object.freeze([
 // The stage object for an id, or null. Ids are exact: "Veteran", " veteran" and non-strings are not stages.
 const stageById = (id) => (typeof id === "string" && CAREER_STAGES.find((s) => s.id === id)) || null;
 
+// The stages as they are said aloud in a read-back: the labels' "(1–3 years)" and "(10+ years)" are for the screen, and read
+// out they come across as "one–three" and "ten+". Null for anything that is not a stage id.
+const SPOKEN_LABELS = Object.freeze({
+  new: "New, under one year",
+  developing: "Developing, one to three years",
+  established: "Established, three to ten years",
+  veteran: "Veteran, ten or more years",
+});
+const spokenStageLabel = (id) => (stageById(id) ? SPOKEN_LABELS[id] : null);
+
 const MAX_YEARS = 70;
 
 // The stage for a number of years in the business, by fixed cut-offs: under 1 new, 1 to under 3 developing, 3 to
@@ -81,4 +91,4 @@ const coachingStyle = (stageId) => {
 // claimsStage in the orchestrator, against the stored stage, however the conversation went.
 const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
 
-module.exports = { CAREER_STAGES, MAX_YEARS, CAREER_QUESTION, stageById, stageForYears, coachingStyle };
+module.exports = { CAREER_STAGES, MAX_YEARS, CAREER_QUESTION, stageById, stageForYears, spokenStageLabel, coachingStyle };

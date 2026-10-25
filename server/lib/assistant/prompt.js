@@ -13,9 +13,10 @@ const GUIDELINE_HANDOFF =
   "That's a loan-guideline question, and I can't verify guidelines yet, so I won't guess.";
 
 // runTurn never performs an action, so any first-person "I logged / added / saved it" or a
-// bare "Done" from the model is false by construction; this replaces it.
+// bare "Done" from the model is false by construction; this replaces it. It speaks of "that change" only: it must stay
+// true after a change confirmed earlier in the same session.
 const NOTHING_CHANGED =
-  "I haven't changed anything yet — tell me what to do and I'll confirm it with you first.";
+  "I haven't made that change — tell me what to do and I'll confirm it with you first.";
 
 // One response asked for more than one change at once; confirmations happen one at a time.
 const ONE_AT_A_TIME = "Let's do those one at a time — which first?";
