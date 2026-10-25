@@ -3233,8 +3233,8 @@ test("R2-4: a grounded reply loses a process-narration opener and is then screen
 
 // #5: a contact report is a request to log it: the prompt says find the client, then propose the log
 test("R2-5: CHARLI_SYSTEM's confirmation rule tells her to find the client and propose logContactTool on a contact report", () => {
-  const line = "When the user reports a contact they just had (called, talked to, met with, texted…), find the client, then call " +
-    "logContactTool to propose logging it — do not just acknowledge.";
+  const line = "When the user reports a contact they just had (called, talked to, met with, texted…) and asks nothing else, find " +
+    "the client, then call logContactTool to propose logging it — do not just acknowledge; if they also ask a question, answer the question.";
   assert.ok(CHARLI_SYSTEM.includes(line));
   const rule = CHARLI_SYSTEM.split("\n\n").find((p) => p.startsWith("Confirmation rule:"));
   assert.ok(rule && rule.includes(line), "inside the confirmation-rule paragraph");
@@ -3260,14 +3260,29 @@ const STILL_CLAIMS = [
   "Three clients marked.", "Two records updated for the Chens.", "Two calls marked and logged.",
 ];
 
-test("R2-6: count narration is no claim; contact verbs, contact / completion words and 'added to' after a number still are", () => {
+// Re-review #2: the exemption holds on a SWEEP turn only (claimsCompletion's fourth argument). On any other turn the same shape
+// is a change claim — each of these was blocked before the count exemption existed and must stay blocked.
+const COUNT_SHAPED_CLAIMS = [
+  "One reminder added for the Chens.", "One note added for the Chens.", "Got it — one follow-up added for Friday.",
+  "One follow-up added for the Chens — anything else?", "Okay, one email added for Patel.", "One client added for you — Jane Doe.",
+  "One call added for the Chens.", "Two clients marked as followed up.", "One check-in marked for the Chens.",
+];
+
+test("R2-6: count narration is no claim on a sweep turn; contact verbs, contact / completion words and 'added to' after a number still are", () => {
   assert.equal(refi.runSweep(db.prepare("SELECT * FROM clients WHERE org_id = ?").all(orgE), LIVE).counts.checkInsDue, 12);
+  const exempt = [
+    ...COUNT_NARRATIONS, "12 clients marked as rate-and-term opportunities.", "Twenty-five clients marked for check-ins.",
+    "A dozen clients marked as cash-out opportunities.", "Got it, three clients marked as cash-out opportunities.",
+  ];
   for (const grounded of [false, true]) {
-    for (const text of [
-      ...COUNT_NARRATIONS, "12 clients marked as rate-and-term opportunities.", "Twenty-five clients marked for check-ins.",
-      "A dozen clients marked as cash-out opportunities.", "Got it, three clients marked as cash-out opportunities.",
-    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
-    for (const text of STILL_CLAIMS) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of exempt) assert.equal(claimsCompletion(text, grounded, null, true), false, `sweep ${grounded}: ${text}`);
+    for (const text of STILL_CLAIMS) assert.equal(claimsCompletion(text, grounded, null, true), true, `sweep ${grounded}: ${text}`);
+    // without the sweep flag nothing is exempt: the count shape is a change claim like any other shortened passive ("flagged"
+    // is not a claim participle on any turn, so those rows are left out here)
+    for (const text of [...exempt.filter((t) => !/\bflagged\b/.test(t)), ...COUNT_SHAPED_CLAIMS]) {
+      assert.equal(claimsCompletion(text, grounded), true, `no sweep ${grounded}: ${text}`);
+      assert.equal(claimsCompletion(text, grounded, null, false), true, `no sweep ${grounded}: ${text}`);
+    }
   }
 });
 
@@ -3280,6 +3295,16 @@ const R2_COUNT_TABLE = [
   // claims after a number, and the claims that never open with one
   ...STILL_CLAIMS.map((t) => ["run a sweep", "runSweepTool", t, NOTHING_CHANGED, { ctx: twelveCtx }]),
   ...STILL_CLAIMS.flatMap((t) => onBoth("how are the Chens doing?", t, NOTHING_CHANGED)),
+  // re-review #2: the count shape off a sweep turn is a change claim (each of these passed between acba1bd and this fix)
+  ...onBoth("The Chens want a follow-up Friday.", "Got it — one follow-up added for Friday.", NOTHING_CHANGED),
+  ...onBoth("The Chens want a follow-up Friday.", "One follow-up added for the Chens — anything else?", NOTHING_CHANGED),
+  ["Patel's email is raj@x.co", null, "Okay, one email added for Patel.", NOTHING_CHANGED],
+  ...onBoth("Jane Doe is a new client, 400k balance", "One client added for you — Jane Doe.", NOTHING_CHANGED),
+  ...onBoth("set a reminder for the Chens", "One reminder added for the Chens.", NOTHING_CHANGED),
+  ...onBoth(AFTER_CANCEL("thanks"), "One call added for the Chens.", NOTHING_CHANGED),
+  ...["Two clients marked as followed up.", "One check-in marked for the Chens."].flatMap((t) => onBoth("how are the Chens doing?", t, NOTHING_CHANGED)),
+  // ... while the same shape on the sweep turn that counted it still passes
+  ["run a sweep", "runSweepTool", "Two clients marked for check-ins.", PASS, { ctx: twelveCtx }],
 ];
 
 test("R2-6: R2_COUNT_TABLE - sweep count narration passes; a claim after a number does not", async () => {

@@ -359,10 +359,12 @@ const laterClauseClaims = (sentence) =>
 //   * a clause that is itself a question ("Call logged?");
 //   * "updated" counts only where the clause ends or "for" / "to" / "with" follows ("Record updated for the Chens."), so "Rates
 //     updated this morning" is narration;
-//   * count narration (countNarration): the phrase BEGINS with a cardinal (digits, one to ninety-nine in words, hundred, dozen, "a
-//     dozen", "a hundred") and its first participle is "marked as / for" or "added" followed by more than "to" (or "flagged", which
-//     is no claim anyway): what a sweep counted, not a change ("Three clients marked as rate-and-term opportunities.", "Two
-//     opportunities added since yesterday.", "12 clients flagged for check-ins."). It stays a claim when the clause also holds a
+//   * count narration (countNarration), ON A SWEEP TURN ONLY (the turn cited the sweep engine): the phrase BEGINS with a cardinal
+//     (digits, one to ninety-nine in words, hundred, dozen, "a dozen", "a hundred") and its first participle is "marked as / for" or
+//     "added" followed by more than "to" (or "flagged", which is no claim anyway): what a sweep counted, not a change ("Three
+//     clients marked as rate-and-term opportunities.", "Two opportunities added since yesterday.", "12 clients flagged for
+//     check-ins."). On any other turn the same shape is a change claim ("One reminder added for the Chens.", "One check-in marked
+//     for the Chens." after a client lookup — nothing counted anything). It stays a claim when the clause also holds a
 //     contact participle (logged / recorded / noted / booked / saved: "Two calls logged.") or a contact or completion word
 //     (contacted / called / reached / done / complete(d) / handled: "Three clients marked as contacted."), and so does a bare
 //     "Two clients added." / "Three clients marked." and "One client added to your book.", which report a change. "updated" is
@@ -400,16 +402,18 @@ const UP_TO_DATE_NOW_RE =
   /\b(?:is|are|['’](?:s|re))\s+(?:all\s+)?(?:now\s+(?:all\s+)?up\s+to\s+date|up\s+to\s+date\s+now)\b/i;
 const SHORT_CLAUSE_SPLIT_RE = /,|:|…|--|\s-\s/;
 const SHORT_LEADING_CONJ_RE = /^(?:(?:so|but|plus|and|then)\s+)+/i;
-const shortPassiveClaims = (sentence) =>
+// `sweep` = this turn cited the sweep engine: only then is count narration exempt ("One reminder added for the Chens." on any
+// other turn is a change claim like the rest).
+const shortPassiveClaims = (sentence, sweep) =>
   UP_TO_DATE_NOW_RE.test(sentence) ||
   sentence.split(SHORT_CLAUSE_SPLIT_RE).some((piece) => {
     const c = stripOpener(piece.trim().replace(SHORT_LEADING_CONJ_RE, "")).trim();
-    return !/\?\s*$/.test(c) && ((SHORT_PASSIVE_RE.test(c) && !countNarration(c)) || IN_FOR_RE.test(c));
+    return !/\?\s*$/.test(c) && ((SHORT_PASSIVE_RE.test(c) && !(sweep && countNarration(c))) || IN_FOR_RE.test(c));
   });
 
-// `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set).
-// Pure: no I/O, no state.
-function claimsCompletion(text, grounded, storedStage) {
+// `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
+// `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only). Pure: no I/O, no state.
+function claimsCompletion(text, grounded, storedStage, sweep) {
   return sentencesOf(String(text == null ? "" : text)).some((part) => {
     let s = stripOpener(part.trim()).trim();
     if (isOffer(s)) s = s.replace(OFFER_LEAD_RE, "").trim();
@@ -418,7 +422,7 @@ function claimsCompletion(text, grounded, storedStage) {
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
       (!grounded && PASSIVE_PAST_RE.test(s)) ||
-      laterClauseClaims(s) || shortPassiveClaims(s);
+      laterClauseClaims(s) || shortPassiveClaims(s, sweep);
   });
 }
 
@@ -1186,7 +1190,9 @@ async function runTurn({ messages, ctx, client } = {}) {
       // stage may be claimed, on every turn, whatever the user said (a stored veteran hearing "you're a Veteran" is told the truth).
       // A set-claim that names a stage ("Your career stage is set to Veteran.") gets the same check inside claimsCompletion.
       if (stageClaims(text).some((id) => id !== storedStage)) return finish(NOTHING_CHANGED);
-      if (claimsCompletion(text, sources.length > 0, storedStage)) return finish(NOTHING_CHANGED);
+      if (claimsCompletion(text, sources.length > 0, storedStage, sources.some((src) => src.startsWith("sweep engine")))) {
+        return finish(NOTHING_CHANGED);
+      }
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
       if (sources.length === 0) {
