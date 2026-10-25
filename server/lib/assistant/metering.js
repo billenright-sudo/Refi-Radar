@@ -56,4 +56,13 @@ function getOrgUsage(orgId, days) {
   };
 }
 
-module.exports = { recordUsage, getOrgUsage };
+// The characters one user has sent to speech synthesis today (UTC): the sum of tts_chars over their 'tts' rows since
+// midnight UTC (created_at is SQLite's UTC datetime('now'), so it compares with date('now') as text). The voice proxy holds
+// each user to a daily budget with it (routes/voice.js).
+function ttsCharsToday(userId) {
+  return db.prepare(
+    "SELECT COALESCE(SUM(tts_chars), 0) AS n FROM assistant_usage WHERE user_id = ? AND kind = 'tts' AND created_at >= date('now')"
+  ).get(userId).n;
+}
+
+module.exports = { recordUsage, getOrgUsage, ttsCharsToday };

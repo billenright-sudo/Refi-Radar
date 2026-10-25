@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { createSession, CAREER_STAGES, pendingRows } from "./session.mjs";
+import { createSession, CAREER_STAGES, pendingRows, voiceNoteFor } from "./session.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
 // Charli, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and
@@ -139,10 +139,7 @@ export default function CharliView({ rates, user, ui }) {
       onMicChange: setMic,
       onAutoplayBlocked: () => setNeedsStart(true),
       onTtsOk: () => { setVoiceNote(""); setNeedsStart(false); },   // it played, so no tap is needed after all
-      onTtsError: (status) => setVoiceNote(
-        status === 503 ? "Voice replies aren't set up on this server, so Charli answers in text."
-          : "Charli's voice isn't coming through right now, so her answers are in text."
-      ),
+      onTtsError: (status) => setVoiceNote(voiceNoteFor(status)),
     });
     parts.current = { session, audio };
   }

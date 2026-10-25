@@ -464,6 +464,46 @@ test("A2: a browser that hangs up while upstream is stalled cancels the upstream
   }
 });
 
+test("B7: each user has a daily speech budget: requests under it are spoken, the one that would cross it is 429 and goes nowhere", async () => {
+  const kim = addUser(orgA, "lo", "kim@a.co", "Kim");
+  const spoken = toSpeech("Hello.").length;   // 6
+  setFetch(() => audio(bytesOf(1, 2)));
+  await withEnv({ CHARLI_TTS_DAILY_CHARS: String(spoken * 2 + 3) }, async () => {
+    assert.equal((await tts(kim, { text: "Hello." })).status, 200);
+    assert.equal((await tts(kim, { text: "Hello." })).status, 200);
+    assert.equal(calls.length, 2);
+    const over = await tts(kim, { text: "Hello." });
+    assert.equal(over.status, 429);
+    assert.deepStrictEqual(over.data, { error: "voice budget reached for today — Charli answers in text until tomorrow" });
+    assert.equal(calls.length, 2, "the request over the budget was not sent upstream");
+    assert.equal(usageRows(kim).filter((r) => r.kind === "tts").length, 2, "and not metered");
+    // another user has a budget of their own
+    assert.equal((await tts(bea, { text: "Hello." })).status, 200);
+  });
+  // only today's (UTC) 'tts' rows count: yesterday's and other kinds do not
+  const lee = addUser(orgA, "lo", "lee@a.co", "Lee");
+  db.prepare("INSERT INTO assistant_usage (user_id, kind, tts_chars, created_at) VALUES (?, 'tts', 999999, datetime('now', '-1 day'))").run(lee);
+  db.prepare("INSERT INTO assistant_usage (user_id, kind, tts_chars) VALUES (?, 'turn', 999999)").run(lee);
+  await withEnv({ CHARLI_TTS_DAILY_CHARS: "100" }, async () => {
+    assert.equal((await tts(lee, { text: "Hello." })).status, 200);
+  });
+  // the default is 60,000 characters (a missing, non-numeric or non-positive setting is the default)
+  const max = addUser(orgA, "lo", "max@a.co", "Max");
+  recordUsage({ userId: max, kind: "tts", ttsChars: 60_000 - spoken });
+  for (const value of [undefined, "", "lots", "0", "-5"]) {
+    await withEnv({ CHARLI_TTS_DAILY_CHARS: value }, async () => {
+      const before = calls.length;
+      assert.equal((await tts(max, { text: "Hello." })).status, 200, `exactly at the default cap (${String(value)})`);
+      db.prepare("DELETE FROM assistant_usage WHERE user_id = ? AND tts_chars = ?").run(max, spoken);
+      assert.equal(calls.length, before + 1);
+    });
+  }
+  recordUsage({ userId: max, kind: "tts", ttsChars: 1 });
+  await withEnv({ CHARLI_TTS_DAILY_CHARS: undefined }, async () => {
+    assert.equal((await tts(max, { text: "Hello." })).status, 429, "one character over the default cap");
+  });
+});
+
 test("timeout: the default deadline is 20 seconds", () => {
   assert.equal(voiceRoutes.TIMEOUT_MS, 20_000);
 });

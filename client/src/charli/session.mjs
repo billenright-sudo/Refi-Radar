@@ -86,6 +86,15 @@ export function classifyReply(text) {
   return found.yes ? "yes" : "other";
 }
 
+// The note shown when a spoken reply could not be fetched or played (the text is already on screen). `status` is what
+// audio.js reports: the HTTP status of /api/voice/tts, 0 for a network failure, -1 for playback. 429 is the daily voice budget
+// (or the per-15-minute limit): the voice is back tomorrow, or in a few minutes.
+export function voiceNoteFor(status) {
+  if (status === 503) return "Voice replies aren't set up on this server, so Charli answers in text.";
+  if (status === 429) return "Charli's voice budget for today is used up, so her answers are in text until tomorrow.";
+  return "Charli's voice isn't coming through right now, so her answers are in text.";
+}
+
 // ── The session ──────────────────────────────────────────────────────────────
 
 const cleanSources = (sources) =>

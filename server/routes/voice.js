@@ -5,7 +5,8 @@
 //   POST /api/voice/stt   multipart field "audio" -> { text } (ElevenLabs Scribe)
 //
 // Neither route ever 500s: not configured is 503, an ElevenLabs error is 502 with a short message (never the
-// upstream body, which could echo a credential), a network error or a stall is 504. The key is never returned
+// upstream body, which could echo a credential), a network error or a stall is 504, and a /tts past the user's daily
+// character budget (CHARLI_TTS_DAILY_CHARS) is 429 without calling ElevenLabs. The key is never returned
 // or logged. The outbound call goes through `app.get("voiceFetch") || fetch`, so tests inject a stub.
 const express = require("express");
 const multer = require("multer");
@@ -13,7 +14,7 @@ const rateLimit = require("express-rate-limit");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 const { requireAuth } = require("../middleware/auth");
-const { recordUsage } = require("../lib/assistant/metering");
+const { recordUsage, ttsCharsToday } = require("../lib/assistant/metering");
 const { toSpeech } = require("../lib/assistant/speech");
 
 const API_BASE = "https://api.elevenlabs.io/v1";
@@ -25,6 +26,10 @@ const MAX_TTS_CHARS = 2000;
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_TURN_ID_CHARS = 64;
 const NOT_CONFIGURED = "voice not configured";
+// Each user's daily speech budget, in characters sent to ElevenLabs (CHARLI_TTS_DAILY_CHARS; a missing, non-numeric or
+// non-positive value is the default). A client bug that loops /tts burns one user's day, not the account's quota.
+const DEFAULT_TTS_DAILY_CHARS = 60_000;
+const OVER_BUDGET = "voice budget reached for today — Charli answers in text until tomorrow";
 
 const fail = (res, status, error) => res.status(status).json({ error });
 
@@ -156,6 +161,19 @@ function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
     const apiKey = setting("ELEVENLABS_API_KEY");
     const voiceId = setting("ELEVENLABS_VOICE_ID_CHARLI");
     if (!apiKey || !voiceId) return fail(res, 503, NOT_CONFIGURED);
+
+    // The daily budget: what this user has had spoken today (UTC) plus this clip may not pass the cap. Checked before
+    // anything goes upstream; a usage read that fails refuses the clip (the cap is a cost guard, so it fails closed).
+    const budget = Number.parseInt(setting("CHARLI_TTS_DAILY_CHARS"), 10);
+    const cap = Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_TTS_DAILY_CHARS;
+    let usedToday;
+    try {
+      usedToday = ttsCharsToday(req.user.id);
+    } catch (err) {
+      console.error("voice tts: usage read failed:", errCode(err));
+      return fail(res, 502, "voice service error");
+    }
+    if (usedToday + spoken.length > cap) return fail(res, 429, OVER_BUDGET);
 
     const send = req.app.get("voiceFetch") || globalThis.fetch;
     const deadline = makeDeadline(timeoutMs);

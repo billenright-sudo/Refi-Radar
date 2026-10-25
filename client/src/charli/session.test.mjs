@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
-  createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows,
+  createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -114,6 +114,14 @@ test("B5: an ordinary yes to a read-back confirms it and never reaches /turn", a
     const { session, server } = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
     assert.deepEqual(await session.submit(said), { ok: true, action: "confirm" }, said);
     assert.equal(server.turns().length, 1, `"${said}" must not reach /turn`);
+  }
+});
+
+test("B7: the text-only note says 'budget' when the voice answered 429; 503 and other failures keep their notes", () => {
+  assert.equal(voiceNoteFor(429), "Charli's voice budget for today is used up, so her answers are in text until tomorrow.");
+  assert.equal(voiceNoteFor(503), "Voice replies aren't set up on this server, so Charli answers in text.");
+  for (const status of [0, -1, 502, 504, 400]) {
+    assert.equal(voiceNoteFor(status), "Charli's voice isn't coming through right now, so her answers are in text.", String(status));
   }
 });
 
