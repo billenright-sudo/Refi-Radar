@@ -236,9 +236,9 @@ function isQuestionShaped(reply) {
 // A completion claim. runTurn never performs an action, so by construction anything the model
 // says that reads as "it's done" is false. Each sentence (split on . ! ? ; and em/en dashes) is
 // tested on its own, after one content-free opener is stripped from it:
-//   * a completion opener at its start ("Done", "All set", "You're all set", "Consider it done",
-//     "Logged", "Already saved", ...); a sentence that is only "done" / "all done" / "all set" is
-//     the simplest case of this;
+//   * a completion opener at its start ("Done", "All set", "You're all set", "Consider it done / handled / sent",
+//     "Logged", "Already saved", "Sent", "Sent over", "Scheduled!", "Created!", ...); a sentence that is only "done" /
+//     "all done" / "all set" is the simplest case of this;
 //   * "I" / "we" (+ 've / have) then up to four words then a past-tense verb ("I just went ahead
 //     and logged it"); the words may not be a negation or modal ("I have not logged", "I can add");
 //     and "I'm / we're logging it" (an action in progress is just as false);
@@ -310,12 +310,12 @@ const GOT_IT_DONE_RE = new RegExp("\\bgot\\s+(?:\\S+\\s+){1,3}?(?:" + PASSIVE_VE
 const DONE_RE =
   /\b(?:it|that)['\u2019]s\s+(?:all\s+)?done\b|\b(?:is|been)\s+(?:all\s+)?done\b|\ball\s+set\b|\b(?:taken|took)\s+care\s+of\b/i;
 const COMPLETION_OPENER_RE =
-  /^\s*(?:(?:just|already|also)\s+)?(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+(?:done|handled)|logged|saved|added|booked|recorded|noted|updated|marked|handled)\b/i;
+  /^\s*(?:(?:just|already|also)\s+)?(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+(?:done|handled|sent)|logged|saved|added|booked|recorded|noted|updated|marked|handled|sent|scheduled|created)\b/i;
 const CLAUSE_SPLIT_RE = /,|:|\u2026|--|\s-\s|\b(?:and|then)\b/i;
 const LEADING_CONJ_RE = /^(?:(?:so|but|plus)\s+)+/i;
 const TRAILING_PUNCT_RE = /[\s.!?;:,\u2026"\u201d)]+$/;
 const CLAUSE_CLAIM_RE =
-  /^(?:(?:just|already|also)\s+)?(?:(?:all\s+)?done|all\s+set|logged|saved|added|booked|recorded|noted|handled|(?:updated|marked)(?=$|\s+(?:it|that|them|him|her|the|your|their|as\s+contacted)\b))\b/i;
+  /^(?:(?:just|already|also)\s+)?(?:(?:all\s+)?done|all\s+set|logged|saved|added|booked|recorded|noted|handled|sent|scheduled|created|(?:updated|marked)(?=$|\s+(?:it|that|them|him|her|the|your|their|as\s+contacted)\b))\b/i;
 
 const sentencesOf = (text) => String(text).match(/[^.!?;\u2014\u2013]+[.!?;\u2014\u2013]*/g) || [];
 const isOffer = (sentence) => /\?\s*$/.test(sentence) && QUESTION_START_RE.test(sentence.trim());
@@ -567,12 +567,14 @@ function latestUserText(messages) {
 
 // A user message that ANSWERS rather than asks: it does not end with "?" and, after filler, does not open
 // with a question or auxiliary word ("Robert and Linda", "The first one", "Chen"; not "Robert and Linda?",
-// "what are rates today", "Is Chen my best?"). Pure.
+// "what are rates today", "Is Chen my best?"). "do it" / "do that" / "do this" / "do them" with no "?" opens with "do" but asks
+// nothing: it tells Charli to go ahead with what was just said, so it answers (DO_PRONOUN_RE). Pure.
+const DO_PRONOUN_RE = /^do\s+(?:it|that|this|them)\b/i;
 function isAnswerShaped(text) {
   const t = String(text == null ? "" : text).trim();
   if (!t || t.endsWith("?")) return false;
   const opening = afterFiller(t);
-  return !QUESTION_START_RE.test(opening) && !YES_NO_AUX_RE.test(opening);
+  return DO_PRONOUN_RE.test(opening) || (!QUESTION_START_RE.test(opening) && !YES_NO_AUX_RE.test(opening));
 }
 
 // The action backstop must also hold while the user is answering a clarifying question about an action:
@@ -588,16 +590,25 @@ function isAnswerShaped(text) {
 // "Okay — I'll leave that." when the user's reply was not a plain yes or no, and the two assistant lines merge
 // ("Just to confirm — log a contact for ...?\nOkay — I'll leave that."). So an assistant message that CONTAINS
 // READ_BACK_PREFIX and not CONFIRMED_PREFIX (the change was confirmed: routes/assistant.js confirmReply) is asked, as
-// long as the user's reply to it is not a new instruction (it does not open with an imperative, IMPERATIVE_LEAD_RE): an
-// unrecognised "absolutely" after a read-back stays held to the backstop, while "run a sweep" or "what are rates
-// today?" after it is a normal turn. Pure.
+// long as the user's reply to it is not a new instruction (isNewInstruction): an unrecognised "absolutely" after a read-back
+// stays held to the backstop, while "run a sweep" or "what are rates today?" after it is a normal turn.
+// A new instruction opens with an imperative (IMPERATIVE_LEAD_RE, or "tell": "run a sweep", "pull up the Chens", "tell me about
+// Patel", "give me a market update") whose object is more than a lone it / that / this / them (PRONOUN_OBJECT_RE): "send it",
+// "send that", "run that" and "tell them" point back at the change just read back, so they answer it and the walk goes on
+// ("do it" is held the same way: see isAnswerShaped). Pure.
 const MAX_CHAIN_HOPS = 4;
 const READ_BACK_PREFIX = "Just to confirm —";
 const CONFIRMED_PREFIX = "Done —";
+const TELL_LEAD_RE = /^tell(?![\w'’-])/i;
+const PRONOUN_OBJECT_RE = /^\w+\s+(?:it|that|this|them)\b/i;
+const isNewInstruction = (text) => {
+  const a = afterFiller(text);
+  return (IMPERATIVE_LEAD_RE.test(a) || TELL_LEAD_RE.test(a)) && !PRONOUN_OBJECT_RE.test(a);
+};
 const askedOf = (asked, answer) => {
   const said = messageText(asked);
   return said.trim().endsWith("?") ||
-    (said.includes(READ_BACK_PREFIX) && !said.includes(CONFIRMED_PREFIX) && !IMPERATIVE_LEAD_RE.test(afterFiller(messageText(answer))));
+    (said.includes(READ_BACK_PREFIX) && !said.includes(CONFIRMED_PREFIX) && !isNewInstruction(messageText(answer)));
 };
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];

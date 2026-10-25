@@ -3125,3 +3125,54 @@ const R2_CONTACT_TABLE = [
 test("R2-1: R2_CONTACT_TABLE - questions after a contact report are normal turns; reports (any form) hold the backstop", async () => {
   await checkTable(R2_CONTACT_TABLE);
 });
+
+// #2: after a cancelled read-back, an imperative whose object is only it / that / this / them ("send it", "run that"), and "do
+// it", answer the read-back (the walk goes on and the backstop holds); "Sent" / "Scheduled" / "Created" / "consider it sent"
+// are completion claims on every turn.
+const AFTER_CANCEL = (answer) => history("log a call with the Chens", CANCELLED, answer);
+
+test("R2-2: sent / scheduled / created openers and 'consider it sent' are claims on every turn; the was-form narration is not", () => {
+  for (const grounded of [false, true]) {
+    for (const text of [
+      "Sent!", "Sent.", "Scheduled.", "Created!", "Sent — the Chens are good to go.", "Sent over for Robert & Linda Chen.",
+      "Will do — consider it sent.", "Consider it sent.", "Already sent.", "Sure, sent!", "Got it, scheduled for Thursday.",
+      "Found the Chens and sent it over.", "Okay — created.",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of [
+      "Nothing sent yet — want me to draft it?", "Want me to send it?", "Should I schedule a follow-up?", "Sentiment on rates is mixed.",
+      "Scheduling a call with the Chens could help.",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+  assert.equal(claimsCompletion("Your last email was sent on 2026-01-01.", true), false, "the was-form narration on a grounded turn");
+  // KEPT FAILING CLOSED: the brief listed "I sent nothing yet — want me to draft it?" as a neighbour that passes, but "I sent" is a
+  // first-person claim (FIRST_PERSON_CLAIM_RE, "sent" a claim verb since Task 3) on every turn, before and after this round;
+  // narrowing that guard for a negated object would loosen it, so the row stays the nothing-changed line
+  for (const grounded of [false, true]) assert.equal(claimsCompletion("I sent nothing yet — want me to draft it?", grounded), true);
+});
+
+const R2_PRONOUN_TABLE = [
+  // the reviewer's rows: all pass-through at d3149db
+  ...["Sent.", "Scheduled.", "Created!", "Sent — the Chens are good to go.", CURRENT_NOW]
+    .flatMap((t) => onBoth(AFTER_CANCEL("send it"), t, NOTHING_CHANGED)),
+  [AFTER_CANCEL("send it"), "findClient", "Sent over for Robert & Linda Chen.", NOTHING_CHANGED],
+  ...onBoth(AFTER_CANCEL("send that"), "Will do — consider it sent.", NOTHING_CHANGED),
+  [AFTER_CANCEL("run that"), "findClient", "On it — the Chens' call is in.", NOTHING_CHANGED],
+  // the same hold for the other pronoun forms and "do it" (a paraphrased claim only the backstop can catch)
+  ...["do it", "do that", "Do it.", "run it", "send this", "tell them", "um, send it", "okay send it", "log it", "pull it up"]
+    .flatMap((a) => onBoth(AFTER_CANCEL(a), CURRENT_NOW, NOTHING_CHANGED)),
+  [AFTER_CANCEL("run that"), "findClient", "Want me to log a contact for Robert and Linda Chen?", PASS],
+  // "Sent!" / "Scheduled." on a turn that asks for nothing: still claims
+  ...["Sent!", "Scheduled."].flatMap((t) => onBoth("how are the Chens doing?", t, NOTHING_CHANGED)),
+  // neighbours: a new instruction with a real object is a normal turn
+  [AFTER_CANCEL("run a sweep"), "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
+  [AFTER_CANCEL("pull up the Chens"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  [AFTER_CANCEL("tell me about Patel"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  [AFTER_CANCEL("give me a market update"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
+  [AFTER_CANCEL("show me the Chens"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
+  // ... and the was-form narration stays allowed on a grounded turn
+  ["When did I last email the Chens?", "findClient", "Your last email was sent on 2026-01-01.", PASS],
+];
+
+test("R2-2: R2_PRONOUN_TABLE - 'send it' / 'run that' / 'do it' after a cancelled read-back stay held; new instructions do not", async () => {
+  await checkTable(R2_PRONOUN_TABLE);
+});
