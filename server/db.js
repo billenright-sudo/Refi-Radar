@@ -92,13 +92,15 @@ db.exec(`
   );
 `);
 
-// One row per Charli turn (including greetings and error turns): what the turn cost. tts_chars is the
-// text sent to speech synthesis and stt_seconds the audio sent to transcription; both are filled by the
-// voice proxy (routes/voice.js), which writes a row of its own for each spoken reply and each recording.
+// What Charli cost: one 'turn' row per turn (including greetings and error turns), plus a row of its own for
+// each spoken reply ('tts', tts_chars = the text sent to speech synthesis) and each recording ('stt',
+// stt_seconds = the audio sent to transcription), written by the voice proxy (routes/voice.js). `kind` keeps
+// the three apart, so a spoken exchange counts as one turn and not three.
 db.exec(`
   CREATE TABLE IF NOT EXISTS assistant_usage (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind          TEXT    NOT NULL DEFAULT 'turn',
     turn_id       TEXT,
     input_tokens  INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -108,10 +110,14 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_assistant_usage_user_created ON assistant_usage (user_id, created_at);
 `);
-// stt_seconds arrived after the table did (a table made before it existed gets it added).
+// stt_seconds and kind arrived after the table did (a table made before they existed gets them added; its old
+// rows are all turns).
 const usageCols = db.prepare("PRAGMA table_info(assistant_usage)").all();
 if (!usageCols.some((c) => c.name === "stt_seconds")) {
   db.exec("ALTER TABLE assistant_usage ADD COLUMN stt_seconds REAL NOT NULL DEFAULT 0");
+}
+if (!usageCols.some((c) => c.name === "kind")) {
+  db.exec("ALTER TABLE assistant_usage ADD COLUMN kind TEXT NOT NULL DEFAULT 'turn'");
 }
 
 // One row per confirmed voice action: POST /api/assistant/confirm records the confirmId it executed under, so

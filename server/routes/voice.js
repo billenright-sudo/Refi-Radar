@@ -192,7 +192,7 @@ function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
       }
       if (first.done) { console.error("voice tts: upstream sent no audio"); return fail(res, 502, "voice service sent no audio"); }
 
-      meter({ userId: req.user.id, turnId, ttsChars: spoken.length });
+      meter({ userId: req.user.id, kind: "tts", turnId, ttsChars: spoken.length });
       res.status(200).set({ "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
       await pipeline(Readable.from(audioChunks(first.value, reader, deadline), { objectMode: false }), res);
       return undefined;
@@ -258,7 +258,7 @@ function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
         return fail(res, 502, "voice service sent an unreadable response");
       }
       const transcript = result && typeof result === "object" ? result : {};
-      meter({ userId: req.user.id, sttSeconds: transcript.audio_duration_secs });
+      meter({ userId: req.user.id, kind: "stt", sttSeconds: transcript.audio_duration_secs });
       return res.json({ text: typeof transcript.text === "string" ? transcript.text.trim() : "" });
     } catch (err) {
       return unexpected(res, "stt", err);

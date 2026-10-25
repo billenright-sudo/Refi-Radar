@@ -214,8 +214,8 @@ test("turn: a text answer comes back with its sources, a turnId, and a usage row
   const rows = usageFor(r.data.turnId);
   assert.equal(rows.length, 1);
   assert.deepStrictEqual(
-    { user_id: rows[0].user_id, input_tokens: rows[0].input_tokens, output_tokens: rows[0].output_tokens, tts_chars: rows[0].tts_chars },
-    { user_id: ann, input_tokens: 2200, output_tokens: 70, tts_chars: 0 }
+    { user_id: rows[0].user_id, kind: rows[0].kind, input_tokens: rows[0].input_tokens, output_tokens: rows[0].output_tokens, tts_chars: rows[0].tts_chars },
+    { user_id: ann, kind: "turn", input_tokens: 2200, output_tokens: 70, tts_chars: 0 }
   );
 });
 
@@ -1160,11 +1160,11 @@ test("usage: a broker gets org-wide totals; other orgs are excluded; days is cla
   const get = (q) => as(ulf)("GET", "/api/assistant/usage" + q);
   let r = await get("");
   assert.equal(r.status, 200);
-  assert.deepStrictEqual(r.data, { success: true, turns: 3, inputTokens: 7000, outputTokens: 700, ttsChars: 210, sttSeconds: 0 }, "default is 30 days");
+  assert.deepStrictEqual(r.data, { success: true, turns: 3, inputTokens: 7000, outputTokens: 700, ttsChars: 210, sttSeconds: 0, ttsRequests: 0, sttRequests: 0 }, "default is 30 days");
   r = await get("?days=30");
-  assert.deepStrictEqual(r.data, { success: true, turns: 3, inputTokens: 7000, outputTokens: 700, ttsChars: 210, sttSeconds: 0 });
+  assert.deepStrictEqual(r.data, { success: true, turns: 3, inputTokens: 7000, outputTokens: 700, ttsChars: 210, sttSeconds: 0, ttsRequests: 0, sttRequests: 0 });
   r = await get("?days=1");
-  assert.deepStrictEqual(r.data, { success: true, turns: 2, inputTokens: 3000, outputTokens: 300, ttsChars: 120, sttSeconds: 0 });
+  assert.deepStrictEqual(r.data, { success: true, turns: 2, inputTokens: 3000, outputTokens: 300, ttsChars: 120, sttSeconds: 0, ttsRequests: 0, sttRequests: 0 });
   r = await get("?days=0");
   assert.equal(r.data.turns, 2, "0 is clamped up to 1");
   r = await get("?days=-5");
@@ -1180,8 +1180,8 @@ test("usage: a broker gets org-wide totals; other orgs are excluded; days is cla
 
   // an org that has never used Charli has nothing
   r = await as(addUser(addOrg("UsageNone"), "broker", "none@u.co", "Nan"))("GET", "/api/assistant/usage");
-  assert.deepStrictEqual(r.data, { success: true, turns: 0, inputTokens: 0, outputTokens: 0, ttsChars: 0, sttSeconds: 0 });
-  assert.deepStrictEqual(getOrgUsage(orgU, 30), { turns: 3, inputTokens: 7000, outputTokens: 700, ttsChars: 210, sttSeconds: 0 });
+  assert.deepStrictEqual(r.data, { success: true, turns: 0, inputTokens: 0, outputTokens: 0, ttsChars: 0, sttSeconds: 0, ttsRequests: 0, sttRequests: 0 });
+  assert.deepStrictEqual(getOrgUsage(orgU, 30), { turns: 3, inputTokens: 7000, outputTokens: 700, ttsChars: 210, sttSeconds: 0, ttsRequests: 0, sttRequests: 0 });
 
   // an LO may not read it; anonymous is 401
   r = await as(uli)("GET", "/api/assistant/usage");
@@ -1208,7 +1208,7 @@ test("usage: every kind of turn is metered (text, side effect, error, greeting)"
   // a 400 is not a turn
   await as(mia)("POST", "/api/assistant/turn", { messages: userMsgs("hello") });
 
-  assert.deepStrictEqual((await usage()).data, { success: true, turns: 4, inputTokens: 30, outputTokens: 11, ttsChars: 0, sttSeconds: 0 });
+  assert.deepStrictEqual((await usage()).data, { success: true, turns: 4, inputTokens: 30, outputTokens: 11, ttsChars: 0, sttSeconds: 0, ttsRequests: 0, sttRequests: 0 });
 });
 
 // ── rate limit ───────────────────────────────────────────────────────────────

@@ -10,13 +10,14 @@
 //              identifier-shaped run, such as 007 or a 13-digit number, is read digit by digit)
 //   decimals   6.52 -> six point five two (digit by digit after the point)
 //   compounds  30-year -> thirty-year (the hyphen stays)
+//   ARM names  5/1 ARM -> five one ARM (any other slash stays between the spoken numbers: 5/1 -> five/one)
 //   ordinals   1st -> first
 //   dates      2026-01-01 -> January first, twenty twenty-six
 //   negatives  -3 -> minus three
 //   also       "&" -> "and", markdown symbols (* _ # `) dropped, whitespace collapsed
 //
-// Words are left alone. Not handled (read as the plain numbers they contain): times like 9:30, ranges
-// written with a slash such as 5/1, phone numbers, ZIP codes, and non-ISO dates.
+// Words are left alone. Not handled (read as the plain numbers they contain): times like 9:30, other
+// slash forms such as 10/21, phone numbers, ZIP codes, and non-ISO dates.
 
 const ONES = [
   "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
@@ -91,6 +92,8 @@ function replaceNumbers(text, pattern, render) {
 const ISO_DATE = /(?<!\d)((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/g;
 const ORDINAL = /(?<![\d.,])(\d+)(?:st|nd|rd|th)\b/gi;
 const MINUS = /(^|[\s(])-(?=\$?\d)/g;
+// The loan type "5/1 ARM" (also 7/6, 10/6): brokers say "five one ARM", not "five slash one".
+const ARM = /(?<!\d)(\d{1,2})\s*\/\s*(\d{1,2})(?=\s+ARMs?\b)/g;
 const MONEY = /\$\s?(\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.(\d+))?(?:\s+(thousand|million|billion|trillion)\b|([kmb])\b)?/gi;
 const MAGNITUDE = { k: "thousand", m: "million", b: "billion" };   // $485K, $1.2M
 const NUMBER = /(\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.(\d+))?(\s?%)?/g;
@@ -117,6 +120,7 @@ function toSpeech(text) {
     `${MONTHS[Number(month) - 1]} ${ordinalWords(integerWords(String(Number(day))))}, ${yearWords(Number(year))}`);
   s = replaceNumbers(s, ORDINAL, (digits) => ordinalWords(integerWords(digits)));
   s = s.replace(MINUS, "$1minus ");
+  s = replaceNumbers(s, ARM, (fixed, adjustable) => `${integerWords(fixed)} ${integerWords(adjustable)}`);
   s = replaceNumbers(s, MONEY, (whole, fraction, word, letter) =>
     moneyWords(whole, fraction, word || (letter && MAGNITUDE[letter.toLowerCase()])));
   s = replaceNumbers(s, NUMBER, (whole, fraction, percent) =>

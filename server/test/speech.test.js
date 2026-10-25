@@ -185,6 +185,34 @@ test("ordinals", () => {
   ]);
 });
 
+test("ARM product names are read the way brokers say them: 5/1 ARM is five one ARM", () => {
+  table([
+    ["5/1 ARM", "five one ARM"],
+    ["7/6 ARM", "seven six ARM"],
+    ["10/6 ARM", "ten six ARM"],
+    ["5 / 1 ARM", "five one ARM"],
+    ["5/1 ARMs", "five one ARMs"],
+    ["a 5/1 ARM and a 7/1 ARM", "a five one ARM and a seven one ARM"],
+    ["Lopez has a 5/1 ARM at 8.25%.", "Lopez has a five one ARM at eight point two five percent."],
+    ["the 5/1 ARM is at 5.81%", "the five one ARM is at five point eight one percent"],
+    ["Good news: 30-year fixed or 5/1 ARM?", "Good news: thirty-year fixed or five one ARM?"],
+  ]);
+});
+
+test("other slash forms are unchanged: the slash stays between the spoken numbers", () => {
+  table([
+    ["5/1", "five/one"],
+    ["5/1 fixed", "five/one fixed"],
+    ["5/1 arm", "five/one arm"],
+    ["10/21", "ten/twenty-one"],
+    ["and/or 3/4 of it", "and/or three/four of it"],
+    ["1/2/2026", "one/two/two thousand twenty-six"],
+    ["5/1 ARMY", "five/one ARMY"],
+    ["100/6 ARM", "one hundred/six ARM"],
+    ["5/100 ARM", "five/one hundred ARM"],
+  ]);
+});
+
 test("an ampersand is spoken as and", () => {
   table([
     ["Robert & Linda Chen", "Robert and Linda Chen"],

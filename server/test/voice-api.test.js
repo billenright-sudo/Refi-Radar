@@ -167,8 +167,8 @@ test("tts: the greeting is spoken through the streaming endpoint with the NORMAL
   const rows = usageRows(ann).slice(before);
   assert.equal(rows.length, 1);
   assert.deepStrictEqual(
-    { turn_id: rows[0].turn_id, tts_chars: rows[0].tts_chars, stt_seconds: rows[0].stt_seconds, input_tokens: rows[0].input_tokens, output_tokens: rows[0].output_tokens },
-    { turn_id: turnId, tts_chars: SPOKEN.length, stt_seconds: 0, input_tokens: 0, output_tokens: 0 },
+    { kind: rows[0].kind, turn_id: rows[0].turn_id, tts_chars: rows[0].tts_chars, stt_seconds: rows[0].stt_seconds, input_tokens: rows[0].input_tokens, output_tokens: rows[0].output_tokens },
+    { kind: "tts", turn_id: turnId, tts_chars: SPOKEN.length, stt_seconds: 0, input_tokens: 0, output_tokens: 0 },
     "ttsChars is the normalized length, not the on-screen text's"
   );
   assert.notEqual(SPOKEN.length, GREETING.length);
@@ -479,8 +479,8 @@ test("stt: one audio upload is forwarded to Scribe as multipart; { text } comes 
   const rows = usageRows(ann).slice(before);
   assert.equal(rows.length, 1);
   assert.deepStrictEqual(
-    { stt_seconds: rows[0].stt_seconds, tts_chars: rows[0].tts_chars, input_tokens: rows[0].input_tokens, turn_id: rows[0].turn_id },
-    { stt_seconds: 10.5, tts_chars: 0, input_tokens: 0, turn_id: null }
+    { kind: rows[0].kind, stt_seconds: rows[0].stt_seconds, tts_chars: rows[0].tts_chars, input_tokens: rows[0].input_tokens, turn_id: rows[0].turn_id },
+    { kind: "stt", stt_seconds: 10.5, tts_chars: 0, input_tokens: 0, turn_id: null }
   );
 });
 
@@ -624,13 +624,24 @@ test("recordUsage keeps stt_seconds (fractions allowed); anything not a non-nega
   assert.deepStrictEqual(rows(), [11.25, ...new Array(10).fill(0)]);
 });
 
+test("recordUsage takes a kind: turn (the default), tts or stt; anything else is a turn", () => {
+  const id = "kind-" + Math.random().toString(16).slice(2);
+  const kinds = () => db.prepare("SELECT kind FROM assistant_usage WHERE turn_id = ? ORDER BY id").all(id).map((r) => r.kind);
+  recordUsage({ userId: ann, turnId: id });
+  for (const kind of ["turn", "tts", "stt"]) recordUsage({ userId: ann, turnId: id, kind });
+  for (const bad of ["TTS", "bogus", "", " stt", undefined, null, 5, {}, ["tts"]]) recordUsage({ userId: ann, turnId: id, kind: bad });
+  assert.deepStrictEqual(kinds(), ["turn", "turn", "tts", "stt", ...new Array(9).fill("turn")]);
+});
+
 test("the usage endpoint and getOrgUsage return sttSeconds alongside the existing totals", async () => {
   const org = addOrg("Meter");
   const mia = addUser(org, "broker", "mia@m.co", "Mia");
   const lee = addUser(org, "lo", "lee@m.co", "Lee");
   const other = addUser(addOrg("MeterOther"), "broker", "oth@m.co", "Oth");
   const usage = (userId, q = "") => as(userId)("GET", "/api/assistant/usage" + q);
-  assert.deepStrictEqual((await usage(mia)).data, { success: true, turns: 0, inputTokens: 0, outputTokens: 0, ttsChars: 0, sttSeconds: 0 });
+  assert.deepStrictEqual((await usage(mia)).data, {
+    success: true, turns: 0, ttsRequests: 0, sttRequests: 0, inputTokens: 0, outputTokens: 0, ttsChars: 0, sttSeconds: 0,
+  });
 
   setFetch(() => audio(bytesOf(1)));
   assert.equal((await tts(mia, { text: "Hi" })).status, 200);       // 2 characters
@@ -651,51 +662,109 @@ test("the usage endpoint and getOrgUsage return sttSeconds alongside the existin
   const o = getOrgUsage(org, 30);
   assert.equal(o.sttSeconds, 12.75);
   assert.equal(o.ttsChars, 8);
-  assert.deepStrictEqual(Object.keys(o).sort(), ["inputTokens", "outputTokens", "sttSeconds", "ttsChars", "turns"]);
+  assert.deepStrictEqual(
+    Object.keys(o).sort(),
+    ["inputTokens", "outputTokens", "sttRequests", "sttSeconds", "ttsChars", "ttsRequests", "turns"]
+  );
+  // the voice rows are requests, not turns
+  assert.deepStrictEqual([r.data.turns, r.data.ttsRequests, r.data.sttRequests], [0, 2, 2]);
   assert.equal((await usage(mia, "?days=1")).data.sttSeconds, 12.75);
 
   // an old row falls outside a short window; sums are rounded so float dust never reaches the broker
-  db.prepare("INSERT INTO assistant_usage (user_id, turn_id, stt_seconds, created_at) VALUES (?, 'old', 100, datetime('now', '-40 days'))").run(mia);
+  db.prepare("INSERT INTO assistant_usage (user_id, kind, turn_id, stt_seconds, created_at) VALUES (?, 'stt', 'old', 100, datetime('now', '-40 days'))").run(mia);
   assert.equal((await usage(mia)).data.sttSeconds, 12.75);
   assert.equal((await usage(mia, "?days=60")).data.sttSeconds, 112.75);
-  db.prepare("INSERT INTO assistant_usage (user_id, turn_id, stt_seconds) VALUES (?, 'dust', 0.1)").run(mia);
-  db.prepare("INSERT INTO assistant_usage (user_id, turn_id, stt_seconds) VALUES (?, 'dust', 0.2)").run(mia);
+  db.prepare("INSERT INTO assistant_usage (user_id, kind, turn_id, stt_seconds) VALUES (?, 'stt', 'dust', 0.1)").run(mia);
+  db.prepare("INSERT INTO assistant_usage (user_id, kind, turn_id, stt_seconds) VALUES (?, 'stt', 'dust', 0.2)").run(mia);
   assert.equal((await usage(mia)).data.sttSeconds, 13.05);
 });
 
-test("the stt_seconds migration is idempotent and keeps the rows a database already had", () => {
+test("a spoken exchange (a turn, a recording, a spoken reply) is 1 turn, 1 stt request and 1 tts request", async () => {
+  const org = addOrg("Exchange");
+  const eve = addUser(org, "broker", "eve@e.co", "Eve");
+  const usage = () => as(eve)("GET", "/api/assistant/usage");
+  const say = (text, usage) => ({
+    id: "msg_fake", type: "message", role: "assistant", model: "fake", stop_reason: "end_turn", usage,
+    content: [{ type: "text", text }],
+  });
+  app.set("anthropicClient", { messages: { create: async () => say("Hello there!", { input_tokens: 10, output_tokens: 5 }) } });
+
+  // 1. she speaks: Scribe transcribes the recording
+  setFetch(() => jsonResponse({ text: "hello", audio_duration_secs: 4.5 }));
+  assert.equal((await stt(eve, audioForm(CLIP))).status, 200);
+  // 2. the turn runs through the real route
+  const turn = await as(eve)("POST", "/api/assistant/turn", {
+    json: { messages: [{ role: "user", content: "hello" }], rates: { rate_30yr_fixed: 6.52, date: "2026-10-21", source: "test" } },
+  });
+  assert.equal(turn.status, 200);
+  assert.equal(turn.data.reply, "Hello there!");
+  // 3. her reply is spoken, tied to the turn
+  setFetch(() => audio(bytesOf(1)));
+  assert.equal((await tts(eve, { text: turn.data.reply, turnId: turn.data.turnId })).status, 200);
+
+  const rows = db.prepare("SELECT kind FROM assistant_usage WHERE user_id = ? ORDER BY id").all(eve).map((r) => r.kind);
+  assert.deepStrictEqual(rows, ["stt", "turn", "tts"]);
+  assert.deepStrictEqual((await usage()).data, {
+    success: true, turns: 1, ttsRequests: 1, sttRequests: 1,
+    inputTokens: 10, outputTokens: 5, ttsChars: "Hello there!".length, sttSeconds: 4.5,
+  });
+  assert.deepStrictEqual(getOrgUsage(org, 30), {
+    turns: 1, ttsRequests: 1, sttRequests: 1, inputTokens: 10, outputTokens: 5, ttsChars: 12, sttSeconds: 4.5,
+  });
+});
+
+test("the stt_seconds and kind migrations are idempotent, keep the rows a database already had, and count them as turns", () => {
   const Database = require("better-sqlite3");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "br-voice-migrate-"));
-  try {
-    const legacy = new Database(path.join(dir, "refi-radar.db"));
-    legacy.exec(`
-      CREATE TABLE assistant_usage (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, turn_id TEXT,
-        input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
-        tts_chars INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  const serverDir = path.join(__dirname, "..");
+  const base = `
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, turn_id TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+    tts_chars INTEGER NOT NULL DEFAULT 0`;
+  const created = "created_at TEXT NOT NULL DEFAULT (datetime('now'))";
+  // the table as the first assistant release made it, and as the first voice release (stt_seconds, no kind) made it
+  const legacies = {
+    "before voice": `CREATE TABLE assistant_usage (${base}, ${created});`,
+    "with stt_seconds, before kind": `CREATE TABLE assistant_usage (${base}, stt_seconds REAL NOT NULL DEFAULT 0, ${created});`,
+  };
+  for (const [name, createTable] of Object.entries(legacies)) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "br-voice-migrate-"));
+    try {
+      const legacy = new Database(path.join(dir, "refi-radar.db"));
+      legacy.exec(`${createTable} INSERT INTO assistant_usage (user_id, turn_id, input_tokens, tts_chars) VALUES (1, 'old', 5, 9);`);
+      legacy.close();
+      const boot = () => execFileSync(process.execPath, ["-e", "require('./db'); require('./db');"], {
+        cwd: serverDir, env: { ...process.env, DATA_DIR: dir }, stdio: "pipe",
+      });
+      boot();
+      boot();   // a second start finds the columns and leaves them alone
+
+      const check = new Database(path.join(dir, "refi-radar.db"));
+      const cols = check.prepare("PRAGMA table_info(assistant_usage)").all();
+      const col = (n) => cols.filter((c) => c.name === n);
+      assert.equal(col("stt_seconds").length, 1, name);
+      assert.deepStrictEqual([col("stt_seconds")[0].type, col("stt_seconds")[0].notnull, col("stt_seconds")[0].dflt_value], ["REAL", 1, "0"], name);
+      assert.equal(col("kind").length, 1, name);
+      assert.deepStrictEqual([col("kind")[0].type, col("kind")[0].notnull, col("kind")[0].dflt_value], ["TEXT", 1, "'turn'"], name);
+      assert.deepStrictEqual(
+        { ...check.prepare("SELECT turn_id, input_tokens, tts_chars, stt_seconds, kind FROM assistant_usage").get() },
+        { turn_id: "old", input_tokens: 5, tts_chars: 9, stt_seconds: 0, kind: "turn" }, name
       );
-      INSERT INTO assistant_usage (user_id, turn_id, input_tokens, tts_chars) VALUES (1, 'old', 5, 9);
-    `);
-    legacy.close();
-    const serverDir = path.join(__dirname, "..");
-    const boot = () => execFileSync(process.execPath, ["-e", "require('./db'); require('./db');"], {
-      cwd: serverDir, env: { ...process.env, DATA_DIR: dir }, stdio: "pipe",
-    });
-    boot();
-    boot();   // a second start finds the column and leaves it alone
-    const check = new Database(path.join(dir, "refi-radar.db"));
-    const col = check.prepare("PRAGMA table_info(assistant_usage)").all().filter((c) => c.name === "stt_seconds");
-    assert.equal(col.length, 1);
-    assert.equal(col[0].type, "REAL");
-    assert.equal(col[0].notnull, 1);
-    assert.equal(col[0].dflt_value, "0");
-    assert.deepStrictEqual(
-      { ...check.prepare("SELECT turn_id, input_tokens, tts_chars, stt_seconds FROM assistant_usage").get() },
-      { turn_id: "old", input_tokens: 5, tts_chars: 9, stt_seconds: 0 }
-    );
-    check.close();
-  } finally {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
+      // user 1 owns the old row, so the org totals can see it
+      check.prepare("INSERT INTO organizations (id, name) VALUES (1, 'Legacy')").run();
+      check.prepare("INSERT INTO users (id, org_id, role, first_name, last_name, email) VALUES (1, 1, 'broker', 'L', 'U', 'l@u.co')").run();
+      check.close();
+      const totals = JSON.parse(execFileSync(
+        process.execPath, ["-e", "console.log(JSON.stringify(require('./lib/assistant/metering').getOrgUsage(1, 30)))"],
+        { cwd: serverDir, env: { ...process.env, DATA_DIR: dir }, stdio: "pipe", encoding: "utf8" }
+      ));
+      assert.deepStrictEqual(
+        totals,
+        { turns: 1, ttsRequests: 0, sttRequests: 0, inputTokens: 5, outputTokens: 0, ttsChars: 9, sttSeconds: 0 },
+        name + ": a row from before kinds existed is a turn"
+      );
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
+    }
   }
 });
 

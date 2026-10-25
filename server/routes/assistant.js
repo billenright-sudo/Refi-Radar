@@ -182,7 +182,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
   // Metering must never break a turn.
   const meter = (userId, turnId, usage) => {
     try {
-      recordUsage({ userId, turnId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, ttsChars: 0 });
+      recordUsage({ userId, kind: "turn", turnId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, ttsChars: 0 });
     } catch (err) {
       console.error("assistant usage:", errText(err));
     }
