@@ -5,8 +5,8 @@ _Status: draft for approval · Owner: Bill Enright · Date: 2026-10-21_
 ## 1. Intent & why
 
 Turn Broker Radar from a dashboard you look at into a **voice-first AI CRM you talk to**.
-You open the app and a real spoken voice — **Charli**, voiced by the warm house voice already
-used across the North Star brands — greets you by name and offers to drive your morning:
+You open the app and a real spoken voice — **Charli**, in her own warm, professional
+ElevenLabs voice — greets you by name and offers to drive your morning:
 
 > "Good morning, Bill. How are you this morning? Where would you like to start — a market
 > update, a sweep of your book for the best opportunities, some marketing ideas, or is there
@@ -107,10 +107,12 @@ call.)_
   until a user gesture, so the very first greeting may require a single "Start" tap or the
   login click as the gesture — acceptable; after that it's hands-free. This is a builder call,
   flagged in §11.)
-- **Charli's voice** is the existing ElevenLabs house voice (the "Teresa" asset in Bill's
-  account) used on the North Star explainers, so she sounds identical. The builder pulls the
-  exact voice id from Bill's ElevenLabs account (recon step, §11). If Bill later wants a
-  different voice to match the Charli name, only that voice id changes.
+- **Charli's voice is Bella** (ElevenLabs voice `hpp4J3VqNfWAUOO0d1Us`, "Professional, Bright,
+  Warm") on the low-latency `eleven_v4_turbo` model — chosen by Bill on 2026-10-25 from an
+  audition of four voices. Teresa (North Star's on-camera presenter) turned out to be a HeyGen
+  voice whose speech API returns finished files only: measured 4.5 s of silence before a short
+  reply and 8.9 s before the greeting, at ~4–5× the cost — too slow for live conversation. The
+  voice is one env var (`ELEVENLABS_VOICE_ID_CHARLI`), so changing it later is trivial.
 - **What she can do by voice in v1:**
   - **Market update** — reads today's real rates, plus the day's movement once a prior
     snapshot exists (we persist a daily rate snapshot from now on; until two exist she gives
@@ -224,8 +226,7 @@ mortgage-rate series Charli quotes — not the 10-yr Treasury, which is a differ
 
 ## 8. Charli's persona & prompt (decided intent)
 
-- **Voice/tone:** warm, familiar, competent, a step ahead — the warm North Star house voice,
-  not a cold assistant.
+- **Voice/tone:** warm, familiar, competent, a step ahead — not a cold assistant.
 - **System prompt encodes:** the morning greeting + proactive menu; the retrieve-and-cite law
   (answer only from tools; say "I can't verify that" otherwise); the confirmation rule for any
   side-effecting action; PII minimization (don't read back full SSNs/account numbers); and the
@@ -262,8 +263,7 @@ See the source doc for the agent spec, evidence hierarchy, test suite, and rollo
 
 ## 11. What's left to the builder
 
-- **Pull the exact voice id for Charli** (Bill's house voice — the "Teresa" asset on the North
-  Star explainers) from Bill's ElevenLabs account (recon).
+- ~~Pull the exact voice id for Charli~~ — done: Bella `hpp4J3VqNfWAUOO0d1Us` (see §6).
 - **First-greeting gesture** (§6): decide whether the login click or a one-tap "Start" serves
   as the autoplay gesture.
 - **Voice panel UI**: transcript + source display, waveform/indicator, pause/mute placement.

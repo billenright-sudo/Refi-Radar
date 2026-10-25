@@ -259,7 +259,7 @@ _Added mid-build (2026-10-22). Runs after Task 4, before Task 5._
 ## Prerequisites (Bill / setup, before Task 5–6 verification)
 
 - `ELEVENLABS_API_KEY` in `server/.env` (+ Secret Manager before any deploy).
-- `ELEVENLABS_VOICE_ID_CHARLI` — the voice Bill chose for Charli: his house voice (the one on the North Star explainers, named "Teresa" in his ElevenLabs account). Pull the exact voice id from his ElevenLabs account (recon step; the ElevenLabs connector in this session can list voices to confirm the id). If Bill later wants a different voice to match the Charli name, only this id changes.
+- `ELEVENLABS_VOICE_ID_CHARLI` = `hpp4J3VqNfWAUOO0d1Us` (Bella, chosen by Bill 2026-10-25 from an audition; already set in `server/.env`). Teresa is a HeyGen voice and measured too slow for live replies (4.5–9 s). Also set: `ELEVENLABS_TTS_MODEL=eleven_v4_turbo`, `ELEVENLABS_STT_MODEL=scribe_v2` (both verified live against Bill's account).
 - `ANTHROPIC_API_KEY` already present (used by the existing app).
 
 ## Out of scope (this plan)
