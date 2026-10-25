@@ -7,9 +7,10 @@ _Last updated: 2026-10-25_
 
 ## Done
 - **Charli v1 — BUILT + reviewed, NOT deployed** (branch `feature/teresa-voice-crm`,
-  40 commits over `9b761ef`; **server 386/386 + client 52/52 node:tests**; whole-branch
-  Opus review 2026-10-25 "ready to merge with fixes" → 9-commit fix wave applied; scoped
-  re-review pending at the time of writing). Voice-first AI CRM co-pilot:
+  52 commits over `9b761ef`; **server 403/403 + client 52/52 node:tests**; whole-branch
+  Opus review 2026-10-25 "ready to merge with fixes" → 9-commit fix wave → scoped
+  re-review → 9-commit round 2 → scoped re-review → one last gate fix `c541f2e`, confirmed
+  clean). Voice-first AI CRM co-pilot:
   `POST /api/assistant/turn` (orchestrator: number-grounding against tool payloads,
   guideline hand-off, completion-claim + career-stage truth checks, action backstop;
   code-authored greeting from live sweep + market data), `POST /api/assistant/confirm`
@@ -86,7 +87,17 @@ _Last updated: 2026-10-25_
   ("…and Chen marked as contacted") is not caught; `POST /api/clients` still writes 700 for
   an unusable credit score while the voice tool rejects it; talk-track tool for brand-new
   LOs (product call); glossary-only turns make a second model call; non-numeric inventions
-  on tool turns ("the Chens are VA eligible") are not code-checked in v1.
+  on tool turns ("the Chens are VA eligible") are not code-checked in v1. From the
+  re-reviews (all fail closed): after a cancelled read-back "run that sweep again" / "show
+  this week's check-ins" are held (that/this before a noun read as a pronoun); "I called the
+  Chens, was a great call." no longer counts as a contact report (auxiliary-led clause);
+  "Had a call with…" subject-drop forms aren't reports; paraphrased claims ("The Chens are
+  current now.") rely on the prompt until the verb-presence rule; dated/active-voice
+  narration ("Last contact logged January 1st, 2024.") is over-caught; the "since" label is a
+  UTC day; the TTS 429 note can't tell the 15-minute limiter from the daily budget (pass the
+  body through `onTtsError`); a stale rate set is still classified by its label; on a turn
+  that cites the sweep, a fabricated count claim ("One follow-up added for Friday.") is still
+  exempt (limit the "added" exemption to "added since / today / this week").
 - `main` is behind both feature branches (not merged).
 - Garbled org-1 name on Bill's real account (`wenright1@gmail.com`) — no org-rename
   API; needs a small DB fix.
