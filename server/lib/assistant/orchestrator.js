@@ -348,28 +348,52 @@ const laterClauseClaims = (sentence) =>
 // The shortened passive: a clause (the sentence, and each piece of it after a comma, colon, ellipsis, "--" or spaced hyphen, one
 // opener and a leading so / but / plus / and / then stripped; not split on a bare "and", which joins names: "Robert and Linda Chen
 // marked as contacted.", "You've got Robert and Linda Chen marked as a rate and term opportunity.") that OPENS with a short noun
-// phrase (an optional article and one to five words) directly
+// phrase (an optional article or numeral and one to five words) directly
 // followed by logged / recorded / marked / added / saved / noted / booked / updated: "Call logged for the Chens.", "Contact logged
 // — anything else?", "Chens marked as contacted.", "Jane Doe added to your book.", "All recorded — anything else?", "Got it,
-// contact logged for Robert and Linda.". Such a clause is a claim on every turn. Not one:
+// contact logged for Robert and Linda.", "2 calls logged.". Such a clause is a claim on every turn. Not one:
 //   * the phrase holds no auxiliary, modal or subject pronoun (NOT_IN_SHORT_NP), so "Your last contact was logged on 2026-01-01."
 //     stays the was/were narration a grounded turn may use (PASSIVE_PAST_RE), and "You logged a call on Monday" reports the user;
 //   * the phrase opens with a negative or "any" ("Nothing logged yet — want me to?", "No contact logged since January", "Anything
 //     logged for the Chens?");
 //   * a clause that is itself a question ("Call logged?");
 //   * "updated" counts only where the clause ends or "for" / "to" / "with" follows ("Record updated for the Chens."), so "Rates
-//     updated this morning" is narration.
+//     updated this morning" is narration;
+//   * count narration (countNarration): the phrase BEGINS with a cardinal (digits, one to ninety-nine in words, hundred, dozen, "a
+//     dozen", "a hundred") and its first participle is "marked as / for" or "added" followed by more than "to" (or "flagged", which
+//     is no claim anyway): what a sweep counted, not a change ("Three clients marked as rate-and-term opportunities.", "Two
+//     opportunities added since yesterday.", "12 clients flagged for check-ins."). It stays a claim when the clause also holds a
+//     contact participle (logged / recorded / noted / booked / saved: "Two calls logged.") or a contact or completion word
+//     (contacted / called / reached / done / complete(d) / handled: "Three clients marked as contacted."), and so does a bare
+//     "Two clients added." / "Three clients marked." and "One client added to your book.", which report a change. "updated" is
+//     never exempt: it is a claim only where the clause ends or for / to / with follows, the change-report form ("Two records
+//     updated for the Chens."), and "Two rates updated since Monday" is no claim to begin with. A phrase that opens with anything
+//     but a cardinal ("All recorded — anything else?", "Chens marked as contacted.") is never count narration.
 // Two narrow forms of the same claim sit beside it: a demonstrative or the call itself "is in" (IN_FOR_RE: "That's in for the
 // Chens.", "It's in now.", "Everything's in."; not "That's in your pipeline" or "Rates are in for a rough week"), and "up to date"
 // with "now" (UP_TO_DATE_NOW_RE, anywhere in the sentence: "The Chens are up to date now.", "Your book is now up to date."; the bare
 // "up to date" can narrate a check-in that is not due).
 const NOT_IN_SHORT_NP = "was|were|is|are|am|be|been|being|has|have|had|will|would|can|could|should|shall|may|might|must|do|does|did|get|gets|got|i|we|you|they|he|she";
 const NP_WORD = "(?!(?:" + NOT_IN_SHORT_NP + ")\\b)(?:[A-Za-z\\u00c0-\\u024f][\\w'\\u2019-]*|&)";
+const UPDATED_AS_CLAIM = "updated(?=\\s*(?:$|[.!?,;:\\u2014\\u2013])|\\s+(?:for|to|with)\\b)";
 const SHORT_PASSIVE_RE = new RegExp(
-  "^(?!(?:no|not|nothing|none|never|neither|nobody|any|anything|anyone)\\b)(?:(?:a|an|the)\\s+)?(?:" + NP_WORD + "\\s+){0,4}" + NP_WORD +
-    "\\s+(?:logged|recorded|marked|added|saved|noted|booked|updated(?=\\s*(?:$|[.!?,;:\\u2014\\u2013])|\\s+(?:for|to|with)\\b))\\b",
+  "^(?!(?:no|not|nothing|none|never|neither|nobody|any|anything|anyone)\\b)(?:(?:a|an|the|\\d[\\d,]*)\\s+)?(?:" + NP_WORD + "\\s+){0,4}" + NP_WORD +
+    "\\s+(?:logged|recorded|marked|added|saved|noted|booked|" + UPDATED_AS_CLAIM + ")\\b",
   "i"
 );
+const CARDINAL =
+  "(?:\\d[\\d,]*|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[\\s-](?:one|two|three|four|five|six|seven|eight|nine))?" +
+  "|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen" +
+  "|(?:a\\s+)?(?:hundred|dozen))";
+// the cardinal, then up to four words that are not a participle, then the first participle: "marked as / for", "added <not to>",
+// "flagged"
+const COUNT_NARRATION_RE = new RegExp(
+  "^" + CARDINAL + "\\s+(?:(?!(?:logged|recorded|marked|added|saved|noted|booked|updated|flagged)\\b)" + NP_WORD + "\\s+){0,4}" +
+    "(?:marked(?=\\s+(?:as|for)\\b)|added(?=\\s+(?!to\\b)\\w)|flagged)\\b",
+  "i"
+);
+const NOT_COUNT_NARRATION_RE = /\b(?:logged|recorded|noted|booked|saved|contacted|called|reached|done|completed?|handled)\b/i;
+const countNarration = (clause) => COUNT_NARRATION_RE.test(clause) && !NOT_COUNT_NARRATION_RE.test(clause);
 const IN_FOR_RE =
   /^(?:that|it|this|everything|all(?:\s+of\s+(?:it|that))?|the\s+(?:call|contact|note|record))(?:['’]s|\s+is|\s+are)\s+(?:all\s+)?in(?=\s*(?:$|[.!,;:—–])|\s+(?:for|now)\b)/i;
 const UP_TO_DATE_NOW_RE =
@@ -380,7 +404,7 @@ const shortPassiveClaims = (sentence) =>
   UP_TO_DATE_NOW_RE.test(sentence) ||
   sentence.split(SHORT_CLAUSE_SPLIT_RE).some((piece) => {
     const c = stripOpener(piece.trim().replace(SHORT_LEADING_CONJ_RE, "")).trim();
-    return !/\?\s*$/.test(c) && (SHORT_PASSIVE_RE.test(c) || IN_FOR_RE.test(c));
+    return !/\?\s*$/.test(c) && ((SHORT_PASSIVE_RE.test(c) && !countNarration(c)) || IN_FOR_RE.test(c));
   });
 
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set).

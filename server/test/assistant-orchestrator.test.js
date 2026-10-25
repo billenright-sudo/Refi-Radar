@@ -3239,3 +3239,49 @@ test("R2-5: CHARLI_SYSTEM's confirmation rule tells her to find the client and p
   const rule = CHARLI_SYSTEM.split("\n\n").find((p) => p.startsWith("Confirmation rule:"));
   assert.ok(rule && rule.includes(line), "inside the confirmation-rule paragraph");
 });
+
+// #6: count narration. A shortened passive whose noun phrase begins with a cardinal and whose participle is "marked as / for",
+// "added <not to>" or "flagged" is what a sweep counted; the contact verbs, contact / completion words and "added to" stay claims.
+const orgE = addOrg("Echo");
+const brokerE = addUser(orgE, "broker", "broker@e.co");
+for (let i = 1; i <= 12; i++) {
+  addClientRow(orgE, brokerE, {
+    name: "Echo " + String(i).padStart(2, "0"), loanType: "30yr_fixed", currentRate: 7.5,
+    loanBalance: 400000, propertyValue: 600000, creditScore: 760, lastContact: "2024-01-01",
+  });
+}
+const twelveCtx = { user: user(brokerE, "broker", orgE), rates: LIVE, db };
+const COUNT_NARRATIONS = [
+  "Three clients marked as rate-and-term opportunities.", "Two opportunities added since yesterday.", "12 clients flagged for check-ins.",
+];
+const STILL_CLAIMS = [
+  "Two calls logged.", "2 calls logged for the Chens.", "All recorded — anything else?", "Chens marked as contacted.",
+  "Three clients marked as contacted.", "Two follow-ups marked as done.", "One client added to your book.", "Two clients added.",
+  "Three clients marked.", "Two records updated for the Chens.", "Two calls marked and logged.",
+];
+
+test("R2-6: count narration is no claim; contact verbs, contact / completion words and 'added to' after a number still are", () => {
+  assert.equal(refi.runSweep(db.prepare("SELECT * FROM clients WHERE org_id = ?").all(orgE), LIVE).counts.checkInsDue, 12);
+  for (const grounded of [false, true]) {
+    for (const text of [
+      ...COUNT_NARRATIONS, "12 clients marked as rate-and-term opportunities.", "Twenty-five clients marked for check-ins.",
+      "A dozen clients marked as cash-out opportunities.", "Got it, three clients marked as cash-out opportunities.",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+    for (const text of STILL_CLAIMS) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+  }
+});
+
+const R2_COUNT_TABLE = [
+  // the reviewer's sweep narration (NOTHING_CHANGED at d3149db) and the brief's count rows, on a sweep turn
+  ...COUNT_NARRATIONS.map((t) => ["run a sweep", "runSweepTool", t, PASS, { ctx: twelveCtx }]),
+  ["Who should I call today?", "runSweepTool", "Three clients marked as rate-and-term opportunities — start with Echo 01.", PASS, { ctx: twelveCtx }],
+  // a count still has to be one the sweep gave
+  ["run a sweep", "runSweepTool", "14 clients flagged for check-ins.", CANT_VERIFY, { ctx: twelveCtx }],
+  // claims after a number, and the claims that never open with one
+  ...STILL_CLAIMS.map((t) => ["run a sweep", "runSweepTool", t, NOTHING_CHANGED, { ctx: twelveCtx }]),
+  ...STILL_CLAIMS.flatMap((t) => onBoth("how are the Chens doing?", t, NOTHING_CHANGED)),
+];
+
+test("R2-6: R2_COUNT_TABLE - sweep count narration passes; a claim after a number does not", async () => {
+  await checkTable(R2_COUNT_TABLE);
+});
