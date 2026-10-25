@@ -211,6 +211,11 @@ function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
       if (first.done) { console.error("voice tts: upstream sent no audio"); return fail(res, 502, "voice service sent no audio"); }
 
       meter({ userId: req.user.id, kind: "tts", turnId, ttsChars: spoken.length });
+      // A browser that hung up while the first chunk was awaited: its 'close' has already fired, so the listener below would
+      // never run, and whether the chunk generator's own cleanup runs would depend on how pipeline tears down a stream it was
+      // handed with a destroyed destination. Cancel the upstream read here and send nothing. (The clip is metered above: the
+      // upstream has already produced it.)
+      if (res.destroyed) { reader.cancel().catch(() => {}); return undefined; }
       res.status(200).set({ "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
       // A browser that hangs up while upstream is stalled: pipeline rejects at once and the finally below disarms the
       // per-read timer, so nothing would cancel the pending read until undici's own body timeout. Cancel it here.

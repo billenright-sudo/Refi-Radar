@@ -464,6 +464,51 @@ test("A2: a browser that hangs up while upstream is stalled cancels the upstream
   }
 });
 
+test("R2-8: a browser that hangs up while the FIRST chunk is awaited has the upstream reader cancelled, and nothing is piped", { timeout: 20000 }, async () => {
+  const slow = buildApp(voiceRoutes.createVoiceRouter({ limiter: { max: 100000 }, timeoutMs: 10_000 }));
+  const { server: s, base: b } = await listen(slow);
+  let release = null;
+  let cancelled = false;
+  let pulls = 0;
+  // the first chunk arrives only when the test says so (after the hang-up); no abort listener, so only a cancel ends the stream
+  setFetch(() => new Response(new ReadableStream({
+    pull(c) {
+      pulls += 1;
+      if (release) return new Promise(() => {});
+      return new Promise((r) => { release = () => { c.enqueue(bytesOf(7, 7)); r(); }; });
+    },
+    cancel() { cancelled = true; },
+  }), { status: 200, headers: { "content-type": "audio/mpeg" } }), slow);
+  // the server's side of the request, to know when it has seen the hang-up
+  const hungUp = new Promise((r) => s.once("request", (_req, res) => res.once("close", r)));
+  // the route streams through Readable.from (looked up when called): counting the calls tells whether anything was piped
+  const { Readable } = require("stream");
+  const realFrom = Readable.from;
+  let piped = 0;
+  Readable.from = function from(...args) { piped += 1; return realFrom.apply(this, args); };
+  try {
+    const ac = new AbortController();
+    const pending = fetch(b + "/api/voice/tts", {
+      method: "POST", signal: ac.signal,
+      headers: { "content-type": "application/json", cookie: "rr_token=" + signToken({ userId: ann }) },
+      body: JSON.stringify({ text: "Hang up before I start." }),
+    }).then(() => "answered", (err) => err.name);
+    for (let i = 0; i < 150 && !release; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(release, "the route is waiting on the first chunk");
+    ac.abort();   // the browser goes away before any audio was sent
+    await within(3000, hungUp, "the server to see the hang-up");
+    release();    // ... and then the first chunk arrives
+    for (let i = 0; i < 100 && !cancelled; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(cancelled, true, "the upstream reader was cancelled");
+    assert.equal(await pending, "AbortError");
+    assert.equal(pulls <= 2, true, "nothing was read past the first chunk");
+    assert.equal(piped, 0, "nothing was piped to a browser that had gone");
+  } finally {
+    Readable.from = realFrom;
+    s.close();
+  }
+});
+
 test("B7: each user has a daily speech budget: requests under it are spoken, the one that would cross it is 429 and goes nowhere", async () => {
   const kim = addUser(orgA, "lo", "kim@a.co", "Kim");
   const spoken = toSpeech("Hello.").length;   // 6
