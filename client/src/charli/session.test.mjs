@@ -93,6 +93,30 @@ test("B1.3: audio-event tags are stripped before a reply is read, and a transcri
   assert.equal(p.server.turns().length, 1);
 });
 
+test("B5: the ordinary yeses and noes of the final review are yes and no; thanks is filler; a yes with a change is still other", () => {
+  const yes = [
+    "Absolutely", "Absolutely.", "Yes, thanks", "Yes, thank you.", "Sure thing", "Go for it", "Sounds good", "Definitely",
+    "Mm-hmm", "Mm-hmm.", "mhm", "Uh-huh", "Yes please", "Yeah sure", "Let's do it", "Do that", "(background noise) Yes.",
+    "sounds good, thanks", "absolutely, go for it", "please do that", "thanks, yes",
+  ];
+  const no = ["No thanks", "No, thank you.", "Nah", "Don't", "Leave it", "Never mind", "nah, leave it", "no thanks, never mind"];
+  const other = [
+    "yes, but change the date", "thanks", "thank you", "please", "sounds good but not the Chens", "absolutely not the Chens",
+    "go for it buddy", "let's do the Smiths instead",
+  ];
+  for (const t of yes) assert.equal(classifyReply(t), "yes", `"${t}" should be yes`);
+  for (const t of no) assert.equal(classifyReply(t), "no", `"${t}" should be no`);
+  for (const t of other) assert.equal(classifyReply(t), "other", `"${t}" should be other`);
+});
+
+test("B5: an ordinary yes to a read-back confirms it and never reaches /turn", async () => {
+  for (const said of ["Absolutely", "Yes, thanks", "Sure thing", "Go for it", "Sounds good", "Definitely", "Mm-hmm", "(background noise) Yes."]) {
+    const { session, server } = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
+    assert.deepEqual(await session.submit(said), { ok: true, action: "confirm" }, said);
+    assert.equal(server.turns().length, 1, `"${said}" must not reach /turn`);
+  }
+});
+
 // ── greeting ─────────────────────────────────────────────────────────────────
 
 test("greeting: waits for rates, then asks /turn once with greeting:true, rates and localHour", async () => {

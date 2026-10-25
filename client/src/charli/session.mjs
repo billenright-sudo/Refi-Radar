@@ -33,19 +33,24 @@ const MAX_SENT_MESSAGES = 30;
 
 // ── Reading a short reply to a read-back ─────────────────────────────────────
 
+// (as normalize leaves them: lower case, punctuation gone, so "Mm-hmm." is "mm hmm" and "uh-huh" is "uh huh")
 const YES_PHRASES = [
   "yes", "yeah", "yep", "yup", "sure", "confirm", "do it", "go ahead", "please do", "correct",
   "that's right", "that's correct", "ok", "okay",
+  "absolutely", "sure thing", "go for it", "sounds good", "definitely", "mm hmm", "mhm", "uh huh", "yes please", "yeah sure",
+  "let's do it", "do that",
 ];
-const NO_PHRASES = ["no", "nope", "cancel", "never mind", "nevermind", "don't", "do not", "stop", "wait"];
-// Politeness and hesitation that may sit around an answer but are not an answer ("yes please", "um, yes").
-const FILLER_WORDS = ["please", "um", "uh"];
+const NO_PHRASES = [
+  "no", "nope", "cancel", "never mind", "nevermind", "don't", "do not", "stop", "wait", "no thanks", "nah", "leave it",
+];
+// Politeness and hesitation that may sit around an answer but are not an answer ("yes please", "um, yes", "yes, thanks").
+const FILLER_WORDS = ["please", "um", "uh", "thanks", "thank you"];
 const MAX_REPLY_WORDS = 4;
 
 const PHRASES = [
   ...YES_PHRASES.map((p) => [p.split(" "), "yes"]),
   ...NO_PHRASES.map((p) => [p.split(" "), "no"]),
-  ...FILLER_WORDS.map((p) => [[p], "filler"]),
+  ...FILLER_WORDS.map((p) => [p.split(" "), "filler"]),
 ];
 
 // Speech-to-text audio-event tags ("(background noise)", "[laughter]") are not the user's words: they go before anything is read.
