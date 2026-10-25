@@ -22,7 +22,7 @@ const db = require("../db");
 const { signToken } = require("../middleware/auth");
 const assistantTools = require("../lib/assistant/tools");
 const { tools, TOOL_SCHEMA, setCareerStageTool } = assistantTools;
-const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, buildCharliSystem } = require("../lib/assistant/prompt");
+const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, STAGE_REASK, buildCharliSystem } = require("../lib/assistant/prompt");
 const { CAREER_STAGES, coachingStyle, stageById, stageForYears } = require("../lib/assistant/coaching");
 const { runTurn, claimsCompletion, claimsStage, stageClaims } = require("../lib/assistant/orchestrator");
 const { SESSION_STARTED } = require("../lib/assistant/history");
@@ -454,39 +454,49 @@ test("two changes in one response (a stage and a contact) are one at a time", as
 const GREETING_Q = `Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. ${CAREER_QUESTION}`;
 
 test("[(Session started.), greeting asking for the years, 'about 20 years']: the action backstop does not engage and the tool call returns its sideEffect", async () => {
-  const messages = [
-    { role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: "about 20 years" },
+  const after = (answer) => [
+    { role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: answer },
   ];
   const ctx = ctxFor(ann, "broker", orgA, null);
-  const r = await runTurn({ messages, ctx, client: fakeClient([useTool("setCareerStageTool", { years: 20 })]) });
+  // B4 FLIP (Tier 1): a plain duration is packaged by code; the model is no longer called for "about 20 years"
+  const tier1 = fakeClient([]);
+  const r = await runTurn({ messages: after("about 20 years"), ctx, client: tier1 });
   assert.equal(r.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
   assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: "veteran" });
-  // not held to the action backstop: a plain statement that names no stage reaches the user ...
-  const plain = await runTurn({ messages, ctx, client: fakeClient([say("Nice, that's a long run.")]) });
-  assert.equal(plain.reply, "Nice, that's a long run.");
-  // ... but I1: after the career question a statement that names a stage is a stage claim, and nothing backs it
-  for (const text of ["Your stage is now Veteran.", "Got it, you're a Veteran now.", "Twenty years! Veteran it is.", "Great — I'll coach you as a Veteran from here on."]) {
+  assert.equal(tier1.calls.length, 0);
+  // an answer code cannot read goes to the model, which sees the greeting and the answer with the null-stage prompt, and its
+  // tool call returns the sideEffect; the action backstop does not engage
+  const messages = after("a while now, since the crash");
+  const client = fakeClient([useTool("setCareerStageTool", { years: 18 })]);
+  const viaModel = await runTurn({ messages, ctx, client });
+  assert.deepStrictEqual(viaModel.sideEffect, { type: "setCareerStage", stage: "veteran" });
+  assert.deepStrictEqual(client.calls[0].messages.map((m) => m.role), ["user", "assistant", "user"]);
+  assert.equal(client.calls[0].messages[2].content, "a while now, since the crash");
+  assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: null }));
+  // B4 FLIPS (Tier 2): a plain statement (was passed through) and a statement that names a stage (was the nothing-changed
+  // line) are both the code-authored re-ask: nothing was saved
+  for (const text of ["Nice, that's a long run.", "Your stage is now Veteran.", "Got it, you're a Veteran now.", "Twenty years! Veteran it is.", "Great — I'll coach you as a Veteran from here on."]) {
     const blocked = await runTurn({ messages, ctx, client: fakeClient([say(text)]) });
-    assert.equal(blocked.reply, NOTHING_CHANGED, text);
+    assert.equal(blocked.reply, STAGE_REASK, text);
     assert.equal(blocked.sideEffect, undefined);
   }
   // a question back is fine, even one that names the stages
   const asked = await runTurn({ messages, ctx, client: fakeClient([say("Which stage fits — Established or Veteran?")]) });
   assert.equal(asked.reply, "Which stage fits — Established or Veteran?");
-  // the model sees the greeting and the answer, with the null-stage prompt
-  const client = fakeClient([useTool("setCareerStageTool", { years: 20 })]);
-  await runTurn({ messages, ctx, client });
-  assert.deepStrictEqual(client.calls[0].messages.map((m) => m.role), ["user", "assistant", "user"]);
-  assert.equal(client.calls[0].messages[2].content, "about 20 years");
-  assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: null }));
+  // an answer that gives no duration is an ordinary turn: the plain statement reaches the user
+  const plain = await runTurn({ messages: after("thanks, good to be here"), ctx, client: fakeClient([say("Nice, glad you're here.")]) });
+  assert.equal(plain.reply, "Nice, glad you're here.");
 });
 
 test("the model cannot claim the stage is set: 'Got it - I've set you as a veteran.' is the nothing-changed line", async () => {
-  const messages = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: "about 20 years" }];
+  // B4: "about 20 years" is now packaged by code (Tier 1) and never reaches the model, so the model's claims are probed on an
+  // answer Tier 1 cannot read; ungrounded that is the Tier 2 re-ask (B4 FLIP: was the nothing-changed line), grounded (a read
+  // tool cited, so Tier 2 is off) it is still the nothing-changed line
+  const messages = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: "almost twenty years" }];
   const ctx = ctxFor(ann, "broker", orgA, null);
   for (const text of ["Got it — I've set you as a veteran.", "You're now set as Veteran.", "Your stage is set to Veteran."]) {
     let r = await runTurn({ messages, ctx, client: fakeClient([say(text)]) });
-    assert.equal(r.reply, NOTHING_CHANGED, "ungrounded: " + text);
+    assert.equal(r.reply, STAGE_REASK, "ungrounded: " + text);
     r = await runTurn({ messages, ctx, client: fakeClient([useTool("findClient", { query: "chen" }), say(text)]) });
     assert.equal(r.reply, NOTHING_CHANGED, "grounded: " + text);
     assert.equal(r.sideEffect, undefined);
@@ -752,7 +762,7 @@ test("end to end: greeting asks, 'about 20 years' reads back, confirm saves, the
   const greeting = await asKit("POST", "/api/assistant/turn", { greeting: true, rates: LIVE, localHour: 9 });
   assert.ok(greeting.data.reply.endsWith(CAREER_QUESTION), greeting.data.reply);
 
-  const client = fakeClient([useTool("setCareerStageTool", { years: 20 })]);
+  const client = fakeClient([]);
   setClient(client);
   const turn = await asKit("POST", "/api/assistant/turn", {
     rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "about 20 years" }],
@@ -761,7 +771,11 @@ test("end to end: greeting asks, 'about 20 years' reads back, confirm saves, the
   assert.equal(turn.data.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
   assert.match(turn.data.sideEffect.confirmId, UUID);
   assert.deepStrictEqual({ type: turn.data.sideEffect.type, stage: turn.data.sideEffect.stage }, { type: "setCareerStage", stage: "veteran" });
-  assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: null }));
+  // B4 FLIP (Tier 1): the answer is packaged by code, so the model is not called (it was, with the null-stage prompt); the
+  // turn is metered as a zero-token row, like the greeting
+  assert.equal(client.calls.length, 0);
+  const metered = db.prepare("SELECT kind, input_tokens, output_tokens FROM assistant_usage WHERE turn_id = ?").all(turn.data.turnId);
+  assert.deepStrictEqual(metered.map((row) => ({ ...row })), [{ kind: "turn", input_tokens: 0, output_tokens: 0 }]);
   assert.equal(stageOf(who), null, "the turn is read-only");
 
   const confirm = await confirmAs(who, turn.data.sideEffect);
@@ -1077,7 +1091,10 @@ test("I1: on the stage-answering turns a setCareerStageTool call still returns i
     const r = await runTurn({ messages, ctx, client });
     assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`, JSON.stringify(messages[messages.length - 1]));
     assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
-    assert.equal(client.calls.length, 1);
+    // B4 FLIP (Tier 1): the first two rows answer the career question with a plain duration, packaged by code without a
+    // model call (the read-back and sideEffect are the ones the model's tool call produced)
+    const plain = messages.length === 3 && messages[1].content === GREETING_Q;
+    assert.equal(client.calls.length, plain ? 0 : 1, JSON.stringify(messages[messages.length - 1]));
   }
 });
 
@@ -1086,6 +1103,11 @@ test("R7-S: the stage claim is a truth check against the stored stage: true for 
   const messages = [{ role: "user", content: SESSION_STARTED }, { role: "assistant", content: GREETING_Q }, { role: "user", content: "about 20 years" }];
   for (const stage of [...IDS, null]) {
     const r = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Your stage is now Veteran.")]) });
+    // B4 FLIP for the null stage (Tier 1): the model is not called, the answer is packaged and read back
+    if (stage === null) {
+      assert.equal(r.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+      continue;
+    }
     assert.equal(r.reply, stage === "veteran" ? "Your stage is now Veteran." : NOTHING_CHANGED, String(stage));
     const asked = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client: fakeClient([say("Which stage fits — Established or Veteran?")]) });
     assert.equal(asked.reply, "Which stage fits — Established or Veteran?", String(stage));
@@ -1096,12 +1118,23 @@ test("I1 over HTTP: after the greeting, 'Your stage is now Veteran.' is the noth
   const who = addUser(orgA, "broker", "Lena");
   const greeting = await greet(who, { localHour: 9 });
   assert.ok(greeting.data.reply.endsWith(CAREER_QUESTION));
-  setClient(fakeClient([say("Your stage is now Veteran.")]));
-  const r = await as(who)("POST", "/api/assistant/turn", {
+  // B4 FLIP (Tier 1): "about 20 years" never reaches the model; it is read back for confirmation, and nothing is written
+  const unused = fakeClient([say("Your stage is now Veteran.")]);
+  setClient(unused);
+  let r = await as(who)("POST", "/api/assistant/turn", {
     rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "about 20 years" }],
   });
   assert.equal(r.status, 200);
-  assert.equal(r.data.reply, NOTHING_CHANGED);
+  assert.equal(r.data.reply, "Just to confirm — set your career stage to Veteran (10+ years)?");
+  assert.equal(r.data.sideEffect.stage, "veteran");
+  assert.equal(unused.calls.length, 0);
+  assert.equal(stageOf(who), null);
+  // the model's claim, on an answer Tier 1 cannot read: the Tier 2 re-ask (was the nothing-changed line), nothing written
+  setClient(fakeClient([say("Your stage is now Veteran.")]));
+  r = await as(who)("POST", "/api/assistant/turn", {
+    rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "oh, a long time" }],
+  });
+  assert.equal(r.data.reply, STAGE_REASK);
   assert.equal("sideEffect" in r.data, false);
   assert.equal(stageOf(who), null);
 });
@@ -1331,6 +1364,138 @@ test("R7-S: setCareerStageTool on every leak flow still returns its sideEffect a
     const r = await runTurn({ messages, ctx, client });
     assert.equal(r.reply, `Just to confirm — set your career stage to ${LABEL[id]}?`, JSON.stringify(messages[messages.length - 1]));
     assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: id });
-    assert.equal(client.calls.length, 1);
+    // B4 FLIP (Tier 1): "Have been doing this 20 years" is a plain duration, packaged by code (20 years: the same stage)
+    const said = messages[messages.length - 1].content;
+    assert.equal(client.calls.length, said === "Have been doing this 20 years" ? 0 : 1, said);
   }
+});
+
+// ── Fix wave B4 (final review I2): the turn that answers the career question ─────────────────────────────────────────────
+
+const answering = (answer, greeting = GREETING_Q) => [
+  { role: "user", content: SESSION_STARTED }, { role: "assistant", content: greeting }, { role: "user", content: answer },
+];
+// The read-back the model's own setCareerStageTool({ years }) call gets: Tier 1 must hand up exactly that (the years -> stage
+// mapping is setCareerStageTool's, so the expected stage is never worked out here).
+const modelReadBack = (years) =>
+  runTurn({ messages: userMsgs("set my stage"), ctx: ctxFor(ann, "broker", orgA, null), client: fakeClient([useTool("setCareerStageTool", { years })]) });
+const THIS_YEAR = new Date().getUTCFullYear();
+const TIER1_PARSES = [
+  ["about 20 years", 20], ["About 20 years.", 20], ["20 years", 20], ["twenty years", 20], ["Twenty-five years.", 25],
+  ["twenty five years", 25], ["2.5 years", 2.5], ["5 years", 5], ["3 years", 3], ["nine years", 9], ["10 years", 10],
+  ["6 months", 0.5], ["six months", 0.5], ["eighteen months", 1.5], ["a year", 1], ["half a year", 0.5],
+  ["two and a half years", 2.5], ["a year and a half", 1.5], ["I've been originating for 12 years", 12],
+  ["I've been doing this about 3 years now", 3], ["It's been 9 years", 9], ["for 10 years", 10], ["over 15 years", 15],
+  ["since 2006", THIS_YEAR - 2006], ["I've been originating since 2019", THIS_YEAR - 2019],
+  ["(background noise) about 20 years", 20], ["um, about 20 years", 20], ["Have been doing this 20 years", 20],
+];
+
+test("B4 Tier 1: a plain duration after the career question is packaged by code from setCareerStageTool({ years }), with no model call", async () => {
+  for (const [answer, years] of TIER1_PARSES) {
+    const client = fakeClient([]);
+    const r = await runTurn({ messages: answering(answer), ctx: ctxFor(ann, "broker", orgA, null), client });
+    const expected = await modelReadBack(years);
+    assert.equal(client.calls.length, 0, answer);
+    assert.equal(r.reply, expected.reply, answer);
+    assert.deepStrictEqual(r.sideEffect, setCareerStageTool({ years }).sideEffect, answer);
+    assert.deepStrictEqual(r.sideEffect, expected.sideEffect, answer);
+    assert.deepStrictEqual(r.details, expected.details, answer);
+    assert.deepStrictEqual(r.sources, [], answer);
+    assert.deepStrictEqual(r.usage, { inputTokens: 0, outputTokens: 0 }, answer);
+  }
+  // the boundaries are setCareerStageTool's: 12 months is a year
+  const twelve = await runTurn({ messages: answering("12 months"), ctx: ctxFor(ann, "broker", orgA, null), client: fakeClient([]) });
+  assert.equal(twelve.sideEffect.stage, setCareerStageTool({ years: 1 }).sideEffect.stage);
+  assert.equal(allStages().find((u) => u.id === ann).career_stage, null, "nothing was written");
+});
+
+test("B4 Tier 1 reads only plain durations, only for an unstaged user, only right after the exact career question", async () => {
+  // anything Tier 1 cannot read goes to the model
+  for (const answer of [
+    "a while", "forever", "since the crash", "a few years", "a couple of years", "almost ten years", "nearly 3 years", "under a year",
+    "less than a year", "Twenty.", "About 20 years?", "about 20 years, and log a call with Chen", "15 years. Why?", "80 years",
+    "a long time", "since 2040",
+  ]) {
+    const client = fakeClient([say("How many years would you say, roughly?")]);
+    const r = await runTurn({ messages: answering(answer), ctx: ctxFor(ann, "broker", orgA, null), client });
+    assert.equal(client.calls.length, 1, answer);
+    assert.equal(r.reply, "How many years would you say, roughly?", answer);
+  }
+  // a stored stage, or a greeting that does not end with the exact question: an ordinary turn
+  for (const [messages, stage] of [
+    [answering("about 20 years"), "established"],
+    [answering("about 20 years", "Good morning, Ann. How long have you been originating?"), null],
+    [[...answering("x").slice(0, 2), { role: "user", content: "hmm" }, { role: "assistant", content: "Take your time." }, { role: "user", content: "about 20 years" }], null],
+  ]) {
+    const client = fakeClient([say("Nice, that's a long run.")]);
+    const r = await runTurn({ messages, ctx: ctxFor(ann, "broker", orgA, stage), client });
+    assert.equal(client.calls.length, 1, JSON.stringify(messages));
+    assert.equal(r.reply, "Nice, that's a long run.", JSON.stringify(messages));
+  }
+});
+
+// The final review's probe6 sentences (stored null, the user answered the career question), verbatim, and the Task 7
+// lone-stage-with-tail leaks from deferred-items.md: under Tier 2 every one is the re-ask.
+const PROBE6 = [
+  "Your career stage is already set to Veteran.", "I've got you set as a Veteran.", "Twenty years — Veteran, got it.",
+  "that's Veteran status", "that counts as Veteran now", "puts you squarely in the Veteran tier", "Congratulations veteran!",
+];
+const LONE_STAGE_TAILS = [
+  "Twenty years — Veteran, then.", "Twenty years — Veteran, got it.", "Twenty years — that's a Veteran.", "Six months — New.",
+  "That counts as Veteran now.", "Congratulations veteran!", "Twenty years — that's Veteran status.",
+];
+const TIER2_ANSWERS = ["a while", "forever", "since the crash", "almost twenty years", "a couple of years", "Twenty."];
+
+test("B4 Tier 2: after an answer Tier 1 cannot read, only a question or the setCareerStage change reaches the user", async () => {
+  const ctx = ctxFor(ann, "broker", orgA, null);
+  for (const answer of TIER2_ANSWERS) {
+    for (const text of [...PROBE6, ...LONE_STAGE_TAILS, "Nice, that's a long run.", "Great, thanks!"]) {
+      const r = await runTurn({ messages: answering(answer), ctx, client: fakeClient([say(text)]) });
+      assert.equal(r.reply, STAGE_REASK, `${answer}: ${text}`);
+      assert.equal(r.sideEffect, undefined);
+    }
+    // a question passes (a stage claim inside an offer is still screened as before)
+    for (const text of ["How many years would you say, roughly?", "Got it — how many years is that, roughly?", "Which stage fits — Established or Veteran?"]) {
+      assert.equal((await runTurn({ messages: answering(answer), ctx, client: fakeClient([say(text)]) })).reply, text, `${answer}: ${text}`);
+    }
+    assert.equal((await runTurn({ messages: answering(answer), ctx, client: fakeClient([say("Should I keep things terse now that you're a Veteran?")]) })).reply, NOTHING_CHANGED);
+    // the change itself is handed up as always
+    const r = await runTurn({ messages: answering(answer), ctx, client: fakeClient([useTool("setCareerStageTool", { years: 20 })]) });
+    assert.deepStrictEqual(r.sideEffect, { type: "setCareerStage", stage: "veteran" }, answer);
+  }
+  // a read tool cited this turn turns Tier 2 off; the stage claims are still truth-checked there
+  const grounded = await runTurn({ messages: answering("a while"), ctx, client: fakeClient([useTool("findClient", { query: "chen" }), say("Twenty years — Veteran, then.")]) });
+  assert.notEqual(grounded.reply, STAGE_REASK);
+  const groundedClaim = await runTurn({ messages: answering("a while"), ctx, client: fakeClient([useTool("findClient", { query: "chen" }), say("I've got you set as a Veteran.")]) });
+  assert.equal(groundedClaim.reply, NOTHING_CHANGED);
+  // an answer with no duration at all is an ordinary turn
+  const ordinary = await runTurn({ messages: answering("what are rates today?"), ctx, client: fakeClient([useTool("getMarketUpdate"), say("The thirty-year fixed is at 6.52 percent.")]) });
+  assert.equal(ordinary.reply, "The thirty-year fixed is at 6.52 percent.");
+  const small = await runTurn({ messages: answering("thanks, good to be here"), ctx, client: fakeClient([say("Great to have you!")]) });
+  assert.equal(small.reply, "Great to have you!");
+  // a stored stage: no Tier 2
+  const staged = await runTurn({ messages: answering("a while"), ctx: ctxFor(ann, "broker", orgA, "veteran"), client: fakeClient([say("Nice, that's a long run.")]) });
+  assert.equal(staged.reply, "Nice, that's a long run.");
+  assert.equal(STAGE_REASK, "Sorry — I didn't get that saved. About how many years have you been originating?");
+});
+
+test("B4 over HTTP: a plain answer is read back with no model call and a zero-token usage row; an unreadable one gets the re-ask", async () => {
+  const who = addUser(orgA, "broker", "Tia");
+  const greeting = await greet(who, { localHour: 9 });
+  const unused = fakeClient([]);
+  setClient(unused);
+  const r = await as(who)("POST", "/api/assistant/turn", {
+    rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "six months" }],
+  });
+  assert.equal(r.data.sideEffect.stage, setCareerStageTool({ years: 0.5 }).sideEffect.stage);
+  assert.ok(Array.isArray(r.data.details) && r.data.details.length === 1);
+  assert.equal(unused.calls.length, 0);
+  const rows = db.prepare("SELECT kind, input_tokens, output_tokens FROM assistant_usage WHERE turn_id = ?").all(r.data.turnId).map((x) => ({ ...x }));
+  assert.deepStrictEqual(rows, [{ kind: "turn", input_tokens: 0, output_tokens: 0 }]);
+  setClient(fakeClient([say("Twenty years — Veteran, then.")]));
+  const again = await as(who)("POST", "/api/assistant/turn", {
+    rates: LIVE, messages: [{ role: "assistant", content: greeting.data.reply }, { role: "user", content: "forever, it feels like" }],
+  });
+  assert.equal(again.data.reply, STAGE_REASK);
+  assert.equal(stageOf(who), null);
 });

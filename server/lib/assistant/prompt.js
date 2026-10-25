@@ -20,6 +20,10 @@ const NOTHING_CHANGED =
 // One response asked for more than one change at once; confirmations happen one at a time.
 const ONE_AT_A_TIME = "Let's do those one at a time — which first?";
 
+// The user answered the greeting's career question with a duration code could not read, and the model replied with neither
+// a question nor the setCareerStage change: whatever it said, nothing was saved, so the question is asked again.
+const STAGE_REASK = "Sorry — I didn't get that saved. About how many years have you been originating?";
+
 // There was no usable user message to answer (empty history, blank transcript, or the last
 // message wasn't the user's), so no model call is made.
 const DIDNT_CATCH = "I didn't catch that — could you say it again?";
@@ -95,5 +99,5 @@ const buildCharliSystem = (user) =>
   CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN,
+  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, STAGE_REASK,
 };
