@@ -91,7 +91,7 @@ test("getMarketUpdate reports day-over-day deltas once a prior-day snapshot exis
   assert.equal(r.data.hasHistory, true);
   assert.equal(r.data.deltas.rate_30yr_fixed, -0.08);
   assert.equal(r.data.deltas.rate_15yr_fixed, 0.01);
-  assert.equal(r.data.since, "January 1, 2000");
+  assert.equal(r.data.since, "January 1st, 2000");   // R2-3 FLIP: the ordinal day (was "January 1, 2000")
   assert.equal(r.data.sinceDate, "2000-01-01");
 });
 

@@ -32,16 +32,25 @@ const NO_DELTA_KEYS = new Set(["rate_5_1_arm"]);
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+// 1 -> "1st", 2 -> "2nd", 3 -> "3rd", 4 -> "4th", 11 / 12 / 13 -> "11th" / "12th" / "13th", 21 -> "21st", 22 -> "22nd", 31 -> "31st"
+const ordinal = (n) => {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" })[n % 10] || "th";
+  return `${n}${suffix}`;
+};
+
 // The spoken "since when" for a snapshot taken on `day`, seen from `today` (both YYYY-MM-DD, UTC days): "yesterday" one day
-// back, the weekday ("Thursday") two to six days back, otherwise the date ("October 18", with the year when it is not this
-// year's). Code computes it so the model never has to (and never says "since yesterday" about an older snapshot). Pure.
+// back, the weekday ("Thursday") two to six days back, otherwise the date with an ordinal day ("October 18th", with the year
+// when it is not this year's), which toSpeech reads "October eighteenth" (a bare "October 18" is read "October eighteen"); the
+// digits still ground the model's "since October 18th". Code computes it so the model never has to (and never says "since
+// yesterday" about an older snapshot). Pure.
 function sinceLabel(day, today = dayKey()) {
   const then = new Date(`${day}T00:00:00Z`);
   const now = new Date(`${today}T00:00:00Z`);
   const days = Math.round((now - then) / 86_400_000);
   if (days === 1) return "yesterday";
   if (days >= 2 && days <= 6) return WEEKDAYS[then.getUTCDay()];
-  const date = `${MONTHS[then.getUTCMonth()]} ${then.getUTCDate()}`;
+  const date = `${MONTHS[then.getUTCMonth()]} ${ordinal(then.getUTCDate())}`;
   return then.getUTCFullYear() === now.getUTCFullYear() ? date : `${date}, ${then.getUTCFullYear()}`;
 }
 

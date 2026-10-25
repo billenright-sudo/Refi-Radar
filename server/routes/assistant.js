@@ -18,7 +18,7 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
-const { stageById, CAREER_QUESTION } = require("../lib/assistant/coaching");
+const { stageById, spokenStageLabel, CAREER_QUESTION } = require("../lib/assistant/coaching");
 const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
@@ -98,9 +98,10 @@ function buildGreeting(user, ctx, localHour) {
     ? `You have ${opportunities} ${opportunities === 1 ? "opportunity" : "opportunities"} and ${checkIns} ` +
       `${checkIns === 1 ? "check-in" : "check-ins"} due`
     : "";
-  // two decimals, as getMarketUpdate presents it (FRED publishes three: "7.251" would be spoken digit by digit)
+  // the rate as getMarketUpdate presents it, already rounded to two decimals (FRED publishes three: "7.251" would be spoken
+  // digit by digit), and said as the number it is: 7.2 is "7.2%", never a padded "7.20%" ("seven point two zero")
   const rateClause = Number.isFinite(rate)
-    ? `the 30-year is at ${Number(rate).toFixed(2)}%${market.data.estimated ? " (estimated)" : ""}`
+    ? `the 30-year is at ${rate}%${market.data.estimated ? " (estimated)" : ""}`
     : "";
   let facts = "";
   if (countsClause && rateClause) facts = ` ${countsClause}; ${rateClause}.`;
@@ -146,9 +147,10 @@ const clientOutcome = (done) => (done.client ? { ...done, result: done.client, r
 const fingerprintName = (name) => (typeof name === "string" ? name.trim().replace(/\s+/g, " ").toLowerCase() : "");
 
 // The code-authored sentence after a confirmed change; the browser speaks it and appends it to the
-// conversation as the assistant's turn (so the read-back is no longer the last thing Charli said).
+// conversation as the assistant's turn (so the read-back is no longer the last thing Charli said). The stage is said as the
+// read-back says it ("Veteran, ten or more years"): the screen label's "(10+ years)" reads aloud as "ten+".
 function confirmReply(type, receipt) {
-  if (type === "setCareerStage") return `Done — your career stage is set to ${receipt.label}.`;
+  if (type === "setCareerStage") return `Done — your career stage is set to ${spokenStageLabel(receipt.stage) || receipt.label}.`;
   return type === "logContact" ? `Done — I logged a contact for ${receipt.name}.` : `Done — I added ${receipt.name} as a new client.`;
 }
 

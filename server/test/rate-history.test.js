@@ -173,10 +173,11 @@ test("B3: since is 'yesterday' for one day, the weekday for two to six, the date
   assert.equal(sinceLabel("2026-10-22", "2026-10-25"), "Thursday", "3 days");
   assert.equal(sinceLabel("2026-10-23", "2026-10-25"), "Friday", "2 days");
   assert.equal(sinceLabel("2026-10-19", "2026-10-25"), "Monday", "6 days");
-  assert.equal(sinceLabel("2026-10-15", "2026-10-25"), "October 15", "10 days");
-  assert.equal(sinceLabel("2026-10-18", "2026-10-25"), "October 18", "7 days");
+  // R2-3 FLIP: the date carries an ordinal day ("October 18th" is spoken "October eighteenth", "October 18" was "eighteen")
+  assert.equal(sinceLabel("2026-10-15", "2026-10-25"), "October 15th", "10 days");
+  assert.equal(sinceLabel("2026-10-18", "2026-10-25"), "October 18th", "7 days");
   assert.equal(sinceLabel("2025-12-30", "2026-01-02"), "Tuesday", "across a year end, within six days");
-  assert.equal(sinceLabel("2025-12-20", "2026-01-02"), "December 20, 2025");
+  assert.equal(sinceLabel("2025-12-20", "2026-01-02"), "December 20th, 2025");
   // through getMovement, against today's real date
   for (const [n, expected] of [[1, "yesterday"], [3, sinceLabel(daysAgo(3))], [10, sinceLabel(daysAgo(10))]]) {
     db.prepare("DELETE FROM rate_snapshots").run();
@@ -186,7 +187,23 @@ test("B3: since is 'yesterday' for one day, the weekday for two to six, the date
     assert.equal(m.sinceDate, daysAgo(n));
   }
   assert.match(sinceLabel(daysAgo(3)), /^(?:Sun|Mon|Tues|Wednes|Thurs|Fri|Satur)day$/);
-  assert.match(sinceLabel(daysAgo(10)), /^[A-Z][a-z]+ \d{1,2}(?:, \d{4})?$/);
+  assert.match(sinceLabel(daysAgo(10)), /^[A-Z][a-z]+ \d{1,2}(?:st|nd|rd|th)(?:, \d{4})?$/);
+});
+
+test("R2-3: the since date's ordinal suffix (st / nd / rd / th, 11th-13th), spoken as an ordinal, its digits still grounding", () => {
+  const { toSpeech } = require("../lib/assistant/speech");
+  const { ungroundedNumbers } = require("../lib/assistant/orchestrator");
+  for (const [day, label, spoken] of [
+    ["2026-08-01", "August 1st", "August first"], ["2026-08-02", "August 2nd", "August second"], ["2026-08-03", "August 3rd", "August third"],
+    ["2026-08-04", "August 4th", "August fourth"], ["2026-08-11", "August 11th", "August eleventh"], ["2026-08-12", "August 12th", "August twelfth"],
+    ["2026-08-13", "August 13th", "August thirteenth"], ["2026-08-21", "August 21st", "August twenty-first"],
+    ["2026-08-22", "August 22nd", "August twenty-second"], ["2026-08-23", "August 23rd", "August twenty-third"],
+    ["2026-08-31", "August 31st", "August thirty-first"], ["2026-10-18", "October 18th", "October eighteenth"],
+  ]) {
+    assert.equal(sinceLabel(day, "2026-12-25"), label, day);
+    assert.equal(toSpeech(`Down 0.1 since ${label}.`), `Down zero point one since ${spoken}.`, label);
+    assert.deepStrictEqual(ungroundedNumbers(`down 0.1 since ${label}`, [{ deltas: { rate_30yr_fixed: -0.1 }, since: label, sinceDate: day }]), [], label);
+  }
 });
 
 // ── Capture-on-fetch wiring in POST /api/rates ──────────────────────────────

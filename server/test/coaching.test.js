@@ -41,7 +41,7 @@ const LABEL = {
   established: "Established (3–10 years)", veteran: "Veteran (10+ years)",
 };
 // B8 FLIP: the setCareerStage read-back speaks these (it read the screen labels above: "(1–3 years)", "(10+ years)"); the
-// labels stay on screen, in the confirm reply and in the card rows
+// labels stay on screen and in the card rows (R2-3: the confirm reply speaks these too)
 const SPOKEN = {
   new: "New, under one year", developing: "Developing, one to three years",
   established: "Established, three to ten years", veteran: "Veteran, ten or more years",
@@ -635,7 +635,9 @@ test("fix round 5: the costs and residuals of the lone-stage, ', so STAGE' and t
 
 // ── /api/assistant/confirm: setCareerStage ───────────────────────────────────
 
-const DONE = (id) => `Done — your career stage is set to ${LABEL[id]}.`;
+// R2-3 FLIP: the confirm reply speaks the stage as the read-back does (it was the screen label: "Veteran (10+ years)" reads
+// "ten+"); the result keeps the screen label
+const DONE = (id) => `Done — your career stage is set to ${SPOKEN[id]}.`;
 
 test("confirm setCareerStage: writes career_stage for the caller only, and says so in a code-authored reply", async () => {
   const who = addUser(orgA, "broker", "Wanda");

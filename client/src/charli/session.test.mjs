@@ -610,7 +610,7 @@ test("stage change: /confirm {setCareerStage, stage}, the reply is appended and 
   const { session, server, spoken } = setup({
     user: { careerStage: "new" },
     routes: {
-      "POST /api/assistant/confirm": () => reply(200, { success: true, result: { stage: "veteran", label: "Veteran (10+ years)" }, reply: "Done — your career stage is set to Veteran (10+ years)." }),
+      "POST /api/assistant/confirm": () => reply(200, { success: true, result: { stage: "veteran", label: "Veteran (10+ years)" }, reply: "Done — your career stage is set to Veteran, ten or more years." }),
       "GET /api/auth/me": me("veteran"),
     },
   });
@@ -618,8 +618,8 @@ test("stage change: /confirm {setCareerStage, stage}, the reply is appended and 
   assert.deepEqual(await session.setStage("veteran"), { ok: true, action: "stage" });
 
   assert.deepEqual(server.confirms()[0].body, { sideEffect: { type: "setCareerStage", stage: "veteran" } });
-  assert.equal(lastTurn(session).content, "Done — your career stage is set to Veteran (10+ years).");
-  assert.deepEqual(spoken.at(-1), { text: "Done — your career stage is set to Veteran (10+ years).", turnId: undefined });
+  assert.equal(lastTurn(session).content, "Done — your career stage is set to Veteran, ten or more years.");
+  assert.deepEqual(spoken.at(-1), { text: "Done — your career stage is set to Veteran, ten or more years.", turnId: undefined });
   assert.equal(session.getState().careerStage, "veteran");
   const order = server.calls.map((c) => `${c.method} ${c.url}`);
   assert.ok(order.indexOf("GET /api/auth/me") > order.indexOf("POST /api/assistant/confirm"), "refreshed after the write");
@@ -665,7 +665,7 @@ test("a career-stage change confirmed by voice (the greeting's question) refresh
         turnReply("Quick question before we dive in — how long have you been originating?"),
         turnReply("So that's Veteran (10+ years) — shall I set that?", { sideEffect: STAGE_SIDE_EFFECT }),
       ),
-      "POST /api/assistant/confirm": () => reply(200, { success: true, result: { stage: "veteran", label: "Veteran (10+ years)" }, reply: "Done — your career stage is set to Veteran (10+ years)." }),
+      "POST /api/assistant/confirm": () => reply(200, { success: true, result: { stage: "veteran", label: "Veteran (10+ years)" }, reply: "Done — your career stage is set to Veteran, ten or more years." }),
     },
   });
   server.calls.length = 0;

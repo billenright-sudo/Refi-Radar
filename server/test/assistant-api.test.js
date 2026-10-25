@@ -393,6 +393,14 @@ test("A4: the greeting speaks a three-decimal FRED rate to two decimals", async 
   assert.match((await greet(sam, { localHour: 9 })).data.reply, /the 30-year is at 6\.52%\./);
 });
 
+test("R2-3: the greeting says the rounded rate as the number it is: 7.2 is '7.2%', never a padded '7.20%' or '7.00%'", async () => {
+  for (const [rate, said] of [[7.2, "7.2%"], [7.25, "7.25%"], [7, "7%"], [7.251, "7.25%"], [6.999, "7%"], [7.104, "7.1%"]]) {
+    const r = await greet(sam, { localHour: 9, rates: { ...LIVE, rate_30yr_fixed: rate } });
+    assert.ok(r.data.reply.includes(`; the 30-year is at ${said}. `), `${rate}: ${r.data.reply}`);
+    assert.doesNotMatch(r.data.reply, /\d\.\d0%|\.00%/, String(rate));
+  }
+});
+
 test("greeting: estimated rates say so, and cite the estimated sources", async () => {
   const r = await greet(sam, { localHour: 9, rates: EST });
   assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due; the 30-year is at 6.52% (estimated). ${WANT_MORE}`);
