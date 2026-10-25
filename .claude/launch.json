@@ -2,10 +2,17 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "broker-radar-api",
+      "runtimeExecutable": "C:/Users/bille/dev/node20/node.exe",
+      "runtimeArgs": ["index.js"],
+      "cwd": "C:/Users/bille/dev/refi-radar/server",
+      "port": 8080
+    },
+    {
       "name": "broker-radar-client",
-      "runtimeExecutable": "C:\\Users\\bille\\dev\\node20\\npm.cmd",
+      "runtimeExecutable": "C:/Users/bille/dev/node20/npm.cmd",
       "runtimeArgs": ["run", "dev", "--", "--host", "--port", "5173"],
-      "cwd": "C:\\Users\\bille\\dev\\refi-radar\\client",
+      "cwd": "C:/Users/bille/dev/refi-radar/client",
       "port": 5173
     }
   ]
