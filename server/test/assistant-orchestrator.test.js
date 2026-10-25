@@ -2729,3 +2729,84 @@ const R3_TABLE = [
 test("R7-S: a user-directed stage claim is false unless it matches the stored stage (leaks, truth check, false positives)", async () => {
   await checkTable(R3_TABLE);
 });
+
+// ── Fix round 4: wider claim forms, "established" / "brand new" allow-lists, the leading form's scope, set-claims ──
+
+const STAGES_AND_NONE = ["new", "developing", "established", "veteran", null];
+const ctxAs = (stage) => user_(stage);
+const sweepAs = (stage) => ({ user: { ...sweepCtx.user, career_stage: stage }, rates: LIVE, db });
+const withCtx = (ctx) => (row) => [...row, { ctx }];
+// what an unstaged user can hear after answering the career question, with the stage each one claims
+const R4_CLAIMS = [
+  ["That puts you in the Veteran tier.", "veteran"], ["This moves you to Established.", "established"], ["That treats you as a Veteran.", "veteran"],
+  ["You're definitely a Veteran.", "veteran"], ["You're clearly a veteran.", "veteran"], ["You're firmly Established.", "established"],
+  ["You're at the Veteran level now.", "veteran"], ["You qualify as a Veteran.", "veteran"], ["That counts as Veteran.", "veteran"],
+  ["That's Veteran level, so I'll keep it terse.", "veteran"], ["I've got you down as a Veteran.", "veteran"], ["Bumped you up to Established.", "established"],
+  ["Consider yourself a Veteran.", "veteran"], ["Welcome aboard, Veteran!", "veteran"], ["You've got veteran status now.", "veteran"],
+  ["Veteran mode on!", "veteran"], ["Got it: Veteran.", "veteran"], ["Veteran (10+ years).", "veteran"],
+];
+const ANSWER = { veteran: "about 20 years", established: "about 6 years" };
+const OTHER_STAGE = { veteran: "developing", established: "veteran" };
+
+const R4_TABLE = [
+  // every form, for an UNSTAGED user: nothing backs the claim, grounded or not
+  ...R4_CLAIMS.flatMap(([t, id]) => claimRows(AFTER_CAREER_Q(ANSWER[id]), [t])),
+  // ... true for the stored stage (on an ungrounded turn only a reply with no digit can pass at all: screenUngroundedText) ...
+  ...R4_CLAIMS.map(([t, id]) => [AFTER_CAREER_Q(ANSWER[id]), "findClient", t, PASS, { ctx: ctxAs(id) }]),
+  ...R4_CLAIMS.filter(([t]) => !/\d/.test(t)).map(([t, id]) => [AFTER_CAREER_Q(ANSWER[id]), null, t, PASS, { ctx: ctxAs(id) }]),
+  [AFTER_CAREER_Q("about 20 years"), null, "Veteran (10+ years).", CANT_VERIFY, { ctx: ctxAs("veteran") }],
+  // ... and false for a different stored stage
+  ...R4_CLAIMS.flatMap(([t, id]) => onBoth(AFTER_CAREER_Q(ANSWER[id]), t, NOTHING_CHANGED).map(withCtx(ctxAs(OTHER_STAGE[id])))),
+
+  // minor 1: "established" follows the new / developing allow-list, so these pass for every stored stage (and none)
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    "You're established in this market, so lead with the Chens.", "You're an established name with the Chens.",
+    "You're one of the established lenders in town.",
+  ].map((t) => ["Who should I call today?", "runSweepTool", t, PASS, { ctx: sweepAs(stage) }])),
+  // ... while "established" where the clause ends, or before a stage noun, still claims
+  ...claimRows(AFTER_CAREER_Q("about 6 years"), ["You're established now.", "You're an established broker, so I'll be brief."]),
+
+  // minor 2: the leading form opens only the reply's first sentence or one after . ! ? (never an em-dash fragment), and a
+  // sentence ending "?" is a question
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    ["Who should I call today?", "runSweepTool", "Call the Chens first — established, low-risk, and due for a check-in.", PASS, { ctx: sweepAs(stage) }],
+    ...onBoth(AFTER_CAREER_Q("about 20 years"), "Veteran, Established, or Developing — which fits?", PASS).map(withCtx(ctxAs(stage))),
+  ]),
+  ...claimRows(AFTER_CAREER_Q("about 20 years"), ["Twenty years. Veteran, got it.", "Twenty years! Veteran.", "Got it — Veteran."]),
+
+  // minor 3: "brand new" is a stage only where "new" would be
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    ["what are rates doing?", "getMarketUpdate", "You're brand new to this business, so watch the trend.", PASS, { ctx: ctxAs(stage) }],
+    ["thanks", null, "You're brand new to this business, so watch the trend.", PASS, { ctx: ctxAs(stage) }],
+  ]),
+  ...claimRows("I'm brand new", ["You're brand new, so I'll keep it simple.", "You're brand-new now."]),
+
+  // minor 4: a set-claim that names a stage is a truth check too: true for the stored stage ...
+  ...["Your career stage is set to Veteran.", "Your stage is set to Veteran.", "I've set you as a veteran."]
+    .flatMap((t) => onBoth("what's my career stage?", t, PASS).map(withCtx(ctxAs("veteran")))),
+  ["what's my career stage?", "findClient", "Your career stage has been set to Veteran (10+ years).", PASS, { ctx: ctxAs("veteran") }],
+  // ... false for any other stored stage, or none
+  ...["developing", "new", "established", null].flatMap((stage) =>
+    onBoth("what's my career stage?", "Your career stage is set to Veteran.", NOTHING_CHANGED).map(withCtx(ctxAs(stage)))),
+  ...onBoth("what's my career stage?", "I've set you as a veteran.", NOTHING_CHANGED).map(withCtx(ctxAs("developing"))),
+  // ... and one that names no stage (or names a second one) fires on every turn, for every user
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    "Your career stage is set.", "Your stage has been set.", "I've already set it.", "Your career stage is now changed.",
+    "Your stage is set to Veteran, not Established.",
+  ].flatMap((t) => onBoth("what's my career stage?", t, NOTHING_CHANGED).map(withCtx(ctxAs(stage))))),
+  // (ACCEPTED, outside the ruling: "you're set / marked / listed as" and the ungrounded "was set" still fire for a stored veteran)
+  ...onBoth("what's my career stage?", "You're listed as Veteran.", NOTHING_CHANGED).map(withCtx(ctxAs("veteran"))),
+  ["what's my career stage?", null, "Your stage was set to Veteran.", NOTHING_CHANGED, { ctx: ctxAs("veteran") }],
+
+  // other subjects stay non-claims, for every stored stage
+  ...STAGES_AND_NONE.flatMap((stage) => [
+    ["Tell me about Chen", "findClient", "Your client Robert is a veteran, so lead with the VA streamline.", PASS, { ctx: ctxAs(stage) }],
+    ["Tell me about Chen", "findClient", "Robert's veteran status makes the VA streamline the lead.", PASS, { ctx: ctxAs(stage) }],
+    ["what are rates doing?", "getMarketUpdate", "That's a new level for rates this year.", PASS, { ctx: ctxAs(stage) }],
+    ["what are rates doing?", "getMarketUpdate", "This refi wave puts you in new territory.", PASS, { ctx: ctxAs(stage) }],
+  ]),
+];
+
+test("Fix round 4: the wider claim forms, the established / brand-new allow-lists, the leading form's scope and set-claims naming a stage", async () => {
+  await checkTable(R4_TABLE);
+});

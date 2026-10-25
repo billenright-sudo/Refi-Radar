@@ -394,7 +394,7 @@ test("runTurn as a New user and as a Veteran user: identical tool calls, args, s
   assert.equal(runs.new.calls[1].system, runs.new.calls[0].system, "the same prompt for every call of a turn");
 });
 
-test("runTurn: the screening does not depend on the stage (the no-guess law holds for every user)", async () => {
+test("runTurn: for every stage, an invented figure is can't-verify, a false 'done' is nothing-changed, and a change is handed up for confirmation", async () => {
   for (const stage of [...IDS, null]) {
     const ctx = ctxFor(ann, "broker", orgA, stage);
     // an invented figure after a market lookup is still the can't-verify line
@@ -532,6 +532,36 @@ test("claimsCompletion: first-person 'set' and the every-turn 'is set to' / 'you
       assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
     }
   }
+});
+
+test("claimsCompletion: a set-claim that names a stage is a truth check against the stored stage; one that names none always claims", () => {
+  for (const grounded of [false, true]) {
+    // SET_PASSIVE_RE / FIRST_PERSON_SET_RE / STAGE_SET_BARE_RE naming the stored stage: a true statement
+    for (const text of [
+      "Your career stage is set to Veteran.", "Your stage is set to Veteran.", "I've set you as a veteran.", "I set your stage to Veteran.",
+      "Your career stage has been set to Veteran (10+ years).", "Your career stage is now set to “Veteran (10+ years)”.",
+      "We've set your career stage to Veteran.",
+    ]) {
+      assert.equal(claimsCompletion(text, grounded, "veteran"), false, `${grounded} veteran: ${text}`);
+      // ... and false for any other stored stage, none, or the two-argument call
+      for (const other of ["new", "developing", "established", null, undefined]) {
+        assert.equal(claimsCompletion(text, grounded, other), true, `${grounded} ${other}: ${text}`);
+      }
+      assert.equal(claimsCompletion(text, grounded), true, `${grounded} (no stored stage): ${text}`);
+    }
+    assert.equal(claimsCompletion("Your stage has been set as an Established broker.", grounded, "established"), false);
+    assert.equal(claimsCompletion("Your stage is set to New (under 1 year).", grounded, "new"), false);
+    // a set-claim that names no stage, or a second stage, or that sits beside another claim, fires for every user
+    for (const text of [
+      "Your career stage is set.", "Your stage has been set.", "I've already set it.", "Your career stage is now changed.",
+      "I have set your stage.", "Your stage is set to Veteran, not Established.", "I've set you as a veteran and logged the call.",
+    ]) {
+      for (const stage of [...IDS, null]) assert.equal(claimsCompletion(text, grounded, stage), true, `${grounded} ${stage}: ${text}`);
+    }
+  }
+  // the forms outside the ruling are unchanged: "you're set / listed as" and the ungrounded "was set" fire for every user
+  assert.equal(claimsCompletion("You're listed as Veteran.", true, "veteran"), true);
+  assert.equal(claimsCompletion("Your stage was set to Veteran.", false, "veteran"), true);
 });
 
 // ── /api/assistant/confirm: setCareerStage ───────────────────────────────────
@@ -1087,6 +1117,29 @@ const CLAIM_TABLE = [
   // the acknowledgements the existing rows pin: a leading stage word, and a welcome
   ["Veteran, got it.", "veteran"], ["Okay, Established.", "established"], ["Great — Developing!", "developing"],
   ["Welcome to the veterans' tier.", "veteran"], ["Welcome to the Developing stage.", "developing"],
+  // fix round 4: what an unstaged user can hear after "about 20 years"
+  // (b) inflections, the new verbs, "yourself", up / down / back, "at"
+  ["That puts you in the Veteran tier.", "veteran"], ["This moves you to Established.", "established"], ["That treats you as a Veteran.", "veteran"],
+  ["I've got you down as a Veteran.", "veteran"], ["Bumped you up to Established.", "established"], ["That places you at the Veteran level.", "veteran"],
+  ["That lands you in the Established bracket.", "established"], ["I noted you as a Veteran.", "veteran"], ["That upgrades you to Veteran.", "veteran"],
+  ["She coaches you as a Veteran.", "veteran"], ["That has you at Veteran.", "veteran"],
+  // (b2) "yourself"
+  ["Consider yourself a Veteran.", "veteran"],
+  // (a) any -ly adverb, and "at (the)"
+  ["You're definitely a Veteran.", "veteran"], ["You're clearly a veteran.", "veteran"], ["You're firmly Established.", "established"],
+  ["You're at the Veteran level now.", "veteran"], ["You're at Veteran level.", "veteran"],
+  // qualify / count as
+  ["You qualify as a Veteran.", "veteran"], ["That counts as Veteran.", "veteran"], ["This qualifies as Established.", "established"],
+  // that's STAGE level / tier / territory / stage / bracket / status; STAGE status / mode
+  ["That's Veteran level, so I'll keep it terse.", "veteran"], ["That's the Veteran tier.", "veteran"], ["That's Established level.", "established"],
+  ["You've got veteran status now.", "veteran"], ["Veteran mode on!", "veteran"], ["Switching to Established mode.", "established"],
+  // the vocative
+  ["Welcome aboard, Veteran!", "veteran"], ["Congrats, Veteran.", "veteran"], ["Welcome, Established broker!", "established"],
+  // the leading form: ":" after an opener, "(" after the stage word, and a sentence after . ! ?
+  ["Got it: Veteran.", "veteran"], ["Veteran (10+ years).", "veteran"], ["Got it: Established (3–10 years).", "established"],
+  ["Twenty years. Veteran, got it.", "veteran"], ["Twenty years! Established.", "established"],
+  // a possessive is the stage before a stage noun
+  ["Welcome to the veterans' club.", "veteran"], ["That puts you in the veterans' bracket.", "veteran"], ["You have veteran status.", "veteran"],
 ];
 
 const NOT_CLAIMS = [
@@ -1106,6 +1159,25 @@ const NOT_CLAIMS = [
   "Want me to set you as a Veteran?", "Want me to coach you as a Veteran?", "Should I treat you like a Veteran?", "Would you like Veteran coaching?",
   "Which stage fits — Established or Veteran?", "Established, Veteran, or Developing?", "Is it okay if I set your stage to Veteran?",
   "Do you want to be Established?", "Does that make you Established?",
+  // fix round 4: "established" bare only where the clause ends, after an article only before a stage noun (like new / developing)
+  "You're established in this market, so lead with the Chens.", "You're an established name with the Chens.",
+  "You're one of the established lenders in town.", "You're established with the Chens.",
+  // ... the leading form never opens an em-dash fragment, and a sentence ending "?" is a question
+  "Call the Chens first — established, low-risk, and due for a check-in.", "Veteran, Established, or Developing — which fits?",
+  // ... "brand new" is a stage only where "new" would be
+  "You're brand new to this business, so watch the trend.", "I could move you to a brand new, lower payment.",
+  // ... and the widened forms leave other subjects and everyday phrases alone
+  "Your client Robert is a veteran, so lead with the VA streamline.", "Robert's veteran status makes the VA streamline the lead.",
+  "Their veteran status qualifies them for a VA streamline.", "With veteran status, they can do a VA IRRRL.",
+  "Robert qualifies as a veteran, so lead with the VA streamline.", "Chen counts as an established client.",
+  "That's a new level for rates this year.", "That's new territory for the Chens.", "That's the established level for cash-out.",
+  "That's a veteran move.", "This refi wave puts you in new territory.", "That counts as a new contact.", "Welcome, new users!",
+  "That lands you at a new low.", "I got you a better rate.", "You've got a new status update from Chen.", "That's established practice.",
+  "You're only a new client away from a record month.", "You're really established in this market.", "Welcome back! New rates are out.",
+  "That gets you into a new fixed rate.", "I'd put you in the established camp with the Chens.",
+  // (narrowed: a possessive veteran's / veterans' before a noun that is not a stage noun, and "status" that is not where the clause ends)
+  "I'll see you at the veterans' breakfast.", "You're likely a veteran's best option.", "You've earned established status with the Chens.",
+  "Your veteran status with the VA helps with the Chens.",
   // not text
   "", "   ", "Sure.",
 ];
