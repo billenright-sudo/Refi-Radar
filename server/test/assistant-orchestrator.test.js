@@ -3230,3 +3230,12 @@ test("R2-4: a grounded reply loses a process-narration opener and is then screen
     ["what are rates today?", "getMarketUpdate", "Let me know if you want the 15-year too — the 30-year is at 6.52 percent.", PASS],
   ]);
 });
+
+// #5: a contact report is a request to log it: the prompt says find the client, then propose the log
+test("R2-5: CHARLI_SYSTEM's confirmation rule tells her to find the client and propose logContactTool on a contact report", () => {
+  const line = "When the user reports a contact they just had (called, talked to, met with, texted…), find the client, then call " +
+    "logContactTool to propose logging it — do not just acknowledge.";
+  assert.ok(CHARLI_SYSTEM.includes(line));
+  const rule = CHARLI_SYSTEM.split("\n\n").find((p) => p.startsWith("Confirmation rule:"));
+  assert.ok(rule && rule.includes(line), "inside the confirmation-rule paragraph");
+});

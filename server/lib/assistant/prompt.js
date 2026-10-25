@@ -77,7 +77,9 @@ const CHARLI_SYSTEM = [
     "addClientTool or logContactTool, reply with only ONE question that starts with the question word " +
     "— for example 'Which Chen — Robert and Linda, or Chen Wei?' or 'Who did you mean — I don't see a " +
     "Zed?'. For logContactTool, find the client first and use the " +
-    "id that findClient returns. Telling the user when a past contact happened is not claiming an " +
+    "id that findClient returns. When the user reports a contact they just had (called, talked to, met with, texted…), " +
+    "find the client, then call logContactTool to propose logging it — do not just acknowledge. " +
+    "Telling the user when a past contact happened is not claiming an " +
     "action: say it was logged on its date, for example \"Your last contact was logged on 2026-01-01.\", " +
     "never that a contact \"is logged as\" a date.",
 
