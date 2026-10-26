@@ -12,7 +12,7 @@ process.env.NODE_ENV = "test";
 
 const test = require("node:test");
 const { before, after } = require("node:test");
-const assert = require("node:assert");
+const assert = require("node:assert/strict");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 

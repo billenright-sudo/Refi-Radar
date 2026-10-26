@@ -61,7 +61,8 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
   **`feature/accurate-refi-scoring`** (Charli v1 merged in 2026-10-26, not yet deployed);
   `main` is behind.
 - **Charli deploy prerequisites:** `ELEVENLABS_API_KEY` in Secret Manager
-  (`--set-secrets`), the other `ELEVENLABS_*` + `CHARLI_TTS_DAILY_CHARS` as env;
+  (`--set-secrets`), the other `ELEVENLABS_*` + `CHARLI_TTS_DAILY_CHARS` (default 60000)
+  + `CHARLI_TURN_DEADLINE_MS` (default 25000; accepted 2000–30000, else the default) as env;
   without them Charli falls back to text-only (503 on the voice routes).
 
 ## Data sources
@@ -87,7 +88,8 @@ restyle without asking.**
 Referenced by env var; stored in **Google Secret Manager** (`ANTHROPIC_API_KEY`,
 `FRED_API_KEY`, `JWT_SECRET`, and on Charli's deploy `ELEVENLABS_API_KEY`) and Cloud
 Run env (`DATA_DIR`, `CLAUDE_MODEL`, `ELEVENLABS_VOICE_ID_CHARLI`,
-`ELEVENLABS_TTS_MODEL`, `ELEVENLABS_STT_MODEL`, `CHARLI_TTS_DAILY_CHARS`); locally
+`ELEVENLABS_TTS_MODEL`, `ELEVENLABS_STT_MODEL`, `CHARLI_TTS_DAILY_CHARS`,
+`CHARLI_TURN_DEADLINE_MS`); locally
 in `server/.env` (git-ignored). Others: `EMAIL_USER`, `EMAIL_PASS`, `APP_URL`,
 `PORT`. `.env.example` holds names/placeholders only. **Never commit real secrets
 or print them in logs/chat. Subagents and reviewers never read, cat or grep `.env`

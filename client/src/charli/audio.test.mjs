@@ -36,7 +36,7 @@ test("ttsFailureBody never throws: an unreadable or missing body is '', and a ca
   assert.equal(await ttsFailureBody(unreadable), "");
   assert.deepEqual(events, ["cancel"], "the body is still cancelled");
   assert.equal(await ttsFailureBody({ ok: false, status: 429 }), "", "no text() and no body");
-  assert.equal(await ttsFailureBody({ ok: false, status: 429, text: async () => null }), "null");
+  assert.equal(await ttsFailureBody({ ok: false, status: 429, text: async () => null }), "", "a non-string body is no text");
   const cancelThrows = failedResponse(429, BUDGET_BODY, { cancel: () => { throw new Error("locked"); } });
   assert.equal(await ttsFailureBody(cancelThrows), BUDGET_BODY);
   const cancelRejects = failedResponse(429, BUDGET_BODY, { cancel: () => Promise.reject(new Error("errored stream")) });

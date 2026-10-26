@@ -21,7 +21,10 @@ const TTS_ERROR_BODY_CHARS = 1024;   // how much of a failed /tts response is re
 // session.mjs voiceNoteFor reads it. Never throws.
 export async function ttsFailureBody(res) {
   let text = "";
-  try { text = String(await res.text()).slice(0, TTS_ERROR_BODY_CHARS); } catch { /* unreadable: the status alone decides the note */ }
+  try {
+    const raw = await res.text();
+    text = typeof raw === "string" ? raw.slice(0, TTS_ERROR_BODY_CHARS) : "";
+  } catch { /* unreadable: the status alone decides the note */ }
   try { if (res && res.body) await Promise.resolve(res.body.cancel()).catch(() => {}); } catch { /* already closed */ }
   return text;
 }
@@ -366,6 +369,7 @@ export function createAudio({
       if (!res.ok) {
         // the body is read BEFORE it is cancelled: it says which 429 this is (the daily budget or the limiter)
         const body = await ttsFailureBody(res);
+        if (ac.signal.aborted) return "skipped";   // stopped or disposed while the body was read: no note for a clip nobody wants
         onTtsError(res.status, body);   // the text is already on screen; carry on without a voice
         return "skipped";
       }

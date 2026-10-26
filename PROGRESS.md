@@ -79,12 +79,17 @@ _Last updated: 2026-10-25_
   speech-only key with a character quota is preferred; the current key is unrestricted and
   one review subagent once echoed it into its own transcript — rotation is Bill's call);
   `ELEVENLABS_VOICE_ID_CHARLI`, `ELEVENLABS_TTS_MODEL`, `ELEVENLABS_STT_MODEL`,
-  `CHARLI_TTS_DAILY_CHARS` as Cloud Run env (without them Charli answers text-only);
+  `CHARLI_TTS_DAILY_CHARS`, `CHARLI_TURN_DEADLINE_MS` as Cloud Run env (without the
+  ElevenLabs ones Charli answers text-only);
   vendor data-retention terms (Anthropic API + ElevenLabs) to confirm; first real curl of
   `/api/voice/tts` and `/stt` against the service.
-- **Charli follow-ups from the final review:** 25 s per-turn deadline + client abort (a slow
-  turn holds the mic); a session.mjs ↔ real-router integration test; orchestrator tidy into
-  one `screenReply` decision function (replace shape regexes with a verb-presence rule);
+- **Charli follow-ups from the reviews** (the 25 s turn deadline, client timeouts, the
+  session.mjs ↔ real-router test and the 429 note were done 2026-10-26 on
+  `feature/charli-hardening`): orchestrator tidy into one `screenReply` decision
+  function (replace shape regexes with a verb-presence rule); a `/confirm` that times out
+  after the server wrote leaves "cancel" saying "I'll leave that" while the write stands;
+  a model call aborted by the deadline is not metered (tokens unknown); `ttsFailureBody`
+  has no time bound (a stalled error body holds the speech queue until Pause);
   `assistant_confirmations` 30-day prune; a completion claim after a mid-sentence "and"
   ("…and Chen marked as contacted") is not caught; `POST /api/clients` still writes 700 for
   an unusable credit score while the voice tool rejects it; talk-track tool for brand-new
