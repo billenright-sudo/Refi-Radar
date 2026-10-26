@@ -12,6 +12,19 @@ import { createVad, VAD_DEFAULTS } from "./vad.mjs";
 const TTS_URL = "/api/voice/tts";
 const STT_URL = "/api/voice/stt";
 const ECHO_TAIL_MS = 350;   // after capture resumes, ignore the room this long (the end of Charli's own voice)
+const TTS_ERROR_BODY_CHARS = 1024;   // how much of a failed /tts response is read
+
+// ── a failed speech response ─────────────────────────────────────────────────
+
+// The start (1 KB at most) of a failed /api/voice/tts response's text, "" when it cannot be read; the body is then cancelled. The
+// status alone cannot tell the two 429s apart (the daily budget vs the per-15-minute limiter): the server's message does, and
+// session.mjs voiceNoteFor reads it. Never throws.
+export async function ttsFailureBody(res) {
+  let text = "";
+  try { text = String(await res.text()).slice(0, TTS_ERROR_BODY_CHARS); } catch { /* unreadable: the status alone decides the note */ }
+  try { if (res && res.body) await Promise.resolve(res.body.cancel()).catch(() => {}); } catch { /* already closed */ }
+  return text;
+}
 
 // ── speech-to-text upload ────────────────────────────────────────────────────
 
@@ -96,7 +109,8 @@ const abortError = () => Object.assign(new Error("aborted"), { name: "AbortError
 //   onMicChange(state)       "live" | "off" | "denied" | "unavailable" | "error"
 //   onAutoplayBlocked()      the browser refused to play without a tap: show a "Start Charli" button, then call
 //                            unlock() and retryBlocked() from that tap
-//   onTtsError(status)       speech could not be fetched/played (status 0 = network, -1 = playback); text stays on screen
+//   onTtsError(status, body) speech could not be fetched/played (status 0 = network, -1 = playback; otherwise the HTTP status, with
+//                            `body` the start of the response text, ttsFailureBody: "" when there was none); text stays on screen
 //   onTtsOk()                a clip played fine
 export function createAudio({
   fetch: fetchFn,
@@ -350,8 +364,9 @@ export function createAudio({
         return "skipped";
       }
       if (!res.ok) {
-        try { if (res.body) res.body.cancel(); } catch { /* already closed */ }
-        onTtsError(res.status);   // the text is already on screen; carry on without a voice
+        // the body is read BEFORE it is cancelled: it says which 429 this is (the daily budget or the limiter)
+        const body = await ttsFailureBody(res);
+        onTtsError(res.status, body);   // the text is already on screen; carry on without a voice
         return "skipped";
       }
       try {

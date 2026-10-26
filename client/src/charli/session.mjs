@@ -104,12 +104,17 @@ export function classifyReply(text) {
   return found.yes ? "yes" : "other";
 }
 
+// The two kinds of 429 from /api/voice/tts: the daily character budget (back tomorrow) and the per-15-minute limiter (back in minutes).
+export const VOICE_BUDGET_NOTE = "Charli's voice budget for today is used up, so her answers are in text until tomorrow.";
+export const VOICE_BREAK_NOTE = "Charli's voice is taking a short break — her answers are in text for a few minutes.";
+
 // The note shown when a spoken reply could not be fetched or played (the text is already on screen). `status` is what
-// audio.js reports: the HTTP status of /api/voice/tts, 0 for a network failure, -1 for playback. 429 is the daily voice budget
-// (or the per-15-minute limit): the voice is back tomorrow, or in a few minutes.
-export function voiceNoteFor(status) {
+// audio.js reports: the HTTP status of /api/voice/tts, 0 for a network failure, -1 for playback. `body` is the start of the failed
+// response's text (audio.js ttsFailureBody; "" when there is none). A 429 is the daily budget only when its body says "budget"
+// (the server's "voice budget reached for today ..."); any other 429 is the limiter, which clears in minutes, not tomorrow.
+export function voiceNoteFor(status, body = "") {
   if (status === 503) return "Voice replies aren't set up on this server, so Charli answers in text.";
-  if (status === 429) return "Charli's voice budget for today is used up, so her answers are in text until tomorrow.";
+  if (status === 429) return /budget/i.test(String(body ?? "")) ? VOICE_BUDGET_NOTE : VOICE_BREAK_NOTE;
   return "Charli's voice isn't coming through right now, so her answers are in text.";
 }
 

@@ -520,6 +520,7 @@ test("B7: each user has a daily speech budget: requests under it are spoken, the
     const over = await tts(kim, { text: "Hello." });
     assert.equal(over.status, 429);
     assert.deepStrictEqual(over.data, { error: "voice budget reached for today — Charli answers in text until tomorrow" });
+    assert.match(over.data.error, /budget/, "the client (voiceNoteFor) tells the daily budget from the limiter by this word");
     assert.equal(calls.length, 2, "the request over the budget was not sent upstream");
     assert.equal(usageRows(kim).filter((r) => r.kind === "tts").length, 2, "and not metered");
     // another user has a budget of their own
@@ -903,6 +904,7 @@ test("rate limit: counted per signed-in user across tts and stt, 429 with a JSON
     const over = await call(ann)("POST", "/api/voice/tts", { json: { text: "four" } });
     assert.equal(over.status, 429);
     assert.match(over.data.error, /too many/i);
+    assert.doesNotMatch(over.data.error, /budget/i, "the limiter's 429 must not read as the daily budget to the client (voiceNoteFor)");
     assert.equal((await call(ann)("POST", "/api/voice/stt", { form: audioForm(CLIP) })).status, 429, "the cap covers stt too");
     // another user is counted separately; anonymous is 401 whatever the count
     assert.equal((await call(bea)("POST", "/api/voice/tts", { json: { text: "hello" } })).status, 200);

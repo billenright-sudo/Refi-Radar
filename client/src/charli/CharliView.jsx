@@ -145,7 +145,7 @@ export default function CharliView({ rates, user, ui }) {
       onMicChange: setMic,
       onAutoplayBlocked: () => setNeedsStart(true),
       onTtsOk: () => { setVoiceNote(""); setNeedsStart(false); },   // it played, so no tap is needed after all
-      onTtsError: (status) => setVoiceNote(voiceNoteFor(status)),
+      onTtsError: (status, body) => setVoiceNote(voiceNoteFor(status, body)),
     });
     parts.current = { session, audio };
   }

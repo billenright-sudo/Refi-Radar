@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
-  CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT,
+  CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -118,12 +118,24 @@ test("B5: an ordinary yes to a read-back confirms it and never reaches /turn", a
   }
 });
 
-test("B7: the text-only note says 'budget' when the voice answered 429; 503 and other failures keep their notes", () => {
-  assert.equal(voiceNoteFor(429), "Charli's voice budget for today is used up, so her answers are in text until tomorrow.");
+test("B7: the text-only note says 'budget' when the voice answered 429 for the daily budget; 503 and other failures keep their notes", () => {
+  assert.equal(VOICE_BUDGET_NOTE, "Charli's voice budget for today is used up, so her answers are in text until tomorrow.");
+  assert.equal(voiceNoteFor(429, '{"error":"voice budget reached for today — Charli answers in text until tomorrow"}'), VOICE_BUDGET_NOTE);
   assert.equal(voiceNoteFor(503), "Voice replies aren't set up on this server, so Charli answers in text.");
   for (const status of [0, -1, 502, 504, 400]) {
     assert.equal(voiceNoteFor(status), "Charli's voice isn't coming through right now, so her answers are in text.", String(status));
   }
+});
+
+test("a 429 that is the limiter (or has no readable body) is a short break, not the daily budget; the body never changes other statuses", () => {
+  assert.equal(VOICE_BREAK_NOTE, "Charli's voice is taking a short break — her answers are in text for a few minutes.");
+  for (const body of ['{"error":"Too many voice requests — please try again in a few minutes"}', "", undefined, null, "<html>slow down</html>"]) {
+    assert.equal(voiceNoteFor(429, body), VOICE_BREAK_NOTE, String(body));
+  }
+  assert.equal(voiceNoteFor(429), VOICE_BREAK_NOTE, "no body at all");
+  assert.equal(voiceNoteFor(429, "Voice BUDGET reached"), VOICE_BUDGET_NOTE, "the word is matched whatever its case");
+  // a body that mentions the budget on any other status changes nothing
+  for (const status of [0, -1, 400, 502, 503]) assert.equal(voiceNoteFor(status, "voice budget reached"), voiceNoteFor(status), String(status));
 });
 
 // ── greeting ─────────────────────────────────────────────────────────────────
