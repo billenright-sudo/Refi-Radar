@@ -34,6 +34,18 @@ export const DIDNT_CATCH = "I didn't catch that — could you say it again?";
 // had already been confirmed, cancelled or replaced on screen.
 export const LATE_ANSWER = "That answer came in after the change was already handled, so I left it alone.";
 
+// What Charli says when /turn did not answer in time (REQUEST_TIMEOUTS): the turn is dropped here and nothing was written. (The
+// server has its own line, TOOK_TOO_LONG, for a turn it cut off itself; that one arrives as an ordinary error reply.)
+export const TOOK_TOO_LONG_CLIENT = "That took too long on my end — could you say it again?";
+
+// How long a request may take before it is given up on, in ms, by URL. /turn is the server's own turn deadline (25 s, see
+// CHARLI_TURN_DEADLINE_MS) plus a margin, so the server's answer to a slow turn arrives before this gives up.
+export const REQUEST_TIMEOUTS = Object.freeze({
+  "/api/assistant/turn": 35_000,
+  "/api/assistant/confirm": 15_000,
+  "/api/auth/me": 10_000,
+});
+
 // The server keeps the last 20 messages and refuses a body of more than 100; send comfortably under that.
 const MAX_SENT_MESSAGES = 30;
 
@@ -130,8 +142,9 @@ function failureText(res) {
 }
 
 // A failed /confirm worth retrying with the same confirmId (the server dedupes, so a retry cannot write twice):
-// the network dropped, the server hiccuped or the rate limit is hit. Anything else (400/401/403/404/409) is final.
-const isRetryable = (res) => res.network || res.status >= 500 || res.status === 429;
+// the network dropped or the request timed out (the write may or may not have happened), the server hiccuped or the rate
+// limit is hit. Anything else (400/401/403/404/409) is final.
+const isRetryable = (res) => res.network || res.timedOut || res.status >= 500 || res.status === 429;
 
 // createSession({ fetch, rates, localHour, user, onSpeak })
 //   fetch      the window fetch (injected so tests need no network)
@@ -195,18 +208,39 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   const history = () =>
     state.turns.filter((t) => t.inHistory).map(({ role, content }) => ({ role, content })).slice(-MAX_SENT_MESSAGES);
 
-  // One HTTP call; never throws. -> { ok, status, data, network }
-  async function request(method, url, body) {
-    try {
+  // One HTTP call; never throws. -> { ok, status, data, network } ; one that outlasted `timeoutMs` (default: REQUEST_TIMEOUTS for
+  // the url) -> { ok: false, status: 0, data: null, network: true, timedOut: true }. The request is cancelled through an abort
+  // signal AND raced against a timer, so a fetch that ignores the signal cannot hang the session either; the timer covers reading
+  // the body too, and is cleared as soon as the call is over. (A timer rather than AbortSignal.timeout: that is missing from older
+  // browsers, and in node its timer does not keep a test process alive.)
+  async function request(method, url, body, { timeoutMs = REQUEST_TIMEOUTS[url] } = {}) {
+    const controller = timeoutMs > 0 && typeof AbortController === "function" ? new AbortController() : null;
+    let timer;
+    let timedOut = false;
+    const exchange = async () => {
       const init = body === undefined
         ? { method }
         : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+      if (controller) init.signal = controller.signal;
       const res = await doFetch(url, init);
       let data = null;
       try { data = await res.json(); } catch { data = null; }
       return { ok: !!res.ok, status: res.status, data, network: false };
+    };
+    try {
+      if (!controller) return await exchange();
+      const clock = new Promise((resolve) => {
+        timer = setTimeout(() => { timedOut = true; controller.abort(); resolve(null); }, timeoutMs);
+      });
+      const done = await Promise.race([exchange(), clock]);
+      if (done) return done;
+      return { ok: false, status: 0, data: null, network: true, timedOut: true };
     } catch {
-      return { ok: false, status: 0, data: null, network: true };
+      return timedOut
+        ? { ok: false, status: 0, data: null, network: true, timedOut: true }
+        : { ok: false, status: 0, data: null, network: true };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -244,7 +278,8 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
       speak(data.reply, data.turnId);
       return;
     }
-    const text = failureText(res);
+    // a /turn that timed out says so in its own words (nothing was written; the user asks again), not as a lost connection
+    const text = res.timedOut ? TOOK_TOO_LONG_CLIENT : failureText(res);
     addTurn({ role: "assistant", content: text, kind: "error" });
     speak(text);
   }

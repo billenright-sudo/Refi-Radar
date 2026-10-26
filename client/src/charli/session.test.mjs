@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
-  CANT_VERIFY, GUIDELINE_HANDOFF,
+  CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -728,4 +728,151 @@ test("a view-level notice is shown (and spoken on request) but never enters the 
   assert.equal(spoken.length, 1);
   await session.submit("hello");
   assert.deepEqual(messagesOf(server.turns()[0]), [{ role: "user", content: "hello" }]);
+});
+
+// ── request timeouts ─────────────────────────────────────────────────────────
+
+// Wraps fakeServer's fetch: the first `hangFirst` calls to each url in `hang` never answer until the request's signal aborts (then
+// they reject, as fetch does); `ignoreSignal` hangs for good, as a fetch that does not look at the signal would. Every call is logged.
+function hangingFetch(server, { hang = [], hangFirst = 1, ignoreSignal = false } = {}) {
+  const posted = [];
+  const hung = [];
+  const seen = {};
+  const fetch = (url, init = {}) => {
+    posted.push({ url, body: init.body ? JSON.parse(init.body) : undefined, signal: init.signal });
+    seen[url] = (seen[url] || 0) + 1;
+    if (!hang.includes(url) || seen[url] > hangFirst) return server.fetch(url, init);
+    hung.push({ url, signal: init.signal });
+    return new Promise((_resolve, reject) => {
+      if (!ignoreSignal && init.signal) init.signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+    });
+  };
+  return { fetch, posted, hung };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));   // setImmediate is not mocked: this drains the microtasks
+function setupHanging(options, routes = {}) {
+  const server = fakeServer({ "GET /api/auth/me": me(), ...routes });
+  const net = hangingFetch(server, options);
+  const spoken = [];
+  const session = createSession({ fetch: net.fetch, rates: RATES, localHour: 9, user: { careerStage: null }, onSpeak: (s) => spoken.push(s) });
+  return { session, server, net, spoken };
+}
+
+test("the request timeouts are pinned: turn 35 s (the server's 25 s deadline plus a margin), confirm 15 s, auth/me 10 s", () => {
+  assert.deepEqual({ ...REQUEST_TIMEOUTS }, { "/api/assistant/turn": 35_000, "/api/assistant/confirm": 15_000, "/api/auth/me": 10_000 });
+  assert.ok(Object.isFrozen(REQUEST_TIMEOUTS));
+  assert.equal(TOOK_TOO_LONG_CLIENT, "That took too long on my end — could you say it again?");
+});
+
+test("a /turn that never answers is given up on at 35 s: the line is shown and spoken, busy resets, nothing is written, the next turn works", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { session, server, net, spoken } = setupHanging({ hang: ["/api/assistant/turn"] }, { "POST /api/assistant/turn": queue(turnReply("Back.")) });
+  const pending = session.submit("what are rates today");
+  await flush();
+  assert.equal(session.getState().busy, true);
+  t.mock.timers.tick(34_999);
+  await flush();
+  assert.equal(session.getState().busy, true, "not before the 35 s");
+  assert.equal(net.hung[0].signal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.deepEqual(await pending, { ok: true, action: "turn" });
+
+  assert.equal(net.hung[0].signal.aborted, true, "the request itself was cancelled");
+  assert.equal(session.getState().busy, false);
+  assert.equal(session.getState().pending, null);
+  assert.deepEqual(session.getState().turns.map((x) => [x.role, x.content, x.kind, x.inHistory]), [
+    ["user", "what are rates today", "message", true],
+    ["assistant", TOOK_TOO_LONG_CLIENT, "error", true],
+  ]);
+  assert.deepEqual(spoken, [{ text: TOOK_TOO_LONG_CLIENT, turnId: undefined }]);
+  assert.equal(server.confirms().length, 0, "nothing is written");
+
+  await session.submit("again");
+  assert.deepEqual(messagesOf(server.turns()[0]).map((m) => m.role), ["user", "assistant", "user"]);
+  assert.equal(lastTurn(session).content, "Back.");
+});
+
+test("a fetch that ignores the abort signal cannot hang the session, and a reply that limps in after the timeout is dropped", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { session, spoken } = setupHanging({ hang: ["/api/assistant/turn"], ignoreSignal: true });
+  const pending = session.submit("what are rates today");
+  await flush();
+  t.mock.timers.tick(35_000);
+  assert.deepEqual(await pending, { ok: true, action: "turn" });
+  assert.equal(lastTurn(session).content, TOOK_TOO_LONG_CLIENT);
+  assert.equal(session.getState().busy, false);
+
+  // a late answer from a request that was already given up on never lands in the transcript
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const lateSession = createSession({
+    fetch: (url, init) => (url === "/api/assistant/turn" ? late : fakeServer({ "GET /api/auth/me": me() }).fetch(url, init)),
+    rates: RATES, localHour: 9, user: { careerStage: null }, onSpeak: (s) => spoken.push(s),
+  });
+  const p2 = lateSession.submit("what are rates today");
+  await flush();
+  t.mock.timers.tick(35_000);
+  await p2;
+  const before = lateSession.getState().turns.length;
+  release({ ok: true, status: 200, json: async () => ({ reply: "Too late.", sources: [], turnId: "x" }) });
+  await flush();
+  assert.equal(lateSession.getState().turns.length, before);
+  assert.ok(lateSession.getState().turns.every((x) => x.content !== "Too late."));
+});
+
+test("a /confirm that times out at 15 s keeps the read-back; saying yes again re-posts the same confirmId, and that one lands", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { session, net, spoken } = setupHanging({ hang: ["/api/assistant/confirm"] }, pendingRoutes({
+    "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done — I logged a contact for Robert and Linda Chen." }),
+  }));
+  await session.submit("log a contact for the Chens");
+  const pending = session.getState().pending;
+  assert.deepEqual(pending, { sideEffect: SIDE_EFFECT, readBack: READ_BACK });
+
+  const first = session.submit("yes");
+  await flush();
+  t.mock.timers.tick(14_999);
+  await flush();
+  assert.equal(session.getState().busy, true, "not before the 15 s");
+  t.mock.timers.tick(1);
+  assert.deepEqual(await first, { ok: true, action: "confirm" });
+  assert.equal(session.getState().busy, false);
+  assert.equal(session.getState().pending, pending, "the pending change is kept as it was");
+  assert.equal(lastTurn(session).kind, "notice");
+  assert.equal(lastTurn(session).content, "I couldn't finish that just now. Say yes to try again, or cancel.");
+  assert.equal(spoken.at(-1).text, "I couldn't finish that just now. Say yes to try again, or cancel.");
+  assert.notEqual(lastTurn(session).content, TOOK_TOO_LONG_CLIENT);
+
+  await session.submit("yes");
+  const posts = net.posted.filter((p) => p.url === "/api/assistant/confirm");
+  assert.equal(posts.length, 2);
+  assert.deepEqual(posts.map((p) => p.body), [{ sideEffect: SIDE_EFFECT }, { sideEffect: SIDE_EFFECT }], "the same confirmId both times");
+  assert.equal(lastTurn(session).content, "Done — I logged a contact for Robert and Linda Chen.");
+  assert.equal(session.getState().pending, null);
+});
+
+test("GET /api/auth/me is given up on at 10 s, and a request that answers in time is left alone (signal passed, never aborted)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const slow = setupHanging({ hang: ["/api/auth/me"] }, { "POST /api/assistant/turn": queue(turnReply("Good morning.")) });
+  const opening = slow.session.open();
+  await flush();
+  await opening;
+  assert.equal(slow.net.hung.length, 1);
+  t.mock.timers.tick(9_999);
+  assert.equal(slow.net.hung[0].signal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(slow.net.hung[0].signal.aborted, true);
+  await flush();
+  assert.equal(slow.session.getState().careerStage, null, "a stage refresh that timed out changes nothing");
+
+  // answered in time: every request carried a signal, none was aborted, and no timer is left to fire later
+  const quick = setupHanging({}, { "POST /api/assistant/turn": queue(turnReply("Rates are 6.5%.")) });
+  await quick.session.submit("what are rates today");
+  assert.equal(lastTurn(quick.session).content, "Rates are 6.5%.");
+  const turnPost = quick.net.posted.find((p) => p.url === "/api/assistant/turn");
+  assert.ok(turnPost.signal instanceof AbortSignal);
+  t.mock.timers.tick(100_000);
+  await flush();
+  assert.equal(turnPost.signal.aborted, false, "the timer was cleared when the reply came");
+  assert.equal(lastTurn(quick.session).content, "Rates are 6.5%.");
 });
