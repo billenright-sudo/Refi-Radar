@@ -9,8 +9,8 @@ Business Solutions**. It lets a mortgage broker/LO track a book of past-client
 loans, pulls **live mortgage rates**, and flags **refinance opportunities**
 (payment savings, break-even, priority). **"Sweeps"** is the AI opportunity engine
 (rate-term + cash-out + ARM→fixed + term-swap lenses, a 6-month check-in cadence) —
-live. **"Charli"** is the voice-first AI CRM co-pilot on top (v1 built on
-`feature/teresa-voice-crm`, not yet merged/deployed): she speaks the morning brief,
+live. **"Charli"** is the voice-first AI CRM co-pilot on top (v1 merged, not yet
+deployed): she speaks the morning brief,
 runs sweeps, looks up / adds clients and logs contacts by voice with
 confirm-before-write, explains terms from a fixed glossary, and tailors coaching to
 the user's career stage.
@@ -57,9 +57,9 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
   (Cloud Build rebuilds the client). gcloud auth tokens expire — if a deploy
   fails on "Reauthentication", Bill runs `gcloud auth login`.
 - **Never deploy without Bill's explicit go** (one approval = one deploy).
-- **Repo:** `github.com/billenright-sudo/Refi-Radar`. Deployed branch
-  **`feature/accurate-refi-scoring`**; Charli v1 on **`feature/teresa-voice-crm`**
-  (awaiting Bill's merge decision); `main` is behind both.
+- **Repo:** `github.com/billenright-sudo/Refi-Radar`. Working + deployed branch
+  **`feature/accurate-refi-scoring`** (Charli v1 merged in 2026-10-26, not yet deployed);
+  `main` is behind.
 - **Charli deploy prerequisites:** `ELEVENLABS_API_KEY` in Secret Manager
   (`--set-secrets`), the other `ELEVENLABS_*` + `CHARLI_TTS_DAILY_CHARS` as env;
   without them Charli falls back to text-only (503 on the voice routes).

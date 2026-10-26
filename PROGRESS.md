@@ -6,8 +6,9 @@ cleanly after compaction / a new session. Newest notes at the top of each list.
 _Last updated: 2026-10-25_
 
 ## Done
-- **Charli v1 — BUILT + reviewed, NOT deployed** (branch `feature/teresa-voice-crm`,
-  52 commits over `9b761ef`; **server 403/403 + client 52/52 node:tests**; whole-branch
+- **Charli v1 — BUILT + reviewed + MERGED into `feature/accurate-refi-scoring` 2026-10-26, NOT
+  deployed** (53 commits fast-forwarded from `feature/teresa-voice-crm`, since deleted;
+  **server 403/403 + client 52/52 node:tests** on the merged result; whole-branch
   Opus review 2026-10-25 "ready to merge with fixes" → 9-commit fix wave → scoped
   re-review → 9-commit round 2 → scoped re-review → one last gate fix `c541f2e`, confirmed
   clean). Voice-first AI CRM co-pilot:
@@ -69,8 +70,9 @@ _Last updated: 2026-10-25_
 - Sweeps works the book two ways: **opportunities** (refi/cash-out/MI-drop) **+
   relationships** (6-month check-ins). Sweeps reminds/drafts; **the broker sends.**
 - Local dev runs on **Node 20** (better-sqlite3 prebuilds); Node 24 won't compile it.
-- `feature/accurate-refi-scoring` is the deployed line; `feature/teresa-voice-crm`
-  (Charli v1) awaits Bill's merge decision.
+- `feature/accurate-refi-scoring` is the working + deployed line (Charli v1 merged in,
+  not yet deployed — the next approved deploy carries her, so set the `ELEVENLABS_*`
+  secrets/env first or she runs text-only).
 
 ## Open issues
 - **Charli deploy prerequisites (Bill's go):** `ELEVENLABS_API_KEY` → Secret Manager (a
@@ -110,13 +112,12 @@ _Last updated: 2026-10-25_
 1. **Bill's first spoken session with Charli** (mic + Bella, local dev servers): time
    end-of-speech → first audio; run the plan's Task 6 live check (greeting, "what are rates
    today", a sweep, "log a contact for the Chens" → spoken yes).
-2. **Merge decision** — `feature/teresa-voice-crm` → `feature/accurate-refi-scoring`
-   (Bill's call), then `main`.
-3. **Deploy on Bill's go** once the secrets/env above are set.
-4. **Charli Plan B — Google Calendar + Gmail draft-and-approve** (design §7.3; per-user
+2. **Deploy on Bill's go** once the secrets/env above are set (Charli is on the deployed
+   line now); then merge to `main`.
+3. **Charli Plan B — Google Calendar + Gmail draft-and-approve** (design §7.3; per-user
    OAuth, draft-only email, general drafts without figures).
-5. **Sweeps Phase 2:** add program/MI fields + an AVM feed → the **drop-MI** lens
+4. **Sweeps Phase 2:** add program/MI fields + an AVM feed → the **drop-MI** lens
    and accurate cash-out.
-6. Add the import + fuller auth integration tests (needs a temp test DB harness).
-7. Housekeeping when convenient: merge to `main`, fix org-1 name, sync one-pager
+5. Add the import + fuller auth integration tests (needs a temp test DB harness).
+6. Housekeeping when convenient: merge to `main`, fix org-1 name, sync one-pager
    math, PDF/PPTX deck exports.
