@@ -16,10 +16,10 @@ const db = require("../db");
 const refi = require("../lib/refi");
 const { TOOL_SCHEMA } = require("../lib/assistant/tools");
 const {
-  CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, buildCharliSystem,
+  CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG, buildCharliSystem,
 } = require("../lib/assistant/prompt");
 const {
-  runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
+  runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation,
 } = require("../lib/assistant/orchestrator");
 
@@ -3337,4 +3337,142 @@ test("R2-7: R2_ACK_TABLE - an acknowledgement after a cancelled read-back is a n
     // a confirmed read-back was never a question
     [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome — anything else?", PASS],
   ]);
+});
+
+// ── the turn deadline ────────────────────────────────────────────────────────
+
+// A model call that never answers unless the signal in its request options aborts it (which rejects, as the SDK does). `ignoresSignal`
+// is a client that never looks at the signal at all.
+const hangingCreate = ({ ignoresSignal = false, rejectWith = () => Object.assign(new Error("aborted"), { name: "AbortError" }) } = {}) =>
+  (params, options) => new Promise((_resolve, reject) => {
+    if (!ignoresSignal && options && options.signal) options.signal.addEventListener("abort", () => reject(rejectWith()));
+  });
+// A fake client that answers the first `script.length` calls like fakeClient and then calls `then` (the stall); records every options argument.
+function stallingClient(script, then) {
+  const calls = [];
+  const optionsSeen = [];
+  return {
+    calls, optionsSeen,
+    messages: {
+      create: async (params, options) => {
+        calls.push(JSON.parse(JSON.stringify(params)));
+        optionsSeen.push(options);
+        const next = script[calls.length - 1];
+        if (next === undefined) return then(params, options);
+        return typeof next === "function" ? next(params) : next;
+      },
+    },
+  };
+}
+const FAST = { deadlineMs: 200, minCallMs: 0 };   // a small deadline for the tests; the floor is exercised on its own below
+
+test("deadline: the pinned lines, defaults and exports", () => {
+  assert.equal(TOOK_TOO_LONG, "Sorry — that took longer than it should. Say that again?");
+  assert.equal(DEFAULT_TURN_DEADLINE_MS, 25_000);
+  assert.equal(MIN_CALL_MS, 1_500);
+});
+
+test("deadline: a model call that never answers is cut off at the deadline - TOOK_TOO_LONG, error:true, nothing proposed, nothing cited", async () => {
+  const client = stallingClient([], hangingCreate());
+  const started = Date.now();
+  const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client, ...FAST });
+  const took = Date.now() - started;
+  assert.ok(took >= 150 && took < 1500, `took ${took} ms`);
+  assert.equal(r.reply, TOOK_TOO_LONG);
+  assert.equal(r.error, true);
+  assert.deepStrictEqual(r.sources, []);
+  assert.equal("sideEffect" in r, false);
+  assert.equal("details" in r, false);
+  assert.deepStrictEqual(r.usage, { inputTokens: 0, outputTokens: 0 });
+  assert.equal(client.calls.length, 1);
+  // the SDK is handed the signal as a request option (second argument), and it was aborted
+  assert.ok(client.optionsSeen[0].signal instanceof AbortSignal);
+  assert.equal(client.optionsSeen[0].signal.aborted, true);
+});
+
+test("deadline: a client that ignores the signal (or an SDK retry sleeping) still cannot hold the turn past it", async () => {
+  const client = stallingClient([], hangingCreate({ ignoresSignal: true }));
+  const started = Date.now();
+  const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client, ...FAST });
+  assert.ok(Date.now() - started < 1500);
+  assert.equal(r.reply, TOOK_TOO_LONG);
+  assert.equal(r.error, true);
+});
+
+test("deadline: one tool round completes, then the model stalls - TOOK_TOO_LONG, and the first call's usage is metered", async () => {
+  const client = stallingClient([useTool("getMarketUpdate", {}, "toolu_1", { input_tokens: 1000, output_tokens: 50 })], hangingCreate());
+  const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client, ...FAST });
+  assert.equal(r.reply, TOOK_TOO_LONG);
+  assert.equal(r.error, true);
+  assert.deepStrictEqual(r.sources, [], "what the tool returned is not cited: nothing was said from it");
+  assert.equal("sideEffect" in r, false);
+  assert.deepStrictEqual(r.usage, { inputTokens: 1000, outputTokens: 50 });
+  assert.equal(client.calls.length, 2);
+  assert.equal(client.optionsSeen[1].signal.aborted, true);
+});
+
+test("deadline: a call is not started with less than MIN_CALL_MS left - the stop is before the call, not an abort", async () => {
+  // the whole budget is under the floor: no model call at all
+  const none = stallingClient([], hangingCreate());
+  let r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client: none, deadlineMs: MIN_CALL_MS - 1 });
+  assert.equal(r.reply, TOOK_TOO_LONG);
+  assert.equal(r.error, true);
+  assert.equal(none.calls.length, 0);
+  // the first call eats the budget down to under the floor: the second call is never made
+  const slowFirst = stallingClient([
+    async () => { await new Promise((res) => setTimeout(res, 150)); return useTool("getMarketUpdate", {}, "toolu_1", { input_tokens: 1000, output_tokens: 50 }); },
+  ], () => { throw new Error("must not be called"); });
+  r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client: slowFirst, deadlineMs: MIN_CALL_MS + 100 });
+  assert.equal(r.reply, TOOK_TOO_LONG);
+  assert.equal(r.error, true);
+  assert.equal(slowFirst.calls.length, 1);
+  assert.deepStrictEqual(r.usage, { inputTokens: 1000, outputTokens: 50 });
+});
+
+test("deadline: a normal turn is unaffected - same reply, usage and sources, and the signal is passed and left unaborted", async () => {
+  const client = stallingClient([
+    useTool("getMarketUpdate", {}, "toolu_1", { input_tokens: 1000, output_tokens: 50 }),
+    (params) => say(`The thirty-year fixed is at ${toolResultPayload(params).data.rates.rate_30yr_fixed} percent.`, { input_tokens: 1200, output_tokens: 20 }),
+  ], () => { throw new Error("must not be called"); });
+  const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client });
+  assert.match(r.reply, /6\.52/);
+  assert.equal("error" in r, false);
+  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.usage, { inputTokens: 2200, outputTokens: 70 });
+  assert.equal(client.optionsSeen.length, 2);
+  for (const o of client.optionsSeen) {
+    assert.ok(o.signal instanceof AbortSignal);
+    assert.equal(o.signal.aborted, false, "the timer is cleared once the call answers");
+  }
+});
+
+test("deadline: the SDK's own abort / timeout errors count as running out of time; any other failure still throws (the route's error turn)", async () => {
+  const Anthropic = require("@anthropic-ai/sdk");
+  const failing = (make) => stallingClient([], async () => { throw make(); });
+  const aborts = [
+    () => Object.assign(new Error("x"), { name: "AbortError" }),
+    () => Object.assign(new Error("x"), { name: "TimeoutError" }),
+    () => new Anthropic.APIUserAbortError(),
+    () => new Anthropic.APIConnectionTimeoutError(),
+  ];
+  for (const make of aborts) {
+    const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client: failing(make) });
+    assert.equal(r.reply, TOOK_TOO_LONG);
+    assert.equal(r.error, true);
+  }
+  await assert.rejects(runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client: failing(() => new Error("boom")) }), /boom/);
+  await assert.rejects(runTurn({
+    messages: userSays("what's today's rate?"), ctx: brokerCtx, client: failing(() => new Anthropic.APIConnectionError({ message: "down" })),
+  }));
+});
+
+test("deadline: an unusable deadlineMs falls back to the default, and a turn that needs no model call ignores it", async () => {
+  for (const bad of [undefined, null, NaN, 0, -5, "soon", Infinity]) {
+    const client = stallingClient([say("Hello! How can I help?")], () => { throw new Error("must not be called"); });
+    const r = await runTurn({ messages: userSays("hi"), ctx: brokerCtx, client, deadlineMs: bad });
+    assert.equal(r.reply, "Hello! How can I help?", `deadlineMs ${String(bad)}`);
+  }
+  const none = stallingClient([], () => { throw new Error("must not be called"); });
+  const r = await runTurn({ messages: userSays("   "), ctx: brokerCtx, client: none, deadlineMs: 1 });
+  assert.equal(r.reply, DIDNT_CATCH);
 });

@@ -21,7 +21,7 @@ const db = require("../db");
 const { signToken } = require("../middleware/auth");
 const refi = require("../lib/refi");
 const assistantTools = require("../lib/assistant/tools");
-const { ERROR_TURN, NOTHING_CHANGED } = require("../lib/assistant/prompt");
+const { ERROR_TURN, NOTHING_CHANGED, TOOK_TOO_LONG } = require("../lib/assistant/prompt");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { normalizeHistory, SESSION_STARTED, MAX_HISTORY, MAX_MESSAGE_CHARS } = require("../lib/assistant/history");
 const clientRoutes = require("../routes/clients");
@@ -664,6 +664,59 @@ test("turn: a tool or screening failure inside runTurn never becomes a 500", asy
     assert.equal(e.data.error, true);
     assert.equal(e.data.reply, ERROR_TURN);
   });
+});
+
+// ── the turn deadline ────────────────────────────────────────────────────────
+
+// The env value is read on every request; anything that is not a whole number of ms from 2,000 to 30,000 is the 25,000 default.
+test("turn deadline: CHARLI_TURN_DEADLINE_MS defaults to 25000, and a bad value falls back to it", () => {
+  const saved = process.env.CHARLI_TURN_DEADLINE_MS;
+  try {
+    const read = (v) => { if (v === undefined) delete process.env.CHARLI_TURN_DEADLINE_MS; else process.env.CHARLI_TURN_DEADLINE_MS = v; return assistantRoutes.turnDeadlineMs(); };
+    for (const unset of [undefined, "", "   "]) assert.equal(read(unset), 25000, JSON.stringify(unset));
+    for (const bad of ["abc", "12.5", "-3", "0", "1999", "30001", "999999", "1e4", "NaN", "Infinity", "5000ms"]) assert.equal(read(bad), 25000, bad);
+    for (const [good, ms] of [["2000", 2000], ["8000", 8000], [" 5000 ", 5000], ["30000", 30000], ["25000", 25000]]) assert.equal(read(good), ms, good);
+  } finally {
+    if (saved === undefined) delete process.env.CHARLI_TURN_DEADLINE_MS; else process.env.CHARLI_TURN_DEADLINE_MS = saved;
+  }
+});
+
+test("turn deadline: the route passes the env deadline through - a model that stalls after one tool round is a 200 TOOK_TOO_LONG, usage metered, nothing logged", async () => {
+  const saved = process.env.CHARLI_TURN_DEADLINE_MS;
+  process.env.CHARLI_TURN_DEADLINE_MS = "2000";
+  const client = fakeClient([
+    useTool("getMarketUpdate", {}, "toolu_1", { input_tokens: 1000, output_tokens: 50 }),
+    () => new Promise(() => {}),   // call 2 stalls for good: only the deadline ends the turn
+  ]);
+  // the fake records the request options of the last call, as the SDK would receive them
+  let lastSignal = null;
+  const create = client.messages.create;
+  client.messages.create = (params, options) => { lastSignal = options && options.signal; return create(params); };
+  setClient(client);
+  try {
+    await capturingErrors(async (logged) => {
+      const started = Date.now();
+      const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("what's today's rate?"), rates: LIVE });
+      const took = Date.now() - started;
+      assert.ok(took >= 1800 && took < 6000, `took ${took} ms: the 2,000 ms from the env, not the 25,000 default`);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.reply, TOOK_TOO_LONG);
+      assert.equal(r.data.error, true);
+      assert.deepStrictEqual(r.data.sources, []);
+      assert.equal("sideEffect" in r.data, false);
+      assert.equal("details" in r.data, false);
+      assert.match(r.data.turnId, UUID);
+      assert.equal(client.calls.length, 2);
+      assert.equal(lastSignal.aborted, true, "the stalled model call was aborted through its signal");
+      const rows = usageFor(r.data.turnId);
+      assert.equal(rows.length, 1);
+      assert.deepStrictEqual([rows[0].user_id, rows[0].kind, rows[0].input_tokens, rows[0].output_tokens], [ann, "turn", 1000, 50]);
+      assert.deepStrictEqual(logged, [], "running out of time is not a fault to log");
+    });
+  } finally {
+    if (saved === undefined) delete process.env.CHARLI_TURN_DEADLINE_MS; else process.env.CHARLI_TURN_DEADLINE_MS = saved;
+  }
+  assert.equal(TOOK_TOO_LONG, "Sorry — that took longer than it should. Say that again?");
 });
 
 // ── confirm: untrusted input ─────────────────────────────────────────────────

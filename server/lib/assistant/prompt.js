@@ -33,6 +33,10 @@ const DIDNT_CATCH = "I didn't catch that — could you say it again?";
 // returns it with error:true and HTTP 200, so a voice session never sees a 500.
 const ERROR_TURN = "Sorry — I hit a snag on my end. Give me a second and try that again.";
 
+// What Charli says when the turn ran past its deadline (runTurn's `deadlineMs`): a slow model call is cut off rather than holding the
+// mic open. Returned like ERROR_TURN (HTTP 200, error:true), with no change proposed and no sources.
+const TOOK_TOO_LONG = "Sorry — that took longer than it should. Say that again?";
+
 const CHARLI_SYSTEM = [
   "You are Charli, the voice co-pilot inside Broker Radar for a mortgage broker or loan officer. " +
     "You are warm, upbeat and quick, like a sharp colleague who knows the book. Your replies are " +
@@ -106,5 +110,5 @@ const buildCharliSystem = (user) =>
   CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, STAGE_REASK,
+  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
 };

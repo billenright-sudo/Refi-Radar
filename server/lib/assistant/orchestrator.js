@@ -17,12 +17,16 @@
 const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
-  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK,
+  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
 } = require("./prompt");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
+// The whole turn gets this long (up to four model calls, so without it a slow model holds the mic for minutes). A model call is
+// not started with less than MIN_CALL_MS left: it could not plausibly finish.
+const DEFAULT_TURN_DEADLINE_MS = 25_000;
+const MIN_CALL_MS = 1_500;
 const MAX_TOKENS = 600;      // replies are 1-3 spoken sentences
 const SWEEP_TOP_OPPORTUNITIES = 10;
 const SWEEP_TOP_CHECKINS = 10;
@@ -1089,16 +1093,48 @@ function changeDetails(out) {
 
 // ── The turn ─────────────────────────────────────────────────────────────────
 
-// runTurn({ messages, ctx, client }) -> { reply, sources, sideEffect?, details?, usage }
-//   messages: Messages API history ending with the user's latest message (not mutated)
-//   ctx:      { user, rates, db }, handed to the tools
-//   sources:  citing `source` strings of the tool results used (error labels are not cited)
-//   details:  with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
-async function runTurn({ messages, ctx, client } = {}) {
+// Thrown by createWithin when the turn's deadline passed during (or just before) a model call.
+class TurnDeadline extends Error {}
+// The SDK's own way of saying a request was aborted or timed out (matched by name: this file does not load the SDK).
+const isTimeoutError = (err) => Boolean(err) && (
+  err.name === "AbortError" || err.name === "TimeoutError" ||
+  (err.constructor && (err.constructor.name === "APIUserAbortError" || err.constructor.name === "APIConnectionTimeoutError"))
+);
+// One model call that is cut off after `ms`: the request is aborted through its signal (the SDK honors `signal` in its request
+// options) AND raced against a timer, so a client that ignores the signal, or an SDK retry sleeping on a Retry-After, still cannot
+// hold the turn past the deadline. Anything that is not a timeout (a 4xx, a network fault) is rethrown as it was.
+async function createWithin(client, params, ms) {
+  const controller = new AbortController();
+  let timer;
+  let fired = false;
+  const clock = new Promise((_, reject) => {
+    timer = setTimeout(() => { fired = true; controller.abort(); reject(new TurnDeadline("model call timed out")); }, ms);
+  });
+  try {
+    return await Promise.race([client.messages.create(params, { signal: controller.signal }), clock]);
+  } catch (err) {
+    if (fired || isTimeoutError(err)) throw new TurnDeadline("model call timed out");
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, error?, usage }
+//   messages:   Messages API history ending with the user's latest message (not mutated)
+//   ctx:        { user, rates, db }, handed to the tools
+//   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call or before the next one, the
+//               turn is the code-authored TOOK_TOO_LONG with error:true (like the route's ERROR_TURN, but no throw): no sources,
+//               no change, and `usage` counts the model calls that did finish. `minCallMs` (default 1.5 s) is how little time
+//               left is still worth a model call; it is a test seam.
+//   sources:    citing `source` strings of the tool results used (error labels are not cited)
+//   details:    with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
+async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
     throw new TypeError("runTurn: client must provide messages.create()");
   }
+  const deadline = Date.now() + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : DEFAULT_TURN_DEADLINE_MS);
   const usage = { inputTokens: 0, outputTokens: 0 };
   const finish = (reply, cited, sideEffect, details) => {
     const out = { reply, sources: cited || [], usage };
@@ -1106,6 +1142,7 @@ async function runTurn({ messages, ctx, client } = {}) {
     if (sideEffect && details) out.details = details;
     return out;
   };
+  const tookTooLong = () => ({ ...finish(TOOK_TOO_LONG), error: true });
 
   // Nothing to answer: no API call.
   const last = messages[messages.length - 1];
@@ -1142,10 +1179,18 @@ async function runTurn({ messages, ctx, client } = {}) {
     const lastCall = call === MAX_MODEL_CALLS - 1;
     // No temperature / tool_choice / thinking: CLAUDE_MODEL is configurable and newer models
     // reject forced tool use and non-default sampling.
-    const response = await client.messages.create({
-      model: modelName(), max_tokens: MAX_TOKENS, system, tools: TOOL_SCHEMA,
-      messages: convo.slice(),
-    });
+    const remaining = deadline - Date.now();
+    if (remaining < minCallMs) return tookTooLong();
+    let response;
+    try {
+      response = await createWithin(client, {
+        model: modelName(), max_tokens: MAX_TOKENS, system, tools: TOOL_SCHEMA,
+        messages: convo.slice(),
+      }, remaining);
+    } catch (err) {
+      if (err instanceof TurnDeadline) return tookTooLong();
+      throw err;
+    }
     // A missing response is a fault upstream, not an answer: the route turns the throw into the error turn.
     if (!response || typeof response !== "object") throw new Error("the model returned no response");
     const u = response.usage || {};
@@ -1246,6 +1291,6 @@ async function runTurn({ messages, ctx, client } = {}) {
 }
 
 module.exports = {
-  runTurn, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
+  runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims,
 };

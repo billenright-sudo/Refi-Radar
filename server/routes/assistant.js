@@ -4,7 +4,8 @@
 //   POST /api/assistant/confirm  the ONLY path that writes from a voice action
 //   GET  /api/assistant/usage    org-wide cost totals (broker only)
 //
-// /turn never writes and never 500s: a model or tool failure is a 200 error turn. A change Charli
+// /turn never writes and never 500s: a model or tool failure is a 200 error turn, and so is a turn that runs past its
+// deadline (CHARLI_TURN_DEADLINE_MS, see turnDeadlineMs). A change Charli
 // proposes comes back as `sideEffect` with a code-authored read-back; the browser echoes it to
 // /confirm only after the user says yes. That body is UNTRUSTED browser input, so /confirm accepts
 // three action types, takes org/user from the session alone, and runs the same validation and checks
@@ -15,7 +16,7 @@ const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
-const { runTurn, isCitation } = require("../lib/assistant/orchestrator");
+const { runTurn, isCitation, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
 const { stageById, spokenStageLabel, CAREER_QUESTION } = require("../lib/assistant/coaching");
@@ -40,10 +41,21 @@ function getClient(req) {
   if (!realClient) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
-    // A voice turn can't wait out the SDK's 10-minute default.
+    // A voice turn can't wait out the SDK's 10-minute default. This is the per-request cap; runTurn's deadline bounds the whole turn.
     realClient = new Anthropic({ apiKey, timeout: 30_000, maxRetries: 1 });
   }
   return realClient;
+}
+
+// How long one /turn may take, in ms: CHARLI_TURN_DEADLINE_MS, read on each request. The default is 25 s. A value is used only if it is a
+// whole number of ms from 2 s (less leaves no time for a model call) to 30 s (the browser gives up on a turn at 35 s, so a longer
+// deadline would never be heard); anything else (unset, empty, text, out of range) falls back to the default.
+const MIN_TURN_DEADLINE_MS = 2_000;
+const MAX_TURN_DEADLINE_MS = 30_000;
+function turnDeadlineMs() {
+  const raw = process.env.CHARLI_TURN_DEADLINE_MS;
+  const ms = typeof raw === "string" && /^\s*\d+\s*$/.test(raw) ? Number(raw) : NaN;
+  return ms >= MIN_TURN_DEADLINE_MS && ms <= MAX_TURN_DEADLINE_MS ? ms : DEFAULT_TURN_DEADLINE_MS;
 }
 
 // What gets logged for a failure: the message only (never the stack or the request, which hold client data).
@@ -193,7 +205,8 @@ function createAssistantRouter({ limiter = {} } = {}) {
 
   // POST /api/assistant/turn
   // Body: { rates, messages } or { rates, greeting: true, localHour? }.
-  // -> { reply, sources, sideEffect?, details?, turnId }; a failed turn -> 200 { reply, error: true, sources: [], turnId }
+  // -> { reply, sources, sideEffect?, details?, turnId }; a failed turn, or one that outran its deadline,
+  //    -> 200 { reply, error: true, sources: [], turnId }
   router.post("/turn", async (req, res) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const rates = cleanRates(body.rates);
@@ -227,7 +240,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
 
     let out;
     try {
-      out = await runTurn({ messages, ctx, client: getClient(req) });
+      out = await runTurn({ messages, ctx, client: getClient(req), deadlineMs: turnDeadlineMs() });
     } catch (err) {
       console.error("POST /api/assistant/turn:", errText(err));
       meter(req.user.id, turnId, {});
@@ -235,6 +248,8 @@ function createAssistantRouter({ limiter = {} } = {}) {
     }
     meter(req.user.id, turnId, out.usage || {});
     const payload = { reply: out.reply, sources: out.sources, turnId };
+    // a turn that ran out of time comes back like a failed one (200, error:true), with the usage of the calls that did finish
+    if (out.error) payload.error = true;
     // Each proposed change gets its own id; /confirm uses it so a double tap cannot write twice. `details` are the rows the
     // pending card shows under the read-back (display only: /confirm never reads them).
     if (out.sideEffect) payload.sideEffect = { ...out.sideEffect, confirmId: crypto.randomUUID() };
@@ -342,4 +357,4 @@ function createAssistantRouter({ limiter = {} } = {}) {
   return router;
 }
 
-module.exports = Object.assign(createAssistantRouter(), { createAssistantRouter, normalizeHistory, SESSION_STARTED });
+module.exports = Object.assign(createAssistantRouter(), { createAssistantRouter, normalizeHistory, SESSION_STARTED, turnDeadlineMs });
