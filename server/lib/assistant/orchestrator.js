@@ -1129,7 +1129,7 @@ const IT_ON_CALENDAR_RE = new RegExp(
 );
 const ACT_DONE_RE = new RegExp(
   "\\b(?:you['\\u2019]re\\s+(?:all\\s+)?set|locked\\s+in|(?:got|have|put)\\s+(?:\\w+\\s+){0,2}down\\s+for|went\\s+out|gone\\s+out" +
-    "|(?:ready|good)\\s+to\\s+(?:go|send)|invit(?:e|es|ed|ation)s?" +
+    "|(?:ready|good)\\s+to\\s+(?:go|send)|invit(?:e|es|ed|ation)s?|consider\\s+it\\s+(?:done|handled|sent|booked|scheduled)" +
     "|(?:is|are|['\\u2019]s|['\\u2019]re)\\s+(?:all\\s+)?in\\s+for\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|next|this))\\b",
   "i"
 );
@@ -1167,9 +1167,11 @@ const AS_SUBJECT =
 const AS_CLAUSE_RE = new RegExp("(?<=(?:^|[,;\\u2014\\u2013])\\s*)" + eitherCase("as") + "(?=\\s+" + AS_SUBJECT + ")", "g");
 const NEGATIVE_WORD_RE =
   /\b(?:not|never|nothing|none|nobody|neither|nor|without|cannot|no(?!\s+(?:problem|worries)\b))\b|n['’]t\b/i;
-// a clause break: , ; a dash, a spaced hyphen, "but", "and"; not ":" (Ruling 36: "Here's what's on your calendar Friday: <title> at
-// 10:00 AM." is one clause)
-const GUARD_CLAUSE_SPLIT_RE = /[,;—–]|\s-\s|\b(?:but|and)\b/i;
+// a clause break: , ; : a dash, a spaced hyphen, "but", "and" (Ruling 38). Not a colon between the digits of a clock time, and not a
+// colon right before a read title (titles are marked before the split: Ruling 36's "Here's what's on your calendar Friday: <title> at
+// 10:00 AM." is one clause), so a negative or a title before any other colon covers nothing after it ("No rush: the Chens are
+// penciled in for Friday.", "Team meeting is at 9:00 AM Friday: the follow-up is on your calendar right after.").
+const GUARD_CLAUSE_SPLIT_RE = /[,;—–]|(?<!\d):(?!\s*\u0001)|:(?!\d)(?!\s*\u0001)|\s-\s|\b(?:but|and)\b/i;
 // sentences split at . ! ? (not at the point of a decimal: "7.85 percent"), each marked as a question or a statement
 const guardSentencesOf = (text) =>
   (String(text).match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean)
@@ -1187,11 +1189,15 @@ const titleGroups = (reads) => {
   }
   return groups;
 };
-// a title as a whole word or words; its first letter in either case, unless it is one word (Ruling 36: "Team standup" is "team
-// standup", but "call" is no "Call")
+// a title as a whole word or words, in its own case, but for its first letter (Rulings 36 and 39): a title of more than one word that
+// begins in lower case may be said with a capital ("Team standup" for "team standup"), and one that begins with a capital may be said
+// in lower case only when it is distinctive, holding a colon, a digit or a later capitalised word ("follow-up: Robert & Linda Chen"
+// for "Follow-up: Robert & Linda Chen"). So a generic title grounds no generic phrase ("follow-up call" is no "Follow-up call",
+// "client meeting" no "Client meeting"), and a one-word title keeps its case ("call" is no "Call").
 const titlePattern = (title) => {
   const first = title[0];
-  const lead = /\s/.test(title) && first.toLowerCase() !== first.toUpperCase()
+  const distinctive = /[:\d]|\s[A-Z]/.test(title.slice(1));
+  const lead = /\s/.test(title) && first.toLowerCase() !== first.toUpperCase() && (first === first.toLowerCase() || distinctive)
     ? `[${escapeRegExp(first.toLowerCase())}${escapeRegExp(first.toUpperCase())}]`
     : escapeRegExp(first);
   return "(?<![\\w])" + lead + escapeRegExp(title.slice(1)) + "(?![\\w])";
@@ -1281,12 +1287,22 @@ const pieceClaims = (piece, groups, now) => {
     (/^set\s/i.test(m[0]) && BASE_FORM_BEFORE_RE.test(piece.slice(0, m.index))) ||
     groundedClause(clause.text, groups, now));
 };
-// A piece after the first that is a statement of its own ("What else — friday it is — want a reminder?", "Want a reminder too — the
-// Chens got your check-in?"): it opens with no question or auxiliary word, holds no negative, and has a finite verb, or opens with an
-// acknowledgement ("— okay, Friday morning with the Chens —"), or is a shortened passive ("— calendar updated?"). An option list
-// ("— Robert and Linda, or Chen Wei?", "— 9 a.m. or 10 a.m.?"), a name or a time ("— 10:00 AM?") and a negative ("— I don't see a
-// Zed?") are no statement. This is what holds the claims in a dash piece that use none of the state words (Ruling 35's pin). (No
-// "am" on the list: it is also the AM of a clock time; "I'm" is the 'm.)
+// A piece after the first that is a statement of its own about a booking ("What else — friday it is — want a reminder?", "Want a
+// reminder too — the Chens got your check-in?"): it names a booking or email noun, a day or a clock time (BOOKING_TOPIC_RE, Ruling 40),
+// opens with no question or auxiliary word, and has a finite verb, or opens with an acknowledgement ("— okay, Friday morning with the
+// Chens —"), or is a shortened passive ("— calendar updated?"). A negative does not excuse it ("— no rush, the follow-up is on your
+// calendar Friday —"). An option list ("— Robert and Linda, or Chen Wei?", "— 9 a.m. or 10 a.m.?") and a time ("— 10:00 AM?") are no
+// statement, and a piece about no booking is not screened here ("— I don't see a Zed?", "— the one who has the HELOC, or Chen
+// Wei?"). The accepted cost: a clarifier whose statement piece names a time, a day or a booking noun is held ("What time works —
+// you're free after 10?"). (No "am" on the verb list: it is also the AM of a clock time; "I'm" is the 'm.)
+const BOOKING_TOPIC_RE = new RegExp(
+  "\\b(?:calendars?|schedules?|follow[\\s-]?ups?|check[\\s-]?ins?|e-?mails?|drafts?|notes?|invit(?:e|es|ation|ations)|meetings?|calls?" +
+    "|appointments?|reminders?|events?|inbox(?:es)?)\\b" +
+    "|\\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|(?:this|next)\\s+week)\\b" +
+    "|\\b\\d{1,2}(?::\\d{2})?\\s*(?:[ap]\\.?m\\b\\.?)|\\b\\d{1,2}:\\d{2}\\b|\\b(?:at|after|before|by|around|until|till|from)\\s+\\d{1,2}\\b" +
+    "|\\b(?:noon|midnight|o['\\u2019]clock)\\b|\\u0001",
+  "i"
+);
 const FINITE_VERB_RE = new RegExp(
   "\\b(?:is|are|was|were|has|have|had|do|does|did|will|would|can|could|should|shall|may|might|must|got|gets|goes|went|comes|came" +
     "|sits|shows|appears|seems|looks|stands|waits|holds|lists|reads|says|includes|contains)\\b" +
@@ -1298,9 +1314,11 @@ const FINITE_VERB_RE = new RegExp(
 const ACK_PIECE_RE = /^(?:okay|ok|great|perfect|alright|all\s+right|done|got\s+it|sure|good|nice|excellent)(?![\w'’-])/i;
 const statementPiece = (piece) => {
   const p = piece.trim().replace(/^(?:(?:and|but|so|then|plus)\s+)+/i, "");
-  if (!p || QUESTION_START_RE.test(p) || NEGATIVE_WORD_RE.test(p)) return false;
-  // (and the shortened passive, which claimsCompletion leaves to a clause that does not end in "?": "— calendar updated?")
-  return FINITE_VERB_RE.test(p) || ACK_PIECE_RE.test(p) || SHORT_PASSIVE_RE.test(p.replace(/[?\s]+$/, ""));
+  if (!p || !BOOKING_TOPIC_RE.test(p) || QUESTION_START_RE.test(p)) return false;
+  // (an acknowledgement opening any clause of the piece: "— no rush, okay, Friday morning with the Chens —"; and the shortened
+  // passive, which claimsCompletion leaves to a clause that does not end in "?": "— calendar updated?")
+  return FINITE_VERB_RE.test(p) || p.split(GUARD_CLAUSE_SPLIT_RE).some((c) => ACK_PIECE_RE.test(c.trim())) ||
+    SHORT_PASSIVE_RE.test(p.replace(/[?\s]+$/, ""));
 };
 // `reads`: null when the turn cited no calendar read, else { events: [{ title, date, timeZone }] (each event this turn's calendar
 // reads returned, its title as the model saw it and the day it was read for), now }; `actionTurn`: the turn is one (Ruling 35)

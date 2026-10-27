@@ -4890,8 +4890,9 @@ test("Task 5b: after an offer, a reply that is no yes is answered under a claim 
       }
     }
   }
-  // the word screen reads statements only: an offer or a question about the act passes
-  for (const said of ["Should I put it on your calendar for Friday?", "Want it booked for Friday?", "What time should I put it on your calendar?"]) {
+  // the word screen reads statements only: an offer or a question about the act passes (fix round 3, Ruling 41: "Want it booked for
+  // Friday?" is no longer pinned anywhere as a pass; "Should I schedule it for Friday?" stands in for it here)
+  for (const said of ["Should I put it on your calendar for Friday?", "Should I schedule it for Friday?", "What time should I put it on your calendar?"]) {
     assert.equal((await offerReply("thanks", said)).reply, said, said);
   }
   // with a calendar source cited the read's grounding applies: a fact from the read passes, "it's on your calendar" does not
@@ -5227,4 +5228,129 @@ test("Task 5b fix 2 (Ruling 37): e.g., i.e., vs., approx., etc. and a.m. / p.m. 
   // a real second sentence is still one too many
   const r = await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], "I see two Chens. Which one?");
   assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+// ── Task 5b fix round 3: colons split claims again, generic titles need their own case, statement pieces screened only for a booking ─
+
+const R3_FRIDAY = "2026-10-30";
+const r3ByDay = (map) => googleCtx(fakeGoogle({ listed: (q) => ({ events: map[q.date] || [] }) }));
+const r3FridayRead = () => useTool("getCalendarTool", { date: "friday" });
+const TEAM_MEETING = { title: "Team meeting", start: "9:00 AM", end: "10:00 AM", allDay: false };
+
+test("Task 5b fix 3 (Ruling 38): a colon is a clause break again, but between clock digits or before a read title", async () => {
+  // a negative before a colon covers nothing after it, after "thanks", with no tool and after an empty Friday read
+  for (const said of [
+    "Not a problem: the follow-up with the Chens is on your calendar Friday.", "No need to do anything else: the follow-up is on your calendar for Friday.",
+    "Nothing else needed: the Chens' follow-up is on the calendar.", "No rush: Friday's follow-up is on your schedule.",
+    "Not to worry: the Chens are penciled in for Friday.", "Nothing to do: Friday's follow-up is in place.",
+    "No action needed: the follow-up is lined up for Friday.", "Not much else today: the follow-up is reserved for Friday at 10.",
+  ]) {
+    for (const [label, script, ctx] of [["no tool", [], googleCtx(fakeGoogle({ events: [CHEN_EVENT] }))], ["empty Friday read", [r3FridayRead()], r3ByDay({})]]) {
+      const r = await runTurn({ messages: history(CAL_ASK, OFFERS[1], "thanks"), ctx, client: fakeClient([...script, say(said)]) });
+      assert.equal(r.reply, NOTHING_CHANGED, `${label}: ${said}`);
+    }
+  }
+  // a read title before a colon grounds nothing after it
+  for (const said of [
+    "Team meeting is at 9:00 AM Friday: the follow-up with the Chens is on your calendar right after.",
+    "Friday at 9:00 AM you have Team meeting: the Chens' follow-up is on your calendar after it.",
+    "Team meeting Friday at 9:00 AM: the Chens' follow-up is scheduled right after.",
+  ]) {
+    const r = await runTurn({ messages: history(CAL_ASK, OFFERS[1], "what's on Friday?"), ctx: r3ByDay({ [R3_FRIDAY]: [TEAM_MEETING] }), client: fakeClient([r3FridayRead(), say(said)]) });
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+  }
+  // on an action turn, a negative and a colon inside a dash piece
+  for (const said of [
+    "What else — nothing else needed: the follow-up is on your calendar Friday — want a reminder?",
+    "Want a reminder too — no need to book: the follow-up is locked in for Friday?",
+    "What else — no rush: the check-in is in your drafts — want a reminder?", "What else — not much: the invite went out — want a reminder?",
+  ]) {
+    for (const messages of [userSays("book the Chens a follow-up Friday"), history(CAL_ASK, OFFERS[1], "yes")]) {
+      assert.equal((await onActionTurn(messages, [useTool("findClient", { query: "chen" })], said)).reply, NOTHING_CHANGED, said);
+    }
+  }
+  // the round-2 narration rows keep their outcomes: a colon before a read title, or inside a clock time, splits nothing
+  const STANDUP = { title: "team standup", start: "9:00 AM", end: "9:15 AM", allDay: false };
+  const CLOSING = { title: "Closing — 12 Elm St", start: "2:00 PM", end: "3:00 PM", allDay: false };
+  const NARRATION = [
+    [[CHEN_EVENT], "Friday you have Follow-up: Robert & Linda Chen at 10:00 AM.", true],
+    [[CHEN_EVENT], "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.", true],
+    [[CHEN_EVENT], "On your calendar Friday: Follow-up: Robert & Linda Chen at 10:00 AM.", true],
+    [[CHEN_EVENT], "Here's what's on your calendar Friday: Follow-up: Robert & Linda Chen at 10:00 AM.", true],
+    [[CHEN_EVENT], "You have one thing scheduled Friday: Follow-up: Robert & Linda Chen at 10:00 AM.", true],
+    [[CHEN_EVENT], "Friday's calendar has one event, Follow-up: Robert & Linda Chen, scheduled for 10:00 AM.", false],
+    [[CHEN_EVENT], "Your follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.", true],
+    [[CHEN_EVENT], "Friday's Follow-up: Robert & Linda Chen is scheduled for 10:00 AM.", true],
+    [[CHEN_EVENT], "Follow-up: Robert & Linda Chen is booked for 10:00 AM on Friday, October 30.", false],
+    [[CHEN_EVENT, STANDUP], "Friday you have team standup at 9:00 AM and Follow-up: Robert & Linda Chen at 10:00 AM.", true],
+    [[CHEN_EVENT, STANDUP], "Team standup is on your calendar Friday at 9:00 AM.", true],
+    [[CHEN_EVENT, STANDUP], "Your team standup is on your calendar at 9:00 AM Friday, then Follow-up: Robert & Linda Chen at 10:00 AM.", true],
+    [[CHEN_EVENT, STANDUP], "On Friday, team standup is scheduled for 9:00 AM and Follow-up: Robert & Linda Chen is scheduled for 10:00 AM.", true],
+    [[CLOSING], "Closing — 12 Elm St is on your calendar Friday at 2:00 PM.", true],
+    [[CLOSING], "Your closing on 12 Elm St is on your calendar Friday at 2:00 PM.", false],
+    [[CLOSING], "The Closing — 12 Elm St event is on your calendar Friday at 2:00 PM.", true],
+    [[CLOSING], "Friday at 2:00 PM: Closing — 12 Elm St is on your calendar.", true],
+    [[CHEN_EVENT], "Follow-up: Robert & Linda Chen is on your calendar this Friday at 10:00 AM.", true],
+    [[CHEN_EVENT], "Follow-up: Robert & Linda Chen is on your calendar Friday the 30th at 10:00 AM.", true],
+    [[CHEN_EVENT], "Follow-up: Robert & Linda Chen is on your calendar Oct 30 at 10:00 AM.", true],
+  ];
+  for (const reply of ["what's on Friday?", "what about Friday"]) {
+    for (const [events, said, passes] of NARRATION) {
+      const r = await runTurn({ messages: history(CAL_ASK, OFFERS[1], reply), ctx: r3ByDay({ [R3_FRIDAY]: events }), client: fakeClient([r3FridayRead(), say(said)]) });
+      assert.equal(r.reply, passes ? said : NOTHING_CHANGED, `${reply} -> ${said}`);
+    }
+  }
+});
+
+test("Task 5b fix 3 (Ruling 39): a generic title grounds no generic phrase; a distinctive title may be said in lower case", async () => {
+  const BOOK = () => userSays("book the Chens a follow-up Friday");
+  for (const [title, said] of [
+    ["Follow-up call", "Your follow-up call with the Chens is on your calendar Friday."],
+    ["Phone call", "Okay, your phone call with the Chens is on your calendar Friday."],
+    ["Follow up", "The follow up with the Chens is on your calendar Friday."],
+    ["Client meeting", "Your client meeting with the Chens is on your calendar Friday."],
+  ]) {
+    const event = { title, start: "9:00 AM", end: "9:30 AM", allDay: false };
+    let r = await runTurn({ messages: history(CAL_ASK, OFFERS[1], "what's on Friday?"), ctx: r3ByDay({ [R3_FRIDAY]: [event] }), client: fakeClient([r3FridayRead(), say(said)]) });
+    assert.equal(r.reply, NOTHING_CHANGED, `[${title}] ${said}`);
+    const question = "Want a reminder too, since " + said[0].toLowerCase() + said.slice(1).replace(/^okay, /, "").replace(/\.$/, "?");
+    r = await runTurn({ messages: BOOK(), ctx: r3ByDay({ [R3_FRIDAY]: [event] }), client: fakeClient([r3FridayRead(), say(question)]) });
+    assert.equal(r.reply, NOTHING_CHANGED, `[${title}] ${question}`);
+  }
+  // the title said as it was read still grounds
+  const event = { title: "Follow-up call", start: "9:00 AM", end: "9:30 AM", allDay: false };
+  const said = "Your Follow-up call with the Chens is on your calendar Friday.";
+  const r = await runTurn({ messages: history(CAL_ASK, OFFERS[1], "what's on Friday?"), ctx: r3ByDay({ [R3_FRIDAY]: [event] }), client: fakeClient([r3FridayRead(), say(said)]) });
+  assert.equal(r.reply, said);
+});
+
+test("Task 5b fix 3 (Ruling 40): a statement piece is screened only when it names a booking, a day or a time, and a negative no longer excuses it", async () => {
+  const clarify = (said) => runTurn({
+    messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] }), twoChensCtx),
+    client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
+  });
+  for (const said of [
+    "Which Chen — the one who has the HELOC, or Chen Wei?", "Which loan — the one that's up for renewal?",
+    "Who did you mean — I have a Zoe and a Zack?", "Which Chen — both are on your book?", "Who did you mean — I don't see a Zed?",
+  ]) assert.equal((await clarify(said)).reply, said, said);
+  // the accepted cost: a statement piece that names a time, a day or a booking noun is held
+  assert.equal((await clarify("What time works — you're free after 10?")).reply, NOTHING_CHANGED);
+  const r = await runTurn({
+    messages: userSays("book the Chens a follow-up Friday"), ctx: r3ByDay({ [R3_FRIDAY]: [TEAM_MEETING] }),
+    client: fakeClient([r3FridayRead(), say("Which time — you have a team meeting on your calendar at 9:00 AM, so 10:00 AM or later?")]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+  // a negative ahead of the claim no longer excuses the piece
+  const strip = (c) => c.replace(/[.!]+$/, "");
+  const lower = (c) => c[0].toLowerCase() + c.slice(1);
+  for (const shape of [
+    (c) => `What else — no rush, ${lower(strip(c))} — want a reminder?`,
+    (c) => `Want a reminder too — no need to do anything, ${lower(strip(c))}?`,
+    (c) => `What else — nothing else needed: ${lower(strip(c))} — want a reminder?`,
+  ]) {
+    for (const claim of WRAP_CLAIMS) {
+      const said = shape(claim);
+      assert.equal((await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said)).reply, NOTHING_CHANGED, said);
+    }
+  }
 });
