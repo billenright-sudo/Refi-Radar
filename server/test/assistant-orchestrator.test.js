@@ -4542,11 +4542,13 @@ test("Task 5 fix 5: on an action turn the hold has no negative lookbehind: 'noth
 });
 
 // replies to OFFERS[1] ("Want me to book another follow-up Friday?") that say yes without the old affirmation words
+// (Task 5b, Ruling 24: "thanks" and "nah, I'll call them myself" moved to the Task 5b tests: they are no yes, and the post-offer
+// claim guard holds the same four replies there)
 const AFFIRMS = [
   "perfect", "great", "great, thanks", "awesome", "that'd be great", "sounds good", "do it", "go ahead", "please", "yes please",
-  "that works", "let's do it", "book it", "Perfect, thanks!", "thanks", "make it Thursday", "yes, Friday at 10 works",
+  "that works", "let's do it", "book it", "Perfect, thanks!", "make it Thursday", "yes, Friday at 10 works",
   // safer than the letter of the rule: a modal with no subject says yes, and a decline that says more is no decline
-  "Would be great", "will do", "no, make it Thursday", "no make it Thursday", "later today", "wait, yes", "nah, I'll call them myself",
+  "Would be great", "will do", "no, make it Thursday", "no make it Thursday", "later today", "wait, yes",
   "don't book Friday, make it Thursday",
   // every word the old affirmation list knew is still a yes
   "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright", "absolutely", "definitely", "of course", "do that", "go for it",
@@ -4563,7 +4565,7 @@ const offerReply = (reply, said, offer = OFFERS[1]) => runTurn({
   messages: history(CAL_ASK, offer, reply), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([say(said)]),
 });
 
-test("Task 5 fix 5: any reply to an offer to act that is no decline and asks nothing is a yes: the action backstop holds", async () => {
+test("Task 5 fix 5: a yes to an offer to act (the AFFIRMS rows) makes an action turn: the action backstop holds", async () => {
   for (const yes of AFFIRMS) {
     for (const said of [
       "Great — it's on your calendar for Friday.", "Okay, it's on your calendar Friday.",
@@ -4636,6 +4638,240 @@ test("Task 5 fix 5: 'What time should I put it on your calendar?' is a question,
         const r = await affirmedBook(said, grounded, offer);
         assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: ${offer} -> yes -> ${said}`);
       }
+    }
+  }
+});
+
+// ── Task 5b (Ruling 24): a reply to an offer to act is a yes, a decline or other; other is answered under a claim guard ─────────
+
+// A statement that claims nothing and names no offered act: it passes on a turn that is not an action turn, and the action backstop
+// replaces it on one, so it tells the two apart.
+const NEUTRAL = "Okay, the Chens will hear from you soon.";
+// the brief's yes rows: a yes, or a correction of the offered act
+const OFFER_YESES = [
+  "sure, no problem", "yeah, no problem", "ok, no problem", "okay no problem", "yeah no worries", "sure, no worries",
+  "yeah, that's fine, no worries", "do Thursday instead", "do Friday at 10", "have it at 10", "might as well", "what a great idea",
+  "perfect", "great, thanks", "that'd be great",
+];
+// more of the same: corrections of the day, the time or the act, and the yeses the round-5 probes found read as a decline or a
+// question
+const MORE_YESES = [
+  "may as well", "do the 10 o'clock", "have them come in Friday", "make it 10", "Thursday instead", "10 instead", "no, Thursday",
+  "actually Thursday", "not Friday, Thursday", "Thursday at 10", "tomorrow at 10", "no, just a reminder", "no, a check-in instead",
+  "Friday at 10 works", "10 is fine", "yes, no problem", "absolutely, no problem", "sure thing, no problem", "sure, that's fine",
+  "that's fine", "fine", "Okay. Not a problem.", "no, that works", "yeah no, go for it", "nah, it's fine, go ahead", "please, no rush",
+  "sure, no need to invite anyone", "yeah, nothing fancy", "would be nice", "should be fine", "could be good", "how nice, yes",
+  "you bet", "pencil it in", "if you can", "I think so", "that would be great", "it'd be great", "works for me", "send it", "draft it",
+  "ok thanks", "Yes!", "(laughs) yes please", "I'm good with that", "sounds like a plan", "ten", "no, next week",
+];
+const OFFER_DECLINES = [
+  "no thanks", "ok, never mind", "please don't", "let's not", "I'd rather not", "not today", "I'm all set", "forget it",
+  "thanks, I'm good", "don't worry about it",
+];
+const MORE_DECLINES = [
+  "okay, let's not", "yeah, I'd rather not", "eh, not now", "sure, forget it", "all set", "I'm good", "nope, I'm fine", "not really",
+  "no, not really", "pass", "leave it", "leave it for now", "I'll handle it", "thanks I'm good", "please, don't worry about it",
+  "Not today, thanks.", "No thanks, I'm all set.",
+];
+const answerOffer = (reply, script, said, ctx = googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), offer = OFFERS[1]) =>
+  runTurn({ messages: history(CAL_ASK, offer, reply), ctx, client: fakeClient([...script, say(said)]) });
+
+test("Task 5b: a yes or a correction after an offer to act is an action turn: the false calendar claim and any statement are held", async () => {
+  for (const yes of [...OFFER_YESES, ...MORE_YESES]) {
+    for (const said of ["Okay, it's on your calendar Friday.", NEUTRAL]) {
+      const r = await offerReply(yes, said);
+      assert.equal(r.reply, NOTHING_CHANGED, `${yes} -> ${said}`);
+      assert.equal(r.sideEffect, undefined);
+      assert.equal("compose" in r, false);
+    }
+  }
+  // every yes of the earlier rounds is still one
+  for (const yes of AFFIRMS) assert.equal((await offerReply(yes, NEUTRAL)).reply, NOTHING_CHANGED, yes);
+  // the same through every offer to act
+  for (const offer of OFFERS) {
+    for (const yes of ["sure, no problem", "do Friday at 10", "what a great idea"]) {
+      assert.equal((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply, NOTHING_CHANGED, `${offer} -> ${yes}`);
+    }
+  }
+  // on that turn a question still passes, and the booking is read back
+  for (const said of [WH_BOOKING_QUESTIONS[0], "Which Chen — Robert and Linda, or Chen Wei?"]) {
+    assert.equal((await offerReply("sure, no problem", said)).reply, said);
+  }
+  // the post-offer claim guard holds there too: a statement riding inside a reply shaped like a question
+  for (const yes of ["yes", "sure, no problem"]) {
+    for (const said of [
+      "What else? The follow-up is on your calendar Friday — want a reminder?", "Should I add a reminder, since it's on your calendar Friday?",
+      "What time? The follow-up was booked for Friday — want another?", "Which day? Friday is locked in — want a reminder?",
+    ]) {
+      for (const script of [[], [useTool("getCalendarTool", {})]]) {
+        assert.equal((await answerOffer(yes, script, said)).reply, NOTHING_CHANGED, `${script.length ? "read" : "no tool"}: ${yes} -> ${said}`);
+      }
+    }
+  }
+  const r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "do Thursday instead"), ctx: googleCtx(fakeGoogle()),
+    client: fakeClient([useTool("createEventTool", { date: "thursday", time: "10:00", clientId: mikeChen })]),
+  });
+  assert.equal(r.sideEffect.type, "createEvent");
+});
+
+test("Task 5b: a decline after an offer is a plain turn: its acknowledgement passes, and a decline ends the chain", async () => {
+  for (const no of [...OFFER_DECLINES, ...MORE_DECLINES]) {
+    for (const offer of [OFFERS[0], OFFERS[1]]) {
+      for (const said of ["No problem.", NEUTRAL]) {
+        assert.equal((await offerReply(no, said, offer)).reply, said, `${offer} -> ${no} -> ${said}`);
+      }
+    }
+  }
+  // its acknowledgement may say what was not done
+  for (const said of [
+    "Okay, I won't put it on your calendar.", "Got it — I won't send anything.", "No problem, I'll leave your calendar alone.",
+    "Okay, nothing is on your calendar for them.",
+  ]) {
+    assert.equal((await offerReply("no thanks", said)).reply, said, said);
+  }
+  // the offer answered a request: a decline still ends the act offered, so the turn is a plain one
+  const r = await runTurn({
+    messages: history("book the Chens a follow-up Friday", "Should I book it for 10:00 AM?", "no thanks"), ctx: googleCtx(fakeGoogle()),
+    client: fakeClient([say("No problem.")]),
+  });
+  assert.equal(r.reply, "No problem.");
+});
+
+test("Task 5b: anything else after an offer is answered as a plain turn: a new request, a question, small talk", async () => {
+  const chens = "Robert & Linda Chen are at 7.85 percent.";
+  for (const said of [chens, `${chens} Want me to write them a check-in?`]) {
+    const r = await answerOffer("pull up the Chens", [useTool("findClient", { query: "chen" })], said);
+    assert.equal(r.reply, said);
+    assert.deepStrictEqual(r.sources, ["client record"]);
+  }
+  let r = await answerOffer("run a sweep", [useTool("runSweepTool")], SWEEP_NARRATION, googleCtx(fakeGoogle(), sweepCtx));
+  assert.equal(r.reply, SWEEP_NARRATION);
+  assert.deepStrictEqual(r.sources, ["sweep engine"]);
+  r = await answerOffer("give me a market update", [useTool("getMarketUpdate")], "The thirty-year fixed is at 6.52 percent today.");
+  assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent today.");
+  r = await answerOffer("tomorrow", [useTool("getCalendarTool", { date: "tomorrow" })], "Tomorrow your calendar is clear.", googleCtx(fakeGoogle()));
+  assert.equal(r.reply, "Tomorrow your calendar is clear.");
+  assert.deepStrictEqual(r.sources, ["google calendar 2026-10-28"]);
+  r = await answerOffer("thanks", [], "You're welcome!");
+  assert.equal(r.reply, "You're welcome!");
+  // the chain: offer -> "the Chens' rate" -> "Which Chen ...?" -> "Robert and Linda" answers the lookup
+  r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "the Chens' rate", "Which Chen — Robert and Linda, or Chen Wei?", "Robert and Linda"),
+    ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([useTool("findClient", { query: "chen" }), say(chens)]),
+  });
+  assert.equal(r.reply, chens);
+  // more replies that are neither a yes nor a decline, through two offers
+  for (const reply of [
+    "when you get a chance", "no problem", "no worries", "can you make it Thursday", "how about Thursday?", "cool", "got it", "hmm", "maybe",
+    "let me think about it", "nah, I'll text them myself", "no, I've got it", "no, just checking", "and tomorrow", "check Friday first",
+    "is Friday open", "I'll do it myself", "please pull up the Chens", "pull up Patel", "yes?", "sure, can you make it 10?", "what about Thursday",
+    "Thursday", "thanks", "not Friday", "not this week", "next Thursday", "tomorrow morning", "maybe tomorrow", "not now, maybe tomorrow",
+    "not sure what time works", "I don't think so",
+  ]) {
+    for (const offer of [OFFERS[0], OFFERS[1]]) assert.equal((await offerReply(reply, NEUTRAL, offer)).reply, NEUTRAL, `${offer} -> ${reply}`);
+  }
+  // an action request behind the offer still holds a reply that only answers it (the walk goes on as through any question)
+  r = await runTurn({
+    messages: history("log a call with Chen", "Which Chen — should I log it for Robert and Linda, or for Chen Wei?", "Robert and Linda"),
+    ctx: twoChensCtx, client: fakeClient([say(NEUTRAL)]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+test("Task 5b: after an offer, a reply that is no yes is answered under a claim guard", async () => {
+  // the brief's rows
+  let r = await answerOffer("pull up the Chens", [useTool("findClient", { query: "chen" })], "Okay, it's on your calendar Friday.");
+  assert.equal(r.reply, NOTHING_CHANGED);
+  assert.equal((await offerReply("when you get a chance", "It's on your calendar now.")).reply, NOTHING_CHANGED);
+  assert.equal((await offerReply("thanks", "Done — booked for Friday.")).reply, NOTHING_CHANGED);
+  // with no calendar source cited, a statement that the offered act is on the calendar, booked, scheduled, drafted or sent is held,
+  // with no tool and after a client lookup; the "now" forms, "it's on your calendar" and an act's own words are held anywhere
+  const HELD = [
+    "Okay, it's on your calendar Friday.", "The follow-up is on the calendar for Friday.", "Okay, it's scheduled for Friday.",
+    "Okay, the follow-up's on your Google calendar.", "Your check-in to the Chens was sent.", "The follow-up was booked for Friday.",
+    "Their check-in was drafted this morning.", "Robert & Linda Chen are at 7.85 percent. The follow-up is in your calendar.",
+    "Should I add a reminder for the follow-up now on your calendar?", "Nothing else is on your calendar now.",
+    "Should I add a reminder, since it's on your calendar Friday?", "Want me to draft a check-in, since that's on your calendar?",
+    "Great, the follow-up is set for Friday.", "The follow-up is on the books for Friday.",
+    // a negative in one clause does not cover the next
+    "Nothing else today, and the follow-up is on the calendar for Friday.", "No need to call them — the follow-up is booked for Friday.",
+  ];
+  const ACT_DONE = [
+    "Okay, Friday it is — you're set.", "Okay, I've got them down for Friday.", "The check-in went out to the Chens.",
+    "Your email to the Chens is ready to go.", "Okay, they'll get an invite.", "Friday at 10:00 AM is locked in.", "Locked in for Friday.",
+    "Okay, the follow-up is in for Friday.",
+  ];
+  HELD.push(...ACT_DONE);
+  for (const reply of ["pull up the Chens", "thanks", "when you get a chance", "nah, I'll call them myself", "no thanks", "never mind"]) {
+    for (const said of HELD) {
+      for (const script of [[], [useTool("findClient", { query: "chen" })]]) {
+        r = await answerOffer(reply, script, said);
+        assert.equal(r.reply, NOTHING_CHANGED, `${script.length ? "client lookup" : "no tool"}: ${reply} -> ${said}`);
+        assert.equal(r.sideEffect, undefined);
+      }
+    }
+  }
+  // the word screen reads statements only: an offer or a question about the act passes
+  for (const said of ["Should I put it on your calendar for Friday?", "Want it booked for Friday?", "What time should I put it on your calendar?"]) {
+    assert.equal((await offerReply("thanks", said)).reply, said, said);
+  }
+  // with a calendar source cited the read's grounding applies: a fact from the read passes, "it's on your calendar" does not
+  const tomorrow = { ...CHEN_EVENT };
+  const fact = "Follow-up: Robert & Linda Chen is on your calendar tomorrow at 10:00 AM.";
+  r = await answerOffer("tomorrow", [useTool("getCalendarTool", { date: "tomorrow" })], fact, googleCtx(fakeGoogle({ events: [tomorrow] })));
+  assert.equal(r.reply, fact);
+  assert.deepStrictEqual(r.sources, ["google calendar 2026-10-28"]);
+  for (const said of [
+    "Okay, it's on your calendar tomorrow at 10:00 AM.", "Should I add a reminder, since it's on your calendar tomorrow?",
+    "Okay, I've got them down for tomorrow at 10:00 AM.", "Tomorrow at 10:00 AM is locked in.", "Okay, tomorrow it is — you're set.",
+  ]) {
+    r = await answerOffer("tomorrow", [useTool("getCalendarTool", { date: "tomorrow" })], said, googleCtx(fakeGoogle({ events: [tomorrow] })));
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+  }
+  // a read grounds only what it returned: after a read of an empty day a calendar statement names no event it read, and no read
+  // grounds a "sent"
+  for (const said of [
+    "The follow-up is on your calendar tomorrow.", "Great, the follow-up is set for tomorrow.", "Your check-in to the Chens was sent.",
+  ]) {
+    r = await answerOffer("tomorrow", [useTool("getCalendarTool", { date: "tomorrow" })], said, googleCtx(fakeGoogle()));
+    assert.equal(r.reply, NOTHING_CHANGED, `empty read: ${said}`);
+  }
+  // ordinary narrations of the read still pass
+  for (const [said, events] of [
+    ["Tomorrow your calendar is clear.", []], ["You have nothing on your calendar tomorrow.", []],
+    ["Tomorrow you have Follow-up: Robert & Linda Chen at 10:00 AM.", [tomorrow]],
+  ]) {
+    r = await answerOffer("tomorrow", [useTool("getCalendarTool", { date: "tomorrow" })], said, googleCtx(fakeGoogle({ events })));
+    assert.equal(r.reply, said, said);
+  }
+  // a draft is still set up only on an action turn
+  r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[0], "pull up the Chens"), ctx: mikeCtx,
+    client: fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" })]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+  assert.equal("compose" in r, false);
+});
+
+test("Task 5b: the wh-question exemption needs a real inversion: a question, with the modal opening it or after a wh-word", async () => {
+  const CLAIMS = ["Just as I said I would I put the follow-up on your calendar.", "Whatever you'd like me to do I put on your calendar."];
+  for (const grounded of [false, true]) {
+    for (const text of [
+      ...CLAIMS, "Just as I said I would I put the follow-up on your calendar?", "Whatever you'd like me to do I put on your calendar?",
+      "As promised, should I say it? I put it on your calendar.", "Should I tell them what I put on your calendar?",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of [
+      ...WH_BOOKING_QUESTIONS, "When can I put it on your calendar?", "What day would we put it on your calendar?",
+      "Which slot do I put it on your calendar in?", "Did I put it on your calendar?", "And what time should I put it on your calendar?",
+      "What time on Friday should I put it on your calendar?", "Okay, which day should I put it on your calendar?", "What should I put on your calendar?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+  // on a plain read the two claims are held; the four wh-questions still pass on the affirmed-book turn
+  for (const said of CLAIMS) assert.equal((await plainRead(said)).reply, NOTHING_CHANGED, said);
+  for (const offer of [OFFERS[1], OFFERS[3]]) {
+    for (const said of WH_BOOKING_QUESTIONS) {
+      for (const grounded of [false, true]) assert.equal((await affirmedBook(said, grounded, offer)).reply, said, `${offer} -> ${said}`);
     }
   }
 });

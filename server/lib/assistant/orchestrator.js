@@ -446,17 +446,27 @@ const shortPassiveClaims = (sentence, sweep) =>
 // whole object ("Want me to put that on your calendar now?"); and a word ending in 's right before the "now" form is "<noun> is"
 // ("... a call given the follow-up's now on your calendar?"), so the complement is the verb's own and not something said beside
 // it. A statement is never exempt, so "I'll put it on your calendar now." and "Let me put it on your calendar now." stay claims, as
-// does the first-person past (CALENDAR_PLACED_RE). This exemption serves turns that are not action turns only: on an action turn
+// does the first-person past (CALENDAR_PLACED_ALL_RE). This exemption serves turns that are not action turns only: on an action turn
 // runTurn holds any "now" form a reply carries, question or not, placing verb or not, negative or not (Rulings 19 and 23, in the
-// R5-3 backstop). CALENDAR_PLACED_RE's I / we is not the subject of a past act when an inverted should / shall / can / could / would
-// / will / do / did stands right before it: "What time should I put it on your calendar?", "Where should we put it on your
-// calendar?" are clarifying questions (Ruling 22); "I put it on your calendar." and "We've put it on your calendar." stay claims.
-const CALENDAR_PLACED_RE = new RegExp(
-  "(?<!\\b(?:should|shall|can|could|would|will|do|did)\\s+)" +
+// R5-3 backstop). CALENDAR_PLACED_ALL_RE's I / we is not the subject of a past act when it is really inverted (Rulings 22 and 24):
+// the sentence ends with "?" and a should / shall / can / could / would / will / do / did stands right before the I / we, opening the
+// sentence or after a wh-word and at most three more words: "What time should I put it on your calendar?", "Where should we put it on
+// your calendar?", "What time on Friday should I put it on your calendar?" are clarifying questions. A modal anywhere else is no
+// inversion: "Just as I said I would I put the follow-up on your calendar." and "Whatever you'd like me to do I put on your calendar."
+// are claims, as are "I put it on your calendar." and "We've put it on your calendar.".
+const CALENDAR_PLACED_ALL_RE = new RegExp(
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
     "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
+  "gi"
+);
+// the text before the I / we ends with the inverted modal: at the start of the sentence, or after a wh-word and up to three words
+const INVERTED_MODAL_BEFORE_RE = new RegExp(
+  "(?:^\\s*(?:(?:and|or|so|then)\\s+)?|\\b(?:what|which|when|where|why|how|who|whom|whose)\\b(?:\\s+[\\w'\\u2019-]+){0,3}?\\s+)" +
+    "(?:should|shall|can|could|would|will|do|did)\\s+$",
   "i"
 );
+const placedClaim = (s) =>
+  [...s.matchAll(CALENDAR_PLACED_ALL_RE)].some((m) => !(/\?\s*$/.test(s) && INVERTED_MODAL_BEFORE_RE.test(s.slice(0, m.index))));
 // the "now" form itself, with no negative lookbehind: what runTurn holds on an action turn (Rulings 19 and 23)
 const CALENDAR_NOW_FORM_RE = /\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
 const CALENDAR_NOW_RE = new RegExp(
@@ -484,7 +494,7 @@ const placingComplement = (s, at) => {
   return /\?\s*$/.test(s) && !IS_CONTRACTED_BEFORE_RE.test(before) && PLACING_COMPLEMENT_RE.test(before);
 };
 const calendarClaim = (s) =>
-  CALENDAR_PLACED_RE.test(s) ||
+  placedClaim(s) ||
   (!NEGATIVE_START_RE.test(s) && [...s.matchAll(CALENDAR_NOW_ALL_RE)].some((m) => !placingComplement(s, m.index)));
 
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
@@ -768,16 +778,27 @@ const askedOf = (asked, answer) => {
 // or the start of the same one), is an offer of the same kind: "I / we can | could | 'd be happy to | 'd like to | 'm happy to" or
 // "happy to" and an action verb, with the same carve-outs ("I can book the Chens a follow-up Friday — want me to?" offers a change,
 // "I can run a sweep of your book — want me to?" and "I can update you on rates — want me to?" do not: a bare search for the verb
-// would take the noun "book"). An AFFIRMATION is ANY reply to such an offer that is not a decline and asks nothing (Ruling 21):
-// "yes", "perfect", "great, thanks", "awesome", "that'd be great", "would be great", "book it", "make it Thursday" all say go ahead.
-// It ASKS something (asksSomething) when it holds a "?" or opens with a question or auxiliary word: "sure, what are rates?" is a new
-// question. It is a DECLINE (isDecline) when every clause of it (split as the user's clauses are) is a decline or only words that
-// add nothing, and at least one is a decline. A decline clause is, after lead words (ok / okay / please / yeah / sure / thanks / but
-// / let's and filler), no / nope / nah / not now / not right now / not yet / don't / do not / never mind / nevermind / maybe later /
-// later / skip / cancel / hold off / wait / stop / no thanks, and nothing after it but the closed DECLINE_PAD words: "ok, never
-// mind", "please don't", "yeah no, not now", "sure, maybe later", "thanks, but not now", "No thanks, I'm good". A clause that says
-// more ("no, make it Thursday", "later today") is no decline, so that reply is a yes (fail-closed). A new instruction that is not a
-// question ("run a sweep") is a yes too: the turn is held to the backstop.
+// would take the noun "book").
+// The user's message right after such an offer is one of three (offerReplyClass, Ruling 24):
+//   * YES: a yes word, alone or leading (yes, yeah, yep, sure, ok, okay, alright, please, go ahead, do it, sounds good, perfect,
+//     great, that'd be great, would be great, that works, works for me, let's do it, book it, send it, why not, will do, absolutely,
+//     of course, ...), followed by nothing, thanks, or anything that asks nothing ("sure, no problem", "yeah, no worries", "great,
+//     thanks", "yeah, that's fine, no worries"); or a correction of the offered act ("no, make it Thursday", "make it 10", "Thursday
+//     instead", "do Friday at 10", "do the 10 o'clock", "have it at 10", "have them come in Friday", "might as well", "Friday at 10
+//     works", "Thursday at 10", and after no / nah / actually / not: a day or an act, "no, Thursday", "no, just a reminder"); or
+//     "what a great idea". It asks for the act: the turn is an action turn (R5-3 and the Ruling 19 / 23 hold, and the post-offer
+//     claim guard beside them), and the chain walk takes it as the origin.
+//   * DECLINE (isDecline): every clause a decline or words that add nothing ("no thanks", "ok, never mind", "let's not", "I'd rather
+//     not", "not today", "I'm all set", "forget it", "thanks, I'm good", "don't worry about it"). A plain turn, and the chain ends there.
+//   * OTHER: anything else, a new request ("pull up the Chens", "run a sweep"), a question with or without "?" ("when you get a
+//     chance"), small talk ("thanks"), a bare day ("tomorrow"). A plain turn, answered under the post-offer claim guard
+//     (offeredActClaimed, in runTurn). The chain walk goes on through it only as it goes through any question: an action request the
+//     user made BEFORE the offer still holds a reply that only answers it ("log a call with Chen" -> "Which Chen — should I log it for
+//     Robert and Linda, or for Chen Wei?" -> "Robert and Linda"); the offer and the reply add nothing to it.
+// A reply that holds a "?", or has a clause that opens a question (opensQuestion), is never a yes. An auxiliary or a modal opens a
+// question only with a subject after it (I, you, we, they, he, she, it, there, a name; "it" not after do / have, which agree with I /
+// you / we / they): "do Thursday instead", "have it at 10", "will do", "would be great" ask nothing, "can you make it 10" and "does it
+// work" do. "what a ...", "why not" and "how nice" are no questions.
 const OFFER_LEAD =
   "(?:do\\s+you\\s+want\\s+me\\s+to|would\\s+you\\s+like\\s+me\\s+to|want\\s+me\\s+to|should\\s+I|shall\\s+I|can\\s+I|could\\s+I|may\\s+I" +
   "|shall\\s+we|should\\s+we|would\\s+you\\s+like\\s+to|do\\s+you\\s+want\\s+to|want\\s+to)";
@@ -798,18 +819,21 @@ const SELF_OFFER_TO_ACT_RE = new RegExp(
 // a sentence that ends with only the lead: "want me to?", or "..., want me to?"
 const BARE_TAIL_RE = new RegExp(OFFER_START + OFFER_LEAD + "\\s*\\?$", "i");
 // The lead words a decline may open with ("ok, never mind", "please don't", "yeah no", "sure, maybe later", "thanks, but not now",
-// "let's hold off"), the decline itself, and the closed list of words that add nothing to it ("no thanks, I'm good", "skip it for
-// now", "not yet, thanks Charli", "no, that's fine", "don't worry about it"). No day, time, verb or name is on that list, so a
-// clause that says more ("no, make it Thursday", "later today", "wait, yes") is no decline.
+// "let's hold off", "eh, not now"), the decline itself, and the closed list of words that add nothing to it ("no thanks, I'm good",
+// "skip it for now", "not yet, thanks Charli", "no, that's fine", "don't worry about it", "leave it for now"). No day, time, verb or
+// name is on that list, so a clause that says more ("no, make it Thursday", "later today", "wait, yes") is no decline; nor are
+// "problem" and "worries", so "sure, no problem" and "yeah, no worries" are no declines either (they are yeses).
 const DECLINE_LEAD =
-  "(?:ok|okay|please|yeah|sure|thanks|thank\\s+you|but|let['\\u2019]?s|oh|um|uh|well|hmm|actually|so|and|hey|charli|charlie)";
+  "(?:ok|okay|please|yeah|sure|eh|thanks|thank\\s+you|but|let['\\u2019]?s|oh|um|uh|well|hmm|actually|so|and|hey|charli|charlie)";
 const DECLINE_HEAD =
-  "(?:no|nope|nah|not\\s+(?:right\\s+)?now|not\\s+yet|don['\\u2019]?t(?:\\s+do)?|do\\s+not(?:\\s+do)?|never\\s*mind|maybe\\s+later|later" +
-  "|skip|cancel|hold\\s+off|wait|stop)";
+  "(?:no|nope|nah|not\\s+(?:right\\s+)?now|not\\s+yet|not\\s+today|not\\s+really|don['\\u2019]?t(?:\\s+do)?|do\\s+not(?:\\s+do)?" +
+  "|never\\s*mind|maybe\\s+later|later|skip|cancel|hold\\s+off|wait|stop|let['\\u2019]?s\\s+not|i(?:['\\u2019]d|\\s+would)\\s+rather\\s+not" +
+  "|(?:i['\\u2019]?m\\s+)?all\\s+set|i['\\u2019]?m\\s+(?:good|fine|ok(?:ay)?)|forget|leave\\s+it|(?:i['\\u2019]?ll\\s+)?pass" +
+  "|i(?:['\\u2019]ll|\\s+will)\\s+handle)";
 const DECLINE_PAD =
-  "(?:ok|okay|please|yeah|sure|thanks|thank|you|but|oh|um|uh|well|hmm|actually|so|and|hey|charli|charlie|alright|all|right|good|fine" +
+  "(?:ok|okay|please|yeah|sure|eh|thanks|thank|you|but|oh|um|uh|well|hmm|actually|so|and|hey|charli|charlie|alright|all|right|good|fine" +
   "|i['\\u2019]?m|i|am|(?:that|it)['\\u2019]?s|it|that|this|them|on|about|for|now|then|yet|either|though|just|really|maybe" +
-  "|no|nope|nah|not|need|bother|worry|worries|problem)";
+  "|no|nope|nah|not|need|bother|worry)";
 const DECLINE_CLAUSE_RE = new RegExp(
   "^(?:" + DECLINE_LEAD + "(?![\\w'\\u2019-])\\s*)*" + DECLINE_HEAD + "(?:\\s+" + DECLINE_PAD + ")*(?![\\w'\\u2019-])\\s*$", "i"
 );
@@ -818,18 +842,152 @@ const isDecline = (text) => {
   const clauses = String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
   return clauses.some((c) => DECLINE_CLAUSE_RE.test(c)) && clauses.every((c) => DECLINE_CLAUSE_RE.test(c) || DECLINE_PAD_RE.test(c));
 };
-// A reply ASKS something when it holds a "?" or opens, after filler, with a question or auxiliary word (ASKING_START_RE,
-// YES_NO_AUX_RE). In the user's words "want" / "need" open a request, not a question ("need it Thursday"), and so do "do it" /
-// "do that" (DO_PRONOUN_RE), "don't ..." / "do not ..." (a decline, or more: isDecline decides), a modal with no subject after it
-// ("would be great", "will do", "can do", "could work") and "why not".
-const NOT_ASKING_OPENING_RE = /^(?:(?:would|will|could|can|should)\s+(?:be|do|love|work|help)|why\s+not|don['’]?t|do\s+not)\b/i;
-const asksSomething = (text) => {
-  const t = String(text == null ? "" : text);
-  if (t.includes("?")) return true;
-  const opening = afterFiller(t);
-  return (ASKING_START_RE.test(opening) || YES_NO_AUX_RE.test(opening)) && !DO_PRONOUN_RE.test(opening) &&
-    !NOT_ASKING_OPENING_RE.test(opening);
+
+// The classes of a reply to an offer to act (see above).
+const OFFER_YES = "yes";
+const OFFER_DECLINE = "decline";
+const OFFER_OTHER = "other";
+// Words ahead of what a reply says that say nothing themselves. Unlike FILLER_RE this never takes ok / okay / alright, which say
+// yes here.
+const REPLY_FILLER_RE = new RegExp(
+  "^(?:(?:hey|hi|hello|oh|ah|um|uh|hmm|well|so|and|but|or|then|actually|wait|charli|charlie|good\\s+(?:morning|afternoon|evening))" +
+    "(?![\\w'\\u2019-])[\\s,.!;:\\u2014\\u2013-]*)+",
+  "i"
+);
+const afterReplyFiller = (s) => String(s == null ? "" : s).trim().replace(REPLY_FILLER_RE, "").trim();
+// The yes words. A bare "please" says yes only on its own ("please", "please, no rush"), never ahead of a request: "please pull up
+// the Chens" asks for that and nothing else.
+const YES_WORDS =
+  "yes\\s+please|yes|yeah|yea|yep|yup|sure(?:\\s+thing)?|ok(?:ay)?|alright|all\\s+right|please\\s+do|go\\s+ahead|go\\s+for\\s+it" +
+  "|do\\s+(?:it|that)|(?:that\\s+)?sounds\\s+(?:good|great|perfect)|perfect|great|awesome|excellent|fine|that['\\u2019]?s\\s+fine" +
+  "|(?:that|it)(?:['\\u2019]d|\\s+would)\\s+be\\s+(?:great|good|nice|perfect|awesome|helpful)|would\\s+be\\s+great|that\\s+works" +
+  "|works\\s+for\\s+me|let['\\u2019]?s\\s+do\\s+(?:it|that)|book\\s+it|send\\s+it|draft\\s+it|why\\s+not|will\\s+do|absolutely" +
+  "|definitely|of\\s+course|you\\s+bet|sounds\\s+like\\s+a\\s+plan";
+const YES_LEAD_RE = new RegExp("^(?:" + YES_WORDS + ")(?![\\w'\\u2019-])", "i");
+const PLEASE_ALONE_RE = /^please[\s.!]*$/i;
+const saysYes = (clause) => {
+  const c = afterReplyFiller(clause);
+  return YES_LEAD_RE.test(c) || PLEASE_ALONE_RE.test(c);
 };
+// Strips, again and again, filler, yes words (and "please") and, for `corrections`, the words a correction opens with: what is left
+// is what the clause says beyond them ("sure, can you make it 10" -> "can you make it 10", "no, just a reminder" -> "a reminder").
+const YES_STRIP_RE = new RegExp("^(?:" + YES_WORDS + "|please)(?![\\w'\\u2019-])[\\s,.!;:\\u2014\\u2013-]*", "i");
+const CORRECTION_LEAD = "no|nope|nah|actually|not|rather|later|instead";
+// a reply that opens with a correction lead, after filler or a yes word ("yeah no, Thursday", "oh, actually Thursday")
+const CORRECTED_RE = new RegExp(
+  "^(?:(?:hey|hi|oh|ah|um|uh|hmm|well|so|and|but|charli|charlie|ok|okay|yeah)(?![\\w'\\u2019-])[\\s,]*)*(?:" + CORRECTION_LEAD +
+    ")(?![\\w'\\u2019-])",
+  "i"
+);
+const CORRECTION_STRIP_RE = new RegExp("^(?:" + CORRECTION_LEAD + "|just|only)(?![\\w'\\u2019-])[\\s,.!;:\\u2014\\u2013-]*", "i");
+const coreOf = (clause, corrections) => {
+  let c = String(clause).trim();
+  for (let prev = null; c !== prev;) {
+    prev = c;
+    c = afterReplyFiller(c).replace(YES_STRIP_RE, "").trim();
+    if (corrections) c = c.replace(CORRECTION_STRIP_RE, "").trim();
+  }
+  return c;
+};
+
+// Does a clause open a question? A wh-word does (but "what a ...", "why not", "how nice"), and an auxiliary or a modal does when a
+// subject follows it: I / you / we / they / he / she / it / there / y'all, or a name (a capitalized word that is no day, month or
+// article). "it" is no subject after do / have (and don't / haven't), which agree with I / you / we / they: "do it", "have it at 10"
+// tell Charli what to do. With no subject the auxiliary asks nothing: "do Friday at 10", "will do", "would be great", "is fine".
+const WH_OPEN_RE = /^(?:(?:and|or|so)\s+)?(?:what|which|who|whom|whose|when|where|why|how)(?![\w'’-])/i;
+const WH_NOT_ASKING_RE =
+  /^(?:(?:and|or|so)\s+)?(?:what\s+an?|why\s+not|how\s+(?:nice|great|cool|lovely|wonderful|kind|sweet|perfect|thoughtful|awesome|fun))(?![\w'’-])/i;
+const AUX_OPEN_RE = new RegExp(
+  "^(?:(?:and|or|so)\\s+)?(do|does|did|have|has|had|might|may|can|could|will|would|should|shall|is|are|am|was|were" +
+    "|don['\\u2019]?t|doesn['\\u2019]?t|didn['\\u2019]?t|haven['\\u2019]?t|hasn['\\u2019]?t|hadn['\\u2019]?t|can['\\u2019]?t|cannot|couldn['\\u2019]?t" +
+    "|won['\\u2019]?t|wouldn['\\u2019]?t|shouldn['\\u2019]?t|isn['\\u2019]?t|aren['\\u2019]?t|wasn['\\u2019]?t|weren['\\u2019]?t)" +
+    "\\s+([A-Za-z\\u00c0-\\u024f][\\w'\\u2019-]*)",
+  "i"
+);
+const SUBJECT_WORDS = new Set(["i", "you", "we", "they", "he", "she", "it", "there", "y'all", "y’all", "yall"]);
+const PLURAL_AUX_RE = /^(?:do|don['’]?t|have|haven['’]?t)$/i;
+const DAY_OR_MONTH_RE =
+  /^(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|january|february|march|april|may|june|july|august|september|october|november|december)(?:['’]s)?$/i;
+const isSubjectAfter = (aux, word) => {
+  const w = word.toLowerCase();
+  if (SUBJECT_WORDS.has(w)) return !(w === "it" && PLURAL_AUX_RE.test(aux));
+  return /^[A-ZÀ-Þ]/.test(word) && !DAY_OR_MONTH_RE.test(word) && !/^(?:the|a|an|that|this|these|those)$/i.test(word);
+};
+// (tested past filler, yes words and correction leads: "sure, can you make it 10", "not sure what time works" ask)
+const opensQuestion = (clause) => {
+  const c = coreOf(clause, true);
+  if (WH_OPEN_RE.test(c)) return !WH_NOT_ASKING_RE.test(c);
+  const m = AUX_OPEN_RE.exec(c);
+  return !!m && isSubjectAfter(m[1], m[2]);
+};
+
+// A correction of the offered act (or a yes that is no yes word), tested on what a clause says beyond its yes words and correction
+// leads. On its own: "make it 10", "might as well", "would be nice" / "will do" / "can do", "pencil it in", "what a great idea", "if
+// you can", "I think so", "I'm good with that" ("I'm good" alone is a decline), "do Thursday instead" / "do the 10 o'clock" /
+// "have them come in Friday" (do / have with no subject), "10 instead" / "a check-in instead" (but not "I'll call them instead"),
+// "Friday at 10 works" / "10 is fine" (but not "nothing works"),
+// and a day or time that names a clock time ("Thursday at 10", "the 10 o'clock", "tomorrow at 10"). After a correction lead (the
+// reply opens with no / nope / nah / actually / not / rather / later): any day or time ("no, Thursday", "not Friday, Thursday",
+// "later today") and an act ("no, just a reminder"). A bare day ("tomorrow", "Thursday") is no correction: it may ask what is on it.
+const CORRECTION_CORE_RE = new RegExp(
+  "^(?:make\\s+(?:it|that|them|this)|(?:might|may)\\s+as\\s+well|(?:would|will|could|can|should)\\s+(?:be|do|love|work|help)" +
+    "|(?:pencil|lock|slot|block|move|get|give|run\\s+with|go\\s+with)\\s+(?:it|that|this|them)|what\\s+an?" +
+    "|if\\s+(?:you\\s+(?:can|could|want|like|would|don['\\u2019]?t\\s+mind|have\\s+(?:the\\s+)?time)|it(?:['\\u2019]s|\\s+is)\\s+(?:open|free))" +
+    "|i\\s+(?:think|guess|suppose)\\s+so|i\\s+(?:guess|suppose)\\s*$|probably\\s*$" +
+    "|i['\\u2019]?m\\s+(?:good|fine|ok(?:ay)?|happy)\\s+with)(?![\\w'\\u2019-])",
+  "i"
+);
+const DO_HAVE_RE = /^(do|have)\s+([^\s,.!;:]+)/i;
+const doHaveImperative = (core) => {
+  const m = DO_HAVE_RE.exec(core);
+  return !!m && !/^not$/i.test(m[2]) && !isSubjectAfter(m[1], m[2]);
+};
+const SUBJECT_START_RE = /^(?:i|we|you|they|he|she|let\s+me)(?:['’](?:ll|m|ve|d|re))?(?![\w'’-])/i;
+const insteadClause = (core) => /\binstead[\s.!]*$/i.test(core) && !SUBJECT_START_RE.test(core);
+const WORKS_RE =
+  /^(?!(?:nothing|no|none|neither|not|never)(?![\w'’-])).*\b(?:works?(?:\s+for\s+me)?|is\s+(?:fine|good|great|perfect)|sounds\s+(?:good|great|perfect))[\s.!]*$/i;
+// the words of a day or a time ("Thursday at 10", "the 10 o'clock", "tomorrow morning", "next week"), and which of them are a clock time
+const DAY_TIME_WORDS = new Set([
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tonight", "tomorrow", "next", "this", "week",
+  "weekend", "morning", "afternoon", "evening", "night", "noon", "midnight", "at", "on", "in", "the", "a", "around", "about", "by", "for",
+  "instead", "then", "early", "late", "later", "o'clock", "o’clock", "am", "pm", "half", "past", "quarter", "thirty", "fifteen",
+  "forty-five", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+]);
+// what makes the words a day or a time at all ("at the", "maybe" are neither)
+const DAY_TIME_ANCHOR_RE =
+  /^(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|week|weekend|morning|afternoon|evening|night)$/i;
+const NUMBER_WORD_RE = /^(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i;
+const CLOCK_WORD_RE = /^(?:\d{1,2}(?::\d{2})?(?:am|pm)?|noon|midnight|o['’]clock|am|pm)$/i;
+const dayTime = (core) => {
+  const words = core.toLowerCase().replace(/\b([ap])\.\s?m\b\.?/g, "$1m").replace(/[\s.!]+$/, "").split(/\s+/).filter(Boolean);
+  if (words.length === 0 || !words.every((w) => DAY_TIME_WORDS.has(w) || CLOCK_WORD_RE.test(w))) return null;
+  const clock = words.some((w, i) => CLOCK_WORD_RE.test(w) || (NUMBER_WORD_RE.test(w) && ((i > 0 && words[i - 1] === "at") || words.length === 1)));
+  return clock || words.some((w) => DAY_TIME_ANCHOR_RE.test(w)) ? { clock } : null;
+};
+const ACT_NOUN_RE =
+  /^(?:(?:an?|the)\s+)?(?:quick\s+)?(?:reminder|check[\s-]?in|call|follow[\s-]?up|note|email|text|meeting|event|appointment)s?(?![\w'’-])/i;
+// A clause that negates its day or act ("not this week", "not Friday") names no correction itself, like "not today" (a decline): in
+// "not Friday, Thursday" the correction is the clause after it.
+const correction = (clause, corrected) => {
+  const core = coreOf(clause, true);
+  if (!core) return false;
+  if (CORRECTION_CORE_RE.test(core) || doHaveImperative(core) || insteadClause(core) || WORKS_RE.test(core)) return true;
+  if (/^not(?![\w'’-])/i.test(coreOf(clause, false))) return false;
+  const when = dayTime(core);
+  if (when && (when.clock || corrected)) return true;
+  return corrected && ACT_NOUN_RE.test(core);
+};
+
+// The class of a reply to an offer to act: OFFER_YES, OFFER_DECLINE or OFFER_OTHER (Ruling 24). Pure.
+function offerReplyClass(text) {
+  const t = String(text == null ? "" : text).replace(AUDIO_TAG_RE, " ").replace(/\s+/g, " ").trim();
+  if (!t || t.includes("?")) return OFFER_OTHER;
+  if (isDecline(t)) return OFFER_DECLINE;
+  const clauses = t.split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length === 0 || clauses.some(opensQuestion)) return OFFER_OTHER;
+  const corrected = CORRECTED_RE.test(clauses[0]);
+  return clauses.some((c) => saysYes(c) || correction(c, corrected)) ? OFFER_YES : OFFER_OTHER;
+}
 function offersAction(message) {
   const pieces = sentencesOf(messageText(message)).map((p) => p.trim()).filter(Boolean);
   const last = pieces[pieces.length - 1];
@@ -840,22 +998,28 @@ function offersAction(message) {
   if (!bare) return false;
   return [s.slice(0, bare.index), pieces[pieces.length - 2]].some((before) => !!before && SELF_OFFER_TO_ACT_RE.test(before));
 }
-const affirmsOffer = (asked, answer) => {
-  if (!asked || asked.role !== "assistant" || !offersAction(asked)) return false;
-  const t = messageText(answer).replace(AUDIO_TAG_RE, " ").trim();
-  return !!t && !asksSomething(t) && !isDecline(t);
-};
+// The class of `answer` as the reply to `asked`, or null when `asked` is no assistant offer to act (or `answer` no user message).
+const offerReplyOf = (asked, answer) =>
+  asked && asked.role === "assistant" && answer && answer.role === "user" && offersAction(asked)
+    ? offerReplyClass(messageText(answer))
+    : null;
 
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];
   if (!latest || latest.role !== "user") return false;
-  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great")
-  if (affirmsOffer(messages[messages.length - 2], latest)) return true;
+  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great", "have it at 10"); a decline
+  // ends the act offered, and with it the chain
+  const first = offerReplyOf(messages[messages.length - 2], latest);
+  if (first === OFFER_YES) return true;
+  if (first === OFFER_DECLINE) return false;
   if (!isAnswerShaped(messageText(latest))) return false;
   for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 1; hop++, i -= 2) {
     const asked = messages[i - 1];
     if (!asked || asked.role !== "assistant") return false;
-    if (affirmsOffer(asked, messages[i])) return true;
+    // a reply to an offer: a yes is the origin, a decline ends the walk, anything else is walked through like any answer
+    const reply = offerReplyOf(asked, messages[i]);
+    if (reply === OFFER_YES) return true;
+    if (reply === OFFER_DECLINE) return false;
     const before = messages[i - 2];
     if (i < 2 || !askedOf(asked, messages[i])) return false;
     if (!before || before.role !== "user") return false;
@@ -864,6 +1028,60 @@ function answersActionQuestion(messages) {
     if (!isAnswerShaped(text)) return false;
   }
   return false;
+}
+
+// The post-offer claim guard (Ruling 24): a reply to an offer to act that is no yes makes a plain turn, so the action backstop does
+// not hold what Charli says on it, and this does instead (after a yes it runs beside the backstop, which lets through any reply
+// shaped like a question, and a statement inside one). The reply is a claim nothing backs when
+//   * it holds a "now on your calendar" form anywhere (CALENDAR_NOW_FORM_RE, as on an action turn), or says the act is on the calendar
+//     or scheduled with "it" / "that" / "they" ... as its subject (IT_ON_CALENDAR_RE: "Okay, it's on your calendar Friday.", "...
+//     since that's on your calendar?"), anywhere, question or not, read or not: a read narrates its events by their titles;
+//   * a statement (a sentence that is no question: it does not end with "?" after a question or auxiliary word) says the act was
+//     carried out in words no read narrates (ACT_DONE_RE: "you're set", "locked in", "got them down for", "went out", "ready to go",
+//     an invite, "is in for Friday");
+//   * a statement says "drafted", "sent" or "emailed" ("Your check-in to the Chens was sent."): no read grounds that;
+//   * a statement says "on / in your calendar", "on the calendar", "booked", "scheduled", "set for / up" or "on the books" ("The
+//     follow-up was booked for Friday.") and the turn cited no calendar read, or it did and the statement names none of the events it
+//     read by its title: with nothing read from the calendar nothing can ground it, and a read grounds what it returned. So
+//     "Follow-up: Robert & Linda Chen is on your calendar tomorrow at 10:00 AM." passes after a read that returned that event (and the
+//     read's own grounding, calendarFactsHold, checks its day and time), while "The follow-up is on your calendar Friday." after a read
+//     of an empty Friday does not.
+// The statement tests look at each clause of the statement (split at , ; : a dash, "but" and "and") and skip one where a negative
+// stands before the words ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for them."; "no problem" /
+// "no worries" are no negative). claimsCompletion runs on this turn too, as on every turn. Pure.
+const IT_ON_CALENDAR_RE = new RegExp(
+  "\\b(?:it|that|this|they|those|these|everything|all\\s+of\\s+(?:it|that|them))(?:['\\u2019](?:s|re)|\\s+(?:is|are|was|were|has\\s+been|have\\s+been))" +
+    "\\s+(?:(?:now|already|all|also|officially|safely)\\s+)*" +
+    "(?:(?:on|in)\\s+(?:your|the)\\s+(?:google\\s+)?calendar|scheduled|set\\s+up|set\\s+for|locked\\s+in)\\b",
+  "i"
+);
+const ACT_DONE_RE = new RegExp(
+  "\\b(?:you['\\u2019]re\\s+(?:all\\s+)?set|locked\\s+in|(?:got|have|put)\\s+(?:\\w+\\s+){0,2}down\\s+for|went\\s+out|gone\\s+out" +
+    "|(?:ready|good)\\s+to\\s+(?:go|send)|invit(?:e|es|ed|ation)s?" +
+    "|(?:is|are|['\\u2019]s|['\\u2019]re)\\s+(?:all\\s+)?in\\s+for\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|next|this))\\b",
+  "i"
+);
+const EMAIL_ACT_RE = /\b(?:drafted|sent|emailed)\b/i;
+const CALENDAR_ACT_RE = /\b(?:(?:on|in)\s+(?:your|the)\s+(?:google\s+)?calendar|booked|scheduled|set\s+(?:for|up)|on\s+the\s+books)\b/i;
+const NEGATIVE_WORD_RE =
+  /\b(?:not|never|nothing|none|nobody|neither|nor|without|cannot|no(?!\s+(?:problem|worries)\b))\b|n['’]t\b/i;
+const STATEMENT_CLAUSE_SPLIT_RE = /[,;:—–]|\s-\s|\b(?:but|and)\b/i;
+// sentences split at . ! ? (not at the point of a decimal: "7.85 percent"), less those that ask
+const statementsOf = (text) =>
+  (String(text).match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim())
+    .filter((s) => s && !(/\?\s*$/.test(s) && QUESTION_START_RE.test(stripOpener(s).trim())));
+const saidInClause = (statement, re) => statement.split(STATEMENT_CLAUSE_SPLIT_RE).some((clause) => {
+  const m = re.exec(clause);
+  return !!m && !NEGATIVE_WORD_RE.test(clause.slice(0, m.index));
+});
+// `readTitles`: the titles of the events this turn's cited calendar reads returned (as the model saw them), or null when the turn
+// cited no calendar read
+const namesARead = (statement, readTitles) =>
+  Array.isArray(readTitles) && readTitles.some((t) => t.length >= 3 && statement.toLowerCase().includes(t.toLowerCase()));
+function offeredActClaimed(text, readTitles) {
+  if (CALENDAR_NOW_FORM_RE.test(text) || IT_ON_CALENDAR_RE.test(text)) return true;
+  return statementsOf(text).some((s) =>
+    saidInClause(s, ACT_DONE_RE) || saidInClause(s, EMAIL_ACT_RE) || (saidInClause(s, CALENDAR_ACT_RE) && !namesARead(s, readTitles)));
 }
 
 // ── Stage claims ─────────────────────────────────────────────────────────────
@@ -1468,11 +1686,15 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
 
   const convo = messages.slice();
   const userText = latestUserText(convo);
-  // R5-3 applies to this turn if the user asked for an action now, or is answering a question about one.
+  // R5-3 applies to this turn if the user asked for an action now, or is answering a question about one (a yes to an offer to act
+  // included).
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
+  // the class of the user's message when the assistant message right before it offered to act (null otherwise, Ruling 24)
+  const afterOffer = offerReplyOf(messages[messages.length - 2], last);
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
   const calendarReads = [];   // { date, timeZone } of each calendar day read this turn
+  const calendarTitles = [];  // the titles of the events those reads returned
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
   // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
@@ -1543,6 +1765,15 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // "... since nothing else is on your calendar now but the follow-up?". A question without the form still passes ("Should I
       // put it on your calendar?"); the accepted cost is that "... since nothing else is on your calendar now?" is held there too.
       if (actionTurn && CALENDAR_NOW_FORM_RE.test(text)) return finish(NOTHING_CHANGED);
+      // Ruling 24: a reply to an offer to act that is no yes (a decline, or anything else) is a plain turn, answered under the
+      // post-offer claim guard: no "now on your calendar" form, no "it's on your calendar" / "it's scheduled", no "you're set" /
+      // "locked in" / "went out", no statement that something was drafted or sent, and none that something is on the calendar, booked
+      // or scheduled unless it names an event this turn's calendar read returned (offeredActClaimed). The guard holds after a yes too:
+      // the backstop above passes a reply shaped like a question, and a statement can ride inside one ("What else? The follow-up is
+      // on your calendar Friday — want a reminder?", "Should I add a reminder, since it's on your calendar Friday?").
+      if (afterOffer && offeredActClaimed(text, sources.some((src) => src.startsWith("google calendar")) ? calendarTitles : null)) {
+        return finish(NOTHING_CHANGED);
+      }
       // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed
       // up (a turn that ends in text carries none): only a question may reach the user, anything else is the re-ask.
       if (careerAnswerTurn && sources.length === 0 && !isQuestionShaped(text)) return finish(STAGE_REASK);
@@ -1641,6 +1872,8 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // "tomorrow" in the reply is checked against (calendarFactsHold)
       if (isCitation(o.source) && o.source.startsWith("google calendar") && o.data && typeof o.data === "object") {
         calendarReads.push({ date: o.data.date, timeZone: o.data.timeZone });
+        // and the titles of its events, as the model saw them: what a reply after an offer may say is on the calendar
+        if (Array.isArray(o.data.events)) calendarTitles.push(...o.data.events.map((e) => oneLine(e && e.title)).filter(Boolean));
       }
       // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote
       if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);
