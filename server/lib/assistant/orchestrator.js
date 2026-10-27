@@ -1892,6 +1892,109 @@ function calendarFactsHold(text, reads, payloads, ctx) {
   });
 }
 
+// ── A calendar fact with no calendar read (Ruling 49) ────────────────────────────────────────────────────────────────────────────
+//
+// Only getCalendarTool can tell what is on the calendar, so on a turn that cited no "google calendar ..." read:
+//   * a sentence that names the calendar or availability (CALENDAR_WORD_RE: calendar, schedule, meeting, appointment, free, busy,
+//     available, availability, booked, wide open, clear, an open slot, and "open" said of a time: "Friday is open") together with a
+//     day or a time (DAY_OR_TIME_RE: today, tonight, tomorrow, yesterday, a morning / afternoon / evening, a weekday, a date, a clock
+//     time, all day, this / next week, the weekend) states a calendar fact nothing backs: "Your sweep is ready, and you're free all
+//     day Friday." on a sweep turn, "Friday afternoon is clear, nothing on your calendar." after a client lookup;
+//   * on a turn that cited nothing at all, any such word does ("Your week looks light — just a couple of meetings.").
+// Either is the can't-verify line, or, when the user's message is about the calendar or availability and Google is not usable for
+// this user (ctx.google.connection() says { code }), the Google line that says why; the same goes for the ungrounded screen's
+// can't-verify ("am I free Friday afternoon?" -> "Yes."). A day with no such word is no calendar fact: "Call the Chens today." on a
+// sweep turn passes, and so do a rates or a client answer that says "today" ("at 6.52 percent" is no clock time).
+// Not facts, and so not screened:
+//   * a question (it ends with "?" and opens with a question word) asks for a day or a slot rather than stating one, so only what it
+//     says after its first clause (a comma, colon, semicolon or dash, or since / because / now that / given / an "as" with its
+//     subject) is screened: "What time should I put it on your calendar?" passes, "Want me to book them Friday, since you're free all
+//     afternoon?" does not;
+//   * a calendar word whose own clause (split at , ; : a dash, but / and / so, since / because / given / now that) says before it what
+//     Charli did not or cannot do ("I couldn't read your calendar just now.", "Okay, I won't put it on your calendar.", "I haven't
+//     booked anything.", "No problem, I'll leave your calendar alone."), what she offers or is able to do ("I can schedule a follow-up
+//     for Friday if you like.", "..., want me to book a meeting Friday?"), or a condition ("a good one to call today if you're free"):
+//     "I couldn't read your calendar, but you're free Friday." and "I can book them Friday, since you're free then." still say the
+//     rest, and "I can't see anything on your calendar today." is a reading, not an inability;
+//   * "feel free", "free and clear", "loud and clear", "crystal clear", "clear of", "clear to close", a rate or a loan that is
+//     "available".
+const CALENDAR_WORD_RE = new RegExp(
+  "(?<![\\w'\\u2019-])(?:calendars?|schedul(?:e|es|ed|ing)|meetings?|appointments?|busy|availability|booked|wide\\s+open|open\\s+slots?" +
+    "|(?<!\\bfeel\\s+)free(?!\\s+(?:and\\s+clear|of)\\b)|(?<!\\b(?:(?:loud|free)\\s+and|crystal)\\s+)clear(?!\\s+(?:to\\s+close|of)\\b)" +
+    "|(?<!\\b(?:rates?|loans?|options?|products?|programs?|terms?|pricing)\\s+)available(?!\\s+(?:rates?|loans?|options?|products?|programs?|terms?)\\b)" +
+    "|(?:is|are|['\\u2019]s|['\\u2019]re|looks?|stays?|still|completely|totally|all)\\s+open)(?![\\w'\\u2019-])",
+  "i"
+);
+const CALENDAR_WORD_ALL_RE = new RegExp(CALENDAR_WORD_RE.source, "gi");
+const DAY_OR_TIME_RE = new RegExp(
+  "\\b(?:today|tonight|tomorrow|yesterday|mornings?|afternoons?|evenings?|noon|midnight|all\\s+day|weekends?|(?:this|next)\\s+week" +
+    "|(?:mon|tues|wednes|thurs|fri|satur|sun)days?" +
+    "|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)" +
+    "\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?|the\\s+\\d{1,2}(?:st|nd|rd|th)|\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|\\d{4}-\\d{2}-\\d{2}" +
+    "|\\d{1,2}(?::\\d{2})?\\s*[ap]m|\\d{1,2}:\\d{2}|o['\\u2019]clock" +
+    "|(?:at|after|before|by|until|till|from|around)\\s+(?:\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)" +
+    "(?![\\d,%]|\\.\\d|\\s*(?:percent|basis|bps|points?)\\b))\\b",
+  "i"
+);
+// where a question's first clause ends (not at its first character)
+const FIRST_CLAUSE_END_RE =
+  /[,;:—–]|--|\s-\s|\b(?:since|because|now\s+that|given|as(?=\s+(?:you|your|it|the|that|there|they|we|I)\b))\b/i;
+const FACT_CLAUSE_BREAK_ALL_RE = /[,;:—–]|--|\s-\s|\b(?:but|and|so|since|because|given|now\s+that)\b/gi;
+// what Charli did not or cannot do to the calendar
+const SHE_DID_NOT_RE = new RegExp(
+  "\\bI(?:\\s+(?:won['\\u2019]?t|will\\s+not|didn['\\u2019]?t|did\\s+not|haven['\\u2019]?t|have\\s+not|can['\\u2019]?t|cannot|can\\s+not" +
+    "|couldn['\\u2019]?t|could\\s+not|wasn['\\u2019]?t\\s+able\\s+to|was\\s+unable\\s+to|am\\s+unable\\s+to|am\\s+not\\s+able\\s+to)" +
+    "|['\\u2019]m\\s+(?:unable|not\\s+able)\\s+to)\\s+(?:just\\s+|even\\s+|yet\\s+)?" +
+    "(?:read|reach|check|access|load|open|connect\\s+to|get\\s+(?:to|into)|look\\s+at|put|add(?:ed)?|book(?:ed)?|schedul(?:e|ed)" +
+    "|plac(?:e|ed)|pencil(?:l?ed)?|block(?:ed)?|set\\s+up|ma(?:k|d)e|chang(?:e|ed))\\b" +
+    "|\\bI(?:['\\u2019]ll|\\s+will)\\s+(?:just\\s+)?leave\\b",
+  "i"
+);
+// what she offers or is able to do ("I can schedule ...", "want me to book ...", "should I put ...")
+const SHE_OFFERS_RE = new RegExp(
+  "\\b(?:(?:I|we)\\s+(?:can|could)|(?:I|we)['\\u2019](?:d\\s+be|m)\\s+(?:happy|glad)\\s+to|(?:do\\s+you\\s+want|want|would\\s+you\\s+like)\\s+me\\s+to" +
+    "|(?:should|shall|can|could|may)\\s+(?:I|we))\\s+(?:also\\s+|just\\s+|go\\s+ahead\\s+and\\s+)?" +
+    "(?:read|check|look\\s+at|look\\s+up|pull\\s+up|open|access|book|put|add|schedule|set\\s+up|pencil|block|move)\\b",
+  "i"
+);
+// a condition ("if you're free", "whenever you're free")
+const CONDITION_RE = /\b(?:if|whenever|unless|when)\b/i;
+// sentences split at . ! ? (not at a decimal point), with "a.m." / "p.m." read as "am" / "pm" so they end no sentence
+const factSentencesOf = (text) =>
+  (String(text).replace(/\b([ap])\.\s?m\b\.?/gi, "$1m").match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean);
+// `cited`: some tool result this turn was cited (then a calendar word needs a day or a time beside it to be a fact). Pure.
+function ungroundedCalendarFact(text, cited) {
+  return factSentencesOf(text).some((sentence) => {
+    const s = stripOpener(sentence).trim();
+    let screened = s;
+    if (/\?\s*$/.test(s) && QUESTION_START_RE.test(s)) {
+      const end = FIRST_CLAUSE_END_RE.exec(s.slice(1));
+      if (!end) return false;
+      screened = s.slice(end.index + 1);
+    }
+    const said = [...screened.matchAll(CALENDAR_WORD_ALL_RE)].some((m) => {
+      const before = screened.slice(0, m.index);
+      const breaks = [...before.matchAll(FACT_CLAUSE_BREAK_ALL_RE)];
+      // (its clause up to and with the word: "I can schedule", "I haven't booked")
+      const clause = (breaks.length ? before.slice(breaks[breaks.length - 1].index + breaks[breaks.length - 1][0].length) : before) + m[0];
+      return !SHE_DID_NOT_RE.test(clause) && !SHE_OFFERS_RE.test(clause) && !CONDITION_RE.test(clause);
+    });
+    return said && (!cited || DAY_OR_TIME_RE.test(s));
+  });
+}
+// The code ctx.google's connection gives (null when it is usable or cannot be read, or there is no adapter: the route always
+// builds one).
+const googleCodeOf = (ctx) => {
+  const google = ctx && ctx.google;
+  if (!google || typeof google.connection !== "function") return null;
+  try {
+    const connection = google.connection();
+    return connection && typeof connection.code === "string" ? connection.code : null;
+  } catch (_err) {
+    return null;
+  }
+};
+
 // The line code speaks when a tool this turn came back with a `data.code` that has one (null otherwise): Google not connected,
 // expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool). Only the
 // non-citing error results carry these codes. The first such result, in the order the tools ran, decides.
@@ -1945,6 +2048,10 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     return out;
   };
   const tookTooLong = () => ({ ...finish(TOOK_TOO_LONG), error: true });
+  // The can't-verify line, or (Ruling 49) the Google line when the user's message is about the calendar or availability and
+  // Google is not usable for them: then the reason nothing could be checked is that one.
+  const cantVerifyCalendar = () =>
+    (CALENDAR_WORD_RE.test(latestUserText(messages)) && GOOGLE_LINES.get(googleCodeOf(ctx))) || CANT_VERIFY;
 
   // Nothing to answer: no API call.
   const last = messages[messages.length - 1];
@@ -2040,7 +2147,8 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // a question it reads the clause a question presupposes ("Should I add a reminder, since it's on your calendar Friday?",
       // "Should I let the Chens know the follow-up is scheduled for Friday?": Ruling 30); on an action turn it screens every piece of
       // the one question in full ("What else — the invite went out — want a reminder?": Ruling 35).
-      const reads = sources.some((src) => src.startsWith("google calendar"))
+      const calendarCited = sources.some((src) => src.startsWith("google calendar"));
+      const reads = calendarCited
         ? { events: calendarEvents, now: ctx && Number.isFinite(ctx.now) ? ctx.now : Date.now() }
         : null;
       if ((afterOffer || actionTurn) && offeredActClaimed(text, reads, actionTurn)) {
@@ -2066,13 +2174,17 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       if (claimsCompletion(text, sources.length > 0, storedStage, sources.some((src) => src.startsWith("sweep engine")))) {
         return finish(NOTHING_CHANGED);
       }
+      // Ruling 49: a calendar or availability fact on a turn that read no calendar is can't-verify, or, when the user asked about
+      // the calendar and Google is not usable, the Google line that says why (ungroundedCalendarFact)
+      if (!calendarCited && ungroundedCalendarFact(text, sources.length > 0)) return finish(cantVerifyCalendar());
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
       if (sources.length === 0) {
         // explainTerm came back empty-handed ("(not found)", invalid, failed): nothing may define the term instead
         // of it, whatever words the definition is made of. Only a question back to the user is allowed through.
         if (glossaryMiss && !isLoneClarifyingQuestion(text, userText)) return finish(CANT_VERIFY);
-        return finish(screenUngroundedText(userText, text));
+        const screened = screenUngroundedText(userText, text);
+        return finish(screened === CANT_VERIFY ? cantVerifyCalendar() : screened);
       }
       // Grounded: every figure the model speaks must be one the tools returned this turn.
       if (!text || ungroundedNumbers(text, payloads).length > 0) return finish(CANT_VERIFY);

@@ -4730,10 +4730,12 @@ test("Task 5b: a decline after an offer is a plain turn: its acknowledgement pas
   // its acknowledgement may say what was not done
   for (const said of [
     "Okay, I won't put it on your calendar.", "Got it — I won't send anything.", "No problem, I'll leave your calendar alone.",
-    "Okay, nothing is on your calendar for them.",
   ]) {
     assert.equal((await offerReply("no thanks", said)).reply, said, said);
   }
+  // (final fix, Ruling 49: what is on the calendar is a calendar fact, and this turn read no calendar; the read before the offer
+  // even had the Chens' follow-up on it)
+  assert.equal((await offerReply("no thanks", "Okay, nothing is on your calendar for them.")).reply, CANT_VERIFY);
   // the offer answered a request: a decline still ends the act offered, so the turn is a plain one
   const r = await runTurn({
     messages: history("book the Chens a follow-up Friday", "Should I book it for 10:00 AM?", "no thanks"), ctx: googleCtx(fakeGoogle()),
@@ -5412,4 +5414,81 @@ test("Task 5b fix 4 (Ruling 43): 'consider it done / handled' reports the act on
     client: fakeClient([useTool("findClient", { query: "chen" }), say("Okay, consider it handled.")]),
   });
   assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+// ── Final fix wave (Rulings 49-58): the whole-branch review of Charli Plan B ──────────────────────────────────────────────────
+
+// A Google adapter whose connection is not usable: `code` is what lib/google's connection() says ("not_connected", "reconnect").
+const unusableGoogle = (code = "not_connected") => ({
+  connection: () => ({ code }), listDay: async () => ({ code }), insertEvent: async () => ({ code }),
+});
+
+test("Final fix (Ruling 49): a calendar or availability fact needs a calendar read this turn; else can't-verify, or the Google line", async () => {
+  const connected = () => googleCtx(fakeGoogle({ events: [CHEN_EVENT] }));
+  const turn = (messages, script, said, ctx = connected()) => runTurn({ messages, ctx, client: fakeClient([...script, say(said)]) });
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const sweep = () => useTool("runSweepTool", {});
+  // the review's probe rows (s6, s7), then the rest of s6 / s7 that also passed at 6be3093; [messages, tools, reply, asks the calendar]
+  const ROWS = [
+    [history(CAL_ASK, CAL_LINE, "and tomorrow?"), [], "Tomorrow is wide open.", false],
+    [history(CAL_ASK, CAL_LINE, "anything this afternoon?"), [], "No, your afternoon is clear.", false],
+    [userSays(CAL_ASK), [], "Your calendar is clear today.", true],
+    [userSays("run a sweep, and am I free Friday?"), [sweep()], "Your sweep is ready, and you're free all day Friday.", true],
+    [userSays("am I free Friday afternoon?"), [lookup()], "Yes — Friday afternoon is clear, nothing on your calendar.", true],
+    [userSays(CAL_ASK), [lookup()], "Nothing on your calendar today.", true],
+    [userSays(CAL_ASK), [], "Nothing on your calendar today.", true],
+    [history(CAL_ASK, CAL_LINE, "what about tomorrow?"), [], "Nothing on your calendar tomorrow.", false],
+    [history(CAL_ASK, CAL_LINE, "what else today?"), [], "That's the only thing on your calendar today.", false],
+    [userSays("what does my week look like?"), [], "Your week looks light — just a couple of meetings.", false],
+    [userSays("am I free Friday afternoon?"), [], "You're wide open Friday afternoon.", true],
+    [userSays("who should I call today?"), [sweep()], "Call the Chens today — your afternoon is free.", false],
+    [userSays("pull up the Chens"), [lookup()], "Want me to book them Friday, since you're free all afternoon?", false],
+  ];
+  for (const [messages, script, said, asks] of ROWS) {
+    const label = `${messages[messages.length - 1].content} -> ${said}`;
+    assert.equal((await turn(messages, script, said)).reply, CANT_VERIFY, `connected: ${label}`);
+    // Google not usable: a message about the calendar or availability hears why; anything else is the can't-verify line
+    for (const [code, line] of [["not_connected", GOOGLE_NOT_CONNECTED], ["reconnect", GOOGLE_RECONNECT]]) {
+      const r = await turn(messages, script, said, googleCtx(unusableGoogle(code)));
+      assert.equal(r.reply, asks ? line : CANT_VERIFY, `${code}: ${label}`);
+      assert.deepEqual(r.sources, [], label);
+    }
+  }
+  // the Google line needs the adapter to say why (the route always builds one); without one it is the can't-verify line
+  assert.equal((await turn(userSays(CAL_ASK), [], "Your calendar is clear today.", mikeCtx)).reply, CANT_VERIFY);
+  // a reading said as an inability is still a reading, and a clause beside an honest one is still screened
+  for (const said of [
+    "I can't see anything on your calendar today.", "I couldn't read your calendar, but you're free Friday.",
+    "I can book them Friday, since you're free then.",
+  ]) {
+    assert.equal((await turn(userSays(CAL_ASK), [], said)).reply, CANT_VERIFY, said);
+  }
+  // a yes/no question about availability that the ungrounded screen refuses hears the Google line too
+  assert.equal((await turn(userSays("am I free Friday afternoon?"), [], "Yes.", googleCtx(unusableGoogle()))).reply, GOOGLE_NOT_CONNECTED);
+
+  // answers that use a day with no availability word still pass, as do calendar facts after a read
+  const PASSES = [
+    [userSays("who should I call today?"), [sweep()], "Call the Chens today.", mikeCtx],
+    [userSays("what are rates today?"), [useTool("getMarketUpdate")], "Today's 30-year fixed is 6.52 percent.", mikeCtx],
+    [userSays("what are rates today?"), [useTool("getMarketUpdate")], "The best rate available today is 6.52 percent on the 30-year fixed.", mikeCtx],
+    [userSays("how are the Chens doing?"), [lookup()], "Robert & Linda Chen are at 7.85 percent, so call them this morning.", mikeCtx],
+    [history(CAL_ASK, CAL_LINE, "and tomorrow?"), [useTool("getCalendarTool", { date: "tomorrow" })], "Tomorrow is wide open.", googleCtx(fakeGoogle({ events: [] }))],
+    [userSays("am I free Friday afternoon?"), [useTool("getCalendarTool", { date: "friday" })], "Yes, Friday afternoon is clear.", googleCtx(fakeGoogle({ events: [] }))],
+    [userSays("good morning"), [], "Good morning! Feel free to ask me anything.", mikeCtx],
+    [userSays("give me a market update"), [useTool("getMarketUpdate")], "The 30-year fixed is at 6.52 percent, so it could be a busy week.", mikeCtx],
+    [userSays("who should I call today?"), [sweep()], "The Chens are your best call today, and they're free and clear soon.", mikeCtx],
+    // what Charli did not or could not do to the calendar, what she offers to do, and a condition are no calendar facts
+    [userSays(CAL_ASK), [], "I couldn't read your calendar just now.", googleCtx(fakeGoogle())],
+    [userSays("pull up the Chens"), [lookup()], "Robert & Linda Chen are at 7.85 percent. I can schedule a follow-up for Friday if you like.", mikeCtx],
+    [userSays("pull up the Chens"), [lookup()], "Robert & Linda Chen are at 7.85 percent, want me to book a meeting with them Friday?", mikeCtx],
+    [userSays("pull up the Chens"), [lookup()], "Robert & Linda Chen are at 7.85 percent — a good one to call today if you're free.", mikeCtx],
+    [userSays("put the Chens on my calendar Friday"), [], "What time on Friday?", googleCtx(fakeGoogle())],
+    // a question asks; only what it says after its first clause is screened
+    [userSays("book the Chens a follow-up Friday"), [], "What time should I put it on your calendar?", googleCtx(unusableGoogle())],
+    [userSays("pull up the Chens"), [lookup()], "Want me to put them on your calendar for Friday?", mikeCtx],
+  ];
+  for (const [messages, script, said, ctx] of PASSES) {
+    const r = await turn(messages, script, said, ctx);
+    assert.equal(r.reply, said, said);
+  }
 });
