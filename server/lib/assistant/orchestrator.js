@@ -219,12 +219,23 @@ function isYesNoQuestion(text) {
 // is / are / should / can / do / does ...). "I just spoke with the Chens, what's their balance?" and "I texted my wife — anyway,
 // what are rates today?" are questions with a bit of news in front, not requests. "want" and "need" do not count as asking
 // here: in the user's words they open a request ("I called the Chens, need to log that"), so such a report stays one. Pure.
+// Coaching is no action either (Ruling 51): write / draft (and writing / drafting) followed, past up / out and a closed list of
+// small words (a, an, the, me, quick, short, ...), by a talk track, a script, an opener, an opening line, a pitch, an intro, a
+// voicemail script, "what to say" or "how to say" ("help me write an opener for the Chens", "write a talk track for a refi call",
+// "Want me to write up a quick talk track for the call?"). A client's name in between keeps it a request ("write the Chens a
+// check-in"), and so does an email, a note, a letter, a message or a text after the noun ("draft an intro email to the Chens").
+const COACHING_OBJECT =
+  "(?!(?:\\s+(?:up|out))?(?:\\s+(?:a|an|the|some|me|us|them|him|her|quick|short|brief|little|good|great|simple|solid|strong|new|better" +
+  "|rough|first|catchy|friendly|casual|fresh|few|couple|of))*\\s+(?:talk\\s+tracks?|scripts?|openers?|opening\\s+lines?|pitch(?:es)?|intros?" +
+  "|voicemail\\s+scripts?|what\\s+to\\s+say|how\\s+to\\s+say)(?![\\w'\\u2019-])(?!\\s+(?:e-?mails?|notes?|letters?|messages?|texts?)\\b))";
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)" +
-  "|draft|write(?!\\s+(?:me|us|down)\\b)|email(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|send(?!\\s+(?:me|us)\\b)";
+  "|draft" + COACHING_OBJECT + "|write(?!\\s+(?:me|us|down)\\b)" + COACHING_OBJECT +
+  "|email(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|send(?!\\s+(?:me|us)\\b)";
 const ACTION_VERBS_ING =
   "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)" +
-  "|drafting|writing(?!\\s+(?:me|us|down)\\b)|emailing(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|sending(?!\\s+(?:me|us)\\b)";
+  "|drafting" + COACHING_OBJECT + "|writing(?!\\s+(?:me|us|down)\\b)" + COACHING_OBJECT +
+  "|emailing(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|sending(?!\\s+(?:me|us)\\b)";
 const REQUEST_FILLER =
   "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember(?=\\s+to\\b)|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");

@@ -5591,3 +5591,50 @@ test("Final fix (Ruling 50): on a plain turn that read the calendar, a true narr
     assert.equal(claimsCompletion(said, true, null, false, true), true, said);
   }
 });
+
+test("Final fix (Ruling 51): writing or drafting a talk track, a script, an opener or what to say is coaching, not an action; a check-in still is", async () => {
+  const COACH = "Open with how long it's been, then ask whether anything has changed with the house.";
+  const ask = async (u, grounded) => (await runTurn({
+    messages: userSays(u), ctx: mikeCtx,
+    client: fakeClient(grounded ? [useTool("findClient", { query: "chen" }), say(COACH)] : [say(COACH)]),
+  })).reply;
+  // probe s8, as at b542904: [request, with no tool, after a client lookup]
+  for (const [u, alone] of [
+    ["help me write an opener for the Chens", COACH],
+    ["can you write a quick script for calling the Chens?", CANT_VERIFY],   // (no tool: "calling" is a book word, as at b542904)
+    ["write a talk track for a refi call", CANT_VERIFY],
+    ["help me draft what to say to the Chens", COACH],
+  ]) {
+    assert.equal(await ask(u, false), alone, `no tool: ${u}`);
+    assert.equal(await ask(u, true), COACH, `client lookup: ${u}`);
+  }
+  // probe s9: a yes to an offer of a talk track is no action turn
+  const TRACK = "Try this: Hi Robert, it's been a while — rates have moved, and I'd love to walk you through your options.";
+  for (const offer of [
+    "The Chens are first. Want me to write up a quick talk track for the call?", "The Chens are first. Want me to draft a short talk track for that call?",
+  ]) {
+    for (const yes of ["yes", "sure"]) {
+      const r = await runTurn({
+        messages: history("who should I call first?", offer, yes), ctx: mikeCtx,
+        client: fakeClient([useTool("findClient", { query: "chen" }), say(TRACK)]),
+      });
+      assert.equal(r.reply, TRACK, `${offer} -> ${yes}`);
+    }
+  }
+  for (const u of [
+    "help me write an opener for the Chens", "can you write a quick script for calling the Chens?", "write a talk track for a refi call",
+    "help me draft what to say to the Chens", "write up a short pitch for the Chens", "draft me an intro for the Chens",
+    "can you write a voicemail script for the Chens?", "help me write an opening line", "write out how to say it to them",
+    "I need you to write a few talk tracks", "could you help me with writing a script for the Chens",
+  ]) assert.equal(isActionRequest(u), false, u);
+  // writing to a client is still an action, and so is an email that is an intro or a pitch
+  for (const u of [
+    "write the Chens a check-in", "draft the Chens a check-in", "draft an intro email to the Chens", "write a pitch email to the Chens",
+    "write a check-in for the Chens", "can you draft a short note for the Chens?",
+  ]) assert.equal(isActionRequest(u), true, u);
+  const r = await runTurn({
+    messages: userSays("draft the Chens a check-in"), ctx: mikeCtx,
+    client: fakeClient([useTool("findClient", { query: "chen" }), say("Okay, it's on its way.")]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+});
