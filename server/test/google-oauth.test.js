@@ -728,6 +728,25 @@ test("routes: a callback whose exchange fails redirects to /?google=error and co
   }
 });
 
+test("Final fix (Ruling 56): a sign-in that leaves the calendar box unticked redirects to /?google=scope and connects nothing", async () => {
+  for (const scope of ["openid email", "openid email https://www.googleapis.com/auth/calendar.events.readonly"]) {
+    const unticked = fakeFetch(goodRoutes(goodTokens({ scope })));
+    const listening = await listen(buildApp(googleRoutes.createGoogleRouter({ limiter: { max: 100000 } }), unticked));
+    try {
+      const request = asUser(listening.base);
+      const flow = await connectFlow(request, bea);
+      const res = await request(null)("GET", `/api/google/callback?code=c&state=${flow.state}`, { cookies: flow.cookies });
+      assert.strictEqual(res.status, 302);
+      assert.strictEqual(res.headers.get("location"), "/?google=scope", scope);
+      assert.strictEqual(connectionRow(bea), undefined);
+      assert.strictEqual(stateRow(flow.state), undefined);
+      assertFlowCookieCleared(res);
+    } finally {
+      listening.server.close();
+    }
+  }
+});
+
 test("routes: /status shows only the caller's own connection and never a token field", async () => {
   seedConnection(ann, { expiresAt: Date.now() + 5 * MIN });
   seedConnection(bea, { expiresAt: Date.now() + 5 * MIN, status: "reconnect" });

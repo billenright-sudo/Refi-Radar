@@ -3,7 +3,8 @@
 //   GET /api/google/status -> { configured, connected, status, googleEmail }
 //     status: "connected" | "reconnect" | null. `connected` only means a connection row exists, so an expired one
 //     (status "reconnect") is connected too: the card must offer Reconnect, not Disconnect.
-//   The OAuth callback sends the browser back to /?google=connected | denied | error.
+//   The OAuth callback sends the browser back to /?google=connected | denied | scope | error (scope: the calendar permission box
+//   was left unticked on Google's consent screen).
 
 // The card's one-line state and the single button it offers.
 //   -> { label, action: "connect" | "reconnect" | "disconnect" | null }   (null: nothing to click)
@@ -19,12 +20,13 @@ export function googleCard(status) {
 }
 
 // The line to show when Google sends the browser back, from the page's query string ("?google=denied"); null when
-// there is none (or it is not one of the three the server sends).
+// there is none (or it is not one of the four the server sends).
 export function returnNotice(search) {
   if (typeof search !== "string") return null;
   switch (new URLSearchParams(search).get("google")) {
     case "connected": return "Google Calendar is connected.";
     case "denied": return "Google wasn't connected — permission was declined.";
+    case "scope": return "Google wasn't connected — tick the calendar permission and try again.";
     case "error": return "Google couldn't be connected. Try again.";
     default: return null;
   }

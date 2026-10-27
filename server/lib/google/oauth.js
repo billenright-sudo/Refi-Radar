@@ -300,5 +300,6 @@ async function disconnect(db, userId, fetchFn = globalThis.fetch) {
 }
 
 module.exports = {
-  SCOPES, STATE_TTL_MS, googleConfig, startAuth, finishAuth, cancelAuth, getConnection, markReconnect, refreshTokenOf, accessToken, disconnect,
+  SCOPES, STATE_TTL_MS, MSG_NEEDS_CALENDAR, googleConfig, startAuth, finishAuth, cancelAuth, getConnection, markReconnect, refreshTokenOf,
+  accessToken, disconnect,
 };

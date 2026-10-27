@@ -52,6 +52,12 @@ test("returnNotice: connected, denied and error each have their own line", () =>
   assert.equal(returnNotice("?google=error"), "Google couldn't be connected. Try again.");
 });
 
+test("Final fix (Ruling 56): returnNotice: a sign-in with the calendar box unticked says to tick it", () => {
+  assert.equal(returnNotice("?google=scope"), "Google wasn't connected — tick the calendar permission and try again.");
+  assert.equal(returnNotice("?a=1&google=scope"), "Google wasn't connected — tick the calendar permission and try again.");
+  assert.equal(returnNotice("?google=SCOPE"), null);
+});
+
 test("returnNotice: the other query parameters around it do not matter, a missing or unknown one is null", () => {
   assert.equal(returnNotice("?a=1&google=connected&b=2"), "Google Calendar is connected.");
   assert.equal(returnNotice("google=denied"), "Google wasn't connected — permission was declined.");

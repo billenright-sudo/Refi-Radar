@@ -1995,8 +1995,8 @@ export default function App() {
   const [selectedLO, setSelectedLO] = useState(null);
   const [googleNotice, setGoogleNotice] = useState(null);   // the line for Charli's transcript after Google sent the browser back
 
-  // Google's consent screen sends the browser back to /?google=connected|denied|error: open Charli with that line, once, and take
-  // the parameter out of the address so a reload does not repeat it.
+  // Google's consent screen sends the browser back to /?google=connected|denied|scope|error: open Charli with that line, once, and
+  // take the parameter out of the address so a reload does not repeat it.
   useEffect(() => {
     const url = new URL(window.location.href);
     if (!url.searchParams.has("google")) return;

@@ -1,7 +1,8 @@
 "use strict";
 // The signed-in user's own Google connection (lib/google/oauth.js), for Charli's calendar.
 //   POST /api/google/connect     -> { url }   the Google consent URL to send the browser to
-//   GET  /api/google/callback    Google's redirect back; answers 302 to /?google=connected | denied | error
+//   GET  /api/google/callback    Google's redirect back; answers 302 to /?google=connected | denied | scope | error
+//                                (scope: signed in, but the calendar permission box was left unticked)
 //   GET  /api/google/status      -> { configured, connected, status, googleEmail }   (status: 'connected' | 'reconnect' | null)
 //   POST /api/google/disconnect  -> { success: true }   revokes at Google and forgets the tokens
 //
@@ -78,7 +79,9 @@ function createGoogleRouter({ limiter = {} } = {}) {
       }
       const send = req.app.get("googleFetch") || globalThis.fetch;
       const result = await oauth.finishAuth(db, { code, state }, send);
-      return done(result.error ? "error" : "connected");
+      // (Ruling 56: Google's consent screen has a box per scope; a broker who unticks the calendar one is told to tick it)
+      if (result.error) return done(result.error === oauth.MSG_NEEDS_CALENDAR ? "scope" : "error");
+      return done("connected");
     } catch (err) {
       console.error("GET /api/google/callback:", errName(err));
       return done("error");
