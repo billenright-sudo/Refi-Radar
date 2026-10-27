@@ -487,6 +487,127 @@ test("B2: the pending card's rows are the server's details (every field to be wr
   assert.deepEqual(pendingRows(null), []);
 });
 
+// ── a client email set up as compose links (nothing to confirm, nothing sent) ──
+
+const COMPOSE_REPLY = "Here's a check-in email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
+const COMPOSE = {
+  to: "chen@family.example",
+  subject: "Checking in",
+  body: "Hi Robert & Linda Chen,\n\nIt's been a little while since we last talked.\n\nBest,\nAnn User\nNMLS #123456",
+  links: {
+    gmail: "https://mail.google.com/mail/?view=cm&fs=1&to=chen%40family.example&su=Checking%20in&body=Hi",
+    outlook: "https://outlook.office.com/mail/deeplink/compose?to=chen%40family.example&subject=Checking%20in&body=Hi",
+    mailto: "mailto:chen%40family.example?subject=Checking%20in&body=Hi",
+  },
+};
+const withLink = (key, value) => ({ ...COMPOSE, links: { ...COMPOSE.links, [key]: value } });
+
+test("Task 7: a /turn reply with a valid compose keeps it on the assistant turn; nothing is pending and /confirm is never called", async () => {
+  const { session, server, spoken } = setup({
+    routes: { "POST /api/assistant/turn": queue(turnReply(COMPOSE_REPLY, { sources: ["client record"], turnId: "mail1", compose: COMPOSE })) },
+  });
+  assert.deepEqual(await session.submit("draft the Chens a check-in"), { ok: true, action: "turn" });
+  const turn = lastTurn(session);
+  assert.equal(turn.role, "assistant");
+  assert.equal(turn.content, COMPOSE_REPLY);
+  assert.equal(turn.kind, "message");
+  assert.deepEqual(turn.sources, ["client record"]);
+  assert.deepEqual(turn.compose, COMPOSE);
+  assert.equal(session.getState().pending, null, "an email is set up, not a change to confirm");
+  assert.deepEqual(spoken, [{ text: COMPOSE_REPLY, turnId: "mail1" }]);
+  assert.equal(server.confirms().length, 0);
+  assert.deepEqual(server.unexpected, []);
+});
+
+test("Task 7: the email never goes back to /turn - history is plain { role, content } and the compose stays on the turn", async () => {
+  const { session, server } = setup({
+    routes: { "POST /api/assistant/turn": queue(turnReply(COMPOSE_REPLY, { compose: COMPOSE }), turnReply("Anything else?")) },
+  });
+  await session.submit("draft the Chens a check-in");
+  await session.submit("thanks");
+  const sent = messagesOf(server.turns()[1]);
+  assert.deepEqual(sent, [
+    { role: "user", content: "draft the Chens a check-in" },
+    { role: "assistant", content: COMPOSE_REPLY },
+    { role: "user", content: "thanks" },
+  ]);
+  const wire = JSON.stringify(server.turns()[1].body);
+  for (const never of ["chen@family.example", "chen%40family.example", "NMLS #123456", "mail.google.com", "mailto:"]) {
+    assert.ok(!wire.includes(never), `"${never}" is not sent to the model`);
+  }
+});
+
+test("Task 7: the compose keeps only the four fields and the three links, as copies", async () => {
+  const sent = { ...COMPOSE, extra: "x", links: { ...COMPOSE.links, evil: "https://evil.test/" } };
+  const { session } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply(COMPOSE_REPLY, { compose: sent })) } });
+  await session.submit("draft the Chens a check-in");
+  const kept = lastTurn(session).compose;
+  assert.deepEqual(kept, COMPOSE);
+  assert.deepEqual(Object.keys(kept), ["to", "subject", "body", "links"]);
+  assert.deepEqual(Object.keys(kept.links), ["gmail", "outlook", "mailto"]);
+  assert.notEqual(kept.links, sent.links);
+});
+
+test("Task 7: a compose with a link that is not an email-compose link is dropped whole; the reply is still shown and spoken", async () => {
+  const bad = [
+    withLink("gmail", "javascript:alert(1)"),
+    withLink("outlook", "javascript:alert(1)"),
+    withLink("mailto", "javascript:alert(1)"),
+    withLink("gmail", "http://mail.google.com/mail/?view=cm"),
+    withLink("gmail", "https://mail.google.com.evil.test/mail/"),
+    withLink("gmail", "https://evil.test/https://mail.google.com/"),
+    withLink("gmail", "data:text/html,<script>alert(1)</script>"),
+    withLink("outlook", "https://outlook.office.com.evil.test/mail/"),
+    withLink("outlook", "https://outlook.live.com/mail/deeplink/compose"),
+    withLink("mailto", "https://mail.google.com/"),
+    withLink("gmail", "HTTPS://MAIL.GOOGLE.COM/mail/"),
+    withLink("gmail", ""),
+    withLink("gmail", undefined),
+    withLink("gmail", null),
+    withLink("gmail", 5),
+    withLink("gmail", ["https://mail.google.com/mail/"]),
+    withLink("gmail", { href: "https://mail.google.com/mail/" }),
+    { ...COMPOSE, links: { gmail: COMPOSE.links.gmail, outlook: COMPOSE.links.outlook } },
+    { ...COMPOSE, links: {} },
+    { ...COMPOSE, links: null },
+    { ...COMPOSE, links: [COMPOSE.links.gmail, COMPOSE.links.outlook, COMPOSE.links.mailto] },
+    { ...COMPOSE, links: "https://mail.google.com/" },
+    { to: COMPOSE.to, subject: COMPOSE.subject, body: COMPOSE.body },
+    { ...COMPOSE, to: 5 },
+    { ...COMPOSE, to: undefined },
+    { ...COMPOSE, subject: ["Checking in"] },
+    { ...COMPOSE, body: { text: "Hi" } },
+    { ...COMPOSE, body: null },
+    [COMPOSE],
+    "mailto:chen@family.example",
+    42,
+    true,
+    null,
+  ];
+  for (const compose of bad) {
+    const { session, spoken, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply(COMPOSE_REPLY, { turnId: "mail2", compose })) } });
+    await session.submit("draft the Chens a check-in");
+    const turn = lastTurn(session);
+    assert.equal(turn.content, COMPOSE_REPLY, JSON.stringify(compose));
+    assert.equal(turn.role, "assistant");
+    assert.equal("compose" in turn, false, `dropped: ${JSON.stringify(compose)}`);
+    assert.equal(session.getState().pending, null);
+    assert.deepEqual(spoken, [{ text: COMPOSE_REPLY, turnId: "mail2" }]);
+    assert.equal(server.confirms().length, 0);
+  }
+});
+
+test("Task 7: a turn without a compose has none, and an error:true turn never keeps one", async () => {
+  const plain = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("The 30-year is at 6.5%.")) } });
+  await plain.session.submit("rates");
+  assert.equal("compose" in lastTurn(plain.session), false);
+
+  const failed = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sorry — something went wrong.", { error: true, compose: COMPOSE })) } });
+  await failed.session.submit("draft the Chens a check-in");
+  assert.equal(lastTurn(failed.session).kind, "error");
+  assert.equal("compose" in lastTurn(failed.session), false);
+});
+
 test("a yes with nothing pending is an ordinary answer to Charli's question and goes to /turn", async () => {
   const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Which would you like?")) } });
   await session.submit("yes");

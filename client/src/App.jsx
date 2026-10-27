@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import CharliView from "./charli/CharliView.jsx";
+import { returnNotice } from "./charli/google.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1992,6 +1993,18 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [treasury, setTreasury] = useState(null);
   const [selectedLO, setSelectedLO] = useState(null);
+  const [googleNotice, setGoogleNotice] = useState(null);   // the line for Charli's transcript after Google sent the browser back
+
+  // Google's consent screen sends the browser back to /?google=connected|denied|error: open Charli with that line, once, and take
+  // the parameter out of the address so a reload does not repeat it.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("google")) return;
+    const text = returnNotice(url.search);
+    url.searchParams.delete("google");
+    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    if (text) { setGoogleNotice(text); setView("charli"); }
+  }, []);
 
   // Check for accept-invite token in URL first
   useEffect(() => {
@@ -2018,6 +2031,7 @@ export default function App() {
     setUser(userData);
     setAuthState("authenticated");
     setView("dashboard");
+    setGoogleNotice(null);   // a Google result from before this sign-in is stale
   };
 
   const handleLogout = async () => {
@@ -2142,7 +2156,7 @@ export default function App() {
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
             {view === "dashboard"     && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
-            {view === "charli"        && <CharliView rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} />}
+            {view === "charli"        && <CharliView rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}

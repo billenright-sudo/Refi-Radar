@@ -7,7 +7,7 @@
 // a spoken or typed "yes" is never sent to /turn (the model would just propose the change again).
 //
 // Server contracts (server/routes/assistant.js):
-//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour } -> { reply, sources, sideEffect?, details?, turnId, error? }
+//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour } -> { reply, sources, sideEffect?, details?, compose?, turnId, error? }
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
@@ -130,6 +130,24 @@ const cleanDetails = (details) =>
     .filter((d) => d && typeof d === "object" && typeof d.label === "string" && d.label.trim() && (typeof d.value === "string" || typeof d.value === "number"))
     .map((d) => ({ label: d.label.trim(), value: String(d.value) }));
 
+// A client email Charli set up (/turn's `compose`): { to, subject, body, links: { gmail, outlook, mailto } }, all strings, shown on the
+// turn as an unsent draft for the broker to open in their own mail app (nothing to confirm; nothing is sent from here). The links
+// are followed by the browser, so each must start with its provider's compose address; anything else drops the whole compose (the
+// reply is still shown). -> a fresh object with only these fields, or null.
+const COMPOSE_LINK_PREFIXES = Object.freeze({ gmail: "https://mail.google.com/", outlook: "https://outlook.office.com/", mailto: "mailto:" });
+function cleanCompose(compose) {
+  if (!compose || typeof compose !== "object" || Array.isArray(compose)) return null;
+  const { to, subject, body, links } = compose;
+  if (typeof to !== "string" || typeof subject !== "string" || typeof body !== "string") return null;
+  if (!links || typeof links !== "object" || Array.isArray(links)) return null;
+  const kept = {};
+  for (const [key, prefix] of Object.entries(COMPOSE_LINK_PREFIXES)) {
+    if (typeof links[key] !== "string" || !links[key].startsWith(prefix)) return null;
+    kept[key] = links[key];
+  }
+  return { to, subject, body, links: kept };
+}
+
 // The rows to draw under a pending read-back (CharliView): the server's details, or none. Pure.
 export const pendingRows = (pending) => (pending && Array.isArray(pending.details) ? pending.details : []);
 
@@ -162,8 +180,9 @@ const isRetryable = (res) => res.network || res.timedOut || res.status >= 500 ||
 //           notice, dispose }.
 //
 // getState() -> { turns, pending, busy, opening, hasRates, careerStage }
-//   turns    [{ id, role, content, sources, turnId, kind: "message" | "unverified" | "error" | "notice", inHistory }]
-//            ("unverified": Charli's reply is exactly the can't-verify or guideline hand-off line)
+//   turns    [{ id, role, content, sources, turnId, kind: "message" | "unverified" | "error" | "notice", inHistory, compose? }]
+//            ("unverified": Charli's reply is exactly the can't-verify or guideline hand-off line; compose: the unsent client
+//            email the reply set up, { to, subject, body, links: { gmail, outlook, mailto } }, kept only when it checks out)
 //   pending  { sideEffect, readBack, details? } | null   (details: [{ label, value }] for the card, when the server sent them)
 // Only turns with inHistory are sent to /turn, as plain { role, content }.
 //
@@ -272,9 +291,11 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
     const data = res.data;
     if (res.ok && data && typeof data.reply === "string" && data.reply.trim()) {
       const failed = data.error === true;
+      const compose = failed ? null : cleanCompose(data.compose);
       addTurn({
         role: "assistant", content: data.reply, sources: cleanSources(data.sources), turnId: data.turnId || null,
         kind: failed ? "error" : UNVERIFIED_REPLIES.has(data.reply.trim()) ? "unverified" : "message",
+        ...(compose ? { compose } : {}),
       });
       if (!failed && data.sideEffect && typeof data.sideEffect === "object" && !Array.isArray(data.sideEffect)) {
         const details = cleanDetails(data.details);

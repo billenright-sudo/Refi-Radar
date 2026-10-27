@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createSession, CAREER_STAGES, pendingRows, voiceNoteFor } from "./session.mjs";
+import { googleCard, validNmls } from "./google.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
 // Charli, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and
 // speaker live in audio.js. This file is the screen: it wires the two together and draws the result.
 //
-// Props: rates (today's rates, from App), user (from /api/auth/me), ui = { C, card, mono, Icon } (App's design tokens).
+// Props: rates (today's rates, from App), user (from /api/auth/me), ui = { C, card, mono, Icon } (App's design tokens),
+// notice (optional: one line to show in the transcript when the screen opens, e.g. where Google sent the browser back to;
+// onNoticeShown() is called once it has been shown, so App can forget it).
 
 const MIC_NOTES = {
   denied: "Microphone access is blocked. Allow it in your browser's site settings to talk to Charli. Typing works in the meantime.",
@@ -15,7 +18,8 @@ const MIC_NOTES = {
 
 // ── pieces ───────────────────────────────────────────────────────────────────
 
-const Turn = ({ turn, ui: { C, mono } }) => {
+const Turn = ({ turn, ui }) => {
+  const { C, mono } = ui;
   if (turn.kind === "notice") {
     return <div style={{ color: C.muted, fontSize: 12.5, fontStyle: "italic", padding: "2px 6px" }}>{turn.content}</div>;
   }
@@ -49,9 +53,44 @@ const Turn = ({ turn, ui: { C, mono } }) => {
           </div>
         )}
       </div>
+      {/* an email Charli set up: shown for the broker to open in their own mail app (session.mjs has checked its links) */}
+      {!mine && turn.compose && <ComposeCard compose={turn.compose} ui={ui} />}
     </div>
   );
 };
+
+// The email Charli set up (spec §4 anti-goal 2: nothing is sent from here). The text is code-authored on the server and shown
+// exactly as it will open; the three links open it ready to go in the broker's own Gmail, Outlook or mail app.
+const COMPOSE_LINKS = [["gmail", "Open in Gmail"], ["outlook", "Open in Outlook"], ["mailto", "Other email app"]];
+const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
+  <div data-testid="charli-compose" style={{ ...card, marginTop: 8, padding: "0.9rem 1.1rem", width: "88%", boxSizing: "border-box" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 7, color: C.muted, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>
+      <Icon name="mail" size={13} color={C.muted} />Email draft — not sent
+    </div>
+    <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "4px 14px", margin: "0 0 12px", fontSize: 13 }}>
+      <dt style={{ color: C.muted }}>To</dt>
+      <dd data-testid="charli-compose-to" style={{ margin: 0, color: C.text, overflowWrap: "anywhere" }}>{compose.to}</dd>
+      <dt style={{ color: C.muted }}>Subject</dt>
+      <dd data-testid="charli-compose-subject" style={{ margin: 0, color: C.text, overflowWrap: "anywhere" }}>{compose.subject}</dd>
+      <dt style={{ color: C.muted }}>Message</dt>
+      <dd data-testid="charli-compose-body" style={{ margin: 0, color: C.text, overflowWrap: "anywhere", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{compose.body}</dd>
+    </dl>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      {COMPOSE_LINKS.map(([key, label]) => (
+        <a
+          key={key}
+          data-testid={`charli-compose-${key}`}
+          href={compose.links[key]}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ display: "inline-flex", alignItems: "center", border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", fontSize: 13, fontWeight: 600, color: C.mutedHi, background: C.surfaceHi, textDecoration: "none" }}
+        >
+          {label}
+        </a>
+      ))}
+    </div>
+  </div>
+);
 
 const StageCard = ({ current, disabled, onPick, ui: { C, card, Icon } }) => (
   <div style={{ ...card, padding: "1.1rem" }}>
@@ -86,9 +125,165 @@ const StageCard = ({ current, disabled, onPick, ui: { C, card, Icon } }) => (
   </div>
 );
 
+// ── Calendar & email: the Google connection and the NMLS IDs every email is signed with ──
+
+// One call to the app's own API; never throws. -> { ok, status, data }
+async function callApi(method, url, body) {
+  try {
+    const res = await fetch(url, body === undefined ? { method } : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    let data = null;
+    try { data = await res.json(); } catch { data = null; }
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+const errorOf = (res, fallback) => (res.data && typeof res.data.error === "string" && res.data.error.trim()) || fallback;
+
+const GOOGLE_BUTTONS = { connect: "Connect", reconnect: "Reconnect", disconnect: "Disconnect" };
+const DISCONNECT_CONFIRM = "Disconnect Google? Charli will stop reading and booking your calendar.";
+
+const NmlsField = ({ label, value, saved, busy, testId, onChange, onSave, ui: { C } }) => {
+  const id = useId();
+  const valid = validNmls(value);
+  const changed = value.trim() !== (saved || "");
+  const can = valid && changed && !busy;
+  return (
+    <div style={{ flex: "1 1 190px", minWidth: 0 }}>
+      <label htmlFor={id} style={{ display: "block", color: C.muted, fontSize: 11.5, marginBottom: 4 }}>{label}</label>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input
+          id={id}
+          data-testid={testId}
+          inputMode="numeric"
+          maxLength={12}
+          placeholder="Digits only"
+          value={value}
+          aria-invalid={!valid}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && can) onSave(); }}
+          style={{ flex: 1, minWidth: 0, background: C.surfaceHi, border: `1px solid ${valid ? C.border : C.red}`, borderRadius: 8, padding: "7px 10px", color: C.text, fontFamily: "inherit", fontSize: 13, outline: "none", boxSizing: "border-box" }}
+        />
+        <button
+          type="button"
+          data-testid={`${testId}-save`}
+          disabled={!can}
+          onClick={onSave}
+          style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", background: "transparent", color: C.mutedHi, fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: can ? "pointer" : "default", opacity: can ? 1 : 0.5 }}
+        >
+          {value.trim() === "" && saved ? "Clear" : "Save"}
+        </button>
+      </div>
+      {!valid && <div style={{ color: C.red, fontSize: 11.5, marginTop: 3 }}>An NMLS ID is digits only (up to twelve).</div>}
+    </div>
+  );
+};
+
+const CalendarEmailCard = ({ ui }) => {
+  const { C, card, Icon } = ui;
+  const [google, setGoogle] = useState(null);     // null: checking | "failed" | what /api/google/status answered
+  const [profile, setProfile] = useState(null);   // null: not loaded | what /api/profile/nmls answered
+  const [own, setOwn] = useState("");
+  const [org, setOrg] = useState("");
+  const [busy, setBusy] = useState("");           // "google" | "own" | "org" | "" (nothing running)
+  const [note, setNote] = useState(null);         // { text, bad? } | null
+
+  const loadGoogle = async () => {
+    const res = await callApi("GET", "/api/google/status");
+    setGoogle(res.ok && res.data && typeof res.data === "object" ? res.data : "failed");
+  };
+  const takeProfile = (p) => { setProfile(p); setOwn(p.nmlsId || ""); setOrg(p.orgNmlsId || ""); };
+  const isProfile = (res) => res.ok && res.data && typeof res.data === "object" && "nmlsId" in res.data;
+  useEffect(() => {
+    loadGoogle();
+    callApi("GET", "/api/profile/nmls").then((res) => { if (isProfile(res)) takeProfile(res.data); });
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const line = google === null
+    ? { label: "Checking your Google connection…", action: null }
+    : google === "failed"
+      ? { label: "Couldn't check your Google connection right now.", action: null }
+      : googleCard(google);
+  const dot = line.action === "disconnect" ? C.green : line.action === "reconnect" ? C.amber : C.muted;
+
+  // Connect and Reconnect are the same trip: ask the server for Google's consent address and go there (it comes back to /?google=...).
+  const goToGoogle = async () => {
+    setBusy("google"); setNote(null);
+    const res = await callApi("POST", "/api/google/connect");
+    if (res.ok && res.data && typeof res.data.url === "string" && res.data.url.startsWith("https://")) {
+      window.location.assign(res.data.url);
+    } else {
+      setNote({ bad: true, text: errorOf(res, "Google couldn't be connected. Try again.") });
+    }
+    setBusy("");
+  };
+  const disconnect = async () => {
+    if (!window.confirm(DISCONNECT_CONFIRM)) return;
+    setBusy("google"); setNote(null);
+    const res = await callApi("POST", "/api/google/disconnect");
+    if (res.ok && res.data && res.data.success === true) {
+      setNote({ text: "Google is disconnected." });
+      await loadGoogle();
+    } else {
+      setNote({ bad: true, text: errorOf(res, "Google couldn't be disconnected. Try again.") });
+    }
+    setBusy("");
+  };
+
+  const saveNmls = async (which) => {
+    const [url, value] = which === "org" ? ["/api/profile/org-nmls", org] : ["/api/profile/nmls", own];
+    setBusy(which); setNote(null);
+    const res = await callApi("PUT", url, { nmlsId: value.trim() });
+    if (isProfile(res)) {
+      takeProfile(res.data);
+      setNote({ text: "Saved." });
+    } else {
+      setNote({ bad: true, text: errorOf(res, "That didn't save. Try again.") });
+    }
+    setBusy("");
+  };
+
+  const googleBusy = busy === "google";
+  return (
+    <div data-testid="charli-google-card" style={{ ...card, padding: "0.9rem 1.1rem", marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+          <Icon name="mail" size={15} color={C.amber} />
+          <span style={{ fontSize: 14, fontWeight: 600 }}>Calendar &amp; email</span>
+        </div>
+        {line.action && (
+          <button
+            type="button"
+            data-testid="charli-google-action"
+            disabled={googleBusy}
+            onClick={line.action === "disconnect" ? disconnect : goToGoogle}
+            style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 14px", background: line.action === "disconnect" ? "transparent" : C.amber, color: line.action === "disconnect" ? C.mutedHi : "#0f2040", fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: googleBusy ? "default" : "pointer", opacity: googleBusy ? 0.6 : 1 }}
+          >
+            {GOOGLE_BUTTONS[line.action]}
+          </button>
+        )}
+      </div>
+      <div data-testid="charli-google-status" style={{ display: "flex", alignItems: "center", gap: 8, color: C.mutedHi, fontSize: 13, lineHeight: 1.45, margin: "6px 0 10px" }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: dot, flex: "none" }} />
+        <span style={{ overflowWrap: "anywhere" }}>{line.label}</span>
+      </div>
+      {profile && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+          <NmlsField label="Your NMLS ID" value={own} saved={profile.nmlsId} busy={busy !== ""} testId="charli-nmls" onChange={setOwn} onSave={() => saveNmls("own")} ui={ui} />
+          {profile.canEditOrg && (
+            <NmlsField label="Company NMLS ID" value={org} saved={profile.orgNmlsId} busy={busy !== ""} testId="charli-org-nmls" onChange={setOrg} onSave={() => saveNmls("org")} ui={ui} />
+          )}
+        </div>
+      )}
+      {profile && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 8, lineHeight: 1.45 }}>Every email Charli sets up is signed with your NMLS ID. You review it and send it yourself.</div>}
+      {note && <div role="status" data-testid="charli-google-note" style={{ color: note.bad ? C.red : C.mutedHi, fontSize: 12.5, marginTop: 8 }}>{note.text}</div>}
+    </div>
+  );
+};
+
 // ── the view ─────────────────────────────────────────────────────────────────
 
-export default function CharliView({ rates, user, ui }) {
+export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
   const { C, card, mono, Icon } = ui;
 
   const [paused, setPaused] = useState(false);
@@ -158,6 +353,13 @@ export default function CharliView({ rates, user, ui }) {
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { session.setRates(rates); }, [rates]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A line handed in by App (where Google sent the browser back to) goes in the transcript once, then App forgets it.
+  useEffect(() => {
+    if (!notice) return;
+    session.notice(notice);
+    if (onNoticeShown) onNoticeShown();
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const snap = useSyncExternalStore(session.subscribe, session.getState, session.getState);
   const working = snap.busy || snap.opening || transcribing;
@@ -261,6 +463,7 @@ export default function CharliView({ rates, user, ui }) {
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 520px", minWidth: 0 }}>
+          <CalendarEmailCard ui={ui} />
           <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", height: 380, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
             {snap.turns.length === 0 && (
               <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charli is getting ready…" : "Waiting for today’s rates…"}</div>
@@ -278,7 +481,7 @@ export default function CharliView({ rates, user, ui }) {
                   {pendingRows(snap.pending).map(({ label, value }) => (
                     <div key={label} style={{ display: "contents" }}>
                       <dt style={{ color: C.muted }}>{label}</dt>
-                      <dd style={{ margin: 0, color: C.text, overflowWrap: "anywhere" }}>{value}</dd>
+                      <dd style={{ margin: 0, color: C.text, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{value}</dd>
                     </div>
                   ))}
                 </dl>

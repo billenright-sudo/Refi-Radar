@@ -72,6 +72,7 @@ before(async () => {
   app.use(express.json({ limit: "20mb" }));
   app.use(cookieParser());
   app.use("/api/auth", require("../routes/auth"));
+  app.use("/api/profile", require("../routes/profile"));
   app.use("/api/assistant", assistantRoutes.createAssistantRouter({ limiter: { max: 100000 } }));
   model = scriptedModel();
   app.set("anthropicClient", model);
@@ -84,6 +85,14 @@ after(() => {
   server.close();
   try { fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch { /* */ }
 });
+
+// A request to the real server as Ann, outside the session (the way the Calendar & email card saves an NMLS ID).
+const asAnn = async (method, url, body) => {
+  const res = await fetch(base + url, {
+    method, headers: { "content-type": "application/json", cookie }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  return { status: res.status, data: await res.json() };
+};
 
 // The session's fetch: the real server, signed in as Ann. It logs every /confirm exchange, and can lose the response to the next
 // one AFTER the server has handled it (the retry case: the write happened, the browser never heard).
@@ -238,4 +247,62 @@ test("seam: a /confirm whose answer is lost on the way back is retried with the 
   assert.equal(net.confirms.length, 2);
   assert.equal(net.confirms[1].sent.sideEffect.confirmId, net.confirms[0].sent.sideEffect.confirmId, "the same confirmId");
   assert.equal(net.confirms[1].got.duplicate, true);
+});
+
+test("seam: 'draft the Chens a check-in' - the spoken compose reply and the email as compose links, with nothing to confirm and nothing sent", async () => {
+  const CHEN_EMAIL = "chen+family@seam.example";
+  db.prepare("UPDATE clients SET email = ?, last_contact = ? WHERE id = ?").run(CHEN_EMAIL, STALE, chen);
+
+  // every email carries the sender's NMLS ID, which Ann saves the way the card does: through the profile route
+  assert.deepEqual((await asAnn("PUT", "/api/profile/nmls", { nmlsId: " 654321 " })).data, { nmlsId: "654321", orgNmlsId: null, canEditOrg: true });
+  assert.deepEqual((await asAnn("PUT", "/api/profile/org-nmls", { nmlsId: "112233" })).data, { nmlsId: "654321", orgNmlsId: "112233", canEditOrg: true });
+  assert.deepEqual((await asAnn("PUT", "/api/profile/nmls", { nmlsId: "12 34" })).status, 400, "an invalid ID is refused");
+
+  const { session, spoken, state } = newSession({ careerStage: "veteran" });
+  const modelCallsBefore = model.calls.length;
+  model.queue.push(useTool("findClient", { query: "chen" }), (p) => useTool("draftEmailTool", { clientId: toolResult(p).data.matches[0].id, purpose: "check_in" }, "toolu_2"));
+  assert.deepEqual(await session.submit("draft the Chens a check-in"), { ok: true, action: "turn" });
+
+  // the spoken reply is the code-authored compose line
+  const turn = state().turns.at(-1);
+  const REPLY = "Here's a check-in email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
+  assert.equal(turn.role, "assistant");
+  assert.equal(turn.kind, "message");
+  assert.equal(turn.content, REPLY);
+  assert.deepEqual(spoken, [REPLY]);
+  assert.deepEqual(turn.sources, ["client record"]);
+
+  // the compose survived the session's checks: the address from the client's record, the three links, and the NMLS signature
+  assert.ok(turn.compose, "the turn carries the compose");
+  assert.equal(turn.compose.to, CHEN_EMAIL);
+  assert.equal(turn.compose.subject, "Checking in");
+  assert.ok(turn.compose.body.startsWith("Hi Robert & Linda Chen,\n\n"));
+  assert.ok(turn.compose.body.endsWith("Best,\nAnn User\nNMLS #654321\nSeam Org\nNMLS #112233"), "signed with her NMLS ID and the company's");
+  assert.deepEqual(Object.keys(turn.compose.links), ["gmail", "outlook", "mailto"]);
+  const gmail = new URL(turn.compose.links.gmail);
+  assert.equal(`${gmail.origin}${gmail.pathname}`, "https://mail.google.com/mail/");
+  assert.equal(gmail.searchParams.get("to"), CHEN_EMAIL, "the Gmail link decodes to the email on Chen's record");
+  assert.equal(gmail.searchParams.get("su"), turn.compose.subject);
+  assert.equal(gmail.searchParams.get("body"), turn.compose.body);
+  const outlook = new URL(turn.compose.links.outlook);
+  assert.equal(`${outlook.origin}${outlook.pathname}`, "https://outlook.office.com/mail/deeplink/compose");
+  assert.equal(outlook.searchParams.get("to"), CHEN_EMAIL);
+  assert.ok(turn.compose.links.mailto.startsWith("mailto:"));
+  assert.equal(decodeURIComponent(turn.compose.links.mailto.slice("mailto:".length).split("?")[0]), CHEN_EMAIL);
+
+  // nothing to confirm, nothing sent, nothing written
+  assert.equal(state().pending, null);
+  assert.equal(net.confirms.length, 0, "no /confirm call");
+  assert.equal(lastContactInDb(), STALE, "no contact was logged");
+  assert.equal(clientCount(), 1);
+  assert.equal(model.calls.length - modelCallsBefore, 2, "findClient, then the draft; the model never narrates it");
+  assert.equal(model.queue.length, 0, "every scripted answer was used");
+  const sentToModel = JSON.stringify(model.calls.slice(modelCallsBefore).map((c) => c.messages));
+  for (const never of [CHEN_EMAIL, "654321", "112233", "Checking in"]) assert.ok(!sentToModel.includes(never), `"${never}" never reaches the model`);
+
+  // the next turn's history is plain text: the email is on the screen, not in the conversation
+  model.queue.push(say("Anything else?"));
+  await session.submit("no thanks, that's all");
+  assert.equal(state().turns.at(-1).content, "Anything else?");
+  assert.ok(!JSON.stringify(model.calls.at(-1).messages).includes(CHEN_EMAIL));
 });
