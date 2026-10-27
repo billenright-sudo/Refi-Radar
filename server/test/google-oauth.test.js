@@ -527,15 +527,41 @@ const listen = async (a) => {
   await new Promise((r) => s.once("listening", r));
   return { server: s, base: `http://localhost:${s.address().port}` };
 };
-// as(userId)(method, path) -> { status, headers, data, text }; as(null) is anonymous. Redirects are NOT followed.
-const asUser = (base) => (userId) => async (method, p) => {
+// as(userId)(method, path, { cookies }) -> { status, headers, data, text }; as(null) is anonymous (no rr_token); `cookies`
+// are extra cookies for the request, { name: value }. Redirects are NOT followed.
+const asUser = (base) => (userId) => async (method, p, { cookies = {} } = {}) => {
   const headers = { "content-type": "application/json" };
-  if (userId != null) headers.cookie = "rr_token=" + signToken({ userId });
+  const jar = { ...(userId != null ? { rr_token: signToken({ userId }) } : {}), ...cookies };
+  if (Object.keys(jar).length) headers.cookie = Object.entries(jar).map(([name, value]) => `${name}=${value}`).join("; ");
   const res = await fetch(base + p, { method, headers, redirect: "manual", ...(method !== "GET" ? { body: "{}" } : {}) });
   const text = await res.text();
   let data = null; try { data = JSON.parse(text); } catch { /* */ }
   return { status: res.status, headers: res.headers, data, text };
 };
+
+const FLOW_COOKIE = "rr_google_flow";
+const flowSetCookie = (res) => res.headers.getSetCookie().find((c) => c.startsWith(FLOW_COOKIE + "="));
+// POST /connect as `userId` through `request` (an asUser(base)): { state, setCookie, cookies } where `cookies` is the flow
+// cookie the browser would send back on the callback.
+async function connectFlow(request, userId) {
+  const res = await request(userId)("POST", "/api/google/connect");
+  assert.strictEqual(res.status, 200);
+  const setCookie = flowSetCookie(res);
+  assert.ok(setCookie, "/connect sets the flow cookie");
+  return {
+    state: new URL(res.data.url).searchParams.get("state"),
+    setCookie,
+    cookies: { [FLOW_COOKIE]: setCookie.split(";")[0].slice(FLOW_COOKIE.length + 1) },
+  };
+}
+// Every callback response, whatever the outcome, expires the flow cookie on its own path.
+function assertFlowCookieCleared(res, label = "") {
+  const cleared = flowSetCookie(res);
+  assert.ok(cleared, "the callback clears the flow cookie " + label);
+  assert.match(cleared, new RegExp(`^${FLOW_COOKIE}=;`));
+  assert.match(cleared, /Path=\/api\/google\/callback/);
+  assert.match(cleared, /Expires=Thu, 01 Jan 1970/);
+}
 
 let server, as, routeFetch;
 before(async () => {
@@ -557,6 +583,34 @@ test("routes: POST /connect answers { url } for the signed-in user", async () =>
   assert.ok(!res.text.includes(CLIENT_SECRET));
 });
 
+test("routes: POST /connect sets a flow cookie bound to the state: HttpOnly, SameSite=Lax, only for the callback path, ten minutes", async () => {
+  const flow = await connectFlow(as, ann);
+  assert.match(flow.setCookie, /;\s*HttpOnly/i);
+  assert.match(flow.setCookie, /;\s*SameSite=Lax/i);
+  assert.match(flow.setCookie, /;\s*Path=\/api\/google\/callback(;|$)/);
+  assert.match(flow.setCookie, /;\s*Max-Age=600(;|$)/);
+  assert.ok(!/;\s*Secure/i.test(flow.setCookie), "Secure only in production (this runs with NODE_ENV=test)");
+  assert.ok(flow.cookies[FLOW_COOKIE].length >= 32, "an unguessable value");
+  assert.ok(stateRow(flow.state), "for a state that has a row");
+  const other = await connectFlow(as, bea);
+  assert.notStrictEqual(other.cookies[FLOW_COOKIE], flow.cookies[FLOW_COOKIE], "a different flow gets a different cookie");
+
+  // the value is not the auth cookie, and /status and the other routes do not set it
+  assert.ok(!flow.setCookie.includes(signToken({ userId: ann })));
+  assert.strictEqual(flowSetCookie(await as(ann)("GET", "/api/google/status")), undefined);
+});
+
+test("routes: a failed or unconfigured POST /connect sets no flow cookie", async () => {
+  const saved = process.env.GOOGLE_CLIENT_ID;
+  try {
+    delete process.env.GOOGLE_CLIENT_ID;
+    assert.strictEqual(flowSetCookie(await as(ann)("POST", "/api/google/connect")), undefined);
+  } finally {
+    process.env.GOOGLE_CLIENT_ID = saved;
+  }
+  assert.strictEqual(flowSetCookie(await as(null)("POST", "/api/google/connect")), undefined);
+});
+
 test("routes: unconfigured POST /connect is 503 with the plain message, and writes no state", async () => {
   const saved = process.env.GOOGLE_CLIENT_SECRET;
   try {
@@ -572,22 +626,66 @@ test("routes: unconfigured POST /connect is 503 with the plain message, and writ
   }
 });
 
-test("routes: the callback needs no cookie, finishes the connection for the user the state names, and redirects to /?google=connected", async () => {
-  const { state } = begin(ann, Date.now());
-  const res = await as(null)("GET", `/api/google/callback?code=auth-code-9&state=${encodeURIComponent(state)}`);
+test("routes: the callback needs only the flow cookie from /connect (no auth cookie), finishes the connection for the user the state names, and redirects to /?google=connected", async () => {
+  const flow = await connectFlow(as, ann);
+  const res = await as(null)("GET", `/api/google/callback?code=auth-code-9&state=${encodeURIComponent(flow.state)}`, { cookies: flow.cookies });
   assert.strictEqual(res.status, 302);
   assert.strictEqual(res.headers.get("location"), "/?google=connected");
   assert.ok(connectionRow(ann));
   assert.strictEqual(routeFetch.calls[0].form.code, "auth-code-9");
   assert.match(res.headers.get("cache-control") || "", /no-store/);
+  assertFlowCookieCleared(res);
 
   const status = await as(ann)("GET", "/api/google/status");
   assert.deepStrictEqual(status.data, { configured: true, connected: true, status: "connected", googleEmail: "ann@gmail.example" });
 });
 
+test("routes: a callback with no flow cookie (another browser) is /?google=error, spends the state, writes no connection and calls nobody", async () => {
+  // Attacker Ann starts a flow and sends the Google URL to Bea; Bea approves and her browser lands on the callback with
+  // Ann's state, her own code, and none of Ann's cookies.
+  const flow = await connectFlow(as, ann);
+  const res = await as(null)("GET", `/api/google/callback?code=beas-code&state=${encodeURIComponent(flow.state)}`);
+  assert.strictEqual(res.status, 302);
+  assert.strictEqual(res.headers.get("location"), "/?google=error");
+  assert.strictEqual(connectionRow(ann), undefined);
+  assert.strictEqual(connectionRow(bea), undefined);
+  assert.strictEqual(stateRow(flow.state), undefined, "the state is spent");
+  assert.strictEqual(routeFetch.calls.length, 0, "no token request, no Calendar request");
+  assertFlowCookieCleared(res);
+
+  // and Ann's own browser can no longer finish that flow either
+  const retry = await as(null)("GET", `/api/google/callback?code=c&state=${encodeURIComponent(flow.state)}`, { cookies: flow.cookies });
+  assert.strictEqual(retry.headers.get("location"), "/?google=error");
+  assert.strictEqual(routeFetch.calls.length, 0);
+});
+
+test("routes: a callback carrying another flow's cookie is /?google=error, spends the state and writes no connection", async () => {
+  const annsFlow = await connectFlow(as, ann);
+  const beasFlow = await connectFlow(as, bea);
+  const mismatches = [
+    ["another user's flow cookie", beasFlow.cookies],
+    ["a cookie of a different length", { [FLOW_COOKIE]: "short" }],
+    ["an empty cookie", { [FLOW_COOKIE]: "" }],
+    ["the state with one character changed", { [FLOW_COOKIE]: annsFlow.state.slice(0, -1) + (annsFlow.state.endsWith("A") ? "B" : "A") }],
+  ];
+  for (const [label, cookies] of mismatches) {
+    const flow = await connectFlow(as, ann);   // a fresh state each time: a mismatch spends the one it names
+    const res = await as(null)("GET", `/api/google/callback?code=c&state=${encodeURIComponent(flow.state)}`, { cookies });
+    assert.strictEqual(res.headers.get("location"), "/?google=error", label);
+    assert.strictEqual(stateRow(flow.state), undefined, label + ": state spent");
+    assert.strictEqual(connectionRow(ann), undefined, label);
+    assertFlowCookieCleared(res, label);
+  }
+  assert.strictEqual(routeFetch.calls.length, 0, "no outbound call for any of them");
+  assert.strictEqual(connectionRow(bea), undefined);
+  assert.ok(stateRow(beasFlow.state), "a flow nobody attacked is untouched");
+  assert.ok(stateRow(annsFlow.state));
+});
+
 test("routes: the callback redirects to /?google=error for an unknown or reused state, a missing code or state, or a failed exchange", async () => {
-  const get = async (qs) => (await as(null)("GET", "/api/google/callback" + qs)).headers.get("location");
+  const get = async (qs, cookies) => (await as(null)("GET", "/api/google/callback" + qs, { cookies })).headers.get("location");
   assert.strictEqual(await get("?code=c&state=unknown"), "/?google=error");
+  assert.strictEqual(await get("?code=c&state=unknown", { [FLOW_COOKIE]: "unknown" }), "/?google=error", "a matching cookie does not make an unknown state good");
   assert.strictEqual(await get(""), "/?google=error");
   assert.strictEqual(await get("?state=x"), "/?google=error");
   assert.strictEqual(await get("?code=c&state[]=a&state[]=b"), "/?google=error");
@@ -595,19 +693,21 @@ test("routes: the callback redirects to /?google=error for an unknown or reused 
   assert.strictEqual(await get("?error=server_error&state=x"), "/?google=error");
   assert.strictEqual(routeFetch.calls.length, 0);
 
-  const first = begin(ann, Date.now());
-  assert.strictEqual(await get(`?code=c&state=${first.state}`), "/?google=connected");
-  assert.strictEqual(await get(`?code=c&state=${first.state}`), "/?google=error");
+  const first = await connectFlow(as, ann);
+  assert.strictEqual(await get(`?code=c&state=${first.state}`, first.cookies), "/?google=connected");
+  assert.strictEqual(await get(`?code=c&state=${first.state}`, first.cookies), "/?google=error", "a state is single use");
 });
 
-test("routes: error=access_denied redirects to /?google=denied and connects nothing", async () => {
-  const { state } = begin(ann, Date.now());
-  const res = await as(null)("GET", `/api/google/callback?error=access_denied&state=${state}`);
+test("routes: error=access_denied redirects to /?google=denied, connects nothing and clears the flow cookie", async () => {
+  const flow = await connectFlow(as, ann);
+  const res = await as(null)("GET", `/api/google/callback?error=access_denied&state=${flow.state}`, { cookies: flow.cookies });
   assert.strictEqual(res.status, 302);
   assert.strictEqual(res.headers.get("location"), "/?google=denied");
   assert.strictEqual(connectionRow(ann), undefined);
+  assertFlowCookieCleared(res);
   const bare = await as(null)("GET", "/api/google/callback?error=access_denied");
   assert.strictEqual(bare.headers.get("location"), "/?google=denied");
+  assertFlowCookieCleared(bare, "(no cookie sent)");
   assert.strictEqual(routeFetch.calls.length, 0);
 });
 
@@ -615,11 +715,14 @@ test("routes: a callback whose exchange fails redirects to /?google=error and co
   const bad = fakeFetch({ [TOKEN_URL]: () => json({ error: "invalid_grant" }, 400) });
   const listening = await listen(buildApp(googleRoutes.createGoogleRouter({ limiter: { max: 100000 } }), bad));
   try {
-    const { state } = begin(bea, Date.now());
-    const res = await asUser(listening.base)(null)("GET", `/api/google/callback?code=c&state=${state}`);
+    const request = asUser(listening.base);
+    const flow = await connectFlow(request, bea);
+    const res = await request(null)("GET", `/api/google/callback?code=c&state=${flow.state}`, { cookies: flow.cookies });
     assert.strictEqual(res.headers.get("location"), "/?google=error");
+    assert.strictEqual(bad.calls.length, 1, "it did get as far as the token request");
     assert.strictEqual(connectionRow(bea), undefined);
-    assert.strictEqual(stateRow(state), undefined);
+    assert.strictEqual(stateRow(flow.state), undefined);
+    assertFlowCookieCleared(res);
   } finally {
     listening.server.close();
   }

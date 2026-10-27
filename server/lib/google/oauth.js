@@ -126,8 +126,14 @@ const isTimeZone = (name) => {
   try { new Intl.DateTimeFormat("en-US", { timeZone: name }); return true; } catch { return false; }
 };
 
+// Spends a state without finishing the sign-in (the callback came from a browser that did not start it).
+function cancelAuth(db, state) {
+  if (nonEmpty(state)) db.prepare("DELETE FROM google_oauth_states WHERE state = ?").run(state);
+}
+
 // The other half of the callback: trades the code for tokens and saves the connection. Resolves to { userId } or
-// { error } (a short message that is safe to show); never throws.
+// { error } (a short message that is safe to show); never throws. The state names the user, so the CALLER must first
+// have checked that this browser is the one that started the sign-in (routes/google.js does, with the flow cookie).
 async function finishAuth(db, { code, state } = {}, fetchFn = globalThis.fetch, now = Date.now()) {
   try {
     if (!nonEmpty(state)) return { error: MSG_FAILED };
@@ -285,4 +291,4 @@ async function disconnect(db, userId, fetchFn = globalThis.fetch) {
   db.prepare("DELETE FROM google_connections WHERE user_id = ?").run(userId);
 }
 
-module.exports = { SCOPES, googleConfig, startAuth, finishAuth, getConnection, accessToken, disconnect };
+module.exports = { SCOPES, STATE_TTL_MS, googleConfig, startAuth, finishAuth, cancelAuth, getConnection, accessToken, disconnect };
