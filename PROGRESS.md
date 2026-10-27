@@ -127,7 +127,10 @@ _Last updated: 2026-10-27_
   written without a confirm, and no pending card appears, so the calendar and the mail are never
   changed by it. Proposed fix: code-authored clarifiers on action turns (built from tool
   results), or a small second model call that classifies "does this reply say something was
-  done?" — as part of the orchestrator tidy (I6, below).
+  done?" — as part of the orchestrator tidy (I6, below). The same holds for calendar facts on a
+  turn with no calendar read (Ruling 62): the Ruling 49 screen needs an availability or calendar
+  word, so about 5 in 20 paraphrases with none ("You've got nothing on Friday.", "You have a
+  follow-up with the Chens this morning.") can still be spoken unchecked.
 - **Charli follow-ups from the reviews** (the 25 s turn deadline, client timeouts, the
   session.mjs ↔ real-router test and the 429 note were done 2026-10-26 on
   `feature/charli-hardening`): orchestrator tidy into one `screenReply` decision

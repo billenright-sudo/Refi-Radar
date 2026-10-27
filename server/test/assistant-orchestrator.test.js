@@ -4009,24 +4009,13 @@ test("Task 5 fix: 'I put it on your calendar' and 'it's on your calendar now' ar
   });
   assert.equal(r.reply, "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.");
   assert.deepStrictEqual(r.sources, ["google calendar 2026-10-30"]);
-  r = await runTurn({
-    messages: userSays("what's on my calendar Friday?"), ctx: googleCtx(google),
-    client: fakeClient([useTool("getCalendarTool", { date: "friday" }), say("I put another one on your calendar for Friday.")]),
-  });
-  assert.equal(r.reply, NOTHING_CHANGED);
-  // (final fix, Ruling 50: on a plain turn that read the calendar a "now" form narrates the read; it is still a claim on a turn with
-  // no calendar read)
-  const nextOne = "Your next one is on your calendar now.";
-  r = await runTurn({
-    messages: userSays("what's on my calendar Friday?"), ctx: googleCtx(google),
-    client: fakeClient([useTool("getCalendarTool", { date: "friday" }), say(nextOne)]),
-  });
-  assert.equal(r.reply, nextOne);
-  r = await runTurn({
-    messages: userSays("what's on my calendar Friday?"), ctx: googleCtx(google),
-    client: fakeClient([useTool("findClient", { query: "chen" }), say(nextOne)]),
-  });
-  assert.equal(r.reply, NOTHING_CHANGED);
+  for (const said of ["I put another one on your calendar for Friday.", "Your next one is on your calendar now."]) {
+    r = await runTurn({
+      messages: userSays("what's on my calendar Friday?"), ctx: googleCtx(google),
+      client: fakeClient([useTool("getCalendarTool", { date: "friday" }), say(said)]),
+    });
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+  }
 });
 
 test("Task 5 fix: write is an action verb (with its carve-outs); a claim of having written is a claim", () => {
@@ -4465,16 +4454,9 @@ test("Task 5 fix 4: on a plain calendar read the 'now' offers still pass with th
     assert.equal(r.reply, said, `plain read: ${offer}`);
     assert.deepStrictEqual(r.sources, ["google calendar 2026-10-27"]);
   }
-  // (final fix, Ruling 50: on a plain turn that read the calendar the "now" forms are no claim, so these pass there; with no calendar
-  // read they are still held)
   for (const claim of NOW_CLAIMS_ROUND_4.slice(6)) {
-    const said = `${CAL_LINE} ${claim}`;
-    assert.equal((await plainRead(said)).reply, said, `plain read: ${claim}`);
-    const r = await runTurn({
-      messages: userSays(CAL_ASK), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
-      client: fakeClient([useTool("findClient", { query: "chen" }), say(claim)]),
-    });
-    assert.equal(r.reply, NOTHING_CHANGED, `client lookup: ${claim}`);
+    const r = await plainRead(`${CAL_LINE} ${claim}`);
+    assert.equal(r.reply, NOTHING_CHANGED, `plain read: ${claim}`);
   }
 });
 
@@ -4490,16 +4472,11 @@ test("Task 5 fix 4: only nothing / anything / none (with or without else) carry 
       "There is nothing else on your calendar now.", "Should I draft a check-in, given nothing else is on your calendar now?",
     ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
   }
-  // a turn with no calendar read: the claim is replaced (final fix, Ruling 50: on a plain turn that read the calendar a "now" form is
-  // no claim, so there it passes); the negative passes on a plain read
+  // a plain read: the claim is replaced; the negative passes
   for (const said of EVERYTHING_ELSE) {
-    const r = await runTurn({
-      messages: userSays(CAL_ASK), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
-      client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
-    });
+    const r = await plainRead(said);
     assert.equal(r.reply, NOTHING_CHANGED, said);
     assert.equal(r.sideEffect, undefined);
-    assert.equal((await plainRead(said)).reply, said, `plain read: ${said}`);
   }
   for (const said of ["Nothing else is on your calendar now.", "You don't have anything else on your calendar now."]) {
     const r = await plainRead(said, []);
@@ -5579,8 +5556,9 @@ test("Final fix (Ruling 50): on a plain turn that read the calendar, a true narr
       const held = await runTurn({ messages, ctx: read(), client: fakeClient([...script, say(said)]) });
       assert.equal(held.reply, NOTHING_CHANGED, `${label}: ${said}`);
     }
-    assert.equal(claimsCompletion(said, true, null, false, true), false, said);
-    assert.equal(claimsCompletion(said, true, null, false, false), true, said);
+    // (Ruling 60: the 5th argument is the plain read's { events }; null when there is none)
+    assert.equal(claimsCompletion(said, true, null, false, { events: [CHEN_EVENT, TEAM] }), false, said);
+    assert.equal(claimsCompletion(said, true, null, false, null), true, said);
   }
   // first-person and past-tense placing claims stay claims on that turn too
   for (const said of [
@@ -5588,7 +5566,7 @@ test("Final fix (Ruling 50): on a plain turn that read the calendar, a true narr
   ]) {
     const r = await runTurn({ messages: userSays(CAL_ASK), ctx: read(), client: fakeClient([useTool("getCalendarTool", {}), say(said)]) });
     assert.equal(r.reply, NOTHING_CHANGED, said);
-    assert.equal(claimsCompletion(said, true, null, false, true), true, said);
+    assert.equal(claimsCompletion(said, true, null, false, { events: [CHEN_EVENT, TEAM] }), true, said);
   }
 });
 
@@ -5743,4 +5721,48 @@ test("Final fix (Ruling 58): only 'tell' skips an object before its clause; only
   for (const said of ["Want it Friday — at 10, okay?", "Which day — Thursday or Friday, ok?", "What time — after 2, good?"]) {
     assert.equal(await clarify(said), said, said);
   }
+});
+
+test("Final fix (Ruling 60): on a plain read a 'now' form is released only in a sentence that names a title the read returned", async () => {
+  const TEAM = { title: "Team meeting", start: "9:00 AM", end: "9:30 AM", allDay: false };
+  const plain = (said, events) => runTurn({
+    messages: userSays(CAL_ASK), ctx: googleCtx(fakeGoogle({ events })), client: fakeClient([useTool("getCalendarTool", {}), say(said)]),
+  });
+  // (probe s2) the narrations name what the read returned: said, with the read's source
+  const NAMED = [
+    "Here's what's on your calendar now: Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "Right now on your calendar you have Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "On your calendar now: Team meeting at 9:00 AM and Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "What's on your calendar now is Team meeting at 9:00 AM, then Follow-up: Robert & Linda Chen at 10:00 AM.",
+  ];
+  for (const said of NAMED) {
+    const r = await plain(said, [CHEN_EVENT, TEAM]);
+    assert.equal(r.reply, said, said);
+    assert.deepStrictEqual(r.sources, ["google calendar 2026-10-27"]);
+    // after an empty read the same words name nothing the read returned
+    assert.equal((await plain(said, [])).reply, NOTHING_CHANGED, `empty read: ${said}`);
+  }
+  // the "now" claims pinned before Ruling 50 are held again, after an empty read and after a read with the Chens' follow-up; a title
+  // in another sentence releases nothing
+  for (const said of [
+    "Everything else is now on your calendar.", "Everything else is on your calendar now.", "Everything else's on your calendar now.",
+    "Your next one is on your calendar now.", "The follow-up with the Chens is now on your calendar.",
+    `${CAL_LINE} Should I book a call given the follow-up's now on your calendar?`,
+    `${CAL_LINE} Should I book a check-in now the follow-up's on your calendar now?`, `${CAL_LINE} Everything else is now on your calendar.`,
+  ]) {
+    for (const events of [[], [CHEN_EVENT]]) {
+      assert.equal((await plain(said, events)).reply, NOTHING_CHANGED, `${events.length} event(s): ${said}`);
+    }
+  }
+  // a title the read did not return, and a generic title said generically (the grounding's own title matching), release nothing
+  assert.equal((await plain("Here's what's on your calendar now: Team meeting at 9:00 AM.", [CHEN_EVENT])).reply, NOTHING_CHANGED);
+  const CALL = { title: "Follow-up call", start: "10:00 AM", end: "10:30 AM", allDay: false };
+  assert.equal((await plain("Your follow-up call with the Chens is on your calendar now.", [CALL])).reply, NOTHING_CHANGED);
+  assert.equal((await plain("Your Follow-up call with the Chens is on your calendar now.", [CALL])).reply,
+    "Your Follow-up call with the Chens is on your calendar now.");
+  // the pure screen: the read's events are what release the form
+  assert.equal(claimsCompletion(NAMED[1], true, null, false, { events: [CHEN_EVENT] }), false);
+  assert.equal(claimsCompletion(NAMED[1], true, null, false, { events: [] }), true);
+  assert.equal(claimsCompletion(NAMED[1], true, null, false, null), true);
+  assert.equal(claimsCompletion("Everything else is now on your calendar.", true, null, false, { events: [CHEN_EVENT] }), true);
 });

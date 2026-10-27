@@ -116,7 +116,7 @@ gcloud run deploy refi-radar \
   --region us-central1 \
   --platform managed \
   --allow-unauthenticated \
-  --set-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,FRED_API_KEY=FRED_API_KEY:latest" \
+  --update-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,FRED_API_KEY=FRED_API_KEY:latest" \
   --set-env-vars="DATA_DIR=/data" \
   --add-volume=name=db-vol,type=cloud-storage,bucket=refi-radar-db-YOUR_PROJECT_ID \
   --add-volume-mount=volume=db-vol,mount-path=/data \
