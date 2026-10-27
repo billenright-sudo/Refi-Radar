@@ -84,7 +84,9 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
   homepage, privacy policy, verified domain). Check the calendar 403 auth-reason mapping
   (`server/lib/google/calendar.js`) against a real account.
 - **Charli deploy prerequisites:** `ELEVENLABS_API_KEY` in Secret Manager
-  (`--set-secrets`), the other `ELEVENLABS_*` + `CHARLI_TTS_DAILY_CHARS` (default 60000)
+  (`--update-secrets`: `--set-secrets` replaces every existing secret mapping — ANTHROPIC, FRED,
+  JWT_SECRET, the GOOGLE_* ones — and without JWT_SECRET the server exits on start), the other
+  `ELEVENLABS_*` + `CHARLI_TTS_DAILY_CHARS` (default 60000)
   + `CHARLI_TURN_DEADLINE_MS` (default 25000; accepted 2000–30000, else the default) as env;
   without them Charli falls back to text-only (503 on the voice routes).
 
