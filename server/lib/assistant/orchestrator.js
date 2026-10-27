@@ -1268,10 +1268,13 @@ const questionClaims = (marked, groups, now) => {
   if (body.split(GUARD_CLAUSE_SPLIT_RE).some((c) => clauseClaims(c, groups, now, true))) return true;
   if ([...body.matchAll(FIRST_PERSON_STATE_RE)].some((m) => !INVERTED_MODAL_BEFORE_RE.test(body.slice(0, m.index)))) return true;
   return [...body.matchAll(QUESTION_CONNECTIVE_RE), ...body.matchAll(AS_CLAUSE_RE)].some((m) => {
-    // (Ruling 43: a break right after the connective, or after its object, opens its clause, it does not end it: "let the Chens know:
-    // the invite went out", "tell them: the check-in went out")
+    // (Ruling 43: a break right after the connective, or after the object of "tell", opens its clause, it does not end it: "let the
+    // Chens know: the invite went out", "tell them: the check-in went out". Only "tell" takes that object (Ruling 58): after "know"
+    // or "that" the words are the clause's own subject, "let the Chens know the invite, as you asked, went out")
     const clause = body.slice(m.index + m[0].length)
-      .replace(/^\s*(?:(?:them|him|her|us|you|me|the\s+[\w'’-]+|[A-Z][\w'’-]*(?:\s+(?:and|&)\s+[A-Z][\w'’-]*)?)\s*)?(?:[,;:—–]|-\s)\s*/, "")
+      .replace(/^tell$/i.test(m[0])
+        ? /^\s*(?:(?:them|him|her|us|you|me|the\s+[\w'’-]+|[A-Z][\w'’-]*(?:\s+(?:and|&)\s+[A-Z][\w'’-]*)?)\s*)?(?:[,;:—–]|-\s)\s*/
+        : /^\s*(?:[,;:—–]|-\s)\s*/, "")
       .split(GUARD_CLAUSE_SPLIT_RE)[0];
     return actDoneIn(clause) || clauseClaims(clause, groups, now, false);
   });
@@ -1339,14 +1342,16 @@ const FINITE_VERB_RE = new RegExp(
   "i"
 );
 const ACK_PIECE_RE = /^(?:okay|ok|great|perfect|alright|all\s+right|done|got\s+it|sure|good|nice|excellent)(?![\w'’-])/i;
-const statementPiece = (piece) => {
+// (`i`, `all`: the piece's place among the pieces screened, as Array.prototype.some hands them over)
+const statementPiece = (piece, i, all) => {
   const p = piece.trim().replace(/^(?:(?:and|but|so|then|plus)\s+)+/i, "");
   if (!p || !BOOKING_TOPIC_RE.test(p) || QUESTION_START_RE.test(p)) return false;
   // (an acknowledgement opening the piece, or opening a clause with another clause after it, Ruling 43: "— no rush, okay, Friday
-  // morning with the Chens —", not the tag of "— at 10, okay?"; and the shortened passive, which claimsCompletion leaves to a clause
-  // that does not end in "?": "— calendar updated?")
+  // morning with the Chens —", not the tag of "— at 10, okay?"; that tag is excused only in the last piece, Ruling 58: "What else —
+  // Friday morning with the Chens, okay — want a reminder?" is held; and the shortened passive, which claimsCompletion leaves to a
+  // clause that does not end in "?": "— calendar updated?")
   return FINITE_VERB_RE.test(p) || ACK_PIECE_RE.test(p) ||
-    p.split(GUARD_CLAUSE_SPLIT_RE).slice(0, -1).some((c) => ACK_PIECE_RE.test(c.trim())) ||
+    p.split(GUARD_CLAUSE_SPLIT_RE).slice(0, all && i === all.length - 1 ? -1 : undefined).some((c) => ACK_PIECE_RE.test(c.trim())) ||
     SHORT_PASSIVE_RE.test(p.replace(/[?\s]+$/, ""));
 };
 // `reads`: null when the turn cited no calendar read, else { events: [{ title, date, timeZone }] (each event this turn's calendar

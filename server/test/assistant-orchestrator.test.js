@@ -5700,3 +5700,47 @@ test("Final fix (Ruling 52): asked to send the email, or whether it was sent, co
     assert.equal(sweep.reply, said, u);
   }
 });
+
+test("Final fix (Ruling 58): only 'tell' skips an object before its clause; only the last piece's tag acknowledgement is excused", async () => {
+  const post = (reply) => history(CAL_ASK, OFFERS[1], reply);
+  const CONTEXTS = [
+    ["thanks, no tool", () => post("thanks"), () => googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), () => []],
+    ["a question, client lookup", () => post("what do you think about the Chens' refi?"), () => googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), () => [useTool("findClient", { query: "chen" })]],
+    ["thanks, empty Friday read", () => post("thanks"), () => r3ByDay({}), () => [r3FridayRead()]],
+  ];
+  const run = async ([, messages, ctx, script], said) => (await runTurn({ messages: messages(), ctx: ctx(), client: fakeClient([...script(), say(said)]) })).reply;
+  // the connective's object pattern swallowed the claim's subject (probe11 r4 B, r5, r6)
+  for (const said of [
+    "Should I let the Chens know the invite, as you asked, went out?", "Did you see that the invite, as planned, went out?",
+    "Should I let them know the invitation — as you asked — went out?", "Should I let them know Invites, all three, went out?",
+    "Want me to let them know the invite, like you asked, went out this morning?", "Do they know the invite, which you approved, went out Friday?",
+    "Should I let them know the invites — both of them — went out?", "Should I let the Chens know the invite, per your note, went out Friday?",
+    "Should I let the Chens know the invite, as planned, is ready to go?",
+  ]) {
+    for (const context of CONTEXTS) assert.equal(await run(context, said), NOTHING_CHANGED, `${context[0]}: ${said}`);
+  }
+  // "tell" keeps its object skip, and an either-or after an object still asks
+  for (const said of ["Want me to tell them: the check-in went out this morning?", "Should I tell the Chens — the invite went out?"]) {
+    for (const context of CONTEXTS) assert.equal(await run(context, said), NOTHING_CHANGED, `${context[0]}: ${said}`);
+  }
+  const either = "Want me to tell them, or would you rather confirm the time first?";
+  for (const context of CONTEXTS) assert.equal(await run(context, either), either, `${context[0]}: ${either}`);
+  // (with no citation at all, "the scheduled appraisal" is a calendar word nothing backs: Ruling 49)
+  const appraisal = "Should I tell Robert and Linda, or just Robert, about the scheduled appraisal?";
+  const outcomes = [];
+  for (const context of CONTEXTS) outcomes.push(await run(context, appraisal));
+  assert.deepStrictEqual(outcomes, [CANT_VERIFY, appraisal, appraisal]);
+  // on an action turn an acknowledgement at the end of a piece excuses it only in the last piece (probe11 r8, r9)
+  const clarify = async (said) => (await runTurn({
+    messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] }), twoChensCtx),
+    client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
+  })).reply;
+  for (const said of [
+    "What else — Friday morning with the Chens, okay — want a reminder?", "What else — no rush, Friday morning with the Chens, okay — want a reminder?",
+    "What else — Friday morning with the Chens, great — want a reminder?", "What else — Friday morning with the Chens, perfect — anything else?",
+    "What else — the Chens Friday at 10, perfect — want a reminder?", "What else — the Chens at 10 Friday, great — want a reminder?",
+  ]) assert.equal(await clarify(said), NOTHING_CHANGED, said);
+  for (const said of ["Want it Friday — at 10, okay?", "Which day — Thursday or Friday, ok?", "What time — after 2, good?"]) {
+    assert.equal(await clarify(said), said, said);
+  }
+});
