@@ -15,7 +15,7 @@
 //     "I didn't catch that", not a fault.
 //   * Everything else that must already be validated - a date or clock time handed to toInstant / dayBounds / spokenDay /
 //     spokenTime, an event time handed to localTimeOf - throws a clear Error when it is not real (code bug or bad Google data).
-const { ordinal, MONTHS, WEEKDAYS } = require("../rateHistory");
+const { ordinal, MONTHS, WEEKDAYS } = require("../dateLabels");
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RE = /^(\d{1,2}):(\d{2})$/;

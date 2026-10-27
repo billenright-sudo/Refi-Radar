@@ -1,14 +1,7 @@
 "use strict";
 // Date and time resolution for Charli's calendar (lib/google/time.js): the broker says "Friday at 10", CODE works out the
 // date in the calendar's own IANA time zone, and the spoken labels ("Friday, October 30th", "10:00 AM") are code-authored.
-// Pure: no network and no clock (every function takes `now`). lib/google/time.js reuses the label tables from
-// lib/rateHistory.js, which opens the DB on load, so this file points DATA_DIR at a throwaway directory first.
-const os = require("os");
-const path = require("path");
-const fs = require("fs");
-process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "br-google-time-"));
-process.env.JWT_SECRET = "test-secret-" + Math.random().toString(16).slice(2);
-process.env.NODE_ENV = "test";
+// Pure: no network, no clock (every function takes `now`) and no database (the label tables come from lib/dateLabels.js).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {

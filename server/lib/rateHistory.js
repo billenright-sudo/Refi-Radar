@@ -1,6 +1,7 @@
 "use strict";
 // Daily market-rate snapshots and day-over-day movement.
 const db = require("../db");
+const { MONTHS, WEEKDAYS, ordinal } = require("./dateLabels");
 
 const dayKey = (d = new Date()) => d.toISOString().slice(0, 10);
 
@@ -53,16 +54,6 @@ function currentProvider(rates, provider) {
 // The 5/1 ARM has no day-over-day move: OBMMI has no ARM index, so one day's figure can be web-searched and the next the
 // "30-year minus 0.10" estimate (routes/rates.js). Its level is still reported; its change never is.
 const NO_DELTA_KEYS = new Set(["rate_5_1_arm"]);
-
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-// 1 -> "1st", 2 -> "2nd", 3 -> "3rd", 4 -> "4th", 11 / 12 / 13 -> "11th" / "12th" / "13th", 21 -> "21st", 22 -> "22nd", 31 -> "31st"
-const ordinal = (n) => {
-  const tens = n % 100;
-  const suffix = tens >= 11 && tens <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" })[n % 10] || "th";
-  return `${n}${suffix}`;
-};
 
 // The spoken "since when" for a snapshot taken on `day`, seen from `today` (both YYYY-MM-DD, UTC days): "yesterday" one day
 // back, the weekday ("Thursday") two to six days back, otherwise the date with an ordinal day ("October 18th", with the year
