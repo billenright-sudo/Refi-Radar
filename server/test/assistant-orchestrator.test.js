@@ -5492,3 +5492,42 @@ test("Final fix (Ruling 49): a calendar or availability fact needs a calendar re
     assert.equal(r.reply, said, said);
   }
 });
+
+test("Final fix (Ruling 55): an unasked calendar read beside other tools does not replace the turn with the Google line", async () => {
+  const parallel = (...blocks) => resp(blocks.map(([name, input], i) => ({ type: "tool_use", id: `t${i}`, name, input })), "tool_use");
+  const sweepAndRead = () => parallel(["runSweepTool", {}], ["getCalendarTool", { date: "today" }]);
+  for (const [code, line] of [["not_connected", GOOGLE_NOT_CONNECTED], ["reconnect", GOOGLE_RECONNECT]]) {
+    // probe s10: "who should I call today?" with the sweep and a calendar read in parallel -> the sweep answer
+    const client = fakeClient([sweepAndRead(), say("Call the Chens first.")]);
+    let r = await runTurn({ messages: userSays("who should I call today?"), ctx: { ...googleCtx(unusableGoogle(code)), now: TUESDAY }, client });
+    assert.equal(r.reply, "Call the Chens first.", code);
+    assert.deepStrictEqual(r.sources, ["sweep engine"]);
+    // the model was handed the calendar's not-connected result like any other result
+    const fed = client.calls[1].messages[client.calls[1].messages.length - 1].content.map((b) => JSON.parse(b.content));
+    assert.equal(fed[1].source, "(not connected)");
+    assert.equal(fed[1].data.code, code);
+    // ... and what it says is screened as on any turn
+    r = await runTurn({
+      messages: userSays("who should I call today?"), ctx: googleCtx(unusableGoogle(code)),
+      client: fakeClient([sweepAndRead(), say("Call the Chens first — and you're free all afternoon.")]),
+    });
+    assert.equal(r.reply, CANT_VERIFY, code);
+    // the Google line when the calendar read is the only tool, or the user asked about the calendar or availability
+    for (const [messages, script] of [
+      [userSays("who should I call today?"), [useTool("getCalendarTool", { date: "today" })]],
+      [userSays("what's on my calendar today, and who should I call?"), [sweepAndRead()]],
+      [userSays("am I free this afternoon, and who should I call?"), [sweepAndRead()]],
+      [userSays("what about today and tomorrow?"), [parallel(["getCalendarTool", { date: "today" }], ["getCalendarTool", { date: "tomorrow" }])]],
+    ]) {
+      r = await runTurn({ messages, ctx: googleCtx(unusableGoogle(code)), client: fakeClient([...script, say("Call the Chens first.")]) });
+      assert.equal(r.reply, line, `${code}: ${messages[0].content}`);
+    }
+    // a booking the user asked for always hears why it cannot be made, beside a lookup or not
+    r = await runTurn({
+      messages: userSays("book the Chens a follow-up Friday at ten"), ctx: googleCtx(unusableGoogle(code)),
+      client: fakeClient([parallel(["findClient", { query: "chen" }], ["createEventTool", { date: "friday", time: "10:00", clientId: mikeChen }])]),
+    });
+    assert.equal(r.reply, line, `${code}: booking`);
+    assert.equal(r.sideEffect, undefined);
+  }
+});

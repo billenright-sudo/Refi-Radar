@@ -1998,14 +1998,24 @@ const googleCodeOf = (ctx) => {
 // The line code speaks when a tool this turn came back with a `data.code` that has one (null otherwise): Google not connected,
 // expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool). Only the
 // non-citing error results carry these codes. The first such result, in the order the tools ran, decides.
+// Ruling 55: a calendar READ the user did not ask for does not decide the turn. When getCalendarTool came back with a Google code
+// beside a tool that is no calendar tool, and the user's message is not about the calendar or availability (`aboutCalendar`), its
+// result is handed back to the model like any other ("who should I call today?" with the sweep and a read in parallel, Google not
+// connected: the call list is answered, and what the model says is screened as on any turn). A booking (createEventTool) the user
+// asked for always hears why it cannot be made. `blocks[i]` is the tool call `outs[i]` answers.
 const GOOGLE_LINES = new Map([
   ["not_connected", GOOGLE_NOT_CONNECTED], ["reconnect", GOOGLE_RECONNECT], ["unavailable", GOOGLE_UNAVAILABLE],
 ]);
-function codeAuthoredLine(outs) {
-  for (const o of outs) {
+const CALENDAR_TOOLS = new Set(["getCalendarTool", "createEventTool"]);
+function codeAuthoredLine(outs, blocks, aboutCalendar) {
+  const onlyCalendar = blocks.every((b) => CALENDAR_TOOLS.has(b.name));
+  for (const [i, o] of outs.entries()) {
     if (isCitation(o.source) || !o.data || typeof o.data !== "object") continue;
     const { code } = o.data;
-    if (GOOGLE_LINES.has(code)) return GOOGLE_LINES.get(code);
+    if (GOOGLE_LINES.has(code)) {
+      if (blocks[i].name === "getCalendarTool" && !onlyCalendar && !aboutCalendar) continue;
+      return GOOGLE_LINES.get(code);
+    }
     if (code === "nmls_missing") return NMLS_NEEDED;
     if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
   }
@@ -2220,8 +2230,9 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
 
     // Google not connected / expired / unreachable, no NMLS ID, no email on the client's record: code says so, before anything
     // below and before the model is handed the results (it would only put it into its own words). It wins over a change another
-    // tool packaged in the same response: the user asked for both, so nothing is handed up and they ask again.
-    const line = codeAuthoredLine(outs);
+    // tool packaged in the same response: the user asked for both, so nothing is handed up and they ask again. (A calendar read the
+    // user did not ask for, beside other tools, is the exception: its result goes back to the model like any other, Ruling 55.)
+    const line = codeAuthoredLine(outs, runBlocks, CALENDAR_WORD_RE.test(userText));
     if (line) return finish(line);
 
     // The tools only package a change; here it is handed up for confirmation, not acted on. An email set up by draftEmailTool
