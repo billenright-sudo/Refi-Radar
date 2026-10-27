@@ -4429,8 +4429,8 @@ test("Task 5 fix 4: on an action turn any 'now on your calendar' wording is held
       assert.equal(r.reply, NOTHING_CHANGED, `${ask} -> ${said}`);
     }
   }
-  // a question with no "now" form still passes on that turn, with no tool and with a calendar read; so does a negative "now" form
-  // after a calendar read (with no tool it is a calendar fact nothing backs, so the ungrounded screen refuses it)
+  // a question with no "now" form still passes on that turn, with no tool and with a calendar read; a negative "now" form does not
+  // (round 5, Ruling 23: on an action turn the hold has no nothing / anything / none lookbehind, so "nothing ... now but X" is held too)
   for (const said of ["Should I put it on your calendar?", "Which Chen — Robert and Linda, or Chen Wei?", "What time should I make it?"]) {
     for (const grounded of [false, true]) {
       const r = await affirmedBook(said, grounded);
@@ -4438,7 +4438,7 @@ test("Task 5 fix 4: on an action turn any 'now on your calendar' wording is held
     }
   }
   const negative = "Should I book it for Friday, since nothing else is on your calendar now?";
-  assert.equal((await affirmedBook(negative, true)).reply, negative);
+  assert.equal((await affirmedBook(negative, true)).reply, NOTHING_CHANGED);
   // the tool path is unchanged: a booking after the yes is read back
   const r = await runTurn({
     messages: history(CAL_ASK, OFFERS[1], "yes"), ctx: googleCtx(fakeGoogle()),
@@ -4503,5 +4503,139 @@ test("Task 5 fix 4: the placing-verb window: given and now end it, a noun's 's r
       "Should I put a follow-up now on your calendar?", "Want me to put the Chens now on your calendar?",
       "Should I put the 10:00 AM call on your calendar now, or wait?",
     ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+});
+
+// ── Task 5 fix round 5: any "now on your calendar" on an action turn, any non-decline answers an offer, wh-questions aren't past acts ─
+
+// the round-4 review's rows: a "nothing ... but / except X" clause carries a "now" claim inside the negative lookbehind
+const NOTHING_BUT_CLAIMS = [
+  "Should I add a reminder, since nothing else is on your calendar now but the follow-up?",
+  "Should I add a reminder, since there's nothing on your calendar now except the new follow-up?",
+  "Should I draft the Chens a check-in, since nothing else is now on your calendar besides their follow-up?",
+  "Should I add a reminder, given there's nothing else on your calendar now other than Friday's follow-up?",
+  "Should I draft a check-in, since none is on your calendar now except the Chens' follow-up?",
+];
+
+test("Task 5 fix 5: on an action turn the hold has no negative lookbehind: 'nothing ... now but X' is held; off it the negatives still pass", async () => {
+  for (const offer of [OFFERS[1], OFFERS[3]]) {
+    for (const said of [
+      ...NOTHING_BUT_CLAIMS,
+      "Should I book it for Friday, since nothing else is on your calendar now?", "Should I book it, since nothing's on your calendar now?",
+    ]) {
+      for (const grounded of [false, true]) {
+        const r = await affirmedBook(said, grounded, offer);
+        assert.equal(r.reply, NOTHING_CHANGED, `${grounded ? "calendar read" : "no tool"}: ${offer} -> yes -> ${said}`);
+      }
+    }
+  }
+  // a request in the user's own words is an action turn too
+  const r = await runTurn({
+    messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+    client: fakeClient([useTool("getCalendarTool", {}), say(NOTHING_BUT_CLAIMS[0])]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+  // not an action turn: the lookbehind still holds, the negatives pass on a read
+  for (const said of ["Nothing else is on your calendar now.", "There's nothing else on your calendar now.", "You don't have anything else on your calendar now."]) {
+    assert.equal((await plainRead(said, [])).reply, said, said);
+  }
+});
+
+// replies to OFFERS[1] ("Want me to book another follow-up Friday?") that say yes without the old affirmation words
+const AFFIRMS = [
+  "perfect", "great", "great, thanks", "awesome", "that'd be great", "sounds good", "do it", "go ahead", "please", "yes please",
+  "that works", "let's do it", "book it", "Perfect, thanks!", "thanks", "make it Thursday", "yes, Friday at 10 works",
+  // safer than the letter of the rule: a modal with no subject says yes, and a decline that says more is no decline
+  "Would be great", "will do", "no, make it Thursday", "no make it Thursday", "later today", "wait, yes", "nah, I'll call them myself",
+  "don't book Friday, make it Thursday",
+  // every word the old affirmation list knew is still a yes
+  "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright", "absolutely", "definitely", "of course", "do that", "go for it",
+  "that sounds good", "why not", "you bet", "Hey Charli, yes", "um, sure",
+];
+// declines: a normal turn (the claim screens still run)
+const DECLINES = [
+  "no", "nope", "nah", "not now", "not yet", "don't", "do not", "never mind", "nevermind", "maybe later", "later", "skip", "cancel",
+  "hold off", "wait", "stop", "no thanks", "ok, never mind", "please don't", "yeah no, not now", "sure, maybe later",
+  "No.", "Nope, not yet.", "Not now, thanks.", "thanks, but not now", "okay, let's hold off", "don't do it", "Skip it for now.",
+  "No thanks, I'm good.", "no, that's fine", "not right now", "no, not right now", "(laughs) no",
+];
+const offerReply = (reply, said, offer = OFFERS[1]) => runTurn({
+  messages: history(CAL_ASK, offer, reply), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([say(said)]),
+});
+
+test("Task 5 fix 5: any reply to an offer to act that is no decline and asks nothing is a yes: the action backstop holds", async () => {
+  for (const yes of AFFIRMS) {
+    for (const said of [
+      "Great — it's on your calendar for Friday.", "Okay, it's on your calendar Friday.",
+      "Should I add a reminder for the follow-up now on your calendar?", NOW_CLAIMS_ROUND_4[0],
+    ]) {
+      const r = await offerReply(yes, said);
+      assert.equal(r.reply, NOTHING_CHANGED, `${yes} -> ${said}`);
+      assert.equal(r.sideEffect, undefined);
+    }
+  }
+  // the same through every offer that offers a change
+  for (const offer of OFFERS) {
+    for (const yes of ["perfect", "great, thanks", "awesome"]) {
+      assert.equal((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply, NOTHING_CHANGED, `${offer} -> ${yes}`);
+    }
+  }
+  // the tool path after such a yes is unchanged: the booking is read back
+  const r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "perfect"), ctx: googleCtx(fakeGoogle()),
+    client: fakeClient([useTool("createEventTool", { date: "friday", time: "10:00", clientId: mikeChen })]),
+  });
+  assert.equal(r.sideEffect.type, "createEvent");
+});
+
+test("Task 5 fix 5: a decline to an offer, a question back, and a reply to an offer that changes nothing are normal turns", async () => {
+  for (const no of DECLINES) {
+    for (const offer of [OFFERS[0], OFFERS[1]]) {
+      assert.equal((await offerReply(no, "No problem.", offer)).reply, "No problem.", `${offer} -> ${no}`);
+    }
+  }
+  // a question back after the offer is answered as before
+  let r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "sure, what are rates?"), ctx: mikeCtx,
+    client: fakeClient([useTool("getMarketUpdate"), say("The thirty-year fixed is at 6.52 percent today.")]),
+  });
+  assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent today.");
+  r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "yes, and who should I call?"), ctx: sweepCtx,
+    client: fakeClient([useTool("runSweepTool"), say(SWEEP_NARRATION)]),
+  });
+  assert.equal(r.reply, SWEEP_NARRATION);
+  // an offer that offers no change: "great" is a normal turn
+  r = await runTurn({
+    messages: history("good morning", "Good morning! Want me to run a sweep?", "great"), ctx: sweepCtx,
+    client: fakeClient([useTool("runSweepTool"), say(SWEEP_NARRATION)]),
+  });
+  assert.equal(r.reply, SWEEP_NARRATION);
+});
+
+// clarifying wh-questions about a booking: an inverted should / can / ... + I / we is no past act
+const WH_BOOKING_QUESTIONS = [
+  "What time should I put it on your calendar?", "Which day should I put it on your calendar?",
+  "Where should we put it on your calendar?", "How long should I put it on your calendar for?",
+];
+
+test("Task 5 fix 5: 'What time should I put it on your calendar?' is a question, not a past act; 'I put it on your calendar.' is a claim", async () => {
+  for (const grounded of [false, true]) {
+    for (const text of [
+      ...WH_BOOKING_QUESTIONS, "When can I put it on your calendar?", "What day would we put it on your calendar?",
+      "Which slot do I put it on your calendar in?", "Did I put it on your calendar?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+    for (const text of [
+      "I put it on your calendar.", "We've put it on your calendar.", "I've put a follow-up on your calendar.", "Then I put it on your calendar for Friday.",
+      "What time? I put it on your calendar for 10.", "I just put the Chens on your Google calendar.",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+  }
+  for (const offer of [OFFERS[1], OFFERS[3]]) {
+    for (const said of WH_BOOKING_QUESTIONS) {
+      for (const grounded of [false, true]) {
+        const r = await affirmedBook(said, grounded, offer);
+        assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: ${offer} -> yes -> ${said}`);
+      }
+    }
   }
 });

@@ -447,14 +447,21 @@ const shortPassiveClaims = (sentence, sweep) =>
 // ("... a call given the follow-up's now on your calendar?"), so the complement is the verb's own and not something said beside
 // it. A statement is never exempt, so "I'll put it on your calendar now." and "Let me put it on your calendar now." stay claims, as
 // does the first-person past (CALENDAR_PLACED_RE). This exemption serves turns that are not action turns only: on an action turn
-// runTurn holds any "now" form a reply carries, question or not, placing verb or not (Ruling 19, in the R5-3 backstop).
+// runTurn holds any "now" form a reply carries, question or not, placing verb or not, negative or not (Rulings 19 and 23, in the
+// R5-3 backstop). CALENDAR_PLACED_RE's I / we is not the subject of a past act when an inverted should / shall / can / could / would
+// / will / do / did stands right before it: "What time should I put it on your calendar?", "Where should we put it on your
+// calendar?" are clarifying questions (Ruling 22); "I put it on your calendar." and "We've put it on your calendar." stay claims.
 const CALENDAR_PLACED_RE = new RegExp(
+  "(?<!\\b(?:should|shall|can|could|would|will|do|did)\\s+)" +
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
     "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
   "i"
 );
-const CALENDAR_NOW_RE =
-  /(?<!\b(?:nothing|anything|none)(?:\s+else)?(?:['’]s|\s+is|\s+are)?\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
+// the "now" form itself, with no negative lookbehind: what runTurn holds on an action turn (Rulings 19 and 23)
+const CALENDAR_NOW_FORM_RE = /\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
+const CALENDAR_NOW_RE = new RegExp(
+  "(?<!\\b(?:nothing|anything|none)(?:\\s+else)?(?:['\\u2019]s|\\s+is|\\s+are)?\\s)" + CALENDAR_NOW_FORM_RE.source, "i"
+);
 const CALENDAR_NOW_ALL_RE = new RegExp(CALENDAR_NOW_RE.source, "gi");
 const NEGATIVE_START_RE = /^(?:no|not|nothing|none|never|nobody|neither)\b/i;
 const PLACING_VERB = "(?:put(?:ting)?|add(?:ing)?|book(?:ing)?|schedul(?:e|ing)|get(?:ting)?|pencil(?:l?ing)?|slot(?:ting)?|mov(?:e|ing))";
@@ -761,8 +768,16 @@ const askedOf = (asked, answer) => {
 // or the start of the same one), is an offer of the same kind: "I / we can | could | 'd be happy to | 'd like to | 'm happy to" or
 // "happy to" and an action verb, with the same carve-outs ("I can book the Chens a follow-up Friday — want me to?" offers a change,
 // "I can run a sweep of your book — want me to?" and "I can update you on rates — want me to?" do not: a bare search for the verb
-// would take the noun "book"). An AFFIRMATION is the user's reply opening with yes / yeah / sure / please / ok / okay / go ahead / do it /
-// sounds good and the like (filler and an address to Charli ahead of it allowed); "no thanks" and a new question are not one.
+// would take the noun "book"). An AFFIRMATION is ANY reply to such an offer that is not a decline and asks nothing (Ruling 21):
+// "yes", "perfect", "great, thanks", "awesome", "that'd be great", "would be great", "book it", "make it Thursday" all say go ahead.
+// It ASKS something (asksSomething) when it holds a "?" or opens with a question or auxiliary word: "sure, what are rates?" is a new
+// question. It is a DECLINE (isDecline) when every clause of it (split as the user's clauses are) is a decline or only words that
+// add nothing, and at least one is a decline. A decline clause is, after lead words (ok / okay / please / yeah / sure / thanks / but
+// / let's and filler), no / nope / nah / not now / not right now / not yet / don't / do not / never mind / nevermind / maybe later /
+// later / skip / cancel / hold off / wait / stop / no thanks, and nothing after it but the closed DECLINE_PAD words: "ok, never
+// mind", "please don't", "yeah no, not now", "sure, maybe later", "thanks, but not now", "No thanks, I'm good". A clause that says
+// more ("no, make it Thursday", "later today") is no decline, so that reply is a yes (fail-closed). A new instruction that is not a
+// question ("run a sweep") is a yes too: the turn is held to the backstop.
 const OFFER_LEAD =
   "(?:do\\s+you\\s+want\\s+me\\s+to|would\\s+you\\s+like\\s+me\\s+to|want\\s+me\\s+to|should\\s+I|shall\\s+I|can\\s+I|could\\s+I|may\\s+I" +
   "|shall\\s+we|should\\s+we|would\\s+you\\s+like\\s+to|do\\s+you\\s+want\\s+to|want\\s+to)";
@@ -782,12 +797,39 @@ const SELF_OFFER_TO_ACT_RE = new RegExp(
 );
 // a sentence that ends with only the lead: "want me to?", or "..., want me to?"
 const BARE_TAIL_RE = new RegExp(OFFER_START + OFFER_LEAD + "\\s*\\?$", "i");
-const AFFIRMATION_RE = new RegExp(
-  "^(?:(?:oh|um|uh|well|so|and|hey|charli|charlie)[\\s,]+)*" +
-    "(?:yes|yeah|yep|yup|sure|please|ok|okay|alright|absolutely|definitely|of\\s+course|go\\s+ahead|do\\s+it|do\\s+that|go\\s+for\\s+it" +
-    "|sounds\\s+good|that\\s+sounds\\s+good|that\\s+works|let['\\u2019]s\\s+do\\s+it|why\\s+not|you\\s+bet)(?![\\w'\\u2019-])",
-  "i"
+// The lead words a decline may open with ("ok, never mind", "please don't", "yeah no", "sure, maybe later", "thanks, but not now",
+// "let's hold off"), the decline itself, and the closed list of words that add nothing to it ("no thanks, I'm good", "skip it for
+// now", "not yet, thanks Charli", "no, that's fine", "don't worry about it"). No day, time, verb or name is on that list, so a
+// clause that says more ("no, make it Thursday", "later today", "wait, yes") is no decline.
+const DECLINE_LEAD =
+  "(?:ok|okay|please|yeah|sure|thanks|thank\\s+you|but|let['\\u2019]?s|oh|um|uh|well|hmm|actually|so|and|hey|charli|charlie)";
+const DECLINE_HEAD =
+  "(?:no|nope|nah|not\\s+(?:right\\s+)?now|not\\s+yet|don['\\u2019]?t(?:\\s+do)?|do\\s+not(?:\\s+do)?|never\\s*mind|maybe\\s+later|later" +
+  "|skip|cancel|hold\\s+off|wait|stop)";
+const DECLINE_PAD =
+  "(?:ok|okay|please|yeah|sure|thanks|thank|you|but|oh|um|uh|well|hmm|actually|so|and|hey|charli|charlie|alright|all|right|good|fine" +
+  "|i['\\u2019]?m|i|am|(?:that|it)['\\u2019]?s|it|that|this|them|on|about|for|now|then|yet|either|though|just|really|maybe" +
+  "|no|nope|nah|not|need|bother|worry|worries|problem)";
+const DECLINE_CLAUSE_RE = new RegExp(
+  "^(?:" + DECLINE_LEAD + "(?![\\w'\\u2019-])\\s*)*" + DECLINE_HEAD + "(?:\\s+" + DECLINE_PAD + ")*(?![\\w'\\u2019-])\\s*$", "i"
 );
+const DECLINE_PAD_RE = new RegExp("^" + DECLINE_PAD + "(?:\\s+" + DECLINE_PAD + ")*(?![\\w'\\u2019-])\\s*$", "i");
+const isDecline = (text) => {
+  const clauses = String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
+  return clauses.some((c) => DECLINE_CLAUSE_RE.test(c)) && clauses.every((c) => DECLINE_CLAUSE_RE.test(c) || DECLINE_PAD_RE.test(c));
+};
+// A reply ASKS something when it holds a "?" or opens, after filler, with a question or auxiliary word (ASKING_START_RE,
+// YES_NO_AUX_RE). In the user's words "want" / "need" open a request, not a question ("need it Thursday"), and so do "do it" /
+// "do that" (DO_PRONOUN_RE), "don't ..." / "do not ..." (a decline, or more: isDecline decides), a modal with no subject after it
+// ("would be great", "will do", "can do", "could work") and "why not".
+const NOT_ASKING_OPENING_RE = /^(?:(?:would|will|could|can|should)\s+(?:be|do|love|work|help)|why\s+not|don['’]?t|do\s+not)\b/i;
+const asksSomething = (text) => {
+  const t = String(text == null ? "" : text);
+  if (t.includes("?")) return true;
+  const opening = afterFiller(t);
+  return (ASKING_START_RE.test(opening) || YES_NO_AUX_RE.test(opening)) && !DO_PRONOUN_RE.test(opening) &&
+    !NOT_ASKING_OPENING_RE.test(opening);
+};
 function offersAction(message) {
   const pieces = sentencesOf(messageText(message)).map((p) => p.trim()).filter(Boolean);
   const last = pieces[pieces.length - 1];
@@ -798,13 +840,18 @@ function offersAction(message) {
   if (!bare) return false;
   return [s.slice(0, bare.index), pieces[pieces.length - 2]].some((before) => !!before && SELF_OFFER_TO_ACT_RE.test(before));
 }
-const affirmsOffer = (asked, answer) =>
-  !!asked && asked.role === "assistant" && offersAction(asked) &&
-  AFFIRMATION_RE.test(messageText(answer).replace(AUDIO_TAG_RE, " ").trim());
+const affirmsOffer = (asked, answer) => {
+  if (!asked || asked.role !== "assistant" || !offersAction(asked)) return false;
+  const t = messageText(answer).replace(AUDIO_TAG_RE, " ").trim();
+  return !!t && !asksSomething(t) && !isDecline(t);
+};
 
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];
-  if (!latest || latest.role !== "user" || !isAnswerShaped(messageText(latest))) return false;
+  if (!latest || latest.role !== "user") return false;
+  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great")
+  if (affirmsOffer(messages[messages.length - 2], latest)) return true;
+  if (!isAnswerShaped(messageText(latest))) return false;
   for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 1; hop++, i -= 2) {
     const asked = messages[i - 1];
     if (!asked || asked.role !== "assistant") return false;
@@ -1490,11 +1537,12 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // carries a sideEffect), so whatever the model says, nothing was done. Only a question may
       // reach the user; anything else is replaced.
       if (actionTurn && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
-      // Ruling 19: and on that turn no "now on your calendar" wording reaches the user at all (CALENDAR_NOW_RE anywhere in the reply,
-      // question or statement, with no placing-verb exemption): "Should I add a reminder for the follow-up now on your calendar?"
-      // after "yes" to a booking offer reads as the booking having been made. A question without it still passes ("Should I put it
-      // on your calendar?"); so does "... since nothing else is on your calendar now?", which CALENDAR_NOW_RE does not match.
-      if (actionTurn && CALENDAR_NOW_RE.test(text)) return finish(NOTHING_CHANGED);
+      // Rulings 19 and 23: and on that turn no "now on your calendar" wording reaches the user at all (CALENDAR_NOW_FORM_RE anywhere
+      // in the reply, question or statement, with no placing-verb exemption and no negative lookbehind): "Should I add a reminder for
+      // the follow-up now on your calendar?" after "yes" to a booking offer reads as the booking having been made, and so does
+      // "... since nothing else is on your calendar now but the follow-up?". A question without the form still passes ("Should I
+      // put it on your calendar?"); the accepted cost is that "... since nothing else is on your calendar now?" is held there too.
+      if (actionTurn && CALENDAR_NOW_FORM_RE.test(text)) return finish(NOTHING_CHANGED);
       // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed
       // up (a turn that ends in text carries none): only a question may reach the user, anything else is the re-ask.
       if (careerAnswerTurn && sources.length === 0 && !isQuestionShaped(text)) return finish(STAGE_REASK);
