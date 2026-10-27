@@ -83,6 +83,16 @@ if (!userCols.some((c) => c.name === "career_stage")) {
   db.exec("ALTER TABLE users ADD COLUMN career_stage TEXT");
 }
 
+// NMLS IDs (digits only, set through routes/profile.js): a loan originator's own and their company's. Every client email
+// Charli sets up is signed with them (lib/assistant/outreach.js). NULL until set; nothing assumes one.
+if (!userCols.some((c) => c.name === "nmls_id")) {
+  db.exec("ALTER TABLE users ADD COLUMN nmls_id TEXT");
+}
+const orgCols = db.prepare("PRAGMA table_info(organizations)").all();
+if (!orgCols.some((c) => c.name === "nmls_id")) {
+  db.exec("ALTER TABLE organizations ADD COLUMN nmls_id TEXT");
+}
+
 // One row per UTC day of the market rates we served — the basis for "market movement". `provider` (fred / claude) is where
 // that day's set came from (lib/rateHistory.js): a move is only ever computed between two sets from the same provider.
 db.exec(`

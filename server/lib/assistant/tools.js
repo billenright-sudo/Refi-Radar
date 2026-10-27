@@ -8,12 +8,15 @@
 // Side-effect tools (addClientTool, logContactTool, setCareerStageTool, createEventTool) only PACKAGE the intent in
 // `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
 // The two Google Calendar tools (getCalendarTool, createEventTool) return a Promise: a read goes out to Google.
+// draftEmailTool sets up a client email and returns it as compose links at the TOP level of the result (`compose`, next to
+// data and source): nothing is sent and no Google connection is involved; the broker sends it from their own mail app.
 const refi = require("../refi");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
 const { validateClient } = require("../../routes/clients");   // the one POST /api/clients runs
 const { resolveDate, parseTime, toInstant, spokenDay, spokenTime } = require("../google/time");
+const { PURPOSES, NMLS_PATTERN, renderEmail, composeLinks } = require("./outreach");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -266,6 +269,58 @@ async function createEventTool(args, ctx) {
   };
 }
 
+// ── Client email: code-authored templates as compose links ───────────────────
+
+// One address, nothing else: no space, no angle brackets, no comma, semicolon or quote (so no second recipient, no display
+// name, no header line smuggled in behind a newline).
+const EMAIL_PATTERN = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
+const isNmls = (v) => typeof v === "string" && NMLS_PATTERN.test(v);
+
+// Set up a client email for the broker to send themselves. Charli never writes the email and never sends it: the wording is the
+// fixed template for `purpose` (lib/assistant/outreach.js; no rate, no dollar figure), signed with the sender's NMLS ID and the
+// company's when it has one, and the recipient is the address on the client's record. Nothing the model passes besides
+// clientId and purpose is read. The sender's name and NMLS IDs are read fresh from the DB (ctx.user is the auth row, which
+// has none of them), so an ID the user just saved works on the very next turn. No user NMLS ID, no email.
+function draftEmailTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const id = idOf(a.clientId);
+  if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
+  const client = scopedClients(ctx).find((r) => r.id === id);
+  if (!client) return fail("(not found)", "no such client in your book");
+  const purpose = a.purpose;
+  if (typeof purpose !== "string" || !PURPOSES.includes(purpose)) return fail("(invalid input)", `purpose must be one of: ${PURPOSES.join(", ")}`);
+
+  const sender = ctx.db.prepare("SELECT first_name, last_name, nmls_id FROM users WHERE id = ?").get(ctx.user.id);
+  const org = ctx.db.prepare("SELECT name, nmls_id FROM organizations WHERE id = ?").get(ctx.user.org_id);
+  if (!sender || !org) return fail("(unavailable)", "your profile could not be read right now");
+  if (!isNmls(sender.nmls_id)) {
+    return {
+      data: { error: "the user's NMLS ID is not saved yet: every client email carries it, so they save it first and then the email can be set up", code: "nmls_missing" },
+      source: "(not ready)",
+    };
+  }
+  if (typeof client.email !== "string" || !EMAIL_PATTERN.test(client.email)) {
+    return {
+      data: { error: "this client has no usable email address on file: say so and suggest adding it to the client record; never make one up or use one that is not on the record", code: "no_email", client: client.name },
+      source: "(no email on file)",
+    };
+  }
+
+  const { subject, body } = renderEmail({
+    clientName: client.name,
+    senderName: `${sender.first_name} ${sender.last_name}`.trim(),
+    nmlsId: sender.nmls_id,
+    orgName: org.name,
+    orgNmlsId: isNmls(org.nmls_id) ? org.nmls_id : null,
+    purpose,
+  });
+  return {
+    data: { client: client.name, email: client.email, purpose, subject, body },
+    source: "client record",
+    compose: { to: client.email, subject, body, links: composeLinks({ to: client.email, subject, body }) },
+  };
+}
+
 // A number of years as the model may pass it: a number, or a plain decimal string like logContactTool's digit-string
 // id ("20", "2.5"; not "1e1", "0x10" or " 5 "). NaN for anything else.
 const yearsOf = (raw) =>
@@ -294,7 +349,7 @@ function setCareerStageTool(args, _ctx) {
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-    getCalendarTool, createEventTool,
+    getCalendarTool, createEventTool, draftEmailTool,
   })
 );
 
@@ -434,9 +489,28 @@ const TOOL_SCHEMA = [
       required: ["date", "time"],
     },
   },
+  {
+    name: "draftEmailTool",
+    description:
+      "Set up a short email to one client for the user to send. Charli never writes or sends the email herself: the wording is fixed " +
+      "by the app (never by you), carries no rate and no dollar figure, and is signed with the user's NMLS ID; the user gets links " +
+      "that open it ready to go in their own Gmail, Outlook or mail app and sends it from their own email, or doesn't. Nothing is " +
+      "sent and nothing is saved. Purposes: check_in (a friendly check-in) and refi_review (offer a no-obligation review of their " +
+      "options). The recipient is the email on the client's record; you cannot choose or change it, the subject or the text. Get the " +
+      "clientId from findClient; never guess it. If it comes back not ready (the user's NMLS ID is not saved yet) or with no email on " +
+      "file, say so plainly and never make one up.",
+    input_schema: {
+      type: "object",
+      properties: {
+        clientId: { type: "integer", description: "The id of the client, from findClient." },
+        purpose: { type: "string", enum: PURPOSES, description: "check_in or refi_review." },
+      },
+      required: ["clientId", "purpose"],
+    },
+  },
 ];
 
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-  getCalendarTool, createEventTool,
+  getCalendarTool, createEventTool, draftEmailTool,
 };

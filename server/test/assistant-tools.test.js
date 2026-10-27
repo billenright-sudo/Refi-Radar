@@ -16,8 +16,9 @@ const refi = require("../lib/refi");
 const { recordSnapshot } = require("../lib/rateHistory");
 const {
   tools, TOOL_SCHEMA,
-  getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, getCalendarTool, createEventTool,
+  getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, getCalendarTool, createEventTool, draftEmailTool,
 } = require("../lib/assistant/tools");
+const { PURPOSES, composeLinks } = require("../lib/assistant/outreach");
 
 // Same rate set + Chen top-tier fixture as server/test/sweeps.test.js and refi-math.test.js —
 // this keeps the server engine, the tool layer and the dashboard's analyze() on one known answer.
@@ -620,7 +621,187 @@ test("createEventTool: not connected (or reconnect, or no adapter) is the non-ci
   assert.deepStrictEqual([badZone.source, badZone.sideEffect], ["(unavailable)", undefined]);
 });
 
+// ── draftEmailTool (compose links; no Google connection) ────────────────────
+
+// Their own company, so the sweep and findClient fixtures above stay as they were.
+const orgC = addOrg("Premier Mortgage Group");
+const billId = Number(db.prepare(
+  "INSERT INTO users (org_id, role, first_name, last_name, email, nmls_id) VALUES (?, 'broker', 'Bill', 'Enright', 'bill@c.co', '123456')"
+).run(orgC).lastInsertRowid);
+const loCId = addUser(orgC, "lo", "lo@c.co");                 // no NMLS ID of their own
+const otherLoCId = addUser(orgC, "lo", "lo-other@c.co");
+db.prepare("UPDATE organizations SET nmls_id = '654321' WHERE id = ?").run(orgC);
+const chenCId = addClientRow(orgC, loCId, {
+  name: "Robert & Linda Chen", loanType: "30yr_fixed", currentRate: 7.85, loanBalance: 485000, propertyValue: 650000, creditScore: 760,
+});
+db.prepare("UPDATE clients SET email = 'linda.chen@example.com' WHERE id = ?").run(chenCId);
+const othersClientCId = addClientRow(orgC, otherLoCId, {
+  name: "Someone Else's", loanType: "30yr_fixed", currentRate: 7, loanBalance: 100000, propertyValue: 200000, creditScore: 700,
+});
+db.prepare("UPDATE clients SET email = 'x@example.com' WHERE id = ?").run(othersClientCId);
+const billCtx = { user: user(billId, "broker", orgC), rates: LIVE, db };
+const loCCtx = { user: user(loCId, "lo", orgC), rates: LIVE, db };
+const setClientEmail = (id, email) => db.prepare("UPDATE clients SET email = ? WHERE id = ?").run(email, id);
+const queryOfUrl = (url) => new URL(url).searchParams;
+
+const CHECK_IN_TEXT =
+  "Hi Robert & Linda Chen,\n\n" +
+  "It's been a little while since we last talked, so I wanted to check in and see how everything is going with the house.\n\n" +
+  "If anything has changed on your end, like plans to move, renovate, or put some of your equity to work, I'd be glad to walk through your options with you. Just reply here whenever it's convenient.\n\n" +
+  "Best,\nBill Enright\nNMLS #123456\nPremier Mortgage Group\nNMLS #654321";
+
+test("draftEmailTool: Chen + check_in is the approved template, to the record's email, as compose links, and nothing else", () => {
+  const r = draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx);
+  assert.ok(!(r instanceof Promise), "no Google call: it stays synchronous");
+  assert.deepStrictEqual(Object.keys(r).sort(), ["compose", "data", "source"], "compose is top level; no sideEffect");
+  assert.equal(r.sideEffect, undefined);
+  assert.equal(r.source, "client record");
+  assert.deepStrictEqual(r.data, {
+    client: "Robert & Linda Chen", email: "linda.chen@example.com", purpose: "check_in", subject: "Checking in", body: CHECK_IN_TEXT,
+  });
+  assert.ok(r.data.body.endsWith("Best,\nBill Enright\nNMLS #123456\nPremier Mortgage Group\nNMLS #654321"));
+  assert.deepStrictEqual(r.compose, {
+    to: "linda.chen@example.com", subject: "Checking in", body: CHECK_IN_TEXT,
+    links: composeLinks({ to: "linda.chen@example.com", subject: "Checking in", body: CHECK_IN_TEXT }),
+  });
+  assert.ok(r.compose.links.gmail.startsWith("https://mail.google.com/mail/?view=cm"));
+  assert.equal(queryOfUrl(r.compose.links.gmail).get("to"), "linda.chen@example.com");
+  assert.equal(queryOfUrl(r.compose.links.gmail).get("body"), CHECK_IN_TEXT);
+});
+
+test("draftEmailTool: refi_review, with a figure-free body, for every purpose; the sender's name and IDs come from the DB, not ctx.user", () => {
+  for (const purpose of PURPOSES) {
+    const r = draftEmailTool({ clientId: chenCId, purpose }, billCtx);
+    assert.equal(r.source, "client record", purpose);
+    assert.equal(r.data.purpose, purpose);
+    assert.equal(billCtx.user.first_name, undefined, "ctx.user carries no name or NMLS ID");
+    const text = r.data.body.split("\n").filter((line) => !line.startsWith("NMLS #")).join("\n");
+    assert.doesNotMatch(text, /[\d$%]/, `${purpose} carries no figure`);
+  }
+  assert.equal(draftEmailTool({ clientId: chenCId, purpose: "refi_review" }, billCtx).data.subject, "A fresh look at your mortgage");
+});
+
+test("draftEmailTool: a numeric-string id from the model works", () => {
+  assert.equal(draftEmailTool({ clientId: String(chenCId), purpose: "check_in" }, billCtx).source, "client record");
+});
+
+test("draftEmailTool: a loan officer with no NMLS ID of their own is not ready; once they save one it works on the very next call", () => {
+  const args = { clientId: chenCId, purpose: "check_in" };
+  const before = draftEmailTool(args, loCCtx);
+  assert.equal(before.source, "(not ready)");
+  assert.equal(before.data.code, "nmls_missing");
+  assert.equal(typeof before.data.error, "string");
+  assert.equal(before.compose, undefined);
+  db.prepare("UPDATE users SET nmls_id = '445566' WHERE id = ?").run(loCId);
+  try {
+    const after = draftEmailTool(args, loCCtx);
+    assert.equal(after.source, "client record");
+    assert.ok(after.data.body.endsWith("Best,\nT User\nNMLS #445566\nPremier Mortgage Group\nNMLS #654321"), after.data.body);
+  } finally {
+    db.prepare("UPDATE users SET nmls_id = NULL WHERE id = ?").run(loCId);
+  }
+});
+
+test("draftEmailTool: a company with no NMLS ID gets the three-line signature", () => {
+  db.prepare("UPDATE organizations SET nmls_id = NULL WHERE id = ?").run(orgC);
+  try {
+    const r = draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx);
+    assert.ok(r.data.body.endsWith("Best,\nBill Enright\nNMLS #123456\nPremier Mortgage Group"), r.data.body);
+    assert.ok(!r.data.body.includes("654321"));
+  } finally {
+    db.prepare("UPDATE organizations SET nmls_id = '654321' WHERE id = ?").run(orgC);
+  }
+});
+
+test("draftEmailTool: a model-supplied to, subject or body (or anything else) changes nothing", () => {
+  const plain = draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx);
+  const pushed = draftEmailTool({
+    clientId: chenCId, purpose: "check_in", to: "x@evil.test", cc: "y@evil.test", bcc: "z@evil.test",
+    subject: "Great rates: 3.1%!", body: "Lock in $500,000 at 3.1% today", email: "x@evil.test", clientName: "Mallory", signature: "none",
+  }, billCtx);
+  assert.deepStrictEqual(pushed, plain);
+  assert.equal(pushed.compose.to, "linda.chen@example.com");
+  assert.ok(!JSON.stringify(pushed).includes("evil"));
+});
+
+test("draftEmailTool: no NMLS ID on the user means no email, with nothing composed", () => {
+  const nobody = addUser(orgC, "broker", "nobody@c.co");
+  for (const stored of [null, ""]) {
+    db.prepare("UPDATE users SET nmls_id = ? WHERE id = ?").run(stored, nobody);
+    const r = draftEmailTool({ clientId: chenCId, purpose: "check_in" }, { ...billCtx, user: user(nobody, "broker", orgC) });
+    assert.deepStrictEqual([r.source, r.data.code, r.compose], ["(not ready)", "nmls_missing", undefined], JSON.stringify(stored));
+    assert.match(r.data.error, /NMLS/);
+  }
+  // a stored value that is not digits (written around the route) is not signed either
+  db.prepare("UPDATE users SET nmls_id = 'abc' WHERE id = ?").run(nobody);
+  assert.equal(draftEmailTool({ clientId: chenCId, purpose: "check_in" }, { ...billCtx, user: user(nobody, "broker", orgC) }).data.code, "nmls_missing");
+});
+
+test("draftEmailTool: a client with no usable email address is no_email, named, with nothing composed", () => {
+  const bad = [
+    "", null, "not-an-email", "a@b", "a b@c.co", "a@b.co, c@d.co", "a@b.co;c@d.co", "<a@b.co>", "\"a\"@b.co", "a@@b.co",
+    "a@b.co\nBcc: x@evil.test", "a@b.co\r\nBcc: x@evil.test", "a@b.co\n", "\na@b.co", "a@b.co ", "a@ b.co",
+  ];
+  try {
+    for (const email of bad) {
+      setClientEmail(chenCId, email);
+      const r = draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx);
+      assert.deepStrictEqual([r.source, r.data.code, r.data.client, r.compose], ["(no email on file)", "no_email", "Robert & Linda Chen", undefined], JSON.stringify(email));
+      assert.equal(typeof r.data.error, "string");
+    }
+    for (const email of ["a@b.co", "first.last+tag@sub.example.com"]) {
+      setClientEmail(chenCId, email);
+      assert.equal(draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx).compose.to, email);
+    }
+  } finally {
+    setClientEmail(chenCId, "linda.chen@example.com");
+  }
+});
+
+test("draftEmailTool: another org's client, another LO's client and an unknown id are (not found)", () => {
+  for (const [clientId, ctx] of [[otherOrgClientId, billCtx], [othersClientCId, loCCtx], [999999, billCtx]]) {
+    const r = draftEmailTool({ clientId, purpose: "check_in" }, ctx);
+    assert.deepStrictEqual([r.source, typeof r.data.error, r.compose], ["(not found)", "string", undefined], String(clientId));
+  }
+  // a broker does see every client in their own org
+  assert.equal(draftEmailTool({ clientId: othersClientCId, purpose: "check_in" }, billCtx).source, "client record");
+});
+
+test("draftEmailTool: an unknown purpose or a bad id is invalid input and non-citing", () => {
+  for (const purpose of ["nonsense", "", undefined, null, 5, "constructor", "__proto__", ["check_in"]]) {
+    const r = draftEmailTool({ clientId: chenCId, purpose }, billCtx);
+    assert.deepStrictEqual([r.source, typeof r.data.error, r.compose], ["(invalid input)", "string", undefined], String(purpose));
+  }
+  for (const clientId of [undefined, null, "", "abc", "1e2", "0x10", " 5 ", 0, -1, 1.5, NaN, {}, []]) {
+    const r = draftEmailTool({ clientId, purpose: "check_in" }, billCtx);
+    assert.equal(r.source, "(invalid input)", String(clientId));
+    assert.equal(r.compose, undefined);
+  }
+  for (const args of [undefined, null, "check_in", []]) assert.equal(draftEmailTool(args, billCtx).source, "(invalid input)");
+  for (const r of [draftEmailTool({ clientId: chenCId, purpose: "nope" }, billCtx), draftEmailTool({}, billCtx)]) assert.match(r.source, NON_CITING);
+});
+
+test("draftEmailTool: it never writes", () => {
+  const before = JSON.stringify([clientRow(chenCId), db.prepare("SELECT * FROM users WHERE id = ?").get(billId)]);
+  const n = clientCount();
+  draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx);
+  draftEmailTool({ clientId: chenCId, purpose: "refi_review" }, billCtx);
+  assert.equal(clientCount(), n);
+  assert.equal(JSON.stringify([clientRow(chenCId), db.prepare("SELECT * FROM users WHERE id = ?").get(billId)]), before);
+});
+
 // ── TOOL_SCHEMA ─────────────────────────────────────────────────────────────
+
+test("TOOL_SCHEMA: draftEmailTool takes a clientId and a purpose, and says Charli never writes or sends the email", () => {
+  const t = TOOL_SCHEMA.find((x) => x.name === "draftEmailTool");
+  assert.deepStrictEqual(t.input_schema.required, ["clientId", "purpose"]);
+  assert.deepStrictEqual(Object.keys(t.input_schema.properties).sort(), ["clientId", "purpose"]);
+  assert.equal(t.input_schema.properties.clientId.type, "integer");
+  assert.match(t.input_schema.properties.clientId.description, /findClient/);
+  assert.deepStrictEqual(t.input_schema.properties.purpose.enum, PURPOSES);
+  assert.match(t.description, /never writes or sends/i);
+  assert.match(t.description, /own email/i);
+});
 
 test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the tool fns", () => {
   assert.ok(Array.isArray(TOOL_SCHEMA) && TOOL_SCHEMA.length > 0);
@@ -637,7 +818,7 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   );
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
-    ["addClientTool", "createEventTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "runSweepTool", "setCareerStageTool"]
+    ["addClientTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "runSweepTool", "setCareerStageTool"]
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);

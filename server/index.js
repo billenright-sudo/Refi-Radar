@@ -18,6 +18,7 @@ const sweepsRoutes = require("./routes/sweeps");
 const assistantRoutes = require("./routes/assistant");
 const voiceRoutes = require("./routes/voice");
 const googleRoutes = require("./routes/google");
+const profileRoutes = require("./routes/profile");
 
 const PORT         = process.env.PORT || 8080;
 const CLIENT_BUILD = path.join(__dirname, "client/build");
@@ -42,6 +43,7 @@ app.use("/api/sweeps",        sweepsRoutes);
 app.use("/api/assistant",     assistantRoutes);
 app.use("/api/voice",         voiceRoutes);
 app.use("/api/google",        googleRoutes);
+app.use("/api/profile",       profileRoutes);
 
 // Health check
 app.get("/health", (req, res) => {
