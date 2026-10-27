@@ -44,6 +44,13 @@ const UNREACHABLE = "couldn't reach Google — try again";
 const CLOCKS = "that time doesn't exist that day — the clocks change";
 const PAST = "that time has already passed";
 
+// What the code logs on a failure is captured (the run stays quiet) and checked at the end: a status or an error name, never a token
+// (final fix, Ruling 59).
+const logged = [];
+const realConsoleError = console.error;
+console.error = (...args) => { logged.push(args.map(String).join(" ")); };
+after(() => { console.error = realConsoleError; });
+
 // ── seed data ────────────────────────────────────────────────────────────────
 
 const addOrg = (name) => Number(db.prepare("INSERT INTO organizations (name) VALUES (?)").run(name).lastInsertRowid);
@@ -605,4 +612,12 @@ test("turn: an ordinary answer carries no `compose` key", async () => {
   const turn = await as(ann)("POST", "/api/assistant/turn", { rates: RATES, messages: [{ role: "user", content: "hello" }] });
   assert.equal(turn.status, 200);
   assert.equal("compose" in turn.data, false);
+});
+
+// (keep this the last test of the file: it reads every line the tests above made the code log)
+test("Final fix (Ruling 59): no access or refresh token appears in any line the code logged", () => {
+  for (const line of logged) {
+    for (const token of [ACCESS, REFRESH, ACCESS_NEW, REFRESH_NEW]) assert.ok(!line.includes(token), `a token in a log line: ${line.slice(0, 60)}`);
+    assert.ok(!/ya29\.|1\/\/|access_token|refresh_token|SECRET-BODY/.test(line), `token-like text in a log line: ${line.slice(0, 60)}`);
+  }
 });
