@@ -13,7 +13,10 @@ live. **"Charli"** is the voice-first AI CRM co-pilot on top (v1 merged, not yet
 deployed): she speaks the morning brief,
 runs sweeps, looks up / adds clients and logs contacts by voice with
 confirm-before-write, explains terms from a fixed glossary, and tailors coaching to
-the user's career stage.
+the user's career stage. **Plan B** (branch `feature/charli-google`, not merged, not
+deployed) adds her calendar and client email: she reads the broker's Google Calendar,
+books follow-ups on it after a confirm, and sets up client emails as compose links the
+broker sends from their own mail app.
 
 ## Stack
 - **Backend:** Node + Express, **better-sqlite3** (SQLite), JWT auth
@@ -33,13 +36,22 @@ the user's career stage.
 ```
 server/    index.js (entry, wires routes), db.js (SQLite schema + idempotent migrations), email.js,
            routes/{auth,clients,org,notifications,rates,import}.js,
-           routes/assistant.js  /api/assistant/{turn,confirm,usage}  (Charli; /confirm = the only write path)
+           routes/assistant.js  /api/assistant/{turn,confirm,usage}  (Charli; /confirm = the only write path;
+                                a calendar booking is confirmed here too, idempotently)
+           routes/google.js     /api/google/{connect,callback,status,disconnect}  (per-user Google OAuth)
+           routes/profile.js    /api/profile/{nmls,org-nmls}  (sender / company NMLS ID, printed on every email)
            routes/voice.js      /api/voice/{tts,stt}  (ElevenLabs proxy; key never leaves the server)
            lib/refi.js (deterministic sweep engine), lib/rateHistory.js (daily rate snapshots, movement "since <day>"),
            lib/assistant/{orchestrator,tools,prompt,coaching,glossary,speech,metering}.js
+           lib/assistant/outreach.js  code-authored client-email templates + Gmail / Outlook / mailto compose links
+           lib/google/{crypto,oauth,calendar,time,index}.js  crypto = AES-256-GCM token encryption; oauth = PKCE
+                                flow, token store + refresh; calendar = Calendar REST (read a day, insert an event);
+                                time = zone-aware date/time helpers; index = the per-user adapter the tools get as ctx.google
+           lib/dateLabels.js    db-free month / weekday / ordinal labels (spoken dates are code-authored)
            middleware/ (auth: requireAuth/requireBroker, signToken)
 client/    src/App.jsx (whole UI), src/index.jsx, index.html, vite.config.js
-           src/charli/{session.mjs,vad.mjs,audio.js,CharliView.jsx} (+ *.test.mjs)
+           src/charli/{session.mjs,vad.mjs,audio.js,CharliView.jsx,google.mjs} (+ *.test.mjs);
+           google.mjs = the words of the Calendar & email card, no DOM
 scripts/   seed-demo.js (fake demo broker + 12 fake clients),
            check-scoring.js (refi-math sanity check)
 server/test/  node:test suites (refi math, rates, auth/permissions, sweeps, Charli orchestrator/API/voice/coaching)
@@ -60,6 +72,17 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
 - **Repo:** `github.com/billenright-sudo/Refi-Radar`. Working + deployed branch
   **`feature/accurate-refi-scoring`** (Charli v1 merged in 2026-10-26, not yet deployed);
   `main` is behind.
+- **Charli Plan B deploy prerequisites** (on top of the list below; Bill's go):
+  `GOOGLE_CLIENT_SECRET` and `GOOGLE_TOKEN_KEY` in Secret Manager (`--update-secrets`);
+  `GOOGLE_CLIENT_ID` and the production `GOOGLE_REDIRECT_URI`
+  (`https://<cloud-run-host>/api/google/callback`) as env (`--update-env-vars`); that same
+  redirect URI added to the OAuth client's authorized redirect URIs. `GOOGLE_REDIRECT_URI`'s
+  host must be the host the user browses from — the OAuth flow cookie is host-scoped, so
+  `localhost` vs `127.0.0.1` matters (a mismatch fails closed: `/?google=error`). Without all
+  four, `/api/google/connect` answers 503 and Charli has no calendar. Before selling to other
+  brokers: Google app verification for the sensitive `calendar.events` scope (public
+  homepage, privacy policy, verified domain). Check the calendar 403 auth-reason mapping
+  (`server/lib/google/calendar.js`) against a real account.
 - **Charli deploy prerequisites:** `ELEVENLABS_API_KEY` in Secret Manager
   (`--set-secrets`), the other `ELEVENLABS_*` + `CHARLI_TTS_DAILY_CHARS` (default 60000)
   + `CHARLI_TURN_DEADLINE_MS` (default 25000; accepted 2000–30000, else the default) as env;
@@ -86,11 +109,16 @@ restyle without asking.**
 
 ## Secrets — names only, never values in the repo
 Referenced by env var; stored in **Google Secret Manager** (`ANTHROPIC_API_KEY`,
-`FRED_API_KEY`, `JWT_SECRET`, and on Charli's deploy `ELEVENLABS_API_KEY`) and Cloud
-Run env (`DATA_DIR`, `CLAUDE_MODEL`, `ELEVENLABS_VOICE_ID_CHARLI`,
+`FRED_API_KEY`, `JWT_SECRET`, and on Charli's deploy `ELEVENLABS_API_KEY`,
+`GOOGLE_CLIENT_SECRET`, `GOOGLE_TOKEN_KEY`) and Cloud Run env (`GOOGLE_CLIENT_ID`,
+`GOOGLE_REDIRECT_URI`, `DATA_DIR`, `CLAUDE_MODEL`, `ELEVENLABS_VOICE_ID_CHARLI`,
 `ELEVENLABS_TTS_MODEL`, `ELEVENLABS_STT_MODEL`, `CHARLI_TTS_DAILY_CHARS`,
 `CHARLI_TURN_DEADLINE_MS`); locally
-in `server/.env` (git-ignored). Others: `EMAIL_USER`, `EMAIL_PASS`, `APP_URL`,
+in `server/.env` (git-ignored). Google (Charli Plan B): `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET` = the OAuth "Web application" client; `GOOGLE_REDIRECT_URI` =
+`<APP_URL>/api/google/callback`; `GOOGLE_TOKEN_KEY` = base64 of 32 random bytes, encrypts
+the stored tokens (changing it makes every stored connection unreadable — users reconnect).
+Others: `EMAIL_USER`, `EMAIL_PASS`, `APP_URL`,
 `PORT`. `.env.example` holds names/placeholders only. **Never commit real secrets
 or print them in logs/chat. Subagents and reviewers never read, cat or grep `.env`
 files** (a repo-wide grep once echoed a key into a review transcript).
@@ -101,7 +129,7 @@ files** (a repo-wide grep once echoed a key into a review transcript).
 - **Prod-like:** `cd client && npx vite build --outDir ../server/client/build --emptyOutDir`, then run the server (single URL on 8080).
 - **Seed demo:** `node scripts/seed-demo.js http://localhost:8080` → `demo@refiradar.com` / `DemoPass123!`.
 - **Tests:** `cd server && npm test` and `cd client && npm test` (node:test, **Node 20**); plus `node scripts/check-scoring.js`.
-- **Charli locally:** needs the `ELEVENLABS_*` vars in `server/.env` for audio (text-only otherwise); open the **Charli** nav item.
+- **Charli locally:** needs the `ELEVENLABS_*` vars in `server/.env` for audio (text-only otherwise); open the **Charli** nav item. The calendar needs the four `GOOGLE_*` vars (names in `.env.example`); never read or print `server/.env`.
 - **Logs:** `gcloud run services logs read refi-radar --region us-central1 --project refi-radar-496318 --limit N`.
 - Always prepend portable Node 20 to PATH locally:
   `$env:Path = "C:\Users\bille\dev\node20;" + $env:Path`.
@@ -125,6 +153,22 @@ files** (a repo-wide grep once echoed a key into a review transcript).
   rateDelta ≥ 0.5, break-even ≤ 36 mo, savings > 0, LTV ≤ 95.
 - **No auto-emails to clients.** Sweeps/alerts remind and can draft; the **broker
   sends**. Invite/alert email is broker-initiated.
+- **Charli never sends (Plan B).** Client email = a code-authored template
+  (`lib/assistant/outreach.js`; the model never writes email text and the recipient comes
+  only from the client record) opened as a Gmail / Outlook / mailto compose link; the broker
+  reads it and sends it from their own mail app. There is no send path and no Gmail scope.
+  Templates quote no rate or dollar figure. Calendar bookings go on the broker's own primary
+  calendar with **no attendees** and `sendUpdates=none` — no invites exist in v1. A booking is
+  a confirmed side effect like any other: code-authored read-back, then `/api/assistant/confirm`,
+  idempotent under the Google event id `"br" + confirmId`.
+- **Every email carries the sender's NMLS ID** (and the company's when set) in the signature;
+  **no NMLS ID on the user → no email** (set in the Charli panel, `/api/profile/nmls`).
+- **Google scopes, exactly:** `openid`, `email`, `calendar.events`. **Not** `gmail.compose`:
+  Google classifies it as a restricted scope (restricted-scope verification + a paid
+  third-party security assessment for outside customers), and Broker Radar is sold to other
+  brokers. OAuth is per-user with PKCE and a browser-bound flow cookie; tokens are encrypted
+  at rest, never logged, never in an API response or tool result. Nothing may depend on our
+  own Google Workspace — every customer connects their own account.
 - Clients are org-scoped: **brokers see the whole org's clients, LOs see their own.**
 - Match the existing code style; keep changes small and in-idiom.
 - For any large feature, write a short plan first (see PROGRESS.md) and share it.

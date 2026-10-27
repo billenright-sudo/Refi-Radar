@@ -27,6 +27,14 @@ already exist (clients, LOs, portfolios, opportunities, notifications, import). 
 grounded voice layer is what turns a good tool into a product a broker runs their day on, and
 it is the concrete realization of the broker/LO CRM from the UWM pitch.
 
+> **Update 2026-10-27 — Broker Radar is now our own product, sold to other brokers; it is not a
+> UWM build.** The UWM framing above (and in §9) is how it started and is kept as history. What
+> changes: every broker connects their *own* Google account (nothing may depend on our
+> Workspace), and anything that needs Google restricted-scope verification is out of v1. §7.3
+> records the result — Google Calendar only, and client email as compose links the broker sends
+> instead of Gmail drafts, so the "drafts refi outreach in Gmail" lines in this document read as
+> "sets up the email for you to send".
+
 ## 2. Goals
 
 - A broker opens Broker Radar and **runs their morning by talking to Charli, hands-free.**
@@ -91,7 +99,7 @@ claim is backed by a tool result that is also shown in the on-screen transcript 
 | Opportunities / savings | the Sweeps engine (`server/lib/refi.js` via `/api/sweeps`) |
 | Client facts (rate, balance, value, LTV, history) | the CRM database |
 | Schedule / availability | Google Calendar (the connected account) |
-| Outreach drafts | generated text staged as a Gmail **draft**, shown for approval |
+| Outreach drafts | code-authored template shown for approval, opened as a compose link _(as built 2026-10-27 — not a Gmail draft, §7.3)_ |
 
 If a question falls outside these (e.g. "what's Fannie's reserve requirement on a 2-unit
 investment?"), v1 Charli says she can't verify that yet — that's the loan-guideline module
@@ -133,6 +141,8 @@ call.)_
     at 10" creates the event.
   - **Draft outreach** — "draft the Chens their refi note" → composes a Gmail **draft**;
     Charli reads it back; sending requires an explicit, separate yes (voice + on-screen).
+    _(As built 2026-10-27: a code-authored email opened as a Gmail / Outlook / mailto compose
+    link; the broker sends it from their own mail app, and Charli has no send path — §7.3.)_
 - **Proactive but bounded:** Charli offers and suggests (the morning menu, "want me to book
   that?", "want me to draft it?"), but every side-effecting action (create client, create
   event, send email) takes an explicit confirmation.
@@ -193,29 +203,51 @@ Server endpoints the voice layer may call, each returning structured, citeable d
 - `getCalendar(range)` / `createEvent(details)` → Google Calendar (new, §7.3)
 - `draftEmail(clientId, purpose)` → compose + stage a Gmail **draft** (new, §7.3);
   `sendEmail(draftId)` exists but is gated behind explicit approval and is the only path that
-  sends — never called autonomously.
+  sends — never called autonomously. _(As built 2026-10-27: `draftEmailTool` returns compose
+  links for a code-authored template; there is no `sendEmail` and no Gmail draft — §7.3.)_
 
 The orchestration LLM (Claude; `ANTHROPIC_API_KEY` / `CLAUDE_MODEL` already in the app) maps
 each utterance to a tool call, then narrates the structured result in Charli's voice. It is
 instructed never to answer a factual/quantitative question except via a tool result.
 
-### 7.3 Google integration
+### 7.3 Google integration — as built (2026-10-27)
 
-- **Per-user OAuth 2.0** (Gmail + Calendar scopes), Google first. Tokens stored server-side,
-  encrypted; refresh handled server-side. New OAuth client id/secret live in env /
-  Secret Manager, never in the repo. For the single v1 account, use Google OAuth
-  **test-user** mode to skip restricted-scope app verification during the pilot. _(Builder
-  call.)_
-- **Provider abstraction:** calendar/email tools sit behind an interface so Microsoft 365 can
-  be added later without touching the voice layer.
-- **Email is draft-only by default.** `draftEmail` creates a Gmail draft. `sendEmail` runs
-  only after an explicit per-send approval captured in the UI (and spoken). Nothing auto-sends.
-- **Draft bodies are general for v1** — they invite the client to review their options and
-  **never quote a specific rate or dollar figure**, which keeps us clear of mortgage-
-  advertising / Loan-Estimate / state-licensing triggers. (Quoting engine figures is a later
-  phase, with the disclosure handling it requires.)
-- **v1 connects one account** (Bill / the demo broker). Multi-broker token management is a
-  later concern but the schema is built per-broker from the start.
+_(The 2026-10-21 design had Gmail + Calendar scopes, Gmail drafts and an approval-gated
+`sendEmail`. It changed when Broker Radar became our own product sold to other brokers, §1.)_
+
+- **Google Calendar only. Scopes, exactly: `openid`, `email`,
+  `https://www.googleapis.com/auth/calendar.events`.** No Gmail scope.
+- **Per-user OAuth 2.0 with PKCE**, bound to the browser that started it by a short-lived flow
+  cookie (httpOnly, SameSite=Lax, scoped to the callback path, ten minutes): a callback that does
+  not match the cookie is refused, so an attacker cannot attach a victim's calendar to the
+  attacker's account. **Tokens are AES-256-GCM-encrypted at rest** (`GOOGLE_TOKEN_KEY`), refreshed
+  server-side, and never logged, never in an API response, never in a tool result; an expired or
+  revoked grant shows as "reconnect". Client id / secret / redirect URI / token key are env vars
+  (Secret Manager on Cloud Run), never in the repo. Each broker connects their own account.
+- **Provider abstraction:** the tools receive a per-user adapter (`server/lib/google/index.js`,
+  bound to one user id, holding no token), so Microsoft 365 can be added later without touching
+  the voice layer and a tool cannot reach another user's calendar.
+- **Calendar.** Charli reads a day (titles, with day and time labels authored by code) and books
+  on the broker's **own primary calendar** with **no attendees and `sendUpdates=none`** — no
+  calendar invites exist in v1. A booking is a confirmed side effect like any other: a
+  code-authored read-back ("Just to confirm — …"), then `/api/assistant/confirm`, which books
+  under the Google event id `"br" + confirmId` so a repeated confirm never makes a second event.
+- **Email is not Gmail drafts.** `draftEmail` sets up a **code-authored template** (a check-in or
+  a refinance review; the model never writes the text) for a client, with the recipient taken only
+  from the client record. The body quotes **no rate or dollar figure** (which keeps us clear of
+  mortgage-advertising / Loan-Estimate / state-licensing triggers; quoting engine figures is a
+  later phase, with the disclosure handling it requires), and the signature carries the
+  **sender's NMLS ID** (and the company's when set) — a user with no NMLS ID gets no email.
+  It is opened as a **Gmail / Outlook / mailto compose link**; the broker reads it and sends it
+  from their own mail app. **There is no send path.** (§4 anti-goal 2 holds.)
+- **Why compose links.** `gmail.compose` is a **restricted** scope: for outside customers Google
+  requires restricted-scope verification plus a paid third-party security assessment.
+  `calendar.events` is only a **sensitive** scope (ordinary app verification: a public homepage,
+  a privacy policy, a verified domain). Compose links give the broker the same result — a
+  prefilled email — without ever holding mail access. If Gmail drafts are wanted later, that is
+  one tool and one card to rework plus the scope and its assessment.
+- **Pilot vs customers.** OAuth **test-user** mode is enough for Bill's own pilot; before other
+  brokers connect, the app needs Google verification for `calendar.events`.
 
 ### 7.4 Grounding & transcript
 

@@ -3,9 +3,27 @@
 Living status file. **Update at the end of every major task** so work resumes
 cleanly after compaction / a new session. Newest notes at the top of each list.
 
-_Last updated: 2026-10-25_
+_Last updated: 2026-10-27_
 
 ## Done
+- **Charli Plan B — Google Calendar + client email — BUILT 2026-10-27 on `feature/charli-google`
+  (branched from `feature/accurate-refi-scoring` @ `b542904`), NOT merged, NOT deployed**
+  (**server 642/642 + client 83/83 node:tests**, up from 415/64). Charli reads the broker's own
+  Google Calendar ("what's on my calendar today?"), books follow-ups on it ("book a follow-up with
+  the Chens Friday at 10": code-authored read-back → Confirm → `/api/assistant/confirm`, idempotent
+  under the event id `"br"+confirmId`, no attendees, `sendUpdates=none`), and sets up client emails
+  (check-in, refinance review) as code-authored templates — no rate or dollar figure, the sender's
+  NMLS ID (and the company's) in the signature, no NMLS ID → no email — opened as Gmail / Outlook /
+  mailto compose links the broker sends from their own mail app. **Nothing sends.** Google scope is
+  `calendar.events` only (`gmail.compose` is restricted — see Key decisions). Per-user OAuth + PKCE
+  with a browser-bound flow cookie, tokens AES-256-GCM-encrypted. New: `server/lib/google/{crypto,
+  oauth,calendar,time,index}.js`, `server/lib/dateLabels.js`, `server/lib/assistant/outreach.js`,
+  `server/routes/{google,profile}.js`, `client/src/charli/google.mjs` + the panel's Calendar & email
+  card (Connect / Disconnect, NMLS fields, compose card). The orchestrator's guards now also cover
+  calendar facts (day and time labels code-authored, grounded in the tool payload) and "I booked /
+  I drafted" claims, including replies to an offer. Plan:
+  `docs/superpowers/plans/2026-10-27-charli-google-calendar-gmail.md`. Whole-branch review and
+  Bill's live check (needs his OAuth client + his own Google sign-in) still to come.
 - **Charli v1 — BUILT + reviewed + MERGED into `feature/accurate-refi-scoring` 2026-10-26, NOT
   deployed** (53 commits fast-forwarded from `feature/teresa-voice-crm`, since deleted;
   **server 403/403 + client 52/52 node:tests** on the merged result; whole-branch
@@ -65,6 +83,15 @@ _Last updated: 2026-10-25_
   only between same-provider snapshots.
 - **Charli's voice = ElevenLabs Bella** (`hpp4J3VqNfWAUOO0d1Us`, `eleven_v4_turbo`);
   HeyGen's Teresa voice was measured at 4.5–9 s of silence per reply and rejected.
+- **Broker Radar is now our own product, sold to other brokers (2026-10-27)** — no longer a UWM
+  build (the UWM pitch assets above are the history). Consequences: every broker connects their
+  own Google account (nothing may depend on our Workspace), and anything that needs Google
+  restricted-scope verification is out. That is why Plan B uses compose links, not Gmail drafts:
+  `gmail.compose` is a restricted scope (restricted-scope verification + a paid third-party
+  security assessment for outside customers), `calendar.events` is only sensitive.
+- **Charli never sends.** Email is a code-authored template opened as a compose link the broker
+  sends; calendar bookings go on the broker's own calendar with no attendees or invites. Every
+  email carries the sender's NMLS ID (and the company's when set); no NMLS ID → no email.
 - **"Sweeps"** = the AI opportunity engine; **Broker Radar** = the platform; **Charli**
   = the voice co-pilot on top of both.
 - Sweeps works the book two ways: **opportunities** (refi/cash-out/MI-drop) **+
@@ -83,6 +110,24 @@ _Last updated: 2026-10-25_
   ElevenLabs ones Charli answers text-only);
   vendor data-retention terms (Anthropic API + ElevenLabs) to confirm; first real curl of
   `/api/voice/tts` and `/stt` against the service.
+- **Charli Plan B deploy prerequisites (Bill's go, on top of the list above):**
+  `GOOGLE_CLIENT_SECRET` and `GOOGLE_TOKEN_KEY` → Secret Manager (`--update-secrets`);
+  `GOOGLE_CLIENT_ID` and the production `GOOGLE_REDIRECT_URI`
+  (`https://<cloud-run-host>/api/google/callback`) as Cloud Run env (`--update-env-vars`), and that
+  redirect URI added to the OAuth client. `GOOGLE_REDIRECT_URI`'s host must match the host the user
+  browses from (the OAuth flow cookie is host-scoped; `localhost` vs `127.0.0.1` matters — a mismatch
+  fails closed to `/?google=error`). Without all four, Charli has no calendar (503 on connect).
+  **Before selling to other brokers:** Google app verification for the sensitive `calendar.events`
+  scope (needs a public homepage, a privacy policy, a verified domain). The calendar 403 auth-reason
+  mapping (`server/lib/google/calendar.js`) still has to be checked against a real account.
+- **Accepted claim-guard residual (Plan B, Ruling 42 — a design decision for Bill):** a model that
+  skips the tool and phrases a done-claim inside a clarifying question ("…since it's on your
+  calendar now — which Chen?"), or paraphrases a done-claim after an ambiguous reply, can still
+  mislead in speech; the guards are word lists and no list covers every paraphrase. Nothing is
+  written without a confirm, and no pending card appears, so the calendar and the mail are never
+  changed by it. Proposed fix: code-authored clarifiers on action turns (built from tool
+  results), or a small second model call that classifies "does this reply say something was
+  done?" — as part of the orchestrator tidy (I6, below).
 - **Charli follow-ups from the reviews** (the 25 s turn deadline, client timeouts, the
   session.mjs ↔ real-router test and the 429 note were done 2026-10-26 on
   `feature/charli-hardening`): orchestrator tidy into one `screenReply` decision
@@ -108,21 +153,28 @@ _Last updated: 2026-10-25_
 - `main` is behind both feature branches (not merged).
 - Garbled org-1 name on Bill's real account (`wenright1@gmail.com`) — no org-rename
   API; needs a small DB fix.
-- Data gaps blocking Sweeps Phase 2: **loan program, MI status, and today's home
+- Data gaps blocking Sweeps Phase 2: **loan program, occupancy, MI status, and today's home
   value (AVM)** are not captured; only origination `propertyValue` exists.
 - `scripts/import` xlsx flow has no automated test yet (see Next steps).
 - gcloud auth tokens expire often → deploys intermittently need `gcloud auth login`.
 
 ## Next steps
-1. **Bill's first spoken session with Charli** (mic + Bella, local dev servers): time
+1. **Bill's live check of Plan B** (needs his own OAuth client in Google Cloud Console and his
+   own Google sign-in; Claude never types his password): restart the API, sign in to Google from
+   the Charli panel, enter his NMLS ID, use a test client whose email is his own address; check
+   "what's on my calendar today?", book a follow-up (read-back → Confirm → one event, no guests;
+   Confirm again → no second event), and "draft <client> a check-in" → Open in Gmail shows the
+   prefilled email, unsent. Then delete the test event.
+2. **Bill's first spoken session with Charli** (mic + Bella, local dev servers): time
    end-of-speech → first audio; run the plan's Task 6 live check (greeting, "what are rates
    today", a sweep, "log a contact for the Chens" → spoken yes).
-2. **Deploy on Bill's go** once the secrets/env above are set (Charli is on the deployed
-   line now); then merge to `main`.
-3. **Charli Plan B — Google Calendar + Gmail draft-and-approve** (design §7.3; per-user
-   OAuth, draft-only email, general drafts without figures).
-4. **Sweeps Phase 2:** add program/MI fields + an AVM feed → the **drop-MI** lens
-   and accurate cash-out.
-5. Add the import + fuller auth integration tests (needs a temp test DB harness).
-6. Housekeeping when convenient: merge to `main`, fix org-1 name, sync one-pager
+3. **Deploy on Bill's go** (Charli + Plan B) once the secrets/env above are set; merge
+   `feature/charli-google` first; then merge to `main`.
+4. **Client target-rate alerts.**
+5. **Sweeps Phase 2:** capture **loan program, occupancy and MI status** (plus an AVM feed) → the
+   **FHA streamline / VA IRRRL** and **drop-MI** lenses and accurate cash-out. Then: real pricing,
+   multi-loan clients, referral partners, LOS import, texting with consent, automatic
+   past-client touches, production reports.
+6. Add the import + fuller auth integration tests (needs a temp test DB harness).
+7. Housekeeping when convenient: merge to `main`, fix org-1 name, sync one-pager
    math, PDF/PPTX deck exports.
