@@ -4240,7 +4240,8 @@ test("Task 5 fix 2: an offer's later clauses are screened like any claim ('since
       "It's on your calendar now, right?", "Since it's on your calendar now, should I draft a check-in?", "Is it on your calendar now?",
     ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
   }
-  // the affirmed-book turn: the claim in a later clause is replaced, with no tool and with a calendar read; the legitimate offer is not
+  // the affirmed-book turn: the claim in a later clause is replaced, with no tool and with a calendar read; a legitimate offer question
+  // passes when it has no "now" form (round 4, Ruling 19: on an action turn any "now on your calendar" wording is held, offer or not)
   for (const offer of [OFFERS[1], OFFERS[3]]) {
     for (const said of CLAIMING_OFFERS.slice(0, 2)) {
       for (const grounded of [false, true]) {
@@ -4250,10 +4251,11 @@ test("Task 5 fix 2: an offer's later clauses are screened like any claim ('since
       }
     }
     for (const grounded of [false, true]) {
-      const said = "Should I put it on your calendar now?";
-      const script = grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)];
-      const r = await runTurn({ messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient(script) });
-      assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: a legitimate offer question passes`);
+      for (const [said, expected] of [["Should I put it on your calendar now?", NOTHING_CHANGED], ["Should I put it on your calendar?", null]]) {
+        const script = grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)];
+        const r = await runTurn({ messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient(script) });
+        assert.equal(r.reply, expected || said, `${grounded ? "calendar read" : "no tool"}: ${said}`);
+      }
     }
   }
 });
@@ -4339,7 +4341,7 @@ test("Task 5 fix 3: a 'now' calendar form in a question is a claim unless it is 
   }
 });
 
-test("Task 5 fix 3: on the affirmed-book turn the 'now' claims are replaced, with no tool and with a calendar read; the offers pass", async () => {
+test("Task 5 fix 3: on the affirmed-book turn the 'now' claims are replaced, with no tool and with a calendar read; the offers pass on a plain read", async () => {
   for (const offer of [OFFERS[1], OFFERS[3]]) {
     for (const said of NOW_CLAIMS_IN_QUESTIONS) {
       for (const grounded of [false, true]) {
@@ -4349,13 +4351,14 @@ test("Task 5 fix 3: on the affirmed-book turn the 'now' claims are replaced, wit
       }
     }
   }
-  // the offers (on the affirmed-book turn when they open with a question word, and on a plain read)
+  // the offers: on the affirmed-book turn they are held too (round 4, Ruling 19: on an action turn any "now on your calendar"
+  // wording is held, placing verb or not); on a plain read they pass
   for (const offer of NOW_OFFERS.filter((o) => isQuestionShaped(o))) {
     const r = await runTurn({
       messages: history(CAL_ASK, OFFERS[1], "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
       client: fakeClient([useTool("getCalendarTool", {}), say(offer)]),
     });
-    assert.equal(r.reply, offer, offer);
+    assert.equal(r.reply, NOTHING_CHANGED, offer);
   }
   for (const offer of NOW_OFFERS) {
     const said = `${CAL_LINE} ${offer}`;
@@ -4372,4 +4375,133 @@ test("Task 5 fix 3: on the affirmed-book turn the 'now' claims are replaced, wit
     client: fakeClient([useTool("getCalendarTool", { date: "friday" }), say("Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.")]),
   });
   assert.equal(r.reply, "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.");
+});
+
+// ── Task 5 fix round 4: on an action turn any "now on your calendar" wording is held; the lookbehind and the placing-verb window ──
+
+// the round-3 review's rows: a "now" form behind a prepositional phrase, a reduced relative, "given", "now", or a noun's "'s" (= is)
+const NOW_CLAIMS_ROUND_4 = [
+  "Should I schedule a check-in for the follow-up now on your calendar?",
+  "Should I add a reminder for the follow-up now on your calendar?",
+  "Should I book a call about the follow-up now on your calendar?",
+  "Should I add a reminder to the follow-up now on your calendar?",
+  "Should I also schedule a reminder before the follow-up now on your calendar?",
+  "Should I add one more like the follow-up now on your calendar?",
+  "Should I book a call given the follow-up's now on your calendar?",
+  "Should I book a check-in now the follow-up's on your calendar now?",
+];
+// legitimate offers on a turn that is not an action turn (Ruling 20c): a bare "that" right after the placing verb, a clock time in
+// the object
+const NOW_OFFERS_ROUND_4 = [
+  "Want me to put that on your calendar now?", "Should I put that on your calendar now?",
+  "Should I put a 10:00 AM follow-up on your calendar now?", "Want me to book a 10:00 AM call with the Chens on your calendar now?",
+];
+const affirmedBook = (said, grounded, offer = OFFERS[1]) => runTurn({
+  messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+  client: fakeClient(grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)]),
+});
+const plainRead = (said, events = [CHEN_EVENT]) => runTurn({
+  messages: userSays(CAL_ASK), ctx: googleCtx(fakeGoogle({ events })),
+  client: fakeClient([useTool("getCalendarTool", {}), say(said)]),
+});
+
+test("Task 5 fix 4: on an action turn any 'now on your calendar' wording is held, question or statement, placing verb or not", async () => {
+  const held = [
+    ...NOW_CLAIMS_ROUND_4, ...NOW_CLAIMS_IN_QUESTIONS, ...NOW_OFFERS, ...NOW_OFFERS_ROUND_4,
+    "Should I put a follow-up now on your calendar?", "It's on your calendar now.", "I'll put it on your calendar now.",
+    "Should I put it on your Google calendar now?", "Shall I book it, since it's on your calendar now?",
+  ];
+  // the affirmed-book turn (Charli offered to book or to put a follow-up on the calendar, the user said yes), no tool and a calendar read
+  for (const offer of [OFFERS[1], OFFERS[3]]) {
+    for (const said of held) {
+      for (const grounded of [false, true]) {
+        const r = await affirmedBook(said, grounded, offer);
+        assert.equal(r.reply, NOTHING_CHANGED, `${grounded ? "calendar read" : "no tool"}: ${offer} -> yes -> ${said}`);
+        assert.equal(r.sideEffect, undefined);
+        assert.equal("compose" in r, false);
+      }
+    }
+  }
+  // a request in the user's own words is an action turn too
+  for (const ask of ["book the Chens a follow-up Friday", "put a follow-up with the Chens on my calendar"]) {
+    for (const said of ["Should I put it on your calendar now?", "Want me to put that on your calendar now?", NOW_CLAIMS_ROUND_4[0]]) {
+      const r = await runTurn({ messages: userSays(ask), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([say(said)]) });
+      assert.equal(r.reply, NOTHING_CHANGED, `${ask} -> ${said}`);
+    }
+  }
+  // a question with no "now" form still passes on that turn, with no tool and with a calendar read; so does a negative "now" form
+  // after a calendar read (with no tool it is a calendar fact nothing backs, so the ungrounded screen refuses it)
+  for (const said of ["Should I put it on your calendar?", "Which Chen — Robert and Linda, or Chen Wei?", "What time should I make it?"]) {
+    for (const grounded of [false, true]) {
+      const r = await affirmedBook(said, grounded);
+      assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: ${said}`);
+    }
+  }
+  const negative = "Should I book it for Friday, since nothing else is on your calendar now?";
+  assert.equal((await affirmedBook(negative, true)).reply, negative);
+  // the tool path is unchanged: a booking after the yes is read back
+  const r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "yes"), ctx: googleCtx(fakeGoogle()),
+    client: fakeClient([useTool("createEventTool", { date: "friday", time: "10:00", clientId: mikeChen })]),
+  });
+  assert.equal(r.sideEffect.type, "createEvent");
+});
+
+test("Task 5 fix 4: on a plain calendar read the 'now' offers still pass with their calendar answer; the round-4 claims with given / now / 's do not", async () => {
+  for (const offer of [...NOW_OFFERS, ...NOW_OFFERS_ROUND_4]) {
+    const said = `${CAL_LINE} ${offer}`;
+    const r = await plainRead(said);
+    assert.equal(r.reply, said, `plain read: ${offer}`);
+    assert.deepStrictEqual(r.sources, ["google calendar 2026-10-27"]);
+  }
+  for (const claim of NOW_CLAIMS_ROUND_4.slice(6)) {
+    const r = await plainRead(`${CAL_LINE} ${claim}`);
+    assert.equal(r.reply, NOTHING_CHANGED, `plain read: ${claim}`);
+  }
+});
+
+test("Task 5 fix 4: only nothing / anything / none (with or without else) carry a copula before a 'now' form; 'Everything else is now on your calendar' is a claim", async () => {
+  const EVERYTHING_ELSE = ["Everything else is now on your calendar.", "Everything else is on your calendar now.", "Everything else's on your calendar now."];
+  for (const grounded of [false, true]) {
+    for (const text of [...EVERYTHING_ELSE, "Everything else’s on your calendar now.", "Something else is on your calendar now."]) {
+      assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    }
+    for (const text of [
+      "Nothing else is on your calendar now.", "There's nothing else on your calendar now.", "Nothing else's on your calendar now.",
+      "You don't have anything else on your calendar now.", "Is there anything else on your calendar now?", "Nothing's on your calendar now.",
+      "There is nothing else on your calendar now.", "Should I draft a check-in, given nothing else is on your calendar now?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+  // a plain read: the claim is replaced; the negative passes
+  for (const said of EVERYTHING_ELSE) {
+    const r = await plainRead(said);
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+    assert.equal(r.sideEffect, undefined);
+  }
+  for (const said of ["Nothing else is on your calendar now.", "You don't have anything else on your calendar now."]) {
+    const r = await plainRead(said, []);
+    assert.equal(r.reply, said, said);
+  }
+});
+
+test("Task 5 fix 4: the placing-verb window: given and now end it, a noun's 's right before the 'now' form is 'is', a bare 'that' and a clock time are objects", () => {
+  for (const grounded of [false, true]) {
+    for (const text of [
+      ...NOW_CLAIMS_ROUND_4.slice(6),
+      "Should I book a call given the follow-up now on your calendar?",
+      "Should I add a check-in now the follow-up sits on your calendar now?",
+      "Should I book a call the follow-up's now on your calendar?",
+      "Should I schedule a check-in the follow-up’s on your calendar now?",
+      "Should I add a reminder Robert's on your calendar now?",
+      // "that" is an object only bare and right after the placing verb
+      "Should I add that it's on your calendar now?", "Should I add that the follow-up is now on your calendar?",
+      "Should I book it and say that's on your calendar now?", "Should I draft a check-in for the call that's on your calendar now?",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of [
+      ...NOW_OFFERS_ROUND_4,
+      "Should I book Robert's follow-up on your calendar now?", "Should I add the Chens' follow-up on your calendar now?",
+      "Should I put a follow-up now on your calendar?", "Want me to put the Chens now on your calendar?",
+      "Should I put the 10:00 AM call on your calendar now, or wait?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
 });

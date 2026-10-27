@@ -433,38 +433,52 @@ const shortPassiveClaims = (sentence, sweep) =>
 // "I've put a follow-up on your calendar" and the "now" forms, "it's on your calendar now" / "that's now on your calendar", are
 // false on every turn. (The verbs added / booked / scheduled are FIRST_PERSON_CLAIM_RE's.) Only these forms: a calendar FACT read
 // from getCalendarTool ("Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.") is true and is no claim. The
-// "now" forms are no claim after a negative ("Nothing's on your calendar now.") or after "nothing / anything / else" ("You have
-// nothing on your calendar now."), and no claim as the COMPLEMENT OF THE ACT OFFERED: in a question, a "now" form directly after a
-// placing verb and its short object ("Should I put it on your calendar now?", "... or put a follow-up on your calendar now?",
-// "Since Friday's open, want me to get it on your calendar now?"). Anywhere else, in any sentence, it is a claim, whatever
-// connective leads up to it: "Should I draft a check-in as it's on your calendar now?", "Want me to let the Chens know it's on your
-// calendar now?", "Should I tell the Chens the follow-up is now on your calendar?", "... for the follow-up that's now on your
-// calendar?" (R5-4: what an offer says is said). The object is at most PLACING_OBJECT_WORDS words with no clause break and none of
-// the words that open a clause of its own (that, which, who, as, since, so, while, because, know, tell, is / are, it's ...), so the
-// complement is the verb's own and not something said beside it. A statement is never exempt, so "I'll put it on your calendar
-// now." and "Let me put it on your calendar now." stay claims, as does the first-person past (CALENDAR_PLACED_RE).
+// "now" forms are no claim after a negative ("Nothing's on your calendar now.") or after "nothing / anything / none", with or
+// without "else" and a copula ("You have nothing on your calendar now.", "Nothing else is on your calendar now."); only those carry
+// the copula, so "Everything else is now on your calendar." is a claim on any turn. They are no claim as the COMPLEMENT OF THE ACT
+// OFFERED: in a question, a "now" form directly after a placing verb and its short object ("Should I put it on your calendar now?",
+// "... or put a follow-up on your calendar now?", "Since Friday's open, want me to get it on your calendar now?"). Anywhere else, in
+// any sentence, it is a claim, whatever connective leads up to it: "Should I draft a check-in as it's on your calendar now?", "Want
+// me to let the Chens know it's on your calendar now?", "Should I tell the Chens the follow-up is now on your calendar?", "... for
+// the follow-up that's now on your calendar?" (R5-4: what an offer says is said). The object is at most PLACING_OBJECT_WORDS words
+// with no clause break (the colon of a clock time, "a 10:00 AM follow-up", is no break) and none of the words that open a clause of
+// its own (that, which, who, as, since, so, while, because, given, now, know, tell, is / are, it's ...), except a bare "that" as the
+// whole object ("Want me to put that on your calendar now?"); and a word ending in 's right before the "now" form is "<noun> is"
+// ("... a call given the follow-up's now on your calendar?"), so the complement is the verb's own and not something said beside
+// it. A statement is never exempt, so "I'll put it on your calendar now." and "Let me put it on your calendar now." stay claims, as
+// does the first-person past (CALENDAR_PLACED_RE). This exemption serves turns that are not action turns only: on an action turn
+// runTurn holds any "now" form a reply carries, question or not, placing verb or not (Ruling 19, in the R5-3 backstop).
 const CALENDAR_PLACED_RE = new RegExp(
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
     "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
   "i"
 );
 const CALENDAR_NOW_RE =
-  /(?<!\b(?:nothing|anything|none|else)(?:['’]s|\s+is|\s+are)?\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
+  /(?<!\b(?:nothing|anything|none)(?:\s+else)?(?:['’]s|\s+is|\s+are)?\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
 const CALENDAR_NOW_ALL_RE = new RegExp(CALENDAR_NOW_RE.source, "gi");
 const NEGATIVE_START_RE = /^(?:no|not|nothing|none|never|nobody|neither)\b/i;
 const PLACING_VERB = "(?:put(?:ting)?|add(?:ing)?|book(?:ing)?|schedul(?:e|ing)|get(?:ting)?|pencil(?:l?ing)?|slot(?:ting)?|mov(?:e|ing))";
 const NOT_AN_OBJECT =
-  "(?:that|which|who|as|since|so|while|because|know|tell|let|note|say|says|said|is|are|was|were|be|been|if|when|where|after|once" +
-  "|(?:it|that|this|they|there|he|she|we|you|everything)['\\u2019](?:s|re|ve))";
+  "(?:that|which|who|as|since|so|while|because|given|now|know|tell|let|note|say|says|said|is|are|was|were|be|been|if|when|where" +
+  "|after|once|(?:it|that|this|they|there|he|she|we|you|everything)['\\u2019](?:s|re|ve))";
 const PLACING_OBJECT_WORDS = 8;
-// the end of the text before a "now" form: a placing verb and a short object, nothing else (no punctuation, no clause of its own)
+// one word of the object: no punctuation, except the colon inside a clock time ("10:00")
+const PLACING_OBJECT_WORD = "(?:[^\\s.,;:!?()\\u2014\\u2013]|(?<=\\d):(?=\\d\\d))+";
+// the end of the text before a "now" form: a placing verb and a short object, nothing else (no punctuation, no clause of its own),
+// or the placing verb and a bare "that"
 const PLACING_COMPLEMENT_RE = new RegExp(
-  "\\b" + PLACING_VERB + "(?:\\s+(?!" + NOT_AN_OBJECT + "\\b)[^\\s.,;:!?()\\u2014\\u2013]+){0," + PLACING_OBJECT_WORDS + "}\\s*$", "i"
+  "\\b" + PLACING_VERB + "(?:\\s+that|(?:\\s+(?!" + NOT_AN_OBJECT + "\\b)" + PLACING_OBJECT_WORD + "){0," + PLACING_OBJECT_WORDS + "})\\s*$",
+  "i"
 );
+// a word ending in 's right before the "now" form: "the follow-up's now on your calendar" is "the follow-up is ..."
+const IS_CONTRACTED_BEFORE_RE = /['’]s\s*$/;
+const placingComplement = (s, at) => {
+  const before = s.slice(0, at);
+  return /\?\s*$/.test(s) && !IS_CONTRACTED_BEFORE_RE.test(before) && PLACING_COMPLEMENT_RE.test(before);
+};
 const calendarClaim = (s) =>
   CALENDAR_PLACED_RE.test(s) ||
-  (!NEGATIVE_START_RE.test(s) &&
-    [...s.matchAll(CALENDAR_NOW_ALL_RE)].some((m) => !(/\?\s*$/.test(s) && PLACING_COMPLEMENT_RE.test(s.slice(0, m.index)))));
+  (!NEGATIVE_START_RE.test(s) && [...s.matchAll(CALENDAR_NOW_ALL_RE)].some((m) => !placingComplement(s, m.index)));
 
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
 // `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only). Pure: no I/O, no state.
@@ -1476,6 +1490,11 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // carries a sideEffect), so whatever the model says, nothing was done. Only a question may
       // reach the user; anything else is replaced.
       if (actionTurn && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
+      // Ruling 19: and on that turn no "now on your calendar" wording reaches the user at all (CALENDAR_NOW_RE anywhere in the reply,
+      // question or statement, with no placing-verb exemption): "Should I add a reminder for the follow-up now on your calendar?"
+      // after "yes" to a booking offer reads as the booking having been made. A question without it still passes ("Should I put it
+      // on your calendar?"); so does "... since nothing else is on your calendar now?", which CALENDAR_NOW_RE does not match.
+      if (actionTurn && CALENDAR_NOW_RE.test(text)) return finish(NOTHING_CHANGED);
       // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed
       // up (a turn that ends in text carries none): only a question may reach the user, anything else is the re-ask.
       if (careerAnswerTurn && sources.length === 0 && !isQuestionShaped(text)) return finish(STAGE_REASK);
