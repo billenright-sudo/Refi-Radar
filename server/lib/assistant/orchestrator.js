@@ -270,6 +270,11 @@ function isQuestionShaped(reply) {
   const s = stripOpener(reply).trim();
   return s.endsWith("?") && QUESTION_START_RE.test(s);
 }
+// Ruling 30: on an action turn the reply is ONE question: question-shaped, and one sentence after at most one opener ("Got it. Who
+// did you talk to?" is one; "I see two Chens. Which one?" and "What else? The follow-up is on your calendar Friday. Want a reminder?"
+// are not). A sentence ends at . ! ? followed by more words; not the point of a title (Mr. Dr. ...) or of a.m. / p.m. Pure.
+const SENTENCE_END_RE = /(?<!\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr)|\b[ap]\.m)[.!?]+(?=\s+\S)/i;
+const isOneQuestion = (reply) => isQuestionShaped(reply) && !SENTENCE_END_RE.test(stripOpener(reply).trim());
 
 // A completion claim. runTurn never performs an action, so by construction anything the model
 // says that reads as "it's done" is false. Each sentence (split on . ! ? ; and em/en dashes) is
@@ -450,18 +455,22 @@ const shortPassiveClaims = (sentence, sweep) =>
 // runTurn holds any "now" form a reply carries, question or not, placing verb or not, negative or not (Rulings 19 and 23, in the
 // R5-3 backstop). CALENDAR_PLACED_ALL_RE's I / we is not the subject of a past act when it is really inverted (Rulings 22 and 24):
 // the sentence ends with "?" and a should / shall / can / could / would / will / do / did stands right before the I / we, opening the
-// sentence or after a wh-word and at most three more words: "What time should I put it on your calendar?", "Where should we put it on
-// your calendar?", "What time on Friday should I put it on your calendar?" are clarifying questions. A modal anywhere else is no
-// inversion: "Just as I said I would I put the follow-up on your calendar." and "Whatever you'd like me to do I put on your calendar."
-// are claims, as are "I put it on your calendar." and "We've put it on your calendar.".
+// sentence, opening a clause (after , : ; or a dash, and an optional and / so / then: Ruling 32), or after a wh-word and at most three
+// more words: "What time should I put it on your calendar?", "Where should we put it on your calendar?", "What time on Friday should
+// I put it on your calendar?", "Friday's open, so should I put it on your calendar?", "For the Chens, should I put it on your
+// calendar?" are questions. A modal anywhere else is no inversion: "Just as I said I would I put the follow-up on your calendar." and
+// "Whatever you'd like me to do I put on your calendar." are claims, as are "I put it on your calendar." and "We've put it on your
+// calendar.".
 const CALENDAR_PLACED_ALL_RE = new RegExp(
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
     "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
   "gi"
 );
-// the text before the I / we ends with the inverted modal: at the start of the sentence, or after a wh-word and up to three words
+// the text before the I / we ends with the inverted modal: at the start of the sentence, at the start of a clause, or after a wh-word
+// and up to three words
 const INVERTED_MODAL_BEFORE_RE = new RegExp(
-  "(?:^\\s*(?:(?:and|or|so|then)\\s+)?|\\b(?:what|which|when|where|why|how|who|whom|whose)\\b(?:\\s+[\\w'\\u2019-]+){0,3}?\\s+)" +
+  "(?:^\\s*(?:(?:and|or|so|then)\\s+)?|[,:;\\u2014\\u2013]\\s*(?:(?:and|so|then)\\s+)?" +
+    "|\\b(?:what|which|when|where|why|how|who|whom|whose)\\b(?:\\s+[\\w'\\u2019-]+){0,3}?\\s+)" +
     "(?:should|shall|can|could|would|will|do|did)\\s+$",
   "i"
 );
@@ -793,11 +802,13 @@ const askedOf = (asked, answer) => {
 //   * DECLINE (isDecline): every clause a decline or words that add nothing ("no thanks", "ok, never mind", "let's not", "I'd rather
 //     not", "not today", "I'm all set", "forget it", "thanks, I'm good", "don't worry about it"). A plain turn.
 //   * OTHER: anything else, a new request ("pull up the Chens", "run a sweep"), a question with or without "?" ("when you get a
-//     chance"), small talk ("thanks"), a bare day ("tomorrow"). A plain turn, answered under the claim guard (offeredActClaimed, in
-//     runTurn).
-// A decline or an OTHER reply also ends the chain walk (Ruling 27): an action request the user made before the offer does not reach
-// past it ("book the Chens Friday" -> "What time — and want me to draft a check-in too?" -> "pull up their loan first" is a plain
-// turn); the claim guard covers what is said there.
+//     chance"), small talk ("thanks"), a bare day ("tomorrow"), a choice ("the afternoon", "Robert and Linda"). A plain turn, answered
+//     under the claim guard (offeredActClaimed, in runTurn), unless the chain walk below makes it an action turn.
+// In the chain walk (Ruling 29, superseding Ruling 27) a decline ends the walk, and so does an OTHER reply that moves on (movesOn: a
+// new request or a question: "book the Chens Friday" -> "What time — and want me to draft a check-in too?" -> "pull up their loan
+// first" is a plain turn). An OTHER reply that only answers (a choice: "the afternoon", "Robert and Linda", "Pat", "Friday at 10") is
+// walked through like any answer, so an action request before the offer holds the turn: "book the Chens a follow-up Friday" ->
+// "Should I book it for the morning or the afternoon?" -> "the afternoon" is an action turn.
 // A reply that holds a "?", or has a clause that opens a question (opensQuestion), is never a yes. An auxiliary or a modal opens a
 // question only with a subject after it (I, you, we, they, he, she, it, there, a name; "it" not after do / have, which agree with I /
 // you / we / they): "do Thursday instead", "have it at 10", "will do", "would be great" ask nothing, "can you make it 10" and "does it
@@ -1012,6 +1023,13 @@ const asksSomethingNew = (clause) => {
   const c = coreOf(clause, false);
   return NEW_REQUEST_RE.test(c) && !PRONOUN_OBJECT_RE.test(c);
 };
+// Ruling 29: a reply moves on when it asks something (a "?", a clause that opens a question, or it is shaped as no answer at all:
+// isAnswerShaped) or makes a new request (asksSomethingNew); a choice ("the afternoon", "Robert and Linda") only answers.
+const movesOn = (text) => {
+  const t = String(text == null ? "" : text).replace(AUDIO_TAG_RE, " ").replace(/\s+/g, " ").trim();
+  const clauses = t.split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
+  return t.includes("?") || !isAnswerShaped(t) || clauses.some(opensQuestion) || clauses.some(asksSomethingNew);
+};
 
 // The class of a reply to an offer to act: OFFER_YES, OFFER_DECLINE or OFFER_OTHER (Rulings 24 and 26). Pure.
 function offerReplyClass(text) {
@@ -1045,18 +1063,20 @@ const offerReplyOf = (asked, answer) =>
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];
   if (!latest || latest.role !== "user") return false;
-  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great", "have it at 10"); a decline or
-  // any other reply ends the walk (Ruling 27)
+  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great", "have it at 10"); a decline,
+  // or another reply that moves on, ends the walk (Ruling 29)
   const first = offerReplyOf(messages[messages.length - 2], latest);
-  if (first) return first === OFFER_YES;
+  if (first === OFFER_YES) return true;
+  if (first === OFFER_DECLINE || (first === OFFER_OTHER && movesOn(messageText(latest)))) return false;
   if (!isAnswerShaped(messageText(latest))) return false;
   for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 1; hop++, i -= 2) {
     const asked = messages[i - 1];
     if (!asked || asked.role !== "assistant") return false;
-    // a reply to an offer: a yes is the origin, a decline or anything else ends the walk (Ruling 27): an action request made before
-    // the offer does not reach past it
+    // a reply to an offer: a yes is the origin; a decline, or another reply that moves on, ends the walk; a reply that only answers
+    // (a choice) is walked through like any answer (Ruling 29)
     const reply = offerReplyOf(asked, messages[i]);
-    if (reply) return reply === OFFER_YES;
+    if (reply === OFFER_YES) return true;
+    if (reply === OFFER_DECLINE || (reply === OFFER_OTHER && movesOn(messageText(messages[i])))) return false;
     const before = messages[i - 2];
     if (i < 2 || !askedOf(asked, messages[i])) return false;
     if (!before || before.role !== "user") return false;
@@ -1067,26 +1087,32 @@ function answersActionQuestion(messages) {
   return false;
 }
 
-// The post-offer claim guard (Ruling 24): a reply to an offer to act that is no yes makes a plain turn, so the action backstop does
-// not hold what Charli says on it, and this does instead (on every action turn, a yes to an offer or a request, it runs beside the
-// backstop, which lets through any reply shaped like a question, and a statement inside one: Ruling 25). The reply is a claim
-// nothing backs when
+// The claim guard (Rulings 24, 25, 30, 31, 33). A reply to an offer to act that is no yes makes a plain turn, so the action
+// backstop does not hold what Charli says on it, and this does instead; on every action turn (a yes to an offer, a request) it runs
+// beside the backstop, which lets through one question, and a question can carry a claim. The reply is a claim nothing backs when
 //   * it holds a "now on your calendar" form anywhere (CALENDAR_NOW_FORM_RE, as on an action turn), or says the act is on the calendar
 //     or scheduled with "it" / "that" / "they" ... as its subject (IT_ON_CALENDAR_RE: "Okay, it's on your calendar Friday.", "...
 //     since that's on your calendar?"), anywhere, question or not, read or not: a read narrates its events by their titles;
-//   * a statement (a sentence that is no question: it does not end with "?" after a question or auxiliary word) says the act was
-//     carried out in words no read narrates (ACT_DONE_RE: "you're set", "locked in", "got them down for", "went out", "ready to go",
-//     an invite, "is in for Friday");
-//   * a statement says "drafted", "sent" or "emailed" ("Your check-in to the Chens was sent."): no read grounds that;
-//   * a statement says "on / in your calendar", "on the calendar", "booked", "scheduled", "set for / up" or "on the books" ("The
-//     follow-up was booked for Friday.") and the turn cited no calendar read, or it did and the statement names none of the events it
-//     read by its title: with nothing read from the calendar nothing can ground it, and a read grounds what it returned. So
-//     "Follow-up: Robert & Linda Chen is on your calendar tomorrow at 10:00 AM." passes after a read that returned that event (and the
-//     read's own grounding, calendarFactsHold, checks its day and time), while "The follow-up is on your calendar Friday." after a read
-//     of an empty Friday does not.
-// The statement tests look at each clause of the statement (split at , ; : a dash, "but" and "and") and skip one where a negative
-// stands before the words ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for them."; "no problem" /
-// "no worries" are no negative). claimsCompletion runs on this turn too, as on every turn. Pure.
+//   * a statement (a sentence that is no question: it does not end with "?" after a question or auxiliary word) has a clause that
+//     says the act was carried out in words no read narrates (ACT_DONE_RE: "you're set", "locked in", "got them down for", "went out",
+//     "ready to go", an invite, "is in for Friday"), or a state no read can ground (UNGROUNDED_STATE: "drafted", "sent", "emailed",
+//     "in your (Gmail) drafts", "on its way", "notified", "on file"), or a calendar state (CALENDAR_STATE: "on / in your calendar", "on
+//     the calendar", "on your schedule", "on the books", "booked", "scheduled", "set for / up", "confirmed", "penciled in", "reserved",
+//     "in place", "lined up") that the clause does not ground (Ruling 31): the clause must name an event this turn's calendar reads
+//     returned by its title, as it was read (case kept, a whole word or words, not "call" for a "Call"), and every day the clause names
+//     (a weekday, today / tonight / tomorrow / yesterday, a month and day) must be the day that event was read for. So "Follow-up:
+//     Robert & Linda Chen is on your calendar tomorrow at 10:00 AM." passes after a read of tomorrow that returned that event, while
+//     after a read of an empty Friday "The follow-up is on your calendar Friday." does not, nor does that title said for Friday when it
+//     was read for today, nor "... and a second one is on your calendar Friday" in a clause of its own;
+//   * a question carries such a state (Ruling 30): in the clause after since / now that / because / given that / know / tell / a "that"
+//     that opens a clause, any of those words ("Should I let the Chens know the follow-up is scheduled for Friday?"); anywhere past the
+//     offer lead, a state said as a state, after a copula ("now that the follow-up is on your calendar", "since the check-in was sent",
+//     "since the follow-up's on the books"), or in the first person ("the Friday follow-up I set up"). The act a question offers is no
+//     state: "Should I put it on your calendar?", "Want it booked for Friday?", "When should I set up the call?" pass.
+// Clauses split at , ; : (not the colon of a clock time) a dash, "but" and "and", with the read titles kept whole; a clause where a
+// negative stands before the words is skipped ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for
+// them."; "no problem" / "no worries" are no negative). claimsCompletion runs on this turn too, as on every turn. Pure but for
+// `reads.now`.
 const IT_ON_CALENDAR_RE = new RegExp(
   "\\b(?:it|that|this|they|those|these|everything|all\\s+of\\s+(?:it|that|them))(?:['\\u2019](?:s|re)|\\s+(?:is|are|was|were|has\\s+been|have\\s+been))" +
     "\\s+(?:(?:now|already|all|also|officially|safely)\\s+)*" +
@@ -1099,27 +1125,110 @@ const ACT_DONE_RE = new RegExp(
     "|(?:is|are|['\\u2019]s|['\\u2019]re)\\s+(?:all\\s+)?in\\s+for\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|next|this))\\b",
   "i"
 );
-const EMAIL_ACT_RE = /\b(?:drafted|sent|emailed)\b/i;
-const CALENDAR_ACT_RE = /\b(?:(?:on|in)\s+(?:your|the)\s+(?:google\s+)?calendar|booked|scheduled|set\s+(?:for|up)|on\s+the\s+books)\b/i;
+const UNGROUNDED_STATE = "drafted|sent|emailed|in\\s+your\\s+(?:gmail\\s+)?drafts|on\\s+its\\s+way|notified|on\\s+file";
+const CALENDAR_STATE =
+  "(?:on|in)\\s+(?:your|the)\\s+(?:google\\s+)?calendar|on\\s+(?:your|the)\\s+schedule|on\\s+the\\s+books|booked|scheduled|set\\s+(?:for|up)" +
+  "|confirmed|pencil(?:l)?ed\\s+in|reserved|in\\s+place|lined\\s+up";
+// the same said as a state: after a copula (and its adverbs)
+const STATE_LEAD =
+  "(?:\\b(?:is|are|was|were|been|being|got)|['\\u2019](?:s|re))\\s+(?:(?:now|already|all|also|just|officially|safely|still)\\s+)*";
+const UNGROUNDED_STATE_RE = new RegExp("\\b(?:" + UNGROUNDED_STATE + ")\\b", "i");
+const CALENDAR_STATE_RE = new RegExp("\\b(?:" + CALENDAR_STATE + ")\\b", "i");
+const UNGROUNDED_AS_STATE_RE = new RegExp(STATE_LEAD + "(?:" + UNGROUNDED_STATE + ")\\b", "i");
+const CALENDAR_AS_STATE_RE = new RegExp(STATE_LEAD + "(?:" + CALENDAR_STATE + ")\\b", "i");
+// ... or in the first person ("the follow-up I set up"); an inverted modal before the I makes it a question ("When should I set up the
+// call?")
+const FIRST_PERSON_STATE_RE = new RegExp(
+  "\\b(?:I|we)(?:['\\u2019](?:ve|d)|\\s+(?:have|had))?(?:\\s+(?:just|already|also|now))*" +
+    "\\s+(?:set\\s+up|booked|scheduled|drafted|sent|emailed|pencil(?:l)?ed(?:\\s+in)?|reserved|confirmed|lined\\s+up|arranged)\\b",
+  "gi"
+);
+// the words that open the clause a question presupposes
+const QUESTION_CONNECTIVE_RE = new RegExp(
+  "\\b(?:since|now\\s+that|because|given\\s+that|know|tell|that(?=['\\u2019](?:s|re)\\b|\\s+(?:is|are|was|were|has|have|had|got|I|we|you|they" +
+    "|he|she|it|the|their|your|his|her|our|its|this|these|those)\\b))\\b",
+  "gi"
+);
 const NEGATIVE_WORD_RE =
   /\b(?:not|never|nothing|none|nobody|neither|nor|without|cannot|no(?!\s+(?:problem|worries)\b))\b|n['’]t\b/i;
-const STATEMENT_CLAUSE_SPLIT_RE = /[,;:—–]|\s-\s|\b(?:but|and)\b/i;
-// sentences split at . ! ? (not at the point of a decimal: "7.85 percent"), less those that ask
-const statementsOf = (text) =>
-  (String(text).match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim())
-    .filter((s) => s && !(/\?\s*$/.test(s) && QUESTION_START_RE.test(stripOpener(s).trim())));
-const saidInClause = (statement, re) => statement.split(STATEMENT_CLAUSE_SPLIT_RE).some((clause) => {
+// a clause break: , ; : (not between the digits of a clock time) a dash, a spaced hyphen, "but", "and"
+const GUARD_CLAUSE_SPLIT_RE = /[,;—–]|(?<!\d):|:(?!\d)|\s-\s|\b(?:but|and)\b/i;
+// sentences split at . ! ? (not at the point of a decimal: "7.85 percent"), each marked as a question or a statement
+const guardSentencesOf = (text) =>
+  (String(text).match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean)
+    .map((s) => ({ s, question: /\?\s*$/.test(s) && QUESTION_START_RE.test(stripOpener(s).trim()) }));
+// the read events, grouped by title, and each title in a sentence replaced by a mark that no clause break or word test sees into
+const TITLE_MARK_RE = /\u0001(\d+)\u0002/g;
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const titleGroups = (reads) => {
+  const groups = [];
+  for (const e of (reads && reads.events) || []) {
+    if (!e || typeof e.title !== "string" || e.title.length < 3) continue;
+    const group = groups.find((g) => g.title === e.title);
+    if (group) group.events.push(e);
+    else groups.push({ title: e.title, events: [e] });
+  }
+  return groups;
+};
+const markTitles = (s, groups) => groups
+  .map((g, i) => [g, i]).sort(([a], [b]) => b.title.length - a.title.length)
+  .reduce((out, [g, i]) => out.replace(new RegExp("(?<![\\w])" + escapeRegExp(g.title) + "(?![\\w])", "g"), `\u0001${i}\u0002`), s);
+// a day a clause names, and whether it is the day an event was read for
+const DAY_NAMED_RE = new RegExp(
+  "\\b(?:(sunday|monday|tuesday|wednesday|thursday|friday|saturday)|(today|tonight|tomorrow|yesterday)" +
+    "|(january|february|march|april|may|june|july|august|september|october|november|december)\\s+(\\d{1,2})(?:st|nd|rd|th)?)\\b",
+  "gi"
+);
+const WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const dayIsEvents = (m, event, now) => {
+  try {
+    const at = new Date(Date.parse(`${event.date}T12:00:00Z`));
+    if (m[1]) return WEEKDAY_NAMES[at.getUTCDay()] === m[1].toLowerCase();
+    if (m[2]) {
+      const today = Date.parse(`${localToday(event.timeZone, now)}T12:00:00Z`);
+      return at.getTime() - today === RELATIVE_DAY_OFFSET[m[2].toLowerCase()] * DAY_MS;
+    }
+    return at.getUTCMonth() === MONTH_NAMES.indexOf(m[3].toLowerCase()) && at.getUTCDate() === Number(m[4]);
+  } catch (_err) {
+    return false;
+  }
+};
+// a clause grounds its calendar state when it names a read title and every day it names is that event's read day
+const groundedClause = (clause, groups, now) => {
+  const days = [...clause.matchAll(DAY_NAMED_RE)];
+  return [...clause.matchAll(TITLE_MARK_RE)].some((t) =>
+    groups[Number(t[1])].events.some((event) => days.every((d) => dayIsEvents(d, event, now))));
+};
+const unnegated = (clause, re) => {
   const m = re.exec(clause);
   return !!m && !NEGATIVE_WORD_RE.test(clause.slice(0, m.index));
-});
-// `readTitles`: the titles of the events this turn's cited calendar reads returned (as the model saw them), or null when the turn
-// cited no calendar read
-const namesARead = (statement, readTitles) =>
-  Array.isArray(readTitles) && readTitles.some((t) => t.length >= 3 && statement.toLowerCase().includes(t.toLowerCase()));
-function offeredActClaimed(text, readTitles) {
+};
+// does a clause claim a state? `asState`: only a state said as one (after a copula)
+const clauseClaims = (clause, groups, now, asState) =>
+  unnegated(clause, asState ? UNGROUNDED_AS_STATE_RE : UNGROUNDED_STATE_RE) ||
+  (unnegated(clause, asState ? CALENDAR_AS_STATE_RE : CALENDAR_STATE_RE) && !groundedClause(clause, groups, now));
+const questionClaims = (marked, groups, now) => {
+  const s = stripOpener(marked).trim();
+  const body = isOffer(s) ? s.replace(OFFER_LEAD_RE, "") : s;
+  if (body.split(GUARD_CLAUSE_SPLIT_RE).some((c) => clauseClaims(c, groups, now, true))) return true;
+  if ([...body.matchAll(FIRST_PERSON_STATE_RE)].some((m) => !INVERTED_MODAL_BEFORE_RE.test(body.slice(0, m.index)))) return true;
+  return [...body.matchAll(QUESTION_CONNECTIVE_RE)].some((m) => {
+    const clause = body.slice(m.index + m[0].length).split(GUARD_CLAUSE_SPLIT_RE)[0];
+    return unnegated(clause, ACT_DONE_RE) || clauseClaims(clause, groups, now, false);
+  });
+};
+// `reads`: null when the turn cited no calendar read, else { events: [{ title, date, timeZone }] (each event this turn's calendar
+// reads returned, its title as the model saw it and the day it was read for), now }
+function offeredActClaimed(text, reads) {
   if (CALENDAR_NOW_FORM_RE.test(text) || IT_ON_CALENDAR_RE.test(text)) return true;
-  return statementsOf(text).some((s) =>
-    saidInClause(s, ACT_DONE_RE) || saidInClause(s, EMAIL_ACT_RE) || (saidInClause(s, CALENDAR_ACT_RE) && !namesARead(s, readTitles)));
+  const groups = titleGroups(reads);
+  const now = reads && Number.isFinite(reads.now) ? reads.now : Date.now();
+  return guardSentencesOf(text).some(({ s, question }) => {
+    const marked = markTitles(s, groups);
+    if (question) return questionClaims(marked, groups, now);
+    return marked.split(GUARD_CLAUSE_SPLIT_RE).some((c) => unnegated(c, ACT_DONE_RE) || clauseClaims(c, groups, now, false));
+  });
 }
 
 // ── Stage claims ─────────────────────────────────────────────────────────────
@@ -1732,7 +1841,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
   const calendarReads = [];   // { date, timeZone } of each calendar day read this turn
-  const calendarTitles = [];  // the titles of the events those reads returned
+  const calendarEvents = [];  // { title, date, timeZone } of each event those reads returned (the title as the model saw it)
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
   // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
@@ -1794,9 +1903,10 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
       // R5-3, the action backstop: an action was asked for (now, or in the question this message
       // answers), and no change is being handed up for confirmation (a turn that ends in text never
-      // carries a sideEffect), so whatever the model says, nothing was done. Only a question may
-      // reach the user; anything else is replaced.
-      if (actionTurn && !isQuestionShaped(text)) return finish(NOTHING_CHANGED);
+      // carries a sideEffect), so whatever the model says, nothing was done. Only ONE question may
+      // reach the user (Ruling 30: one sentence past one opener, as the prompt asks); anything else is replaced, a statement and
+      // a question beside it included ("What else? The follow-up is on your calendar Friday. Want a reminder?").
+      if (actionTurn && !isOneQuestion(text)) return finish(NOTHING_CHANGED);
       // Rulings 19 and 23: and on that turn no "now on your calendar" wording reaches the user at all (CALENDAR_NOW_FORM_RE anywhere
       // in the reply, question or statement, with no placing-verb exemption and no negative lookbehind): "Should I add a reminder for
       // the follow-up now on your calendar?" after "yes" to a booking offer reads as the booking having been made, and so does
@@ -1804,14 +1914,16 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // put it on your calendar?"); the accepted cost is that "... since nothing else is on your calendar now?" is held there too.
       if (actionTurn && CALENDAR_NOW_FORM_RE.test(text)) return finish(NOTHING_CHANGED);
       // Ruling 24: a reply to an offer to act that is no yes (a decline, or anything else) is a plain turn, answered under the
-      // post-offer claim guard: no "now on your calendar" form, no "it's on your calendar" / "it's scheduled", no "you're set" /
-      // "locked in" / "went out", no statement that something was drafted or sent, and none that something is on the calendar, booked
-      // or scheduled unless it names an event this turn's calendar read returned (offeredActClaimed). The guard holds on every action
-      // turn too, a yes to an offer or a request in the user's own words (Ruling 25): the backstop above passes a reply shaped like a
-      // question, and a statement can ride inside one ("What else? The follow-up is on your calendar Friday — want a reminder?",
-      // "Should I add a reminder, since it's on your calendar Friday?").
-      if ((afterOffer || actionTurn) &&
-        offeredActClaimed(text, sources.some((src) => src.startsWith("google calendar")) ? calendarTitles : null)) {
+      // claim guard: no "now on your calendar" form, no "it's on your calendar" / "it's scheduled", no "you're set" / "locked in" /
+      // "went out", no statement that something was drafted or sent, and none that something is on the calendar, booked or scheduled
+      // unless the clause names an event this turn's calendar read returned, for the day it was read (offeredActClaimed, Rulings 31
+      // and 33). The guard holds on every action turn too, a yes to an offer or a request in the user's own words (Ruling 25), and in
+      // a question it reads the clause a question presupposes ("Should I add a reminder, since it's on your calendar Friday?",
+      // "Should I let the Chens know the follow-up is scheduled for Friday?": Ruling 30).
+      const reads = sources.some((src) => src.startsWith("google calendar"))
+        ? { events: calendarEvents, now: ctx && Number.isFinite(ctx.now) ? ctx.now : Date.now() }
+        : null;
+      if ((afterOffer || actionTurn) && offeredActClaimed(text, reads)) {
         return finish(NOTHING_CHANGED);
       }
       // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed
@@ -1912,8 +2024,14 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // "tomorrow" in the reply is checked against (calendarFactsHold)
       if (isCitation(o.source) && o.source.startsWith("google calendar") && o.data && typeof o.data === "object") {
         calendarReads.push({ date: o.data.date, timeZone: o.data.timeZone });
-        // and the titles of its events, as the model saw them: what a reply after an offer may say is on the calendar
-        if (Array.isArray(o.data.events)) calendarTitles.push(...o.data.events.map((e) => oneLine(e && e.title)).filter(Boolean));
+        // and its events, each title as the model saw it and the day it was read for: what a reply under the claim guard may say is
+        // on the calendar, and for which day (Ruling 31)
+        if (Array.isArray(o.data.events)) {
+          for (const e of o.data.events) {
+            const title = oneLine(e && e.title);
+            if (title) calendarEvents.push({ title, date: o.data.date, timeZone: o.data.timeZone });
+          }
+        }
       }
       // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote
       if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);

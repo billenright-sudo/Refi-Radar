@@ -4779,16 +4779,16 @@ test("Task 5b: anything else after an offer is answered as a plain turn: a new r
   ]) {
     for (const offer of [OFFERS[0], OFFERS[1]]) assert.equal((await offerReply(reply, NEUTRAL, offer)).reply, NEUTRAL, `${offer} -> ${reply}`);
   }
-  // Ruling 27: an OTHER reply ends the chain walk, so an action request made before the offer does not hold it; what is said there is
-  // screened (claimsCompletion, the claim guard)
+  // Ruling 29 (superseding Ruling 27): an OTHER reply that only answers (a choice) is walked through, so the action request before
+  // the offer holds the turn: nothing but one question passes
   const lookup = history("log a call with Chen", "Which Chen — should I log it for Robert and Linda, or for Chen Wei?", "Robert and Linda");
-  for (const [said, expected] of [[NEUTRAL, NEUTRAL], ["Logged it for Robert and Linda.", NOTHING_CHANGED], ["It's on your calendar Friday.", NOTHING_CHANGED]]) {
+  for (const said of [NEUTRAL, "Logged it for Robert and Linda.", "It's on your calendar Friday."]) {
     r = await runTurn({ messages: lookup, ctx: twoChensCtx, client: fakeClient([say(said)]) });
-    assert.equal(r.reply, expected, said);
+    assert.equal(r.reply, NOTHING_CHANGED, said);
   }
 });
 
-test("Task 5b (Rulings 26, 27): thanks after an acknowledgement and a new request after a yes are answered; other ends the chain walk", async () => {
+test("Task 5b (Rulings 26, 27, 29): thanks after an acknowledgement and a new request after a yes are answered; a reply that moves on ends the chain walk", async () => {
   const chens = "Robert & Linda Chen are at 7.85 percent.";
   const findChen = () => [useTool("findClient", { query: "chen" })];
   // Ruling 26: answered as a plain turn
@@ -4807,13 +4807,14 @@ test("Task 5b (Rulings 26, 27): thanks after an acknowledgement and a new reques
   assert.equal((await answerOffer("ok thanks", [], "It's on your calendar now.")).reply, NOTHING_CHANGED);
   r = await answerOffer("ok, pull up the Chens", findChen(), `${chens} The follow-up is on the calendar for Friday.`);
   assert.equal(r.reply, NOTHING_CHANGED);
-  // Ruling 27: the brief's chain answers the lookup
+  // the brief's chain answers the lookup (the walk passes "the Chens' rate" and stops at CAL_ASK, a question)
   r = await runTurn({
     messages: history(CAL_ASK, OFFERS[1], "the Chens' rate", "Which Chen — Robert and Linda, or Chen Wei?", "Robert and Linda"),
     ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...findChen(), say(chens)]),
   });
   assert.equal(r.reply, chens);
-  // an action request before the offer does not reach past an OTHER reply: the lookup is answered, a claim is held
+  // an action request before the offer does not reach past an OTHER reply that moves on (a new request; Rulings 27 and 29): the
+  // lookup is answered, a claim is held
   const earlier = history("book the Chens Friday", "What time — and want me to draft a check-in too?", "pull up their loan first");
   r = await runTurn({ messages: earlier, ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...findChen(), say(chens)]) });
   assert.equal(r.reply, chens);
@@ -4949,6 +4950,158 @@ test("Task 5b: the wh-question exemption needs a real inversion: a question, wit
   for (const offer of [OFFERS[1], OFFERS[3]]) {
     for (const said of WH_BOOKING_QUESTIONS) {
       for (const grounded of [false, true]) assert.equal((await affirmedBook(said, grounded, offer)).reply, said, `${offer} -> ${said}`);
+    }
+  }
+});
+
+// ── Task 5b fix round 1: answers keep the action chain; one question on action turns; titles tied to their day and clause ───────
+
+test("Task 5b fix 1 (Ruling 29): a choice answering an offer-shaped clarifier keeps the action chain; a reply that moves on ends it", async () => {
+  const lookup = () => [useTool("findClient", { query: "chen" })];
+  const rows = [
+    [history("book the Chens a follow-up Friday", "Should I book it for the morning or the afternoon?", "the afternoon"),
+      ["Okay, the Chens are on for Friday afternoon.", "Got it — Friday afternoon with the Chens is confirmed."]],
+    [history("add a note to Chen", "Should I add it for Robert and Linda, or Chen Wei?", "Robert and Linda"),
+      ["Okay, the note is on Robert and Linda's record."]],
+    [history("log a call with Chen", "Which Chen — should I log it for Robert and Linda, or for Chen Wei?", "Robert and Linda"),
+      ["Your call with Robert and Linda is on file."]],
+    [history("email the Chens a check-in", "Should I email Robert and Linda, or Chen Wei?", "Robert and Linda"),
+      ["Okay, the check-in to Robert and Linda is in your drafts."]],
+    [history("write the Chens a check-in", "Should I write it for Robert and Linda, or for Pat?", "Pat"), ["Okay, Pat it is."]],
+  ];
+  for (const [messages, saids] of rows) {
+    for (const said of saids) {
+      for (const script of [[], lookup()]) {
+        const r = await runTurn({ messages, ctx: googleCtx(fakeGoogle(), twoChensCtx), client: fakeClient([...script, say(said)]) });
+        assert.equal(r.reply, NOTHING_CHANGED, `${script.length ? "lookup" : "no tool"}: ${messages[2].content} -> ${said}`);
+      }
+    }
+  }
+  // the draft asked for before the clarifier is set up again
+  let r = await runTurn({
+    messages: history("write the Chens a check-in", "Should I write it for Robert and Linda, or for Pat?", "Robert and Linda"), ctx: mikeCtx,
+    client: fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" })]),
+  });
+  assert.equal(r.compose.to, MIKE_CHEN_EMAIL);
+  // a reply that moves on (a new request, a question with or without "?") ends the walk: a plain turn, answered
+  const chens = "Robert & Linda Chen are at 7.85 percent.";
+  for (const [reply, script, said] of [
+    ["pull up their loan first", lookup(), chens],
+    ["what's their balance?", lookup(), "Robert & Linda Chen owe $485,000."],
+    ["is Friday open", [useTool("getCalendarTool", { date: "friday" })], "Friday your calendar is clear."],
+  ]) {
+    r = await runTurn({
+      messages: history("book the Chens a follow-up Friday", "Should I book it for the morning or the afternoon?", reply),
+      ctx: googleCtx(fakeGoogle()), client: fakeClient([...script, say(said)]),
+    });
+    assert.equal(r.reply, said, reply);
+  }
+});
+
+test("Task 5b fix 1 (Ruling 30): on an action turn the reply is one question, and the clause a question presupposes is screened", async () => {
+  const PRESUPPOSING = [
+    "Want me to add a reminder now that the follow-up is on your calendar for Friday?",
+    "Should I let the Chens know the follow-up is scheduled for Friday?",
+    "Should I also draft them a note, since the check-in was sent?",
+    "Do you want me to add a reminder to the Friday follow-up I set up?",
+    "How about a reminder too, since the follow-up's on the books?",
+  ];
+  const WRAPPED = [
+    "What else? The follow-up is set for Friday. Want a reminder?", "What else? Your check-in is in your Gmail drafts. Want a reminder?",
+    "What else? The Chens are confirmed for Friday. Want a reminder?", "I see two Chens. Which one?",
+  ];
+  const turns = [
+    ["direct request, empty Friday read", userSays("book the Chens a follow-up Friday"), [useTool("getCalendarTool", { date: "friday" })], []],
+    ["direct request, lookup", userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], [CHEN_EVENT]],
+    ["direct request, no tool", userSays("write the Chens a check-in"), [], [CHEN_EVENT]],
+    ["yes to an offer, lookup", history(CAL_ASK, OFFERS[1], "yes"), [useTool("findClient", { query: "chen" })], [CHEN_EVENT]],
+    ["yes to an offer, no tool", history(CAL_ASK, OFFERS[1], "yes"), [], [CHEN_EVENT]],
+  ];
+  for (const [label, messages, script, events] of turns) {
+    for (const said of [...PRESUPPOSING, ...WRAPPED]) {
+      const r = await runTurn({ messages, ctx: googleCtx(fakeGoogle({ events })), client: fakeClient([...script, say(said)]) });
+      assert.equal(r.reply, NOTHING_CHANGED, `${label}: ${said}`);
+      assert.equal(r.sideEffect, undefined);
+    }
+  }
+  // ordinary one-question clarifications and offers still pass on an action turn
+  for (const said of [
+    "Which Chen — Robert and Linda, or Chen Wei?", "What time should I put it on your calendar?", "Who did you mean — I don't see a Zed?",
+    "Got it. Who did you talk to?", "Should I put it on your calendar?", "Want it booked for Friday?", "When should I set up the call?",
+  ]) {
+    const r = await runTurn({
+      messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle()),
+      client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
+    });
+    assert.equal(r.reply, said, said);
+  }
+});
+
+test("Task 5b fix 1 (Ruling 31): a calendar statement must name a read event, as a whole title, in its own clause, for the day it was read", async () => {
+  const TODAY = "2026-10-27";
+  const FRIDAY = "2026-10-30";
+  const byDay = (map) => googleCtx(fakeGoogle({ listed: (q) => ({ events: map[q.date] || [] }) }));
+  const bothDays = () => resp([
+    { type: "tool_use", id: "toolu_t", name: "getCalendarTool", input: {} },
+    { type: "tool_use", id: "toolu_f", name: "getCalendarTool", input: { date: "friday" } },
+  ], "tool_use");
+  const today = () => useTool("getCalendarTool", {});
+  const CALL = { title: "Call", start: "9:00 AM", end: "9:15 AM", allDay: false };
+  const LUNCH = { title: "Lunch", start: "12:00 PM", end: "1:00 PM", allDay: false };
+  const said = async (script, map, text) => runTurn({ messages: history(CAL_ASK, OFFERS[1], "thanks"), ctx: byDay(map), client: fakeClient([script, say(text)]) });
+  // held: a title met as part of another word ("call", "lunch"), a title read for another day, a calendar word in another clause
+  for (const [script, map, text] of [
+    [today(), { [TODAY]: [CALL] }, "Your follow-up call with the Chens is scheduled."],
+    [today(), { [TODAY]: [LUNCH] }, "Okay, the follow-up with the Chens is on your calendar after lunch."],
+    [bothDays(), { [TODAY]: [CHEN_EVENT] }, "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM."],
+    [bothDays(), { [TODAY]: [CHEN_EVENT] }, "Follow-up: Robert & Linda Chen is today at 10:00 AM, and a second one is on your calendar Friday at 10:00 AM."],
+  ]) {
+    assert.equal((await said(script, map, text)).reply, NOTHING_CHANGED, text);
+  }
+  // passes: the event's own title, for the day it was read
+  for (const [script, map, text, sources] of [
+    [today(), { [TODAY]: [CHEN_EVENT] }, "Follow-up: Robert & Linda Chen is on your calendar today at 10:00 AM.", ["google calendar 2026-10-27"]],
+    [bothDays(), { [FRIDAY]: [CHEN_EVENT] }, "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.",
+      ["google calendar 2026-10-27", "google calendar 2026-10-30"]],
+    [today(), { [TODAY]: [CALL] }, "Call is on your calendar at 9:00 AM.", ["google calendar 2026-10-27"]],
+  ]) {
+    const r = await said(script, map, text);
+    assert.equal(r.reply, text, text);
+    assert.deepStrictEqual(r.sources, sources);
+  }
+});
+
+test("Task 5b fix 1 (Ruling 32): an offer whose modal opens a clause is a question, not a past act", async () => {
+  const OFFERS_AFTER_A_BREAK = [
+    "Friday's open, so should I put it on your calendar?",
+    "You have Follow-up: Robert & Linda Chen at 10:00 AM, so should I put another one on your calendar?",
+    "If you'd like, should I put it on your calendar?", "For the Chens, should I put it on your calendar?",
+    "Alright Bill, should I put it on your calendar?",
+  ];
+  for (const grounded of [false, true]) {
+    for (const t of OFFERS_AFTER_A_BREAK) assert.equal(claimsCompletion(t, grounded), false, `${grounded}: ${t}`);
+    for (const t of ["Just as I said I would I put the follow-up on your calendar.", "Whatever you'd like me to do I put on your calendar."]) {
+      assert.equal(claimsCompletion(t, grounded), true, `${grounded}: ${t}`);
+    }
+  }
+  for (const t of OFFERS_AFTER_A_BREAK) {
+    const r = await plainRead(t);
+    assert.equal(r.reply, t, t);
+    assert.deepStrictEqual(r.sources, ["google calendar 2026-10-27"]);
+  }
+});
+
+test("Task 5b fix 1 (Ruling 33): the guard knows confirmed, on your schedule, in your drafts, on its way, penciled in, reserved and the rest", async () => {
+  const STATES = [
+    "The Chens are confirmed for Friday.", "It's on your schedule for Friday.", "Your check-in is in your Gmail drafts.",
+    "The email to the Chens is on its way.", "The Chens are penciled in for Friday.", "Friday morning is reserved for the Chens.",
+    "The Chens have been notified.", "Friday's follow-up is in place.", "The follow-up is lined up for Friday.", "The follow-up is set for Friday.",
+    "Your call with the Chens is on file.", "Friday's follow-up is on the books.", "Friday's follow-up is scheduled for 10:00 AM.",
+  ];
+  for (const text of STATES) {
+    for (const [label, script] of [["no tool", []], ["empty Friday read", [useTool("getCalendarTool", { date: "friday" })]]]) {
+      const r = await runTurn({ messages: history(CAL_ASK, OFFERS[1], "thanks"), ctx: googleCtx(fakeGoogle()), client: fakeClient([...script, say(text)]) });
+      assert.equal(r.reply, NOTHING_CHANGED, `${label}: ${text}`);
     }
   }
 });
