@@ -272,8 +272,9 @@ function isQuestionShaped(reply) {
 }
 // Ruling 30: on an action turn the reply is ONE question: question-shaped, and one sentence after at most one opener ("Got it. Who
 // did you talk to?" is one; "I see two Chens. Which one?" and "What else? The follow-up is on your calendar Friday. Want a reminder?"
-// are not). A sentence ends at . ! ? followed by more words; not the point of a title (Mr. Dr. ...) or of a.m. / p.m. Pure.
-const SENTENCE_END_RE = /(?<!\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr)|\b[ap]\.m)[.!?]+(?=\s+\S)/i;
+// are not). A sentence ends at . ! ? followed by more words; not the point of a title (Mr. Dr. ...) or of a common abbreviation
+// (e.g. i.e. vs. approx. etc. a.m. p.m.: Ruling 37). Pure.
+const SENTENCE_END_RE = /(?<!\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|approx|etc)|\b[ap]\.m|\be\.g|\bi\.e)[.!?]+(?=\s+\S)/i;
 const isOneQuestion = (reply) => isQuestionShaped(reply) && !SENTENCE_END_RE.test(stripOpener(reply).trim());
 
 // A completion claim. runTurn never performs an action, so by construction anything the model
@@ -1098,21 +1099,28 @@ function answersActionQuestion(messages) {
 //     "ready to go", an invite, "is in for Friday"), or a state no read can ground (UNGROUNDED_STATE: "drafted", "sent", "emailed",
 //     "in your (Gmail) drafts", "on its way", "notified", "on file"), or a calendar state (CALENDAR_STATE: "on / in your calendar", "on
 //     the calendar", "on your schedule", "on the books", "booked", "scheduled", "set for / up", "confirmed", "penciled in", "reserved",
-//     "in place", "lined up") that the clause does not ground (Ruling 31): the clause must name an event this turn's calendar reads
-//     returned by its title, as it was read (case kept, a whole word or words, not "call" for a "Call"), and every day the clause names
-//     (a weekday, today / tonight / tomorrow / yesterday, a month and day) must be the day that event was read for. So "Follow-up:
-//     Robert & Linda Chen is on your calendar tomorrow at 10:00 AM." passes after a read of tomorrow that returned that event, while
-//     after a read of an empty Friday "The follow-up is on your calendar Friday." does not, nor does that title said for Friday when it
-//     was read for today, nor "... and a second one is on your calendar Friday" in a clause of its own;
+//     "in place", "lined up") that the clause does not ground (Rulings 31 and 36): the clause must name an event this turn's calendar
+//     reads returned by its title, a whole word or words (its first letter in either case, "follow-up: Robert & Linda Chen" for
+//     "Follow-up: Robert & Linda Chen", "Team standup" for "team standup"; a one-word title in its own case only, so "call" is not a
+//     "Call"), and every day the clause names (a weekday, today / tonight / tomorrow / yesterday, a month and day) must be the day that
+//     event was read for. So "Follow-up: Robert & Linda Chen is on your calendar tomorrow at 10:00 AM." and "Here's what's on your
+//     calendar Friday: Follow-up: Robert & Linda Chen at 10:00 AM." pass after a read that returned that event for that day, while after
+//     a read of an empty Friday "The follow-up is on your calendar Friday." does not, nor does that title said for Friday when it was
+//     read for today, nor "... and a second one is on your calendar Friday" in a clause of its own;
 //   * a question carries such a state (Ruling 30): in the clause after since / now that / because / given that / know / tell / a "that"
-//     that opens a clause, any of those words ("Should I let the Chens know the follow-up is scheduled for Friday?"); anywhere past the
-//     offer lead, a state said as a state, after a copula ("now that the follow-up is on your calendar", "since the check-in was sent",
+//     that opens a clause / an "as" that opens a clause with its subject (Ruling 34: ", as the check-in went out", not "add it as a
+//     reminder"), any of those words ("Should I let the Chens know the follow-up is scheduled for Friday?"); anywhere past the offer
+//     lead, a state said as a state, after a copula ("now that the follow-up is on your calendar", "since the check-in was sent",
 //     "since the follow-up's on the books"), or in the first person ("the Friday follow-up I set up"). The act a question offers is no
-//     state: "Should I put it on your calendar?", "Want it booked for Friday?", "When should I set up the call?" pass.
-// Clauses split at , ; : (not the colon of a clock time) a dash, "but" and "and", with the read titles kept whole; a clause where a
-// negative stands before the words is skipped ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for
-// them."; "no problem" / "no worries" are no negative). claimsCompletion runs on this turn too, as on every turn. Pure but for
-// `reads.now`.
+//     state: "Should I put it on your calendar?", "When should I set up the call?" pass;
+//   * on an action turn (Ruling 35), any piece of the one question (split at ; a dash, "--" or a spaced hyphen; a question with none is
+//     one piece) has any of those words, as a statement would, copula or not ("What else — the invite went out — want a reminder?",
+//     "Want a reminder too — the check-in is waiting in your drafts?"), but for a placing verb's own complement ("put it on your
+//     calendar", "add it as a reminder on your calendar") and "set up" / "set for" used as a verb ("When should I set up the call?").
+//     The accepted cost: a clarifier that names a state word is held ("Should I send it to the address that's on file?").
+// Clauses split at , ; a dash, "but" and "and" (not at ":", Ruling 36), with the read titles kept whole; a clause where a negative
+// stands before the words is skipped ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for them."; "no
+// problem" / "no worries" are no negative). claimsCompletion runs on this turn too, as on every turn. Pure but for `reads.now`.
 const IT_ON_CALENDAR_RE = new RegExp(
   "\\b(?:it|that|this|they|those|these|everything|all\\s+of\\s+(?:it|that|them))(?:['\\u2019](?:s|re)|\\s+(?:is|are|was|were|has\\s+been|have\\s+been))" +
     "\\s+(?:(?:now|already|all|also|officially|safely)\\s+)*" +
@@ -1149,10 +1157,19 @@ const QUESTION_CONNECTIVE_RE = new RegExp(
     "|he|she|it|the|their|your|his|her|our|its|this|these|those)\\b))\\b",
   "gi"
 );
+// Ruling 34: an "as" opens such a clause only at a clause start (the sentence's, or after , ; a dash) and with its subject after it
+// (a pronoun, a determiner, a name): ", as the check-in went out", ", as it's booked", "As Friday's follow-up was emailed"; not "add it
+// as a reminder". Case-sensitive, so that a name is a capitalized word (each pronoun / determiner takes either case first).
+const eitherCase = (w) => `[${w[0].toLowerCase()}${w[0].toUpperCase()}]${w.slice(1)}`;
+const AS_SUBJECT =
+  "(?:I|" + ["we", "you", "they", "he", "she", "it", "there", "the", "their", "your", "his", "her", "our", "its", "this", "that", "these",
+    "those"].map(eitherCase).join("|") + "|[A-Z][\\w'\\u2019-]*)(?![\\w])";
+const AS_CLAUSE_RE = new RegExp("(?<=(?:^|[,;\\u2014\\u2013])\\s*)" + eitherCase("as") + "(?=\\s+" + AS_SUBJECT + ")", "g");
 const NEGATIVE_WORD_RE =
   /\b(?:not|never|nothing|none|nobody|neither|nor|without|cannot|no(?!\s+(?:problem|worries)\b))\b|n['’]t\b/i;
-// a clause break: , ; : (not between the digits of a clock time) a dash, a spaced hyphen, "but", "and"
-const GUARD_CLAUSE_SPLIT_RE = /[,;—–]|(?<!\d):|:(?!\d)|\s-\s|\b(?:but|and)\b/i;
+// a clause break: , ; a dash, a spaced hyphen, "but", "and"; not ":" (Ruling 36: "Here's what's on your calendar Friday: <title> at
+// 10:00 AM." is one clause)
+const GUARD_CLAUSE_SPLIT_RE = /[,;—–]|\s-\s|\b(?:but|and)\b/i;
 // sentences split at . ! ? (not at the point of a decimal: "7.85 percent"), each marked as a question or a statement
 const guardSentencesOf = (text) =>
   (String(text).match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean)
@@ -1170,9 +1187,18 @@ const titleGroups = (reads) => {
   }
   return groups;
 };
+// a title as a whole word or words; its first letter in either case, unless it is one word (Ruling 36: "Team standup" is "team
+// standup", but "call" is no "Call")
+const titlePattern = (title) => {
+  const first = title[0];
+  const lead = /\s/.test(title) && first.toLowerCase() !== first.toUpperCase()
+    ? `[${escapeRegExp(first.toLowerCase())}${escapeRegExp(first.toUpperCase())}]`
+    : escapeRegExp(first);
+  return "(?<![\\w])" + lead + escapeRegExp(title.slice(1)) + "(?![\\w])";
+};
 const markTitles = (s, groups) => groups
   .map((g, i) => [g, i]).sort(([a], [b]) => b.title.length - a.title.length)
-  .reduce((out, [g, i]) => out.replace(new RegExp("(?<![\\w])" + escapeRegExp(g.title) + "(?![\\w])", "g"), `\u0001${i}\u0002`), s);
+  .reduce((out, [g, i]) => out.replace(new RegExp(titlePattern(g.title), "g"), `\u0001${i}\u0002`), s);
 // a day a clause names, and whether it is the day an event was read for
 const DAY_NAMED_RE = new RegExp(
   "\\b(?:(sunday|monday|tuesday|wednesday|thursday|friday|saturday)|(today|tonight|tomorrow|yesterday)" +
@@ -1213,17 +1239,79 @@ const questionClaims = (marked, groups, now) => {
   const body = isOffer(s) ? s.replace(OFFER_LEAD_RE, "") : s;
   if (body.split(GUARD_CLAUSE_SPLIT_RE).some((c) => clauseClaims(c, groups, now, true))) return true;
   if ([...body.matchAll(FIRST_PERSON_STATE_RE)].some((m) => !INVERTED_MODAL_BEFORE_RE.test(body.slice(0, m.index)))) return true;
-  return [...body.matchAll(QUESTION_CONNECTIVE_RE)].some((m) => {
+  return [...body.matchAll(QUESTION_CONNECTIVE_RE), ...body.matchAll(AS_CLAUSE_RE)].some((m) => {
     const clause = body.slice(m.index + m[0].length).split(GUARD_CLAUSE_SPLIT_RE)[0];
     return unnegated(clause, ACT_DONE_RE) || clauseClaims(clause, groups, now, false);
   });
 };
+// Ruling 35: the pieces of the one question of an action turn, each screened in full. A calendar word that is a placing verb's own
+// complement ("put it on your calendar", "add it as a reminder on your calendar": the verb and up to eight words with no punctuation
+// and no clause of their own before the destination), and "set up" / "set for" as a verb (after to, a subject, a modal, "let me" or
+// "please"), are the act offered, not a state.
+const QUESTION_PIECE_SPLIT_RE = /[;—–]|--|\s-\s/;
+const GUARD_CLAUSE_BREAK_ALL_RE = new RegExp(GUARD_CLAUSE_SPLIT_RE.source, "gi");
+const ACT_DONE_ALL_RE = new RegExp(ACT_DONE_RE.source, "gi");
+const UNGROUNDED_STATE_ALL_RE = new RegExp(UNGROUNDED_STATE_RE.source, "gi");
+const CALENDAR_STATE_ALL_RE = new RegExp(CALENDAR_STATE_RE.source, "gi");
+const DESTINATION_RE = /^(?:on|in)\s+(?:your|the)\s+(?:google\s+)?(?:calendar|schedule)$/i;
+const PLACING_DESTINATION_BEFORE_RE = new RegExp(
+  "\\b" + PLACING_VERB + "(?:\\s+(?!(?:that|which|who|since|because|while|now|is|are|was|were|be|been" +
+    "|(?:it|that|this|they|there|he|she|we|you|everything)['\\u2019](?:s|re|ve))\\b)[^\\s.,;:!?()\\u2014\\u2013]+){0,8}\\s*$",
+  "i"
+);
+const BASE_FORM_BEFORE_RE = /(?:\b(?:to|I|we|you|they|can|could|should|shall|will|would|may|might|must|please|let\s+me)|['’]ll)\s+$/i;
+// the clause of `s` around position `at`
+const clauseAround = (s, at) => {
+  let start = 0;
+  let end = s.length;
+  for (const m of s.matchAll(GUARD_CLAUSE_BREAK_ALL_RE)) {
+    if (m.index + m[0].length <= at) start = m.index + m[0].length;
+    else if (m.index > at) { end = m.index; break; }
+  }
+  return { text: s.slice(start, end), offset: start };
+};
+const pieceClaims = (piece, groups, now) => {
+  const said = (re, isTheAct) => [...piece.matchAll(re)].some((m) => {
+    const clause = clauseAround(piece, m.index);
+    if (NEGATIVE_WORD_RE.test(clause.text.slice(0, m.index - clause.offset))) return false;
+    return !(isTheAct && isTheAct(m, clause));
+  });
+  return said(ACT_DONE_ALL_RE) || said(UNGROUNDED_STATE_ALL_RE) || said(CALENDAR_STATE_ALL_RE, (m, clause) =>
+    (DESTINATION_RE.test(m[0]) && PLACING_DESTINATION_BEFORE_RE.test(piece.slice(0, m.index))) ||
+    (/^set\s/i.test(m[0]) && BASE_FORM_BEFORE_RE.test(piece.slice(0, m.index))) ||
+    groundedClause(clause.text, groups, now));
+};
+// A piece after the first that is a statement of its own ("What else — friday it is — want a reminder?", "Want a reminder too — the
+// Chens got your check-in?"): it opens with no question or auxiliary word, holds no negative, and has a finite verb, or opens with an
+// acknowledgement ("— okay, Friday morning with the Chens —"), or is a shortened passive ("— calendar updated?"). An option list
+// ("— Robert and Linda, or Chen Wei?", "— 9 a.m. or 10 a.m.?"), a name or a time ("— 10:00 AM?") and a negative ("— I don't see a
+// Zed?") are no statement. This is what holds the claims in a dash piece that use none of the state words (Ruling 35's pin). (No
+// "am" on the list: it is also the AM of a clock time; "I'm" is the 'm.)
+const FINITE_VERB_RE = new RegExp(
+  "\\b(?:is|are|was|were|has|have|had|do|does|did|will|would|can|could|should|shall|may|might|must|got|gets|goes|went|comes|came" +
+    "|sits|shows|appears|seems|looks|stands|waits|holds|lists|reads|says|includes|contains)\\b" +
+    "|\\b(?:it|that|there|here|what|who|he|she|everything|this)['\\u2019]s\\b|['\\u2019](?:re|ve|d|ll|m)\\b" +
+    "|['\\u2019]s\\s+(?:all|now|already|just|still|also|officially|on|in|set|done|good|fine|ready|out|booked|scheduled|arranged|squared" +
+    "|taken|a\\s+go)\\b",
+  "i"
+);
+const ACK_PIECE_RE = /^(?:okay|ok|great|perfect|alright|all\s+right|done|got\s+it|sure|good|nice|excellent)(?![\w'’-])/i;
+const statementPiece = (piece) => {
+  const p = piece.trim().replace(/^(?:(?:and|but|so|then|plus)\s+)+/i, "");
+  if (!p || QUESTION_START_RE.test(p) || NEGATIVE_WORD_RE.test(p)) return false;
+  // (and the shortened passive, which claimsCompletion leaves to a clause that does not end in "?": "— calendar updated?")
+  return FINITE_VERB_RE.test(p) || ACK_PIECE_RE.test(p) || SHORT_PASSIVE_RE.test(p.replace(/[?\s]+$/, ""));
+};
 // `reads`: null when the turn cited no calendar read, else { events: [{ title, date, timeZone }] (each event this turn's calendar
-// reads returned, its title as the model saw it and the day it was read for), now }
-function offeredActClaimed(text, reads) {
+// reads returned, its title as the model saw it and the day it was read for), now }; `actionTurn`: the turn is one (Ruling 35)
+function offeredActClaimed(text, reads, actionTurn) {
   if (CALENDAR_NOW_FORM_RE.test(text) || IT_ON_CALENDAR_RE.test(text)) return true;
   const groups = titleGroups(reads);
   const now = reads && Number.isFinite(reads.now) ? reads.now : Date.now();
+  if (actionTurn) {
+    const pieces = markTitles(stripOpener(String(text)).trim(), groups).split(QUESTION_PIECE_SPLIT_RE);
+    if (pieces.some((p) => pieceClaims(p, groups, now)) || pieces.slice(1).some(statementPiece)) return true;
+  }
   return guardSentencesOf(text).some(({ s, question }) => {
     const marked = markTitles(s, groups);
     if (question) return questionClaims(marked, groups, now);
@@ -1919,11 +2007,12 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // unless the clause names an event this turn's calendar read returned, for the day it was read (offeredActClaimed, Rulings 31
       // and 33). The guard holds on every action turn too, a yes to an offer or a request in the user's own words (Ruling 25), and in
       // a question it reads the clause a question presupposes ("Should I add a reminder, since it's on your calendar Friday?",
-      // "Should I let the Chens know the follow-up is scheduled for Friday?": Ruling 30).
+      // "Should I let the Chens know the follow-up is scheduled for Friday?": Ruling 30); on an action turn it screens every piece of
+      // the one question in full ("What else — the invite went out — want a reminder?": Ruling 35).
       const reads = sources.some((src) => src.startsWith("google calendar"))
         ? { events: calendarEvents, now: ctx && Number.isFinite(ctx.now) ? ctx.now : Date.now() }
         : null;
-      if ((afterOffer || actionTurn) && offeredActClaimed(text, reads)) {
+      if ((afterOffer || actionTurn) && offeredActClaimed(text, reads, actionTurn)) {
         return finish(NOTHING_CHANGED);
       }
       // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed

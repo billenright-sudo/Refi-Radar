@@ -5024,10 +5024,11 @@ test("Task 5b fix 1 (Ruling 30): on an action turn the reply is one question, an
       assert.equal(r.sideEffect, undefined);
     }
   }
-  // ordinary one-question clarifications and offers still pass on an action turn
+  // ordinary one-question clarifications and offers still pass on an action turn ("Want it booked for Friday?" no longer does:
+  // fix round 2, Ruling 35 screens the whole question and "booked" is no placing verb's destination)
   for (const said of [
     "Which Chen — Robert and Linda, or Chen Wei?", "What time should I put it on your calendar?", "Who did you mean — I don't see a Zed?",
-    "Got it. Who did you talk to?", "Should I put it on your calendar?", "Want it booked for Friday?", "When should I set up the call?",
+    "Got it. Who did you talk to?", "Should I put it on your calendar?", "When should I set up the call?",
   ]) {
     const r = await runTurn({
       messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle()),
@@ -5104,4 +5105,126 @@ test("Task 5b fix 1 (Ruling 33): the guard knows confirmed, on your schedule, in
       assert.equal(r.reply, NOTHING_CHANGED, `${label}: ${text}`);
     }
   }
+});
+
+// ── Task 5b fix round 2: "as" clauses and dash pieces screened on action turns; titles ground across colons and capitalisation ─
+
+// the review's 55 claim forms (round-2 probes), each a false report that the offered act was carried out
+const WRAP_CLAIMS = [
+  "The follow-up has been added to your calendar.", "It's been added to your calendar for Friday.", "Friday's follow-up with the Chens is confirmed.",
+  "The Chens are confirmed for Friday.", "Your check-in is in your Gmail drafts.", "The check-in is waiting in your drafts.",
+  "Your draft to the Chens is ready.", "The email to the Chens is on its way.", "Your calendar now has the follow-up on Friday.",
+  "Your calendar has the Chens on Friday.", "Friday's all arranged with the Chens.", "Friday with the Chens is a go.",
+  "The Chens are on for Friday.", "Friday it is.", "Consider it handled.", "The follow-up with the Chens is all squared away.",
+  "Calendar updated.", "Your calendar's updated.", "Added to your calendar.", "The Chens have been emailed.", "The Chens got your check-in.",
+  "The Chens have your check-in now.", "The invite's out.", "Booked!", "You're booked with the Chens Friday.", "You and the Chens are meeting Friday.",
+  "Friday's follow-up is now in place.", "The follow-up is set.", "That's taken care of.", "It's on there for Friday.",
+  "Friday's follow-up is on your schedule.", "It's on your schedule for Friday.", "Your Friday is blocked for the Chens.",
+  "The Chens are penciled in for Friday.", "Friday morning is reserved for the Chens.", "Their check-in is written and waiting for you.",
+  "The check-in is written.", "Your Friday follow-up is all lined up.", "The Chens are expecting your call Friday.",
+  "There's a follow-up with the Chens waiting on Friday.", "You now have a follow-up with the Chens on Friday.", "You've got the Chens on Friday morning.",
+  "Friday morning, you're meeting the Chens.", "The Chens are all set for Friday.", "Okay, Friday morning with the Chens.", "Okay, done.",
+  "Your calendar shows the follow-up Friday.", "The follow-up shows on your calendar Friday.", "The follow-up appears on Friday.",
+  "A follow-up with the Chens now sits on Friday.", "That follow-up's in place for Friday.", "The check-in to the Chens is out.",
+  "The Chens have been notified.", "The Chens should have it in their inbox.", "Your note to the Chens is composed.",
+];
+const ACTION_CONTEXTS = [
+  ["direct request, lookup", () => userSays("book the Chens a follow-up Friday"), () => [useTool("findClient", { query: "chen" })]],
+  ["direct request, empty Friday read", () => userSays("book the Chens a follow-up Friday"), () => [useTool("getCalendarTool", { date: "friday" })]],
+  ["yes to an offer, lookup", () => history(CAL_ASK, OFFERS[1], "yes"), () => [useTool("findClient", { query: "chen" })]],
+];
+const onActionTurn = (messages, script, said) =>
+  runTurn({ messages, ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...script, say(said)]) });
+
+test("Task 5b fix 2 (Ruling 34): an 'as' that opens a clause is read like 'since'; 'add it as a reminder' is no clause", async () => {
+  const fridayRead = () => [useTool("getCalendarTool", { date: "friday" })];
+  for (const said of [
+    "Want a reminder too, as the check-in went out?", "Should I add a reminder, as the follow-up is locked in for Friday?",
+    "Want a reminder too, as the invite's out?",
+  ]) {
+    // an action turn, and a plain turn after an offer (where the question screen reads it)
+    let r = await runTurn({ messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle()), client: fakeClient([...fridayRead(), say(said)]) });
+    assert.equal(r.reply, NOTHING_CHANGED, `action turn: ${said}`);
+    r = await answerOffer("thanks", fridayRead(), said, googleCtx(fakeGoogle()));
+    assert.equal(r.reply, NOTHING_CHANGED, `after "thanks": ${said}`);
+  }
+  const offer = "Should I add it as a reminder on your calendar?";
+  let r = await runTurn({ messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle()), client: fakeClient([...fridayRead(), say(offer)]) });
+  assert.equal(r.reply, offer);
+  r = await answerOffer("thanks", fridayRead(), offer, googleCtx(fakeGoogle()));
+  assert.equal(r.reply, offer);
+});
+
+test("Task 5b fix 2 (Ruling 35): on an action turn every piece of the one question is screened in full", async () => {
+  const strip = (c) => c.replace(/[.!]+$/, "");
+  const lower = (c) => c[0].toLowerCase() + c.slice(1);
+  const SHAPES = [(c) => `What else — ${lower(strip(c))} — want a reminder?`, (c) => `Want a reminder too — ${lower(strip(c))}?`];
+  for (const [label, messages, script] of ACTION_CONTEXTS) {
+    for (const shape of SHAPES) {
+      for (const claim of WRAP_CLAIMS) {
+        const said = shape(claim);
+        const r = await onActionTurn(messages(), script(), said);
+        assert.equal(r.reply, NOTHING_CHANGED, `${label}: ${said}`);
+        assert.equal(r.sideEffect, undefined);
+      }
+    }
+  }
+  // the clarifications and offers that turn exists for still pass
+  for (const said of [
+    "Which Chen — Robert and Linda, or Chen Wei?", "Who did you mean — I don't see a Zed?", "What time should I put it on your calendar?",
+    "Should I add it as a reminder on your calendar?", "Got it — which Chen, Robert and Linda or Chen Wei?", "What time works — 9 a.m. or 10 a.m.?",
+    "Should I book it on your calendar for Friday?", "When should I set up the call?",
+  ]) {
+    const r = await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said);
+    assert.equal(r.reply, said, said);
+  }
+  // the accepted cost: a clarifier that names a state word is held
+  for (const said of ["Should I send it to the address that's on file, or a different one?", "Want it booked for Friday?"]) {
+    const r = await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said);
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+  }
+});
+
+test("Task 5b fix 2 (Ruling 36): a title grounds across a colon and with either case of its first letter; a one-word title keeps its case", async () => {
+  const FRIDAY = "2026-10-30";
+  const STANDUP = { title: "team standup", start: "9:00 AM", end: "9:15 AM", allDay: false };
+  const byDay = (map) => googleCtx(fakeGoogle({ listed: (q) => ({ events: map[q.date] || [] }) }));
+  const fridayRead = () => useTool("getCalendarTool", { date: "friday" });
+  for (const reply of ["what's on Friday?", "what about Friday"]) {
+    for (const said of [
+      "Here's what's on your calendar Friday: Follow-up: Robert & Linda Chen at 10:00 AM.",
+      "On your calendar Friday: Follow-up: Robert & Linda Chen at 10:00 AM.",
+      "You have one thing scheduled Friday: Follow-up: Robert & Linda Chen at 10:00 AM.",
+      "Your follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.",
+      "Team standup is on your calendar Friday at 9:00 AM.",
+    ]) {
+      const r = await runTurn({
+        messages: history(CAL_ASK, OFFERS[1], reply), ctx: byDay({ [FRIDAY]: [CHEN_EVENT, STANDUP] }), client: fakeClient([fridayRead(), say(said)]),
+      });
+      assert.equal(r.reply, said, `${reply} -> ${said}`);
+      assert.deepStrictEqual(r.sources, ["google calendar 2026-10-30"]);
+    }
+  }
+  // a one-word title keeps its own case: "call" and "lunch" ground nothing (the Ruling 31 rows, read for Friday here)
+  const CALL = { title: "Call", start: "9:00 AM", end: "9:15 AM", allDay: false };
+  const LUNCH = { title: "Lunch", start: "12:00 PM", end: "1:00 PM", allDay: false };
+  for (const said of ["Your follow-up call with the Chens is scheduled Friday.", "Okay, the follow-up with the Chens is on your calendar Friday after lunch."]) {
+    const r = await runTurn({
+      messages: history(CAL_ASK, OFFERS[1], "what's on Friday?"), ctx: byDay({ [FRIDAY]: [CALL, LUNCH] }), client: fakeClient([fridayRead(), say(said)]),
+    });
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+  }
+});
+
+test("Task 5b fix 2 (Ruling 37): e.g., i.e., vs., approx., etc. and a.m. / p.m. end no sentence", async () => {
+  for (const said of [
+    "Which loan, e.g. the refi or the HELOC?", "Which loan, i.e. the one you refinanced?", "Which one — the refi vs. the HELOC?",
+    "What time works, approx. 10?", "What time — 9 a.m. or 2 p.m. Friday?",
+  ]) {
+    const r = await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said);
+    assert.equal(r.reply, said, said);
+  }
+  // a real second sentence is still one too many
+  const r = await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], "I see two Chens. Which one?");
+  assert.equal(r.reply, NOTHING_CHANGED);
 });
