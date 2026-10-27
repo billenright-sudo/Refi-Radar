@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createSession, CAREER_STAGES, pendingRows, voiceNoteFor } from "./session.mjs";
-import { googleCard, validNmls } from "./google.mjs";
+import { googleCard, validNmls, connectUrlOk, inputAfterReload, createCoalescer } from "./google.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
 // Charli, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and
@@ -179,7 +179,10 @@ const NmlsField = ({ label, value, saved, busy, testId, onChange, onSave, ui: { 
   );
 };
 
-const CalendarEmailCard = ({ ui }) => {
+// `working`: Charli's session is busy with a turn, a confirm or a cancel (not the opening greeting). The card reads Google's
+// state and the NMLS IDs on open, again whenever that ends, and whenever the window gets focus back: Charli can find out
+// mid-conversation that the connection expired (her reply says to reconnect it here), and an ID can be saved from another tab.
+const CalendarEmailCard = ({ ui, working }) => {
   const { C, card, Icon } = ui;
   const [google, setGoogle] = useState(null);     // null: checking | "failed" | what /api/google/status answered
   const [profile, setProfile] = useState(null);   // null: not loaded | what /api/profile/nmls answered
@@ -188,16 +191,50 @@ const CalendarEmailCard = ({ ui }) => {
   const [busy, setBusy] = useState("");           // "google" | "own" | "org" | "" (nothing running)
   const [note, setNote] = useState(null);         // { text, bad? } | null
 
-  const loadGoogle = async () => {
-    const res = await callApi("GET", "/api/google/status");
-    setGoogle(res.ok && res.data && typeof res.data === "object" ? res.data : "failed");
-  };
-  const takeProfile = (p) => { setProfile(p); setOwn(p.nmlsId || ""); setOrg(p.orgNmlsId || ""); };
+  const profileRef = useRef(null);   // what the profile was when it was last taken (state, for the code that must not wait for a render)
+  const epoch = useRef(0);           // bumped around every change made here: a read that started before one is stale and is thrown away
+  const reread = useRef(null);
+  const wasWorking = useRef(false);
+
   const isProfile = (res) => res.ok && res.data && typeof res.data === "object" && "nmlsId" in res.data;
+  // A field the user has typed in is never overwritten by a re-read; `overwrite` ("own" | "org") is the one just saved.
+  const takeProfile = (p, { overwrite } = {}) => {
+    const before = profileRef.current;
+    profileRef.current = p;
+    setProfile(p);
+    setOwn((now) => (overwrite === "own" ? p.nmlsId || "" : inputAfterReload(now, before && before.nmlsId, p.nmlsId)));
+    setOrg((now) => (overwrite === "org" ? p.orgNmlsId || "" : inputAfterReload(now, before && before.orgNmlsId, p.orgNmlsId)));
+  };
+  // One read of both. A failed re-read leaves what is shown as it was (only a first read that fails says so).
+  const readAll = async () => {
+    const started = epoch.current;
+    const [g, p] = await Promise.all([callApi("GET", "/api/google/status"), callApi("GET", "/api/profile/nmls")]);
+    if (started !== epoch.current) { reread.current(); return; }   // something changed here while it was in flight: read again
+    setGoogle((shown) => (g.ok && g.data && typeof g.data === "object" ? g.data : shown === null ? "failed" : shown));
+    if (isProfile(p)) takeProfile(p.data);
+  };
+  if (!reread.current) reread.current = createCoalescer(readAll);
+
   useEffect(() => {
-    loadGoogle();
-    callApi("GET", "/api/profile/nmls").then((res) => { if (isProfile(res)) takeProfile(res.data); });
+    reread.current();
+    const onFocus = () => reread.current({ soft: true });
+    const onVisible = () => { if (document.visibilityState === "visible") reread.current({ soft: true }); };
+    // coming back to this page from Google with the Back button can restore it as it was, with Connect still "working"
+    const onShow = (e) => { if (e.persisted) { setBusy(""); reread.current(); } };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onShow);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onShow);
+    };
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (wasWorking.current && !working) reread.current();
+    wasWorking.current = working;
+  }, [working]);
 
   const line = google === null
     ? { label: "Checking your Google connection…", action: null }
@@ -207,39 +244,45 @@ const CalendarEmailCard = ({ ui }) => {
   const dot = line.action === "disconnect" ? C.green : line.action === "reconnect" ? C.amber : C.muted;
 
   // Connect and Reconnect are the same trip: ask the server for Google's consent address and go there (it comes back to /?google=...).
+  // Only Google's own address is followed. On the way there the button stays busy, so a second click cannot start another sign-in.
   const goToGoogle = async () => {
     setBusy("google"); setNote(null);
     const res = await callApi("POST", "/api/google/connect");
-    if (res.ok && res.data && typeof res.data.url === "string" && res.data.url.startsWith("https://")) {
+    if (res.ok && res.data && connectUrlOk(res.data.url)) {
       window.location.assign(res.data.url);
-    } else {
-      setNote({ bad: true, text: errorOf(res, "Google couldn't be connected. Try again.") });
+      return;
     }
+    setNote({ bad: true, text: res.ok ? "Google couldn't be connected. Try again." : errorOf(res, "Google couldn't be connected. Try again.") });
     setBusy("");
   };
   const disconnect = async () => {
     if (!window.confirm(DISCONNECT_CONFIRM)) return;
     setBusy("google"); setNote(null);
+    epoch.current += 1;
     const res = await callApi("POST", "/api/google/disconnect");
     if (res.ok && res.data && res.data.success === true) {
+      setGoogle((shown) => (shown && typeof shown === "object" ? { ...shown, connected: false, status: null, googleEmail: null } : shown));
       setNote({ text: "Google is disconnected." });
-      await loadGoogle();
     } else {
       setNote({ bad: true, text: errorOf(res, "Google couldn't be disconnected. Try again.") });
     }
+    epoch.current += 1;
+    reread.current();   // whatever happened, what the server says now is what the card shows
     setBusy("");
   };
 
   const saveNmls = async (which) => {
     const [url, value] = which === "org" ? ["/api/profile/org-nmls", org] : ["/api/profile/nmls", own];
     setBusy(which); setNote(null);
+    epoch.current += 1;
     const res = await callApi("PUT", url, { nmlsId: value.trim() });
     if (isProfile(res)) {
-      takeProfile(res.data);
+      takeProfile(res.data, { overwrite: which });
       setNote({ text: "Saved." });
     } else {
       setNote({ bad: true, text: errorOf(res, "That didn't save. Try again.") });
     }
+    epoch.current += 1;
     setBusy("");
   };
 
@@ -463,7 +506,7 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 520px", minWidth: 0 }}>
-          <CalendarEmailCard ui={ui} />
+          <CalendarEmailCard ui={ui} working={snap.busy && !snap.opening} />
           <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", height: 380, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
             {snap.turns.length === 0 && (
               <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charli is getting ready…" : "Waiting for today’s rates…"}</div>

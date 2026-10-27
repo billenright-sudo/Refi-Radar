@@ -35,3 +35,40 @@ export function returnNotice(search) {
 export function validNmls(text) {
   return typeof text === "string" && /^\d{0,12}$/.test(text.trim());
 }
+
+// The one address Connect and Reconnect will send the browser to: Google's own sign-in, over https (the server builds it in
+// lib/google/oauth.js). The trailing slash matters: it is what keeps "https://accounts.google.com.evil.test/" out.
+export function connectUrlOk(url) {
+  return typeof url === "string" && url.startsWith("https://accounts.google.com/");
+}
+
+// What an NMLS field shows once the saved value has been read again. A field nobody has edited (it still shows what was saved
+// before) follows the new saved value; one the user has typed in is left exactly as it is. Strings in, a string out.
+export function inputAfterReload(current, previousSaved, nextSaved) {
+  const shown = typeof current === "string" ? current : "";
+  return shown.trim() !== (previousSaved || "") ? shown : (nextSaved || "");
+}
+
+// Runs `task` (an async re-read) for each trigger, never two at once. A trigger that arrives while it is running is not lost:
+// one more run follows when it finishes (however many arrived), so a change that happened mid-read is always read afterwards.
+// A { soft: true } trigger (window focus, tab visible again) is dropped instead: a read is already on its way. The task reports its
+// own failures; one that throws does not stop the runner. trigger() resolves when the runs it started are done.
+export function createCoalescer(task) {
+  let running = false;
+  let again = false;
+  return async function trigger({ soft = false } = {}) {
+    if (running) {
+      if (!soft) again = true;
+      return;
+    }
+    running = true;
+    try {
+      do {
+        again = false;
+        try { await task(); } catch { /* the task reports its own failures */ }
+      } while (again);
+    } finally {
+      running = false;
+    }
+  };
+}
