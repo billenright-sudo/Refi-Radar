@@ -433,8 +433,11 @@ const shortPassiveClaims = (sentence, sweep) =>
 // "I've put a follow-up on your calendar" and the "now" forms, "it's on your calendar now" / "that's now on your calendar", are
 // false on every turn. (The verbs added / booked / scheduled are FIRST_PERSON_CLAIM_RE's.) Only these forms: a calendar FACT read
 // from getCalendarTool ("Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.") is true and is no claim. The
-// "now" forms are no claim in a question ("Should I put it on your calendar now?"), after a negative ("Nothing's on your calendar
-// now.") or after "nothing / anything / else" ("You have nothing on your calendar now.").
+// "now" forms are no claim after a negative ("Nothing's on your calendar now.") or after "nothing / anything / else" ("You have
+// nothing on your calendar now."), and no claim in the FIRST clause of an offer, which is the act offered ("Should I put it on your
+// calendar now?"). Whatever an offer says after its first clause is said, and gets the same test (R5-4, like every other claim):
+// "Should I also draft a check-in, since the follow-up is now on your calendar?" and "Want me to draft a check-in too, since it's on
+// your calendar now?" are claims. A question that is no offer ("It's on your calendar now, right?") is tested whole.
 const CALENDAR_PLACED_RE = new RegExp(
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
     "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
@@ -443,16 +446,25 @@ const CALENDAR_PLACED_RE = new RegExp(
 const CALENDAR_NOW_RE =
   /(?<!\b(?:nothing|anything|none|else)\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
 const NEGATIVE_START_RE = /^(?:no|not|nothing|none|never|nobody|neither)\b/i;
-const calendarClaim = (s) =>
-  CALENDAR_PLACED_RE.test(s) || (!/\?\s*$/.test(s) && !NEGATIVE_START_RE.test(s) && CALENDAR_NOW_RE.test(s));
+// where an offer's later clauses begin: a comma, colon, ellipsis, dash, or since / because / now that / given / once / after
+const OFFER_CLAUSE_SPLIT_RE = /,|:|…|--|\s-\s|\b(?:since|because|now\s+that|given|once|after)\b/i;
+const CLAUSE_LEAD_RE = /^(?:(?:and|but|so|or|plus)\s+)+/i;
+// `offer` = the sentence was an offer (isOffer) and has already lost its question word and subject pronoun
+const calendarClaim = (s, offer) =>
+  CALENDAR_PLACED_RE.test(s) ||
+  (offer ? s.split(OFFER_CLAUSE_SPLIT_RE).slice(1) : [s]).some((piece) => {
+    const clause = piece.trim().replace(CLAUSE_LEAD_RE, "");
+    return !NEGATIVE_START_RE.test(clause) && CALENDAR_NOW_RE.test(clause);
+  });
 
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
 // `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only). Pure: no I/O, no state.
 function claimsCompletion(text, grounded, storedStage, sweep) {
   return sentencesOf(String(text == null ? "" : text)).some((part) => {
     let s = stripOpener(part.trim()).trim();
-    if (isOffer(s)) s = s.replace(OFFER_LEAD_RE, "").trim();
-    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s) ||
+    const offer = isOffer(s);
+    if (offer) s = s.replace(OFFER_LEAD_RE, "").trim();
+    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, offer) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
@@ -723,20 +735,31 @@ const askedOf = (asked, answer) => {
 // opens, after at most one opener or a comma / colon / "and" / "so", with an offer lead (want me to, do you want me to, should I,
 // shall I, would you like me to, can I, could I, may I, shall we, should we, want to ...) followed by an action verb
 // (ACTION_VERBS, with its carve-outs: "Want me to run a sweep?" and "Want me to update you on rates?" offer no change); or when that
-// sentence is only the lead ("... — want me to?") and the sentence before it holds an action verb ("I can book a follow-up
-// Friday — want me to?"). An AFFIRMATION is the user's reply opening with yes / yeah / sure / please / ok / okay / go ahead / do it /
+// sentence is only the lead ("... — want me to?", "..., want me to?") and what is offered, said just before it (the sentence before,
+// or the start of the same one), is an offer of the same kind: "I / we can | could | 'd be happy to | 'd like to | 'm happy to" or
+// "happy to" and an action verb, with the same carve-outs ("I can book the Chens a follow-up Friday — want me to?" offers a change,
+// "I can run a sweep of your book — want me to?" and "I can update you on rates — want me to?" do not: a bare search for the verb
+// would take the noun "book"). An AFFIRMATION is the user's reply opening with yes / yeah / sure / please / ok / okay / go ahead / do it /
 // sounds good and the like (filler and an address to Charli ahead of it allowed); "no thanks" and a new question are not one.
 const OFFER_LEAD =
   "(?:do\\s+you\\s+want\\s+me\\s+to|would\\s+you\\s+like\\s+me\\s+to|want\\s+me\\s+to|should\\s+I|shall\\s+I|can\\s+I|could\\s+I|may\\s+I" +
   "|shall\\s+we|should\\s+we|would\\s+you\\s+like\\s+to|do\\s+you\\s+want\\s+to|want\\s+to)";
 // (An offer to update, send, email or write TO THE USER, "Want me to update you on rates?", asks the user for no change.)
+const OFFER_FILLER = "(?:\\s+(?:also|just|quickly|maybe|go\\s+ahead\\s+and)){0,2}\\s+";
+const NOT_TO_THE_USER = "(?!(?:update|send|email|write|text)\\s+you\\b)";
+const OFFER_START = "(?:^|[,:]\\s*)(?:(?:and|or|so)\\s+)?";
 const OFFER_TO_ACT_RE = new RegExp(
-  "(?:^|[,:]\\s*)(?:(?:and|or|so)\\s+)?" + OFFER_LEAD + "(?:\\s+(?:also|just|quickly|maybe|go\\s+ahead\\s+and)){0,2}\\s+" +
-    "(?!(?:update|send|email|write|text)\\s+you\\b)(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])",
-  "i"
+  OFFER_START + OFFER_LEAD + OFFER_FILLER + NOT_TO_THE_USER + "(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i"
 );
-const BARE_OFFER_RE = new RegExp("^(?:(?:and|or|so)\\s+)?" + OFFER_LEAD + "\\s*\\?$", "i");
-const ACTION_WORD_RE = new RegExp("\\b(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
+// "I can ...", "we could ...", "I'd be happy to ...", "happy to ...": the offer made in the statement before a bare "want me to?"
+const SELF_OFFER_LEAD =
+  "(?:(?:I|we)\\s+(?:can|could)|(?:I|we)['\\u2019]d\\s+(?:be\\s+(?:happy|glad)\\s+to|like\\s+to)|(?:I|we)['\\u2019]m\\s+(?:happy|glad)\\s+to" +
+  "|(?:happy|glad)\\s+to)";
+const SELF_OFFER_TO_ACT_RE = new RegExp(
+  OFFER_START + SELF_OFFER_LEAD + OFFER_FILLER + NOT_TO_THE_USER + "(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i"
+);
+// a sentence that ends with only the lead: "want me to?", or "..., want me to?"
+const BARE_TAIL_RE = new RegExp(OFFER_START + OFFER_LEAD + "\\s*\\?$", "i");
 const AFFIRMATION_RE = new RegExp(
   "^(?:(?:oh|um|uh|well|so|and|hey|charli|charlie)[\\s,]+)*" +
     "(?:yes|yeah|yep|yup|sure|please|ok|okay|alright|absolutely|definitely|of\\s+course|go\\s+ahead|do\\s+it|do\\s+that|go\\s+for\\s+it" +
@@ -748,7 +771,10 @@ function offersAction(message) {
   const last = pieces[pieces.length - 1];
   if (!last || !last.endsWith("?")) return false;
   const s = stripOpener(last).trim();
-  return OFFER_TO_ACT_RE.test(s) || (BARE_OFFER_RE.test(s) && pieces.length > 1 && ACTION_WORD_RE.test(pieces[pieces.length - 2]));
+  if (OFFER_TO_ACT_RE.test(s)) return true;
+  const bare = BARE_TAIL_RE.exec(s);
+  if (!bare) return false;
+  return [s.slice(0, bare.index), pieces[pieces.length - 2]].some((before) => !!before && SELF_OFFER_TO_ACT_RE.test(before));
 }
 const affirmsOffer = (asked, answer) =>
   !!asked && asked.role === "assistant" && offersAction(asked) &&

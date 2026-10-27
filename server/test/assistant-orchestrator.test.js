@@ -4215,3 +4215,74 @@ test("Task 5 fix: ordinary calendar narrations still pass the calendar checks", 
   assert.equal(await say_([], "You have nothing on your calendar now."), "You have nothing on your calendar now.");
   assert.equal(await say_([], "Nothing on the calendar for Friday.", "friday"), "Nothing on the calendar for Friday.");
 });
+
+// ── Task 5 fix round 2: claims after an offer's first clause are screened; bare offers use the to-the-user carve-out ────────────────
+
+test("Task 5 fix 2: an offer's later clauses are screened like any claim ('since it's on your calendar now'), its first clause is not", async () => {
+  const CLAIMING_OFFERS = [
+    "Want me to draft a check-in too, since it's on your calendar now?",
+    "Should I also draft a check-in, since the follow-up is now on your calendar?",
+    "Should I draft a check-in now that the follow-up is now on your calendar?",
+    "Want me to write them a check-in, because it's on your calendar now?",
+    "Shall I email the Chens: it's on your calendar now?",
+    "Should I also draft one, now that I've put it on your calendar?",
+  ];
+  for (const grounded of [false, true]) {
+    for (const text of CLAIMING_OFFERS) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of [
+      "Should I put it on your calendar now?", "Want me to put it on your calendar now?", "Should I put the call and the follow-up on your calendar now?",
+      "Should I put it on your calendar now, or tomorrow?", "Is it on your calendar now?", "Want me to put the Chens now on your calendar?",
+      "Should I draft a check-in, since nothing's on your calendar now?", "Should I draft a check-in, given nothing else is on your calendar now?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+    // a question that is no offer is tested whole
+    for (const text of ["It's on your calendar now, right?", "Since it's on your calendar now, should I draft a check-in?"]) {
+      assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    }
+  }
+  // the affirmed-book turn: the claim in a later clause is replaced, with no tool and with a calendar read; the legitimate offer is not
+  for (const offer of [OFFERS[1], OFFERS[3]]) {
+    for (const said of CLAIMING_OFFERS.slice(0, 2)) {
+      for (const grounded of [false, true]) {
+        const script = grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)];
+        const r = await runTurn({ messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient(script) });
+        assert.equal(r.reply, NOTHING_CHANGED, `${grounded ? "calendar read" : "no tool"}: ${said}`);
+      }
+    }
+    for (const grounded of [false, true]) {
+      const said = "Should I put it on your calendar now?";
+      const script = grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)];
+      const r = await runTurn({ messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient(script) });
+      assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: a legitimate offer question passes`);
+    }
+  }
+});
+
+test("Task 5 fix 2: a bare 'want me to?' offers what the sentence before it offers, with the to-the-user carve-out", async () => {
+  // not offers to change anything: a yes is a normal turn, and the grounded answer passes
+  for (const offer of [
+    "I can run a sweep of your book — want me to?", "I can update you on rates — want me to?", "I can send you the numbers — want me to?",
+    "I can run a sweep of your book, want me to?", "Happy to pull up the numbers on the Chens — want me to?",
+  ]) {
+    let r = await runTurn({
+      messages: history("good morning", `Good morning! ${offer}`, "yes"), ctx: sweepCtx,
+      client: fakeClient([useTool("runSweepTool"), say(SWEEP_NARRATION)]),
+    });
+    assert.equal(r.reply, SWEEP_NARRATION, offer);
+    assert.deepStrictEqual(r.sources, ["sweep engine"]);
+    r = await runTurn({
+      messages: history("good morning", `Good morning! ${offer}`, "yes please"), ctx: mikeCtx,
+      client: fakeClient([useTool("getMarketUpdate"), say("The thirty-year fixed is at 6.52 percent today.")]),
+    });
+    assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent today.", offer);
+  }
+  // offers to change something stay offers: a yes is an action turn
+  for (const offer of [
+    "I can book the Chens a follow-up Friday — want me to?", "I can book the Chens a follow-up Friday, want me to?", "I could also write them a check-in. Want me to?",
+    "Happy to email the Chens a check-in — want me to?", "I'd be happy to draft one — want me to?", "We can put it on your calendar — want me to?",
+  ]) {
+    for (const said of ["Email drafted for the Chens.", "I put it on your calendar for Friday.", "Okay, the Chens will hear from you soon."]) {
+      const r = await runTurn({ messages: history(CAL_ASK, `${CAL_LINE} ${offer}`, "yes"), ctx: mikeCtx, client: fakeClient([say(said)]) });
+      assert.equal(r.reply, NOTHING_CHANGED, `${offer} -> yes -> ${said}`);
+    }
+  }
+});
