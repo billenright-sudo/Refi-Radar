@@ -4231,13 +4231,14 @@ test("Task 5 fix 2: an offer's later clauses are screened like any claim ('since
     for (const text of CLAIMING_OFFERS) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
     for (const text of [
       "Should I put it on your calendar now?", "Want me to put it on your calendar now?", "Should I put the call and the follow-up on your calendar now?",
-      "Should I put it on your calendar now, or tomorrow?", "Is it on your calendar now?", "Want me to put the Chens now on your calendar?",
+      "Should I put it on your calendar now, or tomorrow?", "Want me to put the Chens now on your calendar?",
       "Should I draft a check-in, since nothing's on your calendar now?", "Should I draft a check-in, given nothing else is on your calendar now?",
     ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
-    // a question that is no offer is tested whole
-    for (const text of ["It's on your calendar now, right?", "Since it's on your calendar now, should I draft a check-in?"]) {
-      assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
-    }
+    // a question that is no offer is tested whole; so is a question that merely asks about the "now" state (round 3: only the
+    // complement of a placing verb is exempt, so "Is it on your calendar now?" is held, fail-closed)
+    for (const text of [
+      "It's on your calendar now, right?", "Since it's on your calendar now, should I draft a check-in?", "Is it on your calendar now?",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
   }
   // the affirmed-book turn: the claim in a later clause is replaced, with no tool and with a calendar read; the legitimate offer is not
   for (const offer of [OFFERS[1], OFFERS[3]]) {
@@ -4285,4 +4286,90 @@ test("Task 5 fix 2: a bare 'want me to?' offers what the sentence before it offe
       assert.equal(r.reply, NOTHING_CHANGED, `${offer} -> yes -> ${said}`);
     }
   }
+});
+
+// ── Task 5 fix round 3: a "now on your calendar" form is exempt only as a placing verb's complement ───────────────────────────────
+
+// claims: a "now" form that is not the complement of the act offered, however it is joined on
+const NOW_CLAIMS_IN_QUESTIONS = [
+  "Want me to let the Chens know it's on your calendar now?",
+  "Should I tell the Chens the follow-up is now on your calendar?",
+  "Should I draft a check-in for the follow-up that's now on your calendar?",
+  "Should I draft a check-in as it's on your calendar now?",
+  "Should I draft a check-in about the follow-up that's on your calendar now?",
+  "Should I draft a check-in for the follow-up now on your calendar?",
+  "Should I draft a check-in so they know it's on your calendar now?",
+  "Should I draft a check-in (it's on your calendar now)?",
+  "Should I draft a check-in while it's now on your calendar?",
+  "Do you want me to email the Chens that the follow-up is now on your calendar?",
+  "Want me to draft a check-in too, since it's on your calendar now?",
+  "Should I also draft a check-in, since the follow-up is now on your calendar?",
+  "Should I put a follow-up on your calendar and tell them it's on your calendar now?",
+  "Should I book it and note it's on your calendar now?",
+];
+// not claims: the "now" form is the complement of a placing verb, whatever leads up to the verb
+const NOW_OFFERS = [
+  "Should I put it on your calendar now?", "Want me to put it on your calendar now?",
+  "Should I wait until Friday, or put it on your calendar now?",
+  "Want me to draft them a check-in, or put a follow-up on your calendar now?",
+  "Should I draft a check-in, then put it on your calendar now?",
+  "Since Friday's open, want me to put it on your calendar now?",
+  "If that works, would you like me to put it on your calendar now?",
+  "Friday's open, so want me to put it on your calendar now?",
+  "Should I put the call and the follow-up on your calendar now?", "Should I put it on your calendar now, or tomorrow?",
+  "Want me to put the Chens now on your calendar?", "Should I add the Chens' follow-up on your calendar now?",
+  "Can I get it on your calendar now?", "Should I book Robert's follow-up on your calendar now?",
+  "Should I wait until Friday, or put another one on your calendar now?",
+];
+
+test("Task 5 fix 3: a 'now' calendar form in a question is a claim unless it is a placing verb's own complement", async () => {
+  for (const grounded of [false, true]) {
+    for (const text of NOW_CLAIMS_IN_QUESTIONS) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of NOW_OFFERS) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+    // statements are never exempt: a promise or an act in progress is no more true than a done one
+    for (const text of [
+      "I'll put it on your calendar now.", "Let me put it on your calendar now.", "Putting it on your calendar now.", "I put it on your calendar now.",
+      "I've added it to your calendar now.", "Put it on your calendar now.", "It's on your calendar now.", "That's now on your calendar.",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    // negatives, and the fact from a read, are still no claim
+    for (const text of [
+      "Nothing's on your calendar now.", "You have nothing on your calendar now.", "Should I draft a check-in, since nothing's on your calendar now?",
+      "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.", "Should I put it on your calendar?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+});
+
+test("Task 5 fix 3: on the affirmed-book turn the 'now' claims are replaced, with no tool and with a calendar read; the offers pass", async () => {
+  for (const offer of [OFFERS[1], OFFERS[3]]) {
+    for (const said of NOW_CLAIMS_IN_QUESTIONS) {
+      for (const grounded of [false, true]) {
+        const script = grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)];
+        const r = await runTurn({ messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient(script) });
+        assert.equal(r.reply, NOTHING_CHANGED, `${grounded ? "calendar read" : "no tool"}: ${said}`);
+      }
+    }
+  }
+  // the offers (on the affirmed-book turn when they open with a question word, and on a plain read)
+  for (const offer of NOW_OFFERS.filter((o) => isQuestionShaped(o))) {
+    const r = await runTurn({
+      messages: history(CAL_ASK, OFFERS[1], "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+      client: fakeClient([useTool("getCalendarTool", {}), say(offer)]),
+    });
+    assert.equal(r.reply, offer, offer);
+  }
+  for (const offer of NOW_OFFERS) {
+    const said = `${CAL_LINE} ${offer}`;
+    const r = await runTurn({
+      messages: userSays(CAL_ASK), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+      client: fakeClient([useTool("getCalendarTool", {}), say(said)]),
+    });
+    assert.equal(r.reply, said, `plain read: ${offer}`);
+    assert.deepStrictEqual(r.sources, ["google calendar 2026-10-27"]);
+  }
+  // the fact from a read still passes
+  const r = await runTurn({
+    messages: userSays("what's on my calendar Friday?"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+    client: fakeClient([useTool("getCalendarTool", { date: "friday" }), say("Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.")]),
+  });
+  assert.equal(r.reply, "Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.");
 });

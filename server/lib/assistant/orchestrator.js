@@ -434,37 +434,45 @@ const shortPassiveClaims = (sentence, sweep) =>
 // false on every turn. (The verbs added / booked / scheduled are FIRST_PERSON_CLAIM_RE's.) Only these forms: a calendar FACT read
 // from getCalendarTool ("Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.") is true and is no claim. The
 // "now" forms are no claim after a negative ("Nothing's on your calendar now.") or after "nothing / anything / else" ("You have
-// nothing on your calendar now."), and no claim in the FIRST clause of an offer, which is the act offered ("Should I put it on your
-// calendar now?"). Whatever an offer says after its first clause is said, and gets the same test (R5-4, like every other claim):
-// "Should I also draft a check-in, since the follow-up is now on your calendar?" and "Want me to draft a check-in too, since it's on
-// your calendar now?" are claims. A question that is no offer ("It's on your calendar now, right?") is tested whole.
+// nothing on your calendar now."), and no claim as the COMPLEMENT OF THE ACT OFFERED: in a question, a "now" form directly after a
+// placing verb and its short object ("Should I put it on your calendar now?", "... or put a follow-up on your calendar now?",
+// "Since Friday's open, want me to get it on your calendar now?"). Anywhere else, in any sentence, it is a claim, whatever
+// connective leads up to it: "Should I draft a check-in as it's on your calendar now?", "Want me to let the Chens know it's on your
+// calendar now?", "Should I tell the Chens the follow-up is now on your calendar?", "... for the follow-up that's now on your
+// calendar?" (R5-4: what an offer says is said). The object is at most PLACING_OBJECT_WORDS words with no clause break and none of
+// the words that open a clause of its own (that, which, who, as, since, so, while, because, know, tell, is / are, it's ...), so the
+// complement is the verb's own and not something said beside it. A statement is never exempt, so "I'll put it on your calendar
+// now." and "Let me put it on your calendar now." stay claims, as does the first-person past (CALENDAR_PLACED_RE).
 const CALENDAR_PLACED_RE = new RegExp(
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
     "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
   "i"
 );
 const CALENDAR_NOW_RE =
-  /(?<!\b(?:nothing|anything|none|else)\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
+  /(?<!\b(?:nothing|anything|none|else)(?:['’]s|\s+is|\s+are)?\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
+const CALENDAR_NOW_ALL_RE = new RegExp(CALENDAR_NOW_RE.source, "gi");
 const NEGATIVE_START_RE = /^(?:no|not|nothing|none|never|nobody|neither)\b/i;
-// where an offer's later clauses begin: a comma, colon, ellipsis, dash, or since / because / now that / given / once / after
-const OFFER_CLAUSE_SPLIT_RE = /,|:|…|--|\s-\s|\b(?:since|because|now\s+that|given|once|after)\b/i;
-const CLAUSE_LEAD_RE = /^(?:(?:and|but|so|or|plus)\s+)+/i;
-// `offer` = the sentence was an offer (isOffer) and has already lost its question word and subject pronoun
-const calendarClaim = (s, offer) =>
+const PLACING_VERB = "(?:put(?:ting)?|add(?:ing)?|book(?:ing)?|schedul(?:e|ing)|get(?:ting)?|pencil(?:l?ing)?|slot(?:ting)?|mov(?:e|ing))";
+const NOT_AN_OBJECT =
+  "(?:that|which|who|as|since|so|while|because|know|tell|let|note|say|says|said|is|are|was|were|be|been|if|when|where|after|once" +
+  "|(?:it|that|this|they|there|he|she|we|you|everything)['\\u2019](?:s|re|ve))";
+const PLACING_OBJECT_WORDS = 8;
+// the end of the text before a "now" form: a placing verb and a short object, nothing else (no punctuation, no clause of its own)
+const PLACING_COMPLEMENT_RE = new RegExp(
+  "\\b" + PLACING_VERB + "(?:\\s+(?!" + NOT_AN_OBJECT + "\\b)[^\\s.,;:!?()\\u2014\\u2013]+){0," + PLACING_OBJECT_WORDS + "}\\s*$", "i"
+);
+const calendarClaim = (s) =>
   CALENDAR_PLACED_RE.test(s) ||
-  (offer ? s.split(OFFER_CLAUSE_SPLIT_RE).slice(1) : [s]).some((piece) => {
-    const clause = piece.trim().replace(CLAUSE_LEAD_RE, "");
-    return !NEGATIVE_START_RE.test(clause) && CALENDAR_NOW_RE.test(clause);
-  });
+  (!NEGATIVE_START_RE.test(s) &&
+    [...s.matchAll(CALENDAR_NOW_ALL_RE)].some((m) => !(/\?\s*$/.test(s) && PLACING_COMPLEMENT_RE.test(s.slice(0, m.index)))));
 
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
 // `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only). Pure: no I/O, no state.
 function claimsCompletion(text, grounded, storedStage, sweep) {
   return sentencesOf(String(text == null ? "" : text)).some((part) => {
     let s = stripOpener(part.trim()).trim();
-    const offer = isOffer(s);
-    if (offer) s = s.replace(OFFER_LEAD_RE, "").trim();
-    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, offer) ||
+    if (isOffer(s)) s = s.replace(OFFER_LEAD_RE, "").trim();
+    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
