@@ -209,6 +209,14 @@ function markReconnect(db, userId, refreshTokenEnc) {
     .run(userId, refreshTokenEnc);
 }
 
+// The refresh token (still encrypted) of the user's connection right now, or null when there is none. Taken just after
+// accessToken() hands back a token, it names the connection that token belongs to: a Calendar call Google then refuses as
+// unauthorised passes it to markReconnect, which leaves a connection the user has redone in the meantime alone.
+function refreshTokenOf(db, userId) {
+  const row = db.prepare("SELECT refresh_token_enc FROM google_connections WHERE user_id = ?").get(userId);
+  return row ? row.refresh_token_enc : null;
+}
+
 // A usable access token for the user, refreshed first when under a minute is left on it.
 //   { token, timeZone, googleEmail }                       the token
 //   { code: "not_connected" }                              no connection
@@ -291,4 +299,6 @@ async function disconnect(db, userId, fetchFn = globalThis.fetch) {
   db.prepare("DELETE FROM google_connections WHERE user_id = ?").run(userId);
 }
 
-module.exports = { SCOPES, STATE_TTL_MS, googleConfig, startAuth, finishAuth, cancelAuth, getConnection, accessToken, disconnect };
+module.exports = {
+  SCOPES, STATE_TTL_MS, googleConfig, startAuth, finishAuth, cancelAuth, getConnection, markReconnect, refreshTokenOf, accessToken, disconnect,
+};

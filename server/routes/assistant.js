@@ -8,8 +8,10 @@
 // deadline (CHARLI_TURN_DEADLINE_MS, see turnDeadlineMs). A change Charli
 // proposes comes back as `sideEffect` with a code-authored read-back; the browser echoes it to
 // /confirm only after the user says yes. That body is UNTRUSTED browser input, so /confirm accepts
-// three action types, takes org/user from the session alone, and runs the same validation and checks
-// as the REST routes (createClientForUser / logContactForUser in routes/clients.js).
+// four action types, takes org/user from the session alone, and runs the same validation and checks
+// as the REST routes (createClientForUser / logContactForUser in routes/clients.js). Three of them write synchronously, in one
+// transaction; the fourth, createEvent, books on the user's own Google calendar, which a transaction cannot wait for.
+// An email Charli sets up for the broker (draftEmailTool) comes back from /turn as `compose` and is never confirmed or sent.
 const crypto = require("crypto");
 const express = require("express");
 const rateLimit = require("express-rate-limit");
@@ -25,6 +27,8 @@ const {
 } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { createClientForUser, logContactForUser } = require("./clients");
+const { googleFor } = require("../lib/google");
+const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../lib/google/time");
 
 const DEFAULT_USAGE_DAYS = 30;
 const MAX_USAGE_DAYS = 365;
@@ -162,6 +166,9 @@ const fingerprintName = (name) => (typeof name === "string" ? name.trim().replac
 // conversation as the assistant's turn (so the read-back is no longer the last thing Charli said). The stage is said as the
 // read-back says it ("Veteran, ten or more years"): the screen label's "(10+ years)" reads aloud as "ten+".
 function confirmReply(type, receipt) {
+  if (type === "createEvent") {
+    return `Done — "${receipt.title}" is on your calendar for ${spokenDay(receipt.date)} at ${spokenTime(parseTime(receipt.time))}.`;
+  }
   if (type === "setCareerStage") return `Done — your career stage is set to ${spokenStageLabel(receipt.stage) || receipt.label}.`;
   return type === "logContact" ? `Done — I logged a contact for ${receipt.name}.` : `Done — I added ${receipt.name} as a new client.`;
 }
@@ -173,6 +180,140 @@ function setCareerStageForUser(user, stage) {
   if (info.changes !== 1) return { status: 404, error: "User not found" };
   const receipt = { stage: stage.id, label: stage.label };
   return { result: receipt, receipt };
+}
+
+// ── Booking a calendar event (createEvent) ───────────────────────────────────
+
+// The one /confirm action that waits on another service. A Google Calendar insert cannot run inside a better-sqlite3 transaction,
+// so its confirmId row has two states: 'pending' (claimed in a transaction, then Google is called outside it) and 'done' (the
+// receipt is kept). The other actions are written synchronously and are always 'done'.
+const PENDING_SECONDS = 120;              // a pending row this young is a request still at work; an older one is a dead request's
+const EVENT_TITLE_MAX = 120;
+const EVENT_MINUTES_MIN = 15;
+const EVENT_MINUTES_MAX = 240;
+
+// What the broker is told when Google cannot book, by the { code } the adapter gives (lib/google).
+const GOOGLE_REASONS = {
+  not_connected: "your Google calendar isn't connected",
+  reconnect: "your Google connection has expired — reconnect it in the Charli panel",
+  unavailable: "couldn't reach Google — try again",
+};
+const GOOGLE_UNREACHABLE = GOOGLE_REASONS.unavailable;
+
+// The Google event id a confirmId books under: "br" + the id's hex (a lower-case UUID's digits are a subset of the base32hex
+// alphabet Google takes), so the same confirmId can only ever make the one event.
+const bookingEventId = (confirmId) => `br${confirmId.replace(/-/g, "")}`;
+
+// What is wrong with a booking's fields, or null. The tool checked all of this when it packaged the booking, but the body is
+// untrusted browser input. (Whether the start has passed and whether the zone is the connection's depend on the moment and
+// on the connection, so they are checked later, once a duplicate has been ruled out.)
+function eventProblem({ date, time, durationMinutes, title }) {
+  let realDate = /^\d{4}-\d{2}-\d{2}$/.test(date);
+  if (realDate) {
+    try { spokenDay(date); } catch (_err) { realDate = false; }
+  }
+  if (!realDate) return "a valid date is required";
+  if (!/^\d{2}:\d{2}$/.test(time) || !parseTime(time)) return "a valid time is required (HH:MM)";
+  if (!Number.isInteger(durationMinutes) || durationMinutes < EVENT_MINUTES_MIN || durationMinutes > EVENT_MINUTES_MAX) {
+    return `the length must be a whole number of minutes from ${EVENT_MINUTES_MIN} to ${EVENT_MINUTES_MAX}`;
+  }
+  if (!title.trim() || title.length > EVENT_TITLE_MAX || /[\r\n\u2028\u2029]/.test(title)) {
+    return `the title must be one line of at most ${EVENT_TITLE_MAX} characters`;
+  }
+  return null;
+}
+
+// POST /api/assistant/confirm for { type: "createEvent", event: { title, date, time, durationMinutes, timeZone }, confirmId }.
+//   1. The shape and the fields are checked (400, nothing recorded). The confirmId is required.
+//   2. One transaction: a 'done' row for this id is a duplicate (answered from the receipt, whatever has changed since: the start
+//      may have passed, Google may be disconnected); a 'pending' row younger than PENDING_SECONDS is 409 "still working on
+//      that one"; anything else is claimed by writing (or taking over) a 'pending' row.
+//   3. Outside it: the connection and the clock decide (409 / 400), then Google books under the id "br" + the confirmId's hex.
+//   4. Booked (Google's own 409, "that id exists", counts: it is the same booking) -> the row becomes 'done' with the receipt
+//      { eventId, title, date, time }. Not booked -> the row is deleted, so the id is good for a retry, and the broker is told
+//      why: 409 for a Google { code } (not connected / expired / unreachable), 502 for any other Google failure.
+// Never rejects: Express 4 would not catch it.
+async function confirmCreateEvent(req, res, sideEffect) {
+  const refuse = (status, error) => res.status(status).json({ success: false, error });
+  const type = "createEvent";
+
+  const event = sideEffect.event;
+  if (!event || typeof event !== "object" || Array.isArray(event)) return refuse(400, "a valid event is required");
+  const { title, date, time, durationMinutes, timeZone } = event;
+  if ([title, date, time, timeZone].some((value) => typeof value !== "string")) return refuse(400, "a valid event is required");
+  if (sideEffect.confirmId == null) return refuse(400, "confirmId required");
+  if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return refuse(400, "confirmId must be a UUID");
+  const confirmId = sideEffect.confirmId.toLowerCase();
+  const problem = eventProblem(event);
+  if (problem) return refuse(400, problem);
+  const target = JSON.stringify([date, time, durationMinutes, title]);
+
+  let claim;
+  try {
+    claim = db.transaction(() => {
+      const prior = db.prepare(
+        "SELECT user_id, result_json, action_type, target, state, created_at > datetime('now', ?) AS fresh " +
+        "FROM assistant_confirmations WHERE confirm_id = ?"
+      ).get(`-${PENDING_SECONDS} seconds`, confirmId);
+      if (prior) {
+        if (prior.user_id !== req.user.id) return { conflict: "confirmId already used" };
+        if (prior.action_type !== type || prior.target !== target) return { conflict: "confirmId was used for a different action" };
+        if (prior.state === "done") return { duplicate: JSON.parse(prior.result_json) };
+        if (prior.fresh) return { working: true };
+        // a pending row this old belongs to a request that died (the process went down mid-call): take it over and restart its clock
+        db.prepare("UPDATE assistant_confirmations SET created_at = datetime('now') WHERE confirm_id = ?").run(confirmId);
+        return { claimed: true };
+      }
+      db.prepare(
+        "INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target, state) VALUES (?, ?, '{}', ?, ?, 'pending')"
+      ).run(confirmId, req.user.id, type, target);
+      return { claimed: true };
+    })();
+  } catch (err) {
+    console.error("POST /api/assistant/confirm:", errText(err));
+    return refuse(500, "Database error");
+  }
+  if (claim.conflict) return refuse(409, claim.conflict);
+  if (claim.working) return refuse(409, "still working on that one");
+  if (claim.duplicate) return res.json({ success: true, result: claim.duplicate, reply: confirmReply(type, claim.duplicate), duplicate: true });
+
+  // Ours from here: whatever stops the booking gives the claim back, so the same confirmId can be tried again.
+  const release = () => {
+    try {
+      db.prepare("DELETE FROM assistant_confirmations WHERE confirm_id = ? AND user_id = ? AND state = 'pending'").run(confirmId, req.user.id);
+    } catch (err) {
+      console.error("POST /api/assistant/confirm (release):", errText(err));
+    }
+  };
+  const eventId = bookingEventId(confirmId);
+  let booked;
+  try {
+    const google = googleFor({ db, userId: req.user.id, fetchFn: req.app.get("googleFetch") || globalThis.fetch });
+    const connection = google.connection();
+    if (connection.code) { release(); return refuse(409, GOOGLE_REASONS[connection.code] || GOOGLE_UNREACHABLE); }
+    if (timeZone !== connection.timeZone) { release(); return refuse(400, "that event isn't for the calendar you connected"); }
+    const clock = parseTime(time);
+    if (!wallTimeExists(date, clock, timeZone)) { release(); return refuse(400, assistantTools.NO_SUCH_TIME); }
+    if (toInstant(date, clock, timeZone) < Date.now()) { release(); return refuse(400, assistantTools.PAST_TIME); }
+
+    booked = await google.insertEvent({ id: eventId, title, date, time, durationMinutes, timeZone });
+    if (booked && booked.code) { release(); return refuse(409, GOOGLE_REASONS[booked.code] || GOOGLE_UNREACHABLE); }
+    if (!booked || !(booked.eventId || booked.duplicate)) { release(); return refuse(502, GOOGLE_UNREACHABLE); }
+  } catch (err) {
+    console.error("POST /api/assistant/confirm:", errText(err));
+    release();
+    return refuse(500, "Something went wrong — try again");
+  }
+
+  // The event is on the calendar. If keeping the receipt fails, the row stays pending and a retry meets Google's own 409.
+  const receipt = { eventId: booked.eventId || eventId, title, date, time };
+  try {
+    db.prepare("UPDATE assistant_confirmations SET result_json = ?, state = 'done' WHERE confirm_id = ? AND user_id = ?")
+      .run(JSON.stringify(receipt), confirmId, req.user.id);
+  } catch (err) {
+    console.error("POST /api/assistant/confirm (receipt):", errText(err));
+  }
+  return res.json({ success: true, result: receipt, reply: confirmReply(type, receipt) });
 }
 
 // ── The router ───────────────────────────────────────────────────────────────
@@ -212,7 +353,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
     const rates = cleanRates(body.rates);
     if (!rates) return res.status(400).json({ success: false, error: "current rates required" });
     const turnId = crypto.randomUUID();
-    const ctx = { user: req.user, rates, db };
+    // ctx.google is bound to the signed-in user: a tool can only ever reach that user's own calendar. Building it makes no call.
+    const google = googleFor({ db, userId: req.user.id, fetchFn: req.app.get("googleFetch") || globalThis.fetch });
+    const ctx = { user: req.user, rates, db, google };
 
     if (body.greeting === true) {
       try {
@@ -258,6 +401,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
     // pending card shows under the read-back (display only: /confirm never reads them).
     if (out.sideEffect) payload.sideEffect = { ...out.sideEffect, confirmId: crypto.randomUUID() };
     if (out.sideEffect && Array.isArray(out.details)) payload.details = out.details;
+    // An email Charli set up (draftEmailTool): the compose links for the browser to open. Nothing to confirm and nothing is sent;
+    // the broker sends it from their own mail app.
+    if (out.compose) payload.compose = out.compose;
     res.json(payload);
   });
 
@@ -275,12 +421,23 @@ function createAssistantRouter({ limiter = {} } = {}) {
   //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
   //     that fails (400 / 403 / 404) records nothing, so the id is still good for a corrected retry.
   //   * what is kept per confirmId is { id, name } only (no email, phone or notes), or { stage, label }.
+  //   * createEvent ({ type, event: { title, date, time, durationMinutes, timeZone }, confirmId }, the confirmId required) books the
+  //     event on the signed-in user's own Google calendar: asynchronous, see confirmCreateEvent. What is kept is
+  //     { eventId, title, date, time }; the reply is `Done — "<title>" is on your calendar for <day> at <time>.`
   router.post("/confirm", (req, res) => {
     const sideEffect = req.body && req.body.sideEffect;
     if (!sideEffect || typeof sideEffect !== "object" || Array.isArray(sideEffect)) {
       return res.status(400).json({ success: false, error: "sideEffect required" });
     }
     const bad = (error) => res.status(400).json({ success: false, error });
+
+    // A booking waits on Google, so it has its own (asynchronous) path; the rest are written synchronously, below.
+    if (sideEffect.type === "createEvent") {
+      return confirmCreateEvent(req, res, sideEffect).catch((err) => {
+        console.error("POST /api/assistant/confirm:", errText(err));
+        if (!res.headersSent) res.status(500).json({ success: false, error: "Something went wrong — try again" });
+      });
+    }
 
     // Shape checks first; they leave `execute`, the write to run if this is not a duplicate, and `target`,
     // the fingerprint of what it acts on.
@@ -328,7 +485,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
         }
         const done = execute();
         if (done.receipt && confirmId) {
-          db.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target) VALUES (?, ?, ?, ?, ?)")
+          db.prepare("INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target, state) VALUES (?, ?, ?, ?, ?, 'done')")
             .run(confirmId, req.user.id, JSON.stringify(done.receipt), type, target);
         }
         return done;

@@ -171,6 +171,15 @@ function toInstant(date, time, timeZone) {
   return wall - before;                                            // none survive = the skipped hour: apply the pre-change offset
 }
 
+// Whether the wall clock in `timeZone` ever reads `date` + `time` ({ hour, minute }): false for a time a clock change skips
+// (spring forward: 02:30 on the day New York jumps from 02:00 to 03:00). toInstant moves such a time forward by the gap, so
+// the check is whether that instant reads back as the time that was asked for. A repeated time (fall back) exists.
+function wallTimeExists(date, time, timeZone) {
+  const { hour, minute } = requireTime(time);
+  const read = localTimeOf(new Date(toInstant(date, time, timeZone)).toISOString(), timeZone);
+  return read.date === date && read.hour === hour && read.minute === minute;
+}
+
 // The [midnight, next midnight) window of a calendar day as RFC 3339 strings with the offset in force at each end (a
 // clock change inside the day makes the two offsets differ). If a zone skips midnight itself, the day starts at the first
 // instant that exists, written as the wall clock reads there (e.g. 01:00).
@@ -208,4 +217,4 @@ function spokenTime(time) {
   return `${hour % 12 || 12}:${pad2(minute)} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-module.exports = { localToday, resolveDate, parseTime, toInstant, dayBounds, localTimeOf, spokenDay, spokenTime };
+module.exports = { localToday, resolveDate, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime };

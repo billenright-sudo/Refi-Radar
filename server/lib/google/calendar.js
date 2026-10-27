@@ -9,15 +9,43 @@
 //
 // `token` comes from oauth.accessToken (through ./index.js); `fetchFn` is injected so tests script Google. Neither function
 // throws: a failure is { error: <fixed message> } and never carries Google's reply or the token. A failure is logged as an
-// HTTP status or an error name only.
+// HTTP status or an error name only. The one exception is a call Google refuses as unauthorised (a 401, or a 403 whose reason
+// is an auth problem): that is { code: "reconnect" }, the code the token step gives too, and ./index.js flags the connection.
 const { dayBounds, toInstant, parseTime, localTimeOf, spokenTime } = require("./time");
 
 const EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const REQUEST_TIMEOUT_MS = 10_000;       // a call to Google that goes quiet is given up on
 const MAX_EVENTS = 50;
+const EVENT_ID_RE = /^[a-v0-9]{5,1024}$/;   // what events.insert takes as a caller-chosen id: base32hex, 5 to 1024 characters
 const NO_TITLE = "(no title)";
 const MSG_NOT_READ = "Google Calendar could not be read";
 const MSG_NOT_BOOKED = "Google Calendar could not create the event";
+
+// The reasons a 403 can give that mean "this token is no good" (as opposed to a quota, a rate limit or a calendar the user may not
+// write to): Google's error-detail `reason`, an OAuth `error` string, or the `status` of the error. Lower-cased to compare.
+const AUTH_REASONS = new Set([
+  "autherror", "invalid_grant", "invalid_token", "unauthorized", "unauthenticated",
+  "insufficientpermissions", "insufficient_scope", "access_token_scope_insufficient",
+]);
+
+// Whether Google refused this call because of the token: any 401, or a 403 that says so. Reads the body of a failed call only, and
+// keeps none of it.
+async function refusedAsUnauthorised(res) {
+  if (res.status === 401) return true;
+  if (res.status !== 403) return false;
+  let body = null;
+  try { body = await res.json(); } catch { return false; }
+  const err = body && typeof body === "object" ? body.error : null;
+  const reasons = [];
+  if (typeof err === "string") reasons.push(err);
+  else if (err && typeof err === "object") {
+    if (typeof err.status === "string") reasons.push(err.status);
+    for (const list of [err.errors, err.details]) {
+      if (Array.isArray(list)) for (const item of list) if (item && typeof item.reason === "string") reasons.push(item.reason);
+    }
+  }
+  return reasons.some((reason) => AUTH_REASONS.has(reason.toLowerCase()));
+}
 
 const authorize = (token, extra) => ({ Authorization: `Bearer ${token}`, ...extra });
 const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error");
@@ -65,6 +93,7 @@ async function listDay(token, { date, timeZone } = {}, fetchFn = globalThis.fetc
   }
   if (!res.ok) {
     console.error("google calendar listDay failed: HTTP", res.status);
+    if (await refusedAsUnauthorised(res)) return { code: "reconnect" };
     return { error: MSG_NOT_READ };
   }
   try {
@@ -88,11 +117,15 @@ const utcIso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 // the same id twice is HTTP 409 from Google, which is { duplicate: true }: the repeat of a confirm is harmless.
 //   { eventId }        booked
 //   { duplicate: true } that id already exists
-//   { error }          anything else, including a booking that is not well formed (nothing is sent)
+//   { code: "reconnect" } Google refused the token (see the top of this file)
+//   { error }          anything else, including a booking that is not well formed (nothing is sent): an id Google would refuse,
+//                      or a title that is not text, is caught here rather than by a 400 from Google
 // No attendees and sendUpdates=none: nobody is invited or emailed.
 async function insertEvent(token, { id, title, date, time, durationMinutes, timeZone } = {}, fetchFn = globalThis.fetch) {
   let body;
   try {
+    if (typeof id !== "string" || !EVENT_ID_RE.test(id)) throw new Error("bad event id");
+    if (typeof title !== "string" || !title.trim()) throw new Error("bad title");
     if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) throw new Error("bad duration");
     const clock = typeof time === "string" ? parseTime(time) : time;
     const startMs = toInstant(date, clock, timeZone);
@@ -121,6 +154,7 @@ async function insertEvent(token, { id, title, date, time, durationMinutes, time
   if (res.status === 409) return { duplicate: true };
   if (!res.ok) {
     console.error("google calendar insertEvent failed: HTTP", res.status);
+    if (await refusedAsUnauthorised(res)) return { code: "reconnect" };
     return { error: MSG_NOT_BOOKED };
   }
   let made = null;

@@ -157,6 +157,11 @@ for (const column of ["action_type", "target"]) {
     db.exec(`ALTER TABLE assistant_confirmations ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`);
   }
 }
+// state: 'done' for every row written once its action has run (all the synchronous actions, and so every row made before this
+// column existed); 'pending' marks a Google booking that /confirm has claimed and is still carrying out (routes/assistant.js).
+if (!confirmationCols.some((c) => c.name === "state")) {
+  db.exec("ALTER TABLE assistant_confirmations ADD COLUMN state TEXT NOT NULL DEFAULT 'done'");
+}
 
 // A user's own Google account, connected for Charli's calendar (lib/google/oauth.js). Both tokens are stored encrypted
 // (lib/google/crypto.js); access_expires_at is epoch ms; status flips to 'reconnect' when Google refuses the refresh

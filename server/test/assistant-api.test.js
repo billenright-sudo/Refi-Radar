@@ -829,7 +829,7 @@ const namedCount = (name) => db.prepare("SELECT COUNT(*) AS n FROM clients WHERE
 
 test("assistant_confirmations: the migration creates the dedupe table", () => {
   const cols = db.prepare("PRAGMA table_info(assistant_confirmations)").all();
-  assert.deepStrictEqual(cols.map((c) => c.name), ["confirm_id", "user_id", "result_json", "created_at", "action_type", "target"]);
+  assert.deepStrictEqual(cols.map((c) => c.name), ["confirm_id", "user_id", "result_json", "created_at", "action_type", "target", "state"]);
   assert.equal(cols.find((c) => c.name === "confirm_id").pk, 1);
   for (const name of ["user_id", "result_json", "action_type", "target"]) {
     assert.equal(cols.find((c) => c.name === name).notnull, 1, name);
@@ -1158,7 +1158,7 @@ test("assistant_confirmations: a table made before the action columns existed ge
     const db = require(${JSON.stringify(path.join(__dirname, "..", "db.js"))});
     console.log(JSON.stringify({
       cols: db.prepare("PRAGMA table_info(assistant_confirmations)").all().map((c) => c.name),
-      row: db.prepare("SELECT action_type, target FROM assistant_confirmations").get(),
+      row: db.prepare("SELECT action_type, target, state FROM assistant_confirmations").get(),
     }));
   `;
   try {
@@ -1166,8 +1166,8 @@ test("assistant_confirmations: a table made before the action columns existed ge
       cwd: path.join(__dirname, ".."), env: { ...process.env, DATA_DIR: dir }, encoding: "utf8",
     });
     const result = JSON.parse(out.trim().split("\n").pop());
-    assert.deepStrictEqual(result.cols, ["confirm_id", "user_id", "result_json", "created_at", "action_type", "target"]);
-    assert.deepStrictEqual(result.row, { action_type: "", target: "" });
+    assert.deepStrictEqual(result.cols, ["confirm_id", "user_id", "result_json", "created_at", "action_type", "target", "state"]);
+    assert.deepStrictEqual(result.row, { action_type: "", target: "", state: "done" }, "a row made before the column existed is a finished one");
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
   }

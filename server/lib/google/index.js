@@ -13,17 +13,32 @@
 // A `{ code }` is oauth.accessToken's failure passed straight back ("not_connected", "reconnect", "unavailable") with no
 // call made to Calendar. Nothing touches the network until listDay or insertEvent is called.
 //
+// A Calendar call that Google itself refuses as unauthorised (401, or a 403 for an auth reason: ./calendar.js) is
+// { code: "reconnect" } too, and the connection is flagged 'reconnect' on the spot, so nothing keeps trying a token Google has
+// stopped honouring. The flag is guarded by the refresh token the call was made under (oauth.markReconnect): a connection the
+// user has redone while the call was in flight is left alone.
+//
 // `now` (epoch ms) is for tests; left out, the clock is read at each call. `fetchFn` defaults to the global fetch.
-const { accessToken, getConnection } = require("./oauth");
+const { accessToken, getConnection, markReconnect, refreshTokenOf } = require("./oauth");
 const calendar = require("./calendar");
 
 function googleFor({ db, userId, fetchFn = globalThis.fetch, now } = {}) {
   const clock = () => (Number.isFinite(now) ? now : Date.now());
 
-  // The token for this call, or the { code } to hand back.
+  // The token for this call, or the { code } to hand back. `refreshEnc` is read right after the token (nothing else can run in
+  // between), so it names the connection the token came from, even when the token step just rotated the refresh token.
   async function authorize() {
     const auth = await accessToken(db, userId, fetchFn, clock());
-    return auth && auth.token ? { auth } : { failure: { code: (auth && auth.code) || "unavailable" } };
+    if (!auth || !auth.token) return { failure: { code: (auth && auth.code) || "unavailable" } };
+    return { auth, refreshEnc: refreshTokenOf(db, userId) };
+  }
+
+  // A Calendar answer of { code: "reconnect" } means Google refused this connection's token: flag it, whatever else happens.
+  function settle(result, refreshEnc) {
+    if (result && result.code === "reconnect" && refreshEnc) {
+      try { markReconnect(db, userId, refreshEnc); } catch (_err) { /* the code is still handed back */ }
+    }
+    return result;
   }
 
   return {
@@ -35,16 +50,16 @@ function googleFor({ db, userId, fetchFn = globalThis.fetch, now } = {}) {
     },
 
     async listDay({ date } = {}) {
-      const { auth, failure } = await authorize();
+      const { auth, refreshEnc, failure } = await authorize();
       if (failure) return failure;
-      return calendar.listDay(auth.token, { date, timeZone: auth.timeZone }, fetchFn);
+      return settle(await calendar.listDay(auth.token, { date, timeZone: auth.timeZone }, fetchFn), refreshEnc);
     },
 
     async insertEvent(event) {
       const booking = event && typeof event === "object" ? event : {};
-      const { auth, failure } = await authorize();
+      const { auth, refreshEnc, failure } = await authorize();
       if (failure) return failure;
-      return calendar.insertEvent(auth.token, { ...booking, timeZone: booking.timeZone || auth.timeZone }, fetchFn);
+      return settle(await calendar.insertEvent(auth.token, { ...booking, timeZone: booking.timeZone || auth.timeZone }, fetchFn), refreshEnc);
     },
   };
 }

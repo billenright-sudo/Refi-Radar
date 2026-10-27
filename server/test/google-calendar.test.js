@@ -166,8 +166,8 @@ test("listDay: every failure is { error } with a fixed message and nothing from 
   const leak = "SECRET-BODY-TEXT " + ACCESS;
   const cases = {
     "HTTP 500": () => json({ error: { message: leak } }, 500),
-    "HTTP 401": () => json({ error: { message: leak } }, 401),
-    "HTTP 403": () => json({ error: { message: leak } }, 403),
+    "HTTP 403 that is not an auth problem": () => json({ error: { message: leak, errors: [{ reason: "forbidden", message: leak }] } }, 403),
+    "HTTP 403 with no readable reason": () => new Response("<html>" + leak + "</html>", { status: 403 }),
     "a network failure": () => { throw Object.assign(new Error(leak), { name: "TypeError" }); },
     "a body that is not JSON": () => new Response("<html>" + leak + "</html>", { status: 200 }),
     "a body that is not an object": () => json("nope"),
@@ -232,7 +232,8 @@ test("insertEvent: every other failure is { error } with a fixed message, and a 
   const leak = "SECRET-BODY-TEXT " + ACCESS;
   const cases = {
     "HTTP 400": () => json({ error: { message: leak } }, 400),
-    "HTTP 403": () => json({ error: { message: leak } }, 403),
+    "HTTP 403 that is not an auth problem": () => json({ error: { message: leak, errors: [{ reason: "rateLimitExceeded" }] } }, 403),
+    "HTTP 403 with no readable reason": () => new Response("<html>" + leak + "</html>", { status: 403 }),
     "HTTP 500": () => json({ error: { message: leak } }, 500),
     "a network failure": () => { throw Object.assign(new Error(leak), { name: "TimeoutError" }); },
   };
@@ -348,4 +349,111 @@ test("googleFor: never throws on a missing event, and does not leak a token into
   assert.ok(!JSON.stringify(results).includes(ACCESS));
   assert.deepEqual(Object.keys(results[1]), ["error"]);
   assert.deepEqual(Object.keys(results[2]), ["error"]);
+});
+
+// ── insertEvent: the id and the title are checked before anything is sent (Ruling 10) ───────────────────────────────────
+
+test("insertEvent: an id Google would refuse, or a title that is not text, is { error } and no request goes out", async () => {
+  const fetchFn = fakeFetch(() => json({ id: "x" }));
+  const bad = [
+    ["no id", { id: undefined }],
+    ["an id that is not text", { id: 12345 }],
+    ["an empty id", { id: "" }],
+    ["an id under five characters", { id: "abcd" }],
+    ["an id over 1024 characters", { id: "a".repeat(1025) }],
+    ["an upper-case id", { id: "ABCDE12345" }],
+    ["an id with a letter past v", { id: "abcdew12345" }],
+    ["an id with a dash", { id: "abcde-12345" }],
+    ["an id with a space", { id: "abcde 12345" }],
+    ["an id with a line break", { id: "abcde12345\n" }],
+    ["no title", { title: undefined }],
+    ["a title that is not text", { title: 7 }],
+    ["an empty title", { title: "" }],
+    ["a blank title", { title: "   " }],
+  ];
+  for (const [label, change] of bad) {
+    const out = await calendar.insertEvent(ACCESS, { ...BOOKING, ...change }, fetchFn);
+    assert.deepEqual(Object.keys(out), ["error"], label);
+  }
+  assert.equal(fetchFn.calls.length, 0);
+  // the edges of the rule are fine: five characters, 1024 characters, the whole a-v and 0-9 alphabet
+  for (const id of ["abcde", "a".repeat(1024), "0123456789abcdefghijklmnopqrstuv"]) {
+    assert.deepEqual(await calendar.insertEvent(ACCESS, { ...BOOKING, id }, fakeFetch((call) => json({ id: call.json.id }))), { eventId: id });
+  }
+  // the id the confirm step builds, "br" + a lower-case UUID's hex, is inside the alphabet
+  const confirmId = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  const built = "br" + confirmId.replace(/-/g, "");
+  assert.deepEqual(await calendar.insertEvent(ACCESS, { ...BOOKING, id: built }, fakeFetch((call) => json({ id: call.json.id }))), { eventId: built });
+});
+
+// ── a Calendar call Google refuses as unauthorised is { code: "reconnect" } (Ruling 17) ─────────────────────────────────
+
+const AUTH_403 = {
+  "authError": () => json({ error: { code: 403, message: "Invalid Credentials", errors: [{ reason: "authError", domain: "global" }] } }, 403),
+  "invalid_grant as the error": () => json({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, 403),
+  "invalid_grant as a reason": () => json({ error: { code: 403, errors: [{ reason: "invalid_grant" }] } }, 403),
+  "insufficientPermissions": () => json({ error: { code: 403, message: "Request had insufficient authentication scopes.", errors: [{ reason: "insufficientPermissions" }] } }, 403),
+  "UNAUTHENTICATED status": () => json({ error: { code: 403, status: "UNAUTHENTICATED" } }, 403),
+  "a missing scope in the error details": () => json({ error: { code: 403, status: "PERMISSION_DENIED", details: [{ reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }] } }, 403),
+};
+
+test("listDay: a 401, and a 403 whose reason is an auth problem, is { code: \"reconnect\" } with nothing from Google's reply", async () => {
+  const unauthorised = { "HTTP 401": () => json({ error: { code: 401, message: "SECRET-BODY-TEXT " + ACCESS } }, 401), "HTTP 401 with no body": () => new Response("", { status: 401 }), ...AUTH_403 };
+  for (const [label, handler] of Object.entries(unauthorised)) {
+    assert.deepEqual(await calendar.listDay(ACCESS, { date: "2026-10-27", timeZone: PHX }, fakeFetch(handler)), { code: "reconnect" }, label);
+  }
+  assert.ok(logged.every((line) => !line.includes(ACCESS) && !line.includes("SECRET")), "a status is logged, never a body");
+});
+
+test("insertEvent: a 401, and a 403 whose reason is an auth problem, is { code: \"reconnect\" } with nothing from Google's reply", async () => {
+  const unauthorised = { "HTTP 401": () => json({ error: { code: 401, message: "SECRET-BODY-TEXT " + ACCESS } }, 401), "HTTP 401 with no body": () => new Response("", { status: 401 }), ...AUTH_403 };
+  for (const [label, handler] of Object.entries(unauthorised)) {
+    assert.deepEqual(await calendar.insertEvent(ACCESS, BOOKING, fakeFetch(handler)), { code: "reconnect" }, label);
+  }
+  assert.ok(logged.every((line) => !line.includes(ACCESS) && !line.includes("SECRET")), "a status is logged, never a body");
+});
+
+test("googleFor: a Calendar call refused as unauthorised flags the connection 'reconnect', for listDay and for insertEvent", async () => {
+  for (const [label, run] of [
+    ["listDay", (g) => g.listDay({ date: "2026-10-27" })],
+    ["insertEvent", (g) => g.insertEvent(BOOKING)],
+  ]) {
+    for (const [how, handler] of [["a 401", () => json({}, 401)], ["a 403 authError", AUTH_403.authError]]) {
+      seedConnection(userId);
+      const g = googleFor({ db, userId, fetchFn: fakeFetch(handler), now: NOW });
+      assert.deepEqual(await run(g), { code: "reconnect" }, `${label}: ${how}`);
+      assert.equal(db.prepare("SELECT status FROM google_connections WHERE user_id = ?").get(userId).status, "reconnect", `${label}: ${how}`);
+      assert.deepEqual(g.connection(), { code: "reconnect" });
+      // the next call is told so without a request to Google
+      const quiet = fakeFetch(() => { throw new Error("no request expected"); });
+      assert.deepEqual(await run(googleFor({ db, userId, fetchFn: quiet, now: NOW })), { code: "reconnect" });
+      assert.equal(quiet.calls.length, 0);
+    }
+  }
+});
+
+test("googleFor: other Calendar failures do not flag the connection", async () => {
+  for (const handler of [() => json({}, 500), () => json({ error: { code: 403, errors: [{ reason: "rateLimitExceeded" }] } }, 403), () => json({}, 404)]) {
+    seedConnection(userId);
+    const g = googleFor({ db, userId, fetchFn: fakeFetch(handler), now: NOW });
+    assert.deepEqual(Object.keys(await g.listDay({ date: "2026-10-27" })), ["error"]);
+    assert.deepEqual(Object.keys(await g.insertEvent(BOOKING)), ["error"]);
+    assert.equal(db.prepare("SELECT status FROM google_connections WHERE user_id = ?").get(userId).status, "connected");
+  }
+});
+
+test("googleFor: a connection the user redid while the refused call was in flight is left alone (matched on the refresh token)", async () => {
+  seedConnection(userId);
+  const redo = () => {
+    // a new sign-in lands while the Calendar request is still out
+    db.prepare("UPDATE google_connections SET refresh_token_enc = ?, status = 'connected' WHERE user_id = ?").run(gcrypto.encrypt("1//brand-new-refresh"), userId);
+  };
+  const g = googleFor({ db, userId, fetchFn: fakeFetch(() => { redo(); return json({}, 401); }), now: NOW });
+  assert.deepEqual(await g.insertEvent(BOOKING), { code: "reconnect" });
+  assert.equal(db.prepare("SELECT status FROM google_connections WHERE user_id = ?").get(userId).status, "connected", "the fresh connection stays usable");
+  // the same through a token refresh that rotates the refresh token: the flag still lands on the connection that made the call
+  seedConnection(userId, { expiresAt: NOW - 1000 });
+  const rotating = fakeFetch((call) => (call.url === TOKEN_URL ? json({ access_token: ACCESS_NEW, expires_in: 3599, refresh_token: "1//rotated-refresh" }) : json({}, 401)));
+  assert.deepEqual(await googleFor({ db, userId, fetchFn: rotating, now: NOW }).listDay({ date: "2026-10-27" }), { code: "reconnect" });
+  assert.equal(db.prepare("SELECT status FROM google_connections WHERE user_id = ?").get(userId).status, "reconnect");
 });

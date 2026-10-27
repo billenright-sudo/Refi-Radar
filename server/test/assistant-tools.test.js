@@ -537,6 +537,23 @@ test("createEventTool: a start that has already passed is refused; a later time 
   assert.ok(later.sideEffect);
 });
 
+test("createEventTool: a wall time the clocks skip (spring forward) is refused; the minutes either side of the gap are packaged", async () => {
+  const ny = fakeGoogle({ connection: { timeZone: "America/New_York", googleEmail: "a@b.c" } });
+  const run = (date, time) => createEventTool({ date, time, title: "Closing" }, calCtx(brokerCtx, ny));
+  // New York springs forward on 2027-03-14: 02:00 becomes 03:00, so 02:30 never happens that day
+  for (const time of ["02:00", "02:30", "02:59"]) {
+    assert.deepStrictEqual(await run("2027-03-14", time), { data: { error: "that time doesn't exist that day — the clocks change" }, source: "(invalid input)" }, time);
+  }
+  assert.deepStrictEqual(ny.asked.insertEvent, []);
+  for (const [date, time] of [["2027-03-14", "01:59"], ["2027-03-14", "03:00"], ["2027-03-13", "02:30"], ["2027-03-15", "02:30"], ["2027-11-07", "01:30"]]) {
+    const r = await run(date, time);
+    assert.ok(r.sideEffect, `${date} ${time}`);
+    assert.deepStrictEqual([r.sideEffect.event.date, r.sideEffect.event.time], [date, time]);
+  }
+  // a calendar with no clock change has a 02:30 that day
+  assert.ok((await createEventTool({ date: "2027-03-14", time: "02:30", title: "Closing" }, calCtx(brokerCtx, fakeGoogle()))).sideEffect);
+});
+
 test("createEventTool: a client must be in the caller's own book", async () => {
   const google = fakeGoogle();
   const foreign = await createEventTool({ ...chenBooking, clientId: otherOrgClientId }, calCtx(brokerCtx, google));

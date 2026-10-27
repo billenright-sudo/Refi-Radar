@@ -5,7 +5,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  localToday, resolveDate, parseTime, toInstant, dayBounds, localTimeOf, spokenDay, spokenTime,
+  localToday, resolveDate, parseTime, toInstant, dayBounds, localTimeOf, spokenDay, spokenTime, wallTimeExists,
 } = require("../lib/google/time");
 
 const PHX = "America/Phoenix";
@@ -205,4 +205,24 @@ test("an invalid time zone throws the same clear error from every function that 
   for (const missing of [undefined, null, "", 7]) {
     assert.throws(() => localToday(missing, TUE), clear, `${JSON.stringify(missing)}`);
   }
+});
+
+test("wallTimeExists: false for a time the clocks skip (spring forward), true for the hour either side and for the repeated hour (fall back)", () => {
+  const t = (hour, minute) => ({ hour, minute });
+  // New York springs forward on 2027-03-14: 02:00 becomes 03:00
+  for (const [h, m] of [[2, 0], [2, 30], [2, 59]]) assert.equal(wallTimeExists("2027-03-14", t(h, m), NY), false, `${h}:${m}`);
+  for (const [h, m] of [[1, 59], [3, 0], [3, 30], [0, 0], [23, 59]]) assert.equal(wallTimeExists("2027-03-14", t(h, m), NY), true, `${h}:${m}`);
+  assert.equal(wallTimeExists("2027-03-13", t(2, 30), NY), true, "the day before has a 02:30");
+  assert.equal(wallTimeExists("2027-03-15", t(2, 30), NY), true, "and so does the day after");
+  // the repeated hour on 2027-11-07 exists (twice); toInstant takes the first
+  assert.equal(wallTimeExists("2027-11-07", t(1, 30), NY), true);
+  // a zone with no clock change never skips anything
+  assert.equal(wallTimeExists("2027-03-14", t(2, 30), PHX), true);
+  // another zone changes on another day: Europe/London springs forward on 2027-03-28 at 01:00
+  assert.equal(wallTimeExists("2027-03-28", t(1, 30), "Europe/London"), false);
+  assert.equal(wallTimeExists("2027-03-14", t(1, 30), "Europe/London"), true);
+  // the same rules as the rest: a date or time that is not real, or a zone Intl rejects, throws
+  assert.throws(() => wallTimeExists("2027-02-30", t(2, 30), NY), /date/i);
+  assert.throws(() => wallTimeExists("2027-03-14", t(25, 0), NY), /time/i);
+  assert.throws(() => wallTimeExists("2027-03-14", t(2, 30), "Mars/Olympus"), /Invalid time zone/);
 });

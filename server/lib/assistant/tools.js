@@ -15,7 +15,7 @@ const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
 const { validateClient } = require("../../routes/clients");   // the one POST /api/clients runs
-const { resolveDate, parseTime, toInstant, spokenDay, spokenTime } = require("../google/time");
+const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../google/time");
 const { PURPOSES, NMLS_PATTERN, renderEmail, composeLinks } = require("./outreach");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
@@ -133,6 +133,10 @@ const BAD_TIME = "say the time as 24-hour HH:MM";
 const BAD_LENGTH = "the length must be a whole number of minutes from 15 to 240";
 const BAD_TITLE = "the title must be one line of at most 120 characters";
 const NEEDS_TITLE = "a title is required when there is no client";
+// Said by createEventTool, and by /api/assistant/confirm for a booking that reaches it by hand: a start already behind us, and a
+// wall time a clock change skips (02:30 on the day the clocks spring forward), which the calendar would quietly move an hour.
+const PAST_TIME = "that time has already passed";
+const NO_SUCH_TIME = "that time doesn't exist that day — the clocks change";
 const MAX_EVENTS_SHOWN = 15;
 const TITLE_MAX = 120;
 const DURATION_MIN = 15;
@@ -252,14 +256,19 @@ async function createEventTool(args, ctx) {
 
   let date;
   let start;
+  let exists;
   try {
     date = resolveDate(a.date, connection.timeZone, clockOf(ctx));
-    if (date) start = toInstant(date, time, connection.timeZone);
+    if (date) {
+      start = toInstant(date, time, connection.timeZone);
+      exists = wallTimeExists(date, time, connection.timeZone);
+    }
   } catch (_err) {
     return fail("(unavailable)", "the time zone of the calendar could not be read");
   }
   if (!date) return fail("(invalid input)", BAD_DAY);
-  if (start < clockOf(ctx)) return fail("(invalid input)", "that time has already passed");
+  if (!exists) return fail("(invalid input)", NO_SUCH_TIME);
+  if (start < clockOf(ctx)) return fail("(invalid input)", PAST_TIME);
 
   const clock = `${String(time.hour).padStart(2, "0")}:${String(time.minute).padStart(2, "0")}`;
   return {
@@ -512,5 +521,5 @@ const TOOL_SCHEMA = [
 
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-  getCalendarTool, createEventTool, draftEmailTool,
+  getCalendarTool, createEventTool, draftEmailTool, PAST_TIME, NO_SUCH_TIME,
 };
