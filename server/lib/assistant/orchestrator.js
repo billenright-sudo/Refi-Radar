@@ -10,6 +10,9 @@
 //     text with no cited tool result behind it can't carry any fact (screenUngroundedText);
 //   * a side-effect tool call is NOT acted on: it is returned as `sideEffect`, with a
 //     code-authored read-back, for the confirmation step;
+//   * a client email is never written or sent here: a successful draftEmailTool ends the turn at once with a code-authored line
+//     and its `compose` links (the model never sees the address or the body), and a Google / NMLS / no-email failure is a
+//     code-authored line too (the model is not asked to put it into words);
 //   * an unknown tool name, or a loop that never settles, resolves to the can't-verify line.
 //
 // `client` is anything with messages.create(params) -> a Messages API response (the real
@@ -18,7 +21,10 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine,
 } = require("./prompt");
+const { PURPOSE_WORDS } = require("./outreach");
+const { parseTime, toInstant, localTimeOf, spokenDay, spokenTime } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 
@@ -32,9 +38,11 @@ const SWEEP_TOP_OPPORTUNITIES = 10;
 const SWEEP_TOP_CHECKINS = 10;
 const FIND_CLIENT_MAX_MATCHES = 5;
 
-// The tools that only PACKAGE a change (they never write; see tools.js). On the last allowed
-// model call these are the only tools run, because nothing else's result could be used.
-const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "setCareerStageTool"]);
+// The tools that only PACKAGE a change (they never write; see tools.js).
+const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "setCareerStageTool", "createEventTool"]);
+// On the last allowed model call these are the only tools run, because nothing else's result could be used: a change to
+// confirm, and an email to set up (its result ends the turn in code, so no later model call is needed to narrate it).
+const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool"]);
 
 // Same fallback as routes/rates.js and index.js. Read per call so the env can change.
 const modelName = () => process.env.CLAUDE_MODEL || "claude-sonnet-4-5";
@@ -190,7 +198,10 @@ function isYesNoQuestion(text) {
 // ("do you mind logging a call", "would you be able to add a client"). Any other word between the lead and
 // the verb is a noun or another verb ("can you pull up Chen's record"), so there is no request. Two
 // information requests share a verb with an action and are carved out of the verb list (and of its -ing
-// form): "update me / us / on ..." ("update me on rates") and "put together" ("put together a call list").
+// form): "update me / us / on ..." ("update me on rates") and "put together" ("put together a call list"). A third
+// is the noun: "email" is the verb unless "address" follows ("email the Chens" asks for an email, "the Chens' email address"
+// asks for nothing to be done). Writing to a client is an action like any other (draft / email / send), so a reply to
+// "draft the Chens a check-in" that is not a question is held to the same backstop; "send me ..." is held with it.
 // The polite leads "would you mind" and a clause-initial "mind" ("mind logging a call") take the -ing form.
 // The filler list holds only words that cannot be a noun: "go log", "make sure to log", "try to log",
 // "remember to log", and "make a note" (the "a" counts only when "note" follows). "remember" counts only
@@ -208,9 +219,11 @@ function isYesNoQuestion(text) {
 // what are rates today?" are questions with a bit of news in front, not requests. "want" and "need" do not count as asking
 // here: in the user's words they open a request ("I called the Chens, need to log that"), so such a report stays one. Pure.
 const ACTION_VERBS =
-  "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)";
+  "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)" +
+  "|draft|email(?!\\s+address)|send";
 const ACTION_VERBS_ING =
-  "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)";
+  "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)" +
+  "|drafting|emailing(?!\\s+address)|sending";
 const REQUEST_FILLER =
   "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember(?=\\s+to\\b)|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
@@ -291,14 +304,14 @@ function isQuestionShaped(reply) {
 // later clauses included (R5-4): "Should I get that marked as contacted?" is not a claim, "Would you
 // like me to set a follow-up now that I've logged the call?" is. "changed" is not a claim verb: "I see
 // rates changed overnight" is narration.
-const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|done";
-const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled";
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|drafted|emailed|done";
+const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled|drafted|emailed";
 const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
 const FIRST_PERSON_CLAIM_RE = new RegExp(
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?!(?:" + NOT_A_CLAIM + ")\\b)\\w+){0,4}\\s+(?:" + CLAIM_VERBS + ")\\b", "i"
 );
 const IN_PROGRESS_RE =
-  /\b(?:I['\u2019]m|I\s+am|we['\u2019]re|we\s+are)\s+(?:(?:now|just|going\s+ahead\s+and)\s+)?(?:logging|saving|adding|booking|recording|marking|noting|updating|scheduling|sending|creating)\b/i;
+  /\b(?:I['\u2019]m|I\s+am|we['\u2019]re|we\s+are)\s+(?:(?:now|just|going\s+ahead\s+and)\s+)?(?:logging|saving|adding|booking|recording|marking|noting|updating|scheduling|sending|creating|drafting|emailing)\b/i;
 const PASSIVE_RE = new RegExp("(?:\\b(?:is|are|been|got)|['\\u2019](?:s|re))\\s+(?:" + PASSIVE_VERBS + ")\\b", "i");
 const PASSIVE_PAST_RE = new RegExp("\\b(?:was|were)\\s+(?:" + PASSIVE_VERBS + "|set)\\b", "i");   // "was set": a career stage reported as set
 const PASSIVE_JUST_RE = new RegExp(
@@ -334,12 +347,12 @@ const GOT_IT_DONE_RE = new RegExp("\\bgot\\s+(?:\\S+\\s+){1,3}?(?:" + PASSIVE_VE
 const DONE_RE =
   /\b(?:it|that)['\u2019]s\s+(?:all\s+)?done\b|\b(?:is|been)\s+(?:all\s+)?done\b|\ball\s+set\b|\b(?:taken|took)\s+care\s+of\b/i;
 const COMPLETION_OPENER_RE =
-  /^\s*(?:(?:just|already|also)\s+)?(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+(?:done|handled|sent)|logged|saved|added|booked|recorded|noted|updated|marked|handled|sent|scheduled|created)\b/i;
+  /^\s*(?:(?:just|already|also)\s+)?(?:done|all\s+done|all\s+set|you['\u2019]re\s+all\s+set|you\s+are\s+all\s+set|consider\s+it\s+(?:done|handled|sent)|logged|saved|added|booked|recorded|noted|updated|marked|handled|sent|scheduled|created|drafted|emailed)\b/i;
 const CLAUSE_SPLIT_RE = /,|:|\u2026|--|\s-\s|\b(?:and|then)\b/i;
 const LEADING_CONJ_RE = /^(?:(?:so|but|plus)\s+)+/i;
 const TRAILING_PUNCT_RE = /[\s.!?;:,\u2026"\u201d)]+$/;
 const CLAUSE_CLAIM_RE =
-  /^(?:(?:just|already|also)\s+)?(?:(?:all\s+)?done|all\s+set|logged|saved|added|booked|recorded|noted|handled|sent|scheduled|created|(?:updated|marked)(?=$|\s+(?:it|that|them|him|her|the|your|their|as\s+contacted)\b))\b/i;
+  /^(?:(?:just|already|also)\s+)?(?:(?:all\s+)?done|all\s+set|logged|saved|added|booked|recorded|noted|handled|sent|scheduled|created|drafted|emailed|(?:updated|marked)(?=$|\s+(?:it|that|them|him|her|the|your|their|as\s+contacted)\b))\b/i;
 
 const sentencesOf = (text) => String(text).match(/[^.!?;\u2014\u2013]+[.!?;\u2014\u2013]*/g) || [];
 const isOffer = (sentence) => /\?\s*$/.test(sentence) && QUESTION_START_RE.test(sentence.trim());
@@ -970,8 +983,36 @@ function trimFindClient(data) {
   return out;
 }
 
+// A calendar event's title is text somebody else wrote (an invite, a note-to-self), and it is the one free-text field of a
+// calendar read: it reaches the model on one line, trimmed, and at most CALENDAR_TITLE_MAX characters long.
+const CALENDAR_TITLE_MAX = 200;
+const oneLine = (t) => (typeof t === "string" ? t.replace(/\s+/g, " ").trim().slice(0, CALENDAR_TITLE_MAX).trim() : "");
+
+// The calendar day as the model sees it: the spoken day, its date, how many events there are and the events. Nothing else
+// (not the time zone, not the connected account). An error result passes through untouched.
+function trimCalendar(data) {
+  if (!data || data.error || !Array.isArray(data.events)) return data;
+  const events = data.events.map((e) => {
+    const event = e && typeof e === "object" ? e : {};
+    return { title: oneLine(event.title), start: event.start, end: event.end, allDay: event.allDay };
+  });
+  return { day: data.day, date: data.date, count: data.count, events };
+}
+
+// The model never sees a client's address or the email text: it is told which client and which purpose, and the email itself
+// goes to the screen as `compose` (runTool carries it past this step).
+function trimDraft(data) {
+  if (!data || typeof data !== "object") return data;
+  const { email, body, ...rest } = data;
+  return rest;
+}
+
 const forModel = (name, data) =>
-  name === "runSweepTool" ? trimSweep(data) : name === "findClient" ? trimFindClient(data) : data;
+  name === "runSweepTool" ? trimSweep(data)
+    : name === "findClient" ? trimFindClient(data)
+      : name === "getCalendarTool" ? trimCalendar(data)
+        : name === "draftEmailTool" ? trimDraft(data)
+          : data;
 
 const toolResultBlock = (id, source, data, isError) => {
   const block = { type: "tool_result", tool_use_id: id, content: JSON.stringify({ source, data }) };
@@ -982,13 +1023,15 @@ const toolResultBlock = (id, source, data, isError) => {
 const cleanName = (n) => (typeof n === "string" ? n.replace(/\s+/g, " ").trim() : "");
 
 // Runs one tool and shapes what goes back to the model. A throwing tool never leaks its error
-// text to the model: it becomes an is_error result the model can apologise for. Returns
-// { source, sideEffect?, data, toolResult }.
-function runTool(block, ctx) {
+// text to the model: it becomes an is_error result the model can apologise for (a tool that returns a Promise, as the Google
+// ones do, is awaited, and one that rejects is the same). Returns { source, sideEffect?, compose?, data, toolResult }; `compose`
+// is the email draftEmailTool set up, carried to the caller and never shown to the model.
+async function runTool(block, ctx) {
   try {
-    const result = tools[block.name](block.input && typeof block.input === "object" ? block.input : {}, ctx);
+    const result = await tools[block.name](block.input && typeof block.input === "object" ? block.input : {}, ctx);
     if (!result || typeof result !== "object") throw new Error("tool returned no result");
     let { sideEffect } = result;
+    const compose = result.compose && typeof result.compose === "object" ? result.compose : undefined;
     if (sideEffect && sideEffect.type === "addClient") {
       // The saved name must be the one the read-back speaks; no usable name means nothing to confirm.
       const fields = sideEffect.fields || {};
@@ -1000,7 +1043,7 @@ function runTool(block, ctx) {
       sideEffect = { ...sideEffect, fields: { ...fields, name } };
     }
     return {
-      source: result.source, sideEffect, data: result.data,
+      source: result.source, sideEffect, compose, data: result.data,
       toolResult: toolResultBlock(block.id, result.source, forModel(block.name, result.data)),
     };
   } catch (_err) {
@@ -1038,12 +1081,38 @@ function addClientReadBack(fields) {
   return text + "?";
 }
 
+// A packaged booking in words, all of it from the event createEventTool packaged (never from the model): the spoken day and start
+// time, and the end time on the calendar's own wall clock (the start instant plus the length, so a clock change in between shows
+// as it will be on the calendar; an end on another day names that day). null when the event is not something the tool could have
+// packaged, and the caller falls back to the generic read-back.
+function eventSpeech(event) {
+  try {
+    const time = parseTime(event.time);
+    if (!time || !Number.isInteger(event.durationMinutes)) return null;
+    const end = localTimeOf(new Date(toInstant(event.date, time, event.timeZone) + event.durationMinutes * 60_000).toISOString(), event.timeZone);
+    const endAt = spokenTime({ hour: end.hour, minute: end.minute });
+    return {
+      day: spokenDay(event.date), at: spokenTime(time),
+      until: end.date === event.date ? endAt : `${spokenDay(end.date)}, ${endAt}`,
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
 // Code-authored confirmation question, built from the tool's own data (never from anything the
 // model wrote), so what is read back is what would be saved. Every read-back opens with READ_BACK_PREFIX
 // (answersActionQuestion keys on it).
 function readBack(out) {
   const se = out.sideEffect;
   switch (se.type) {
+    case "createEvent": {
+      const event = se.event || {};
+      const said = eventSpeech(event);
+      return said
+        ? `${READ_BACK_PREFIX} put "${event.title}" on your calendar for ${said.day} at ${said.at}, ${event.durationMinutes} minutes? Nobody gets an invite.`
+        : `${READ_BACK_PREFIX} go ahead with that?`;
+    }
     case "logContact":
       return `${READ_BACK_PREFIX} log a contact for ${cleanName(out.data && out.data.client && out.data.client.name) || "that client"}?`;
     case "addClient":
@@ -1061,7 +1130,8 @@ function readBack(out) {
 
 // What the pending card shows under the read-back: [{ label, value }], code-authored from the same packaged change. addClient
 // lists every field of sideEffect.fields (the object /confirm will write), the credit-score default included; logContact the
-// client and the date (the write sets the last contact to now); setCareerStage the stage. Never sent to the model.
+// client and the date (the write sets the last contact to now); setCareerStage the stage; createEvent the title, the day with its
+// start and end time on the calendar's clock, and that nobody is invited. Never sent to the model.
 const CLIENT_FIELD_LABELS = [
   ["name", "Name"], ["loanType", "Loan type"], ["currentRate", "Rate"], ["loanBalance", "Balance"], ["propertyValue", "Property value"],
   ["closeDate", "Close date"], ["creditScore", "Credit score"], ["email", "Email"], ["phone", "Phone"], ["notes", "Notes"],
@@ -1087,6 +1157,15 @@ function changeDetails(out) {
   if (se.type === "setCareerStage") {
     const stage = stageById(se.stage);
     return stage ? [{ label: "Career stage", value: stage.label }] : [];
+  }
+  if (se.type === "createEvent") {
+    const event = se.event || {};
+    const said = eventSpeech(event);
+    return said ? [
+      { label: "Title", value: String(event.title) },
+      { label: "When", value: `${said.day}, ${said.at} – ${said.until}` },
+      { label: "Invites", value: "None — your calendar only" },
+    ] : [];
   }
   return [];
 }
@@ -1120,15 +1199,43 @@ async function createWithin(client, params, ms) {
   }
 }
 
-// runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, error?, usage }
+// The line code speaks when a tool this turn came back with a `data.code` that has one (null otherwise): Google not connected,
+// expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool). Only the
+// non-citing error results carry these codes. The first such result, in the order the tools ran, decides.
+const GOOGLE_LINES = new Map([
+  ["not_connected", GOOGLE_NOT_CONNECTED], ["reconnect", GOOGLE_RECONNECT], ["unavailable", GOOGLE_UNAVAILABLE],
+]);
+function codeAuthoredLine(outs) {
+  for (const o of outs) {
+    if (isCitation(o.source) || !o.data || typeof o.data !== "object") continue;
+    const { code } = o.data;
+    if (GOOGLE_LINES.has(code)) return GOOGLE_LINES.get(code);
+    if (code === "nmls_missing") return NMLS_NEEDED;
+    if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
+  }
+  return null;
+}
+
+// What is said once an email is set up: the kind of email and the client, from the tool's own data. The address and the text
+// are on the screen (`compose`), and nothing here says or implies that anything was sent.
+const draftReply = (out) => {
+  const purpose = out.data && Object.hasOwn(PURPOSE_WORDS, out.data.purpose) ? PURPOSE_WORDS[out.data.purpose] : "client";
+  return `Here's a ${purpose} email for ${cleanName(out.data && out.data.client) || "that client"}, ready on your screen. ` +
+    "Open it in your email to review it and send it yourself — I don't send anything.";
+};
+
+// runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
 //   messages:   Messages API history ending with the user's latest message (not mutated)
-//   ctx:        { user, rates, db }, handed to the tools
+//   ctx:        { user, rates, db, google? }, handed to the tools (google = the per-user Google adapter; without one the calendar
+//               tools say Google is not connected)
 //   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call or before the next one, the
 //               turn is the code-authored TOOK_TOO_LONG with error:true (like the route's ERROR_TURN, but no throw): no sources,
 //               no change, and `usage` counts the model calls that did finish. `minCallMs` (default 1.5 s) is how little time
 //               left is still worth a model call; it is a test seam.
 //   sources:    citing `source` strings of the tool results used (error labels are not cited)
 //   details:    with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
+//   compose:    with a successful draftEmailTool, the email it set up ({ to, subject, body, links }) for the screen to open in the
+//               user's own mail app; it is never sent to the model, and nothing is sent by anyone
 async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
@@ -1136,10 +1243,11 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
   }
   const deadline = Date.now() + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : DEFAULT_TURN_DEADLINE_MS);
   const usage = { inputTokens: 0, outputTokens: 0 };
-  const finish = (reply, cited, sideEffect, details) => {
+  const finish = (reply, cited, sideEffect, details, compose) => {
     const out = { reply, sources: cited || [], usage };
     if (sideEffect) out.sideEffect = sideEffect;
     if (sideEffect && details) out.details = details;
+    if (compose) out.compose = compose;
     return out;
   };
   const tookTooLong = () => ({ ...finish(TOOK_TOO_LONG), error: true });
@@ -1257,9 +1365,9 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     }
 
     convo.push({ role: "assistant", content });
-    // On the last allowed call no narration can follow, so only a change to confirm matters.
-    const runBlocks = lastCall ? toolUses.filter((b) => SIDE_EFFECT_TOOLS.has(b.name)) : toolUses;
-    const outs = runBlocks.map((block) => runTool(block, ctx));
+    // On the last allowed call no narration can follow, so only a change to confirm (or an email to set up) matters.
+    const runBlocks = lastCall ? toolUses.filter((b) => LAST_CALL_TOOLS.has(b.name)) : toolUses;
+    const outs = await Promise.all(runBlocks.map((block) => runTool(block, ctx)));
     runBlocks.forEach((b, i) => {
       if (b.name !== "explainTerm") return;
       const { source, data } = outs[i];
@@ -1269,12 +1377,22 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       }
     });
 
-    // The tools only package a change; here it is handed up for confirmation, not acted on.
-    const changes = outs.filter((o) => o.sideEffect);
+    // Google not connected / expired / unreachable, no NMLS ID, no email on the client's record: code says so, before anything
+    // below and before the model is handed the results (it would only put it into its own words). It wins over a change another
+    // tool packaged in the same response: the user asked for both, so nothing is handed up and they ask again.
+    const line = codeAuthoredLine(outs);
+    if (line) return finish(line);
+
+    // The tools only package a change; here it is handed up for confirmation, not acted on. An email set up by draftEmailTool
+    // counts as a change for the one-at-a-time rule (it changes what is on the user's screen), though it has nothing to confirm:
+    // it ends the turn at once with a code-authored reply and its compose links, and the model never narrates it.
+    const changes = outs.filter((o) => o.sideEffect || o.compose);
     if (changes.length > 1) return finish(ONE_AT_A_TIME);
     if (changes.length === 1) {
       const change = changes[0];
-      return finish(readBack(change), isCitation(change.source) ? [change.source] : [], change.sideEffect, changeDetails(change));
+      const cited = isCitation(change.source) ? [change.source] : [];
+      if (change.compose) return finish(draftReply(change), cited, undefined, undefined, change.compose);
+      return finish(readBack(change), cited, change.sideEffect, changeDetails(change));
     }
     if (lastCall) break;
 
@@ -1292,5 +1410,5 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
 
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
 };

@@ -201,7 +201,7 @@ test("buildCharliSystem: four distinct staged prompts and a fifth for null, each
   // CHARLI_SYSTEM itself is untouched: the five-line contract the rest of the suite pins
   assert.ok(CHARLI_SYSTEM.includes(CANT_VERIFY));
   // it names setCareerStageTool in the confirmation rule only (it only prepares a change); the ask-once instruction is not in it
-  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool and setCareerStageTool only prepare an action/);
+  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool, setCareerStageTool and createEventTool only prepare an action/);
   assert.equal((CHARLI_SYSTEM.match(/setCareerStageTool/g) || []).length, 1);
   assert.doesNotMatch(CHARLI_SYSTEM, /career stage|how long they've been originating|isn't set/i);
 });
