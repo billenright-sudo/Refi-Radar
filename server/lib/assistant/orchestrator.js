@@ -24,7 +24,7 @@ const {
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
-const { parseTime, toInstant, localTimeOf, spokenDay, spokenTime } = require("../google/time");
+const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 
@@ -198,10 +198,11 @@ function isYesNoQuestion(text) {
 // ("do you mind logging a call", "would you be able to add a client"). Any other word between the lead and
 // the verb is a noun or another verb ("can you pull up Chen's record"), so there is no request. Two
 // information requests share a verb with an action and are carved out of the verb list (and of its -ing
-// form): "update me / us / on ..." ("update me on rates") and "put together" ("put together a call list"). A third
-// is the noun: "email" is the verb unless "address" follows ("email the Chens" asks for an email, "the Chens' email address"
-// asks for nothing to be done). Writing to a client is an action like any other (draft / email / send), so a reply to
-// "draft the Chens a check-in" that is not a question is held to the same backstop; "send me ..." is held with it.
+// form): "update me / us / on ..." ("update me on rates") and "put together" ("put together a call list"). Writing to a client
+// is an action like any other (draft / write / email / send), so a reply to "draft the Chens a check-in" that is not a question is
+// held to the same backstop. The same kind of carve-out keeps the information requests that share those verbs answerable: "send me
+// / us ..." ("send me what's on my calendar"), "email me / us ..." and "email on file ..." / "email address ..." (the noun), and
+// "write me / us / down ...". Charli sends nothing, so a claim of "sent" or "emailed" is still caught by the every-turn claim screens.
 // The polite leads "would you mind" and a clause-initial "mind" ("mind logging a call") take the -ing form.
 // The filler list holds only words that cannot be a noun: "go log", "make sure to log", "try to log",
 // "remember to log", and "make a note" (the "a" counts only when "note" follows). "remember" counts only
@@ -220,10 +221,10 @@ function isYesNoQuestion(text) {
 // here: in the user's words they open a request ("I called the Chens, need to log that"), so such a report stays one. Pure.
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)" +
-  "|draft|email(?!\\s+address)|send";
+  "|draft|write(?!\\s+(?:me|us|down)\\b)|email(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|send(?!\\s+(?:me|us)\\b)";
 const ACTION_VERBS_ING =
   "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)" +
-  "|drafting|emailing(?!\\s+address)|sending";
+  "|drafting|writing(?!\\s+(?:me|us|down)\\b)|emailing(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|sending(?!\\s+(?:me|us)\\b)";
 const REQUEST_FILLER =
   "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember(?=\\s+to\\b)|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
@@ -304,7 +305,7 @@ function isQuestionShaped(reply) {
 // later clauses included (R5-4): "Should I get that marked as contacted?" is not a claim, "Would you
 // like me to set a follow-up now that I've logged the call?" is. "changed" is not a claim verb: "I see
 // rates changed overnight" is narration.
-const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|drafted|emailed|done";
+const CLAIM_VERBS = "logged|added|saved|booked|sent|scheduled|updated|created|recorded|marked|noted|handled|drafted|emailed|wrote|done";
 const PASSIVE_VERBS = "logged|added|saved|recorded|updated|marked|noted|booked|sent|handled|drafted|emailed";
 const NOT_A_CLAIM = "not|never|no|can|cannot|could|would|should|will|shall|may|might|must|to";
 const FIRST_PERSON_CLAIM_RE = new RegExp(
@@ -397,7 +398,7 @@ const NP_WORD = "(?!(?:" + NOT_IN_SHORT_NP + ")\\b)(?:[A-Za-z\\u00c0-\\u024f][\\
 const UPDATED_AS_CLAIM = "updated(?=\\s*(?:$|[.!?,;:\\u2014\\u2013])|\\s+(?:for|to|with)\\b)";
 const SHORT_PASSIVE_RE = new RegExp(
   "^(?!(?:no|not|nothing|none|never|neither|nobody|any|anything|anyone)\\b)(?:(?:a|an|the|\\d[\\d,]*)\\s+)?(?:" + NP_WORD + "\\s+){0,4}" + NP_WORD +
-    "\\s+(?:logged|recorded|marked|added|saved|noted|booked|" + UPDATED_AS_CLAIM + ")\\b",
+    "\\s+(?:logged|recorded|marked|added|saved|noted|booked|drafted|emailed|sent|" + UPDATED_AS_CLAIM + ")\\b",
   "i"
 );
 const CARDINAL =
@@ -428,13 +429,30 @@ const shortPassiveClaims = (sentence, sweep) =>
     return !/\?\s*$/.test(c) && ((SHORT_PASSIVE_RE.test(c) && !(sweep && countNarration(c))) || IN_FOR_RE.test(c));
   });
 
+// A booking is never made here (createEventTool only packages one for /confirm), so a first-person "I put it on your calendar" /
+// "I've put a follow-up on your calendar" and the "now" forms, "it's on your calendar now" / "that's now on your calendar", are
+// false on every turn. (The verbs added / booked / scheduled are FIRST_PERSON_CLAIM_RE's.) Only these forms: a calendar FACT read
+// from getCalendarTool ("Follow-up: Robert & Linda Chen is on your calendar Friday at 10:00 AM.") is true and is no claim. The
+// "now" forms are no claim in a question ("Should I put it on your calendar now?"), after a negative ("Nothing's on your calendar
+// now.") or after "nothing / anything / else" ("You have nothing on your calendar now.").
+const CALENDAR_PLACED_RE = new RegExp(
+  "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
+    "\\s+(?:put|placed|blocked|penciled|pencilled|slotted|dropped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|in|onto|into)\\s+your\\s+(?:google\\s+)?calendar\\b",
+  "i"
+);
+const CALENDAR_NOW_RE =
+  /(?<!\b(?:nothing|anything|none|else)\s)\b(?:now\s+on\s+your\s+(?:google\s+)?calendar|on\s+your\s+(?:google\s+)?calendar\s+now)\b/i;
+const NEGATIVE_START_RE = /^(?:no|not|nothing|none|never|nobody|neither)\b/i;
+const calendarClaim = (s) =>
+  CALENDAR_PLACED_RE.test(s) || (!/\?\s*$/.test(s) && !NEGATIVE_START_RE.test(s) && CALENDAR_NOW_RE.test(s));
+
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
 // `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only). Pure: no I/O, no state.
 function claimsCompletion(text, grounded, storedStage, sweep) {
   return sentencesOf(String(text == null ? "" : text)).some((part) => {
     let s = stripOpener(part.trim()).trim();
     if (isOffer(s)) s = s.replace(OFFER_LEAD_RE, "").trim();
-    return COMPLETION_OPENER_RE.test(s) ||
+    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
@@ -697,13 +715,54 @@ const askedOf = (asked, answer) => {
   return said.trim().endsWith("?") ||
     (said.includes(READ_BACK_PREFIX) && !said.includes(CONFIRMED_PREFIX) && !isNewInstruction(reply) && !isAcknowledgement(reply));
 };
+
+// An OFFER to act, and a yes to it. Charli may offer to book a follow-up or write a check-in ("Want me to write them a check-in?",
+// "Should I book another follow-up Friday?"), and the user's "yes" is then a request to do it, though nothing in the user's own
+// words is an action request (the offer followed a calendar read or a sweep). So that "yes" turn is held to the action backstop like
+// any other, and the chain walk below counts it as the origin. An assistant message OFFERS when its last sentence ends with "?" and
+// opens, after at most one opener or a comma / colon / "and" / "so", with an offer lead (want me to, do you want me to, should I,
+// shall I, would you like me to, can I, could I, may I, shall we, should we, want to ...) followed by an action verb
+// (ACTION_VERBS, with its carve-outs: "Want me to run a sweep?" and "Want me to update you on rates?" offer no change); or when that
+// sentence is only the lead ("... — want me to?") and the sentence before it holds an action verb ("I can book a follow-up
+// Friday — want me to?"). An AFFIRMATION is the user's reply opening with yes / yeah / sure / please / ok / okay / go ahead / do it /
+// sounds good and the like (filler and an address to Charli ahead of it allowed); "no thanks" and a new question are not one.
+const OFFER_LEAD =
+  "(?:do\\s+you\\s+want\\s+me\\s+to|would\\s+you\\s+like\\s+me\\s+to|want\\s+me\\s+to|should\\s+I|shall\\s+I|can\\s+I|could\\s+I|may\\s+I" +
+  "|shall\\s+we|should\\s+we|would\\s+you\\s+like\\s+to|do\\s+you\\s+want\\s+to|want\\s+to)";
+// (An offer to update, send, email or write TO THE USER, "Want me to update you on rates?", asks the user for no change.)
+const OFFER_TO_ACT_RE = new RegExp(
+  "(?:^|[,:]\\s*)(?:(?:and|or|so)\\s+)?" + OFFER_LEAD + "(?:\\s+(?:also|just|quickly|maybe|go\\s+ahead\\s+and)){0,2}\\s+" +
+    "(?!(?:update|send|email|write|text)\\s+you\\b)(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])",
+  "i"
+);
+const BARE_OFFER_RE = new RegExp("^(?:(?:and|or|so)\\s+)?" + OFFER_LEAD + "\\s*\\?$", "i");
+const ACTION_WORD_RE = new RegExp("\\b(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
+const AFFIRMATION_RE = new RegExp(
+  "^(?:(?:oh|um|uh|well|so|and|hey|charli|charlie)[\\s,]+)*" +
+    "(?:yes|yeah|yep|yup|sure|please|ok|okay|alright|absolutely|definitely|of\\s+course|go\\s+ahead|do\\s+it|do\\s+that|go\\s+for\\s+it" +
+    "|sounds\\s+good|that\\s+sounds\\s+good|that\\s+works|let['\\u2019]s\\s+do\\s+it|why\\s+not|you\\s+bet)(?![\\w'\\u2019-])",
+  "i"
+);
+function offersAction(message) {
+  const pieces = sentencesOf(messageText(message)).map((p) => p.trim()).filter(Boolean);
+  const last = pieces[pieces.length - 1];
+  if (!last || !last.endsWith("?")) return false;
+  const s = stripOpener(last).trim();
+  return OFFER_TO_ACT_RE.test(s) || (BARE_OFFER_RE.test(s) && pieces.length > 1 && ACTION_WORD_RE.test(pieces[pieces.length - 2]));
+}
+const affirmsOffer = (asked, answer) =>
+  !!asked && asked.role === "assistant" && offersAction(asked) &&
+  AFFIRMATION_RE.test(messageText(answer).replace(AUDIO_TAG_RE, " ").trim());
+
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];
   if (!latest || latest.role !== "user" || !isAnswerShaped(messageText(latest))) return false;
-  for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 2; hop++, i -= 2) {
+  for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 1; hop++, i -= 2) {
     const asked = messages[i - 1];
+    if (!asked || asked.role !== "assistant") return false;
+    if (affirmsOffer(asked, messages[i])) return true;
     const before = messages[i - 2];
-    if (!asked || asked.role !== "assistant" || !askedOf(asked, messages[i])) return false;
+    if (i < 2 || !askedOf(asked, messages[i])) return false;
     if (!before || before.role !== "user") return false;
     const text = messageText(before);
     if (isActionRequest(text)) return true;
@@ -1199,6 +1258,61 @@ async function createWithin(client, params, ms) {
   }
 }
 
+// The tools of one model response, raced against what is left of the turn: a Google call goes out to the network, and the turn's
+// deadline covers it as it covers the model calls. When the time runs out the tools still in flight are abandoned (runTool never
+// rejects, so nothing is left unhandled, and nothing they return is used). The timer is always cleared.
+async function withinTurn(promise, ms) {
+  let timer;
+  const clock = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new TurnDeadline("tool calls timed out")), Math.max(0, ms));
+  });
+  try {
+    return await Promise.race([promise, clock]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── What a calendar read grounds beyond its figures ──────────────────────────────────────────────────────────────────────────
+//
+// On a turn that read the calendar, the figure check lets any number through that appears in the payload, so "10:00 PM" for a 10:00 AM
+// event, "Saturday" on a Tuesday read and "tomorrow" on a read of today would all pass it. So, on such a turn (Ruling 13):
+//   * every clock time in the reply ("10:00 AM", "10 PM", "9:30 a.m.") must be a time this turn's payloads hold, compared as H:MM and
+//     AM / PM, case and spacing aside ("10 AM" reads as 10:00 AM);
+//   * every weekday name in the reply must appear in this turn's payloads (the read's `day`, "Friday, October 30th", or an event title);
+//   * every today / tonight / tomorrow / yesterday must agree with a day this turn read: its date is the calendar's local today (+0),
+//     today plus one, or today minus one, in the time zone of that read (localToday, lib/google/time.js), at the turn's clock.
+// Times are checked wherever they stand; the weekday and relative-day words are checked in the sentences that state something, not in
+// a question: the offer "Want me to book another follow-up Friday?" after a read of today names a day to book, not a day the calendar
+// showed. Anything that does not hold, or a time zone that cannot be read, fails closed (the caller says CANT_VERIFY). Pure but for
+// the clock (ctx.now when a test sets it).
+const CLOCK_TIME_RE = /\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b/gi;
+const WEEKDAY_NAME_RE = /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi;
+const RELATIVE_DAY_RE = /\b(today|tonight|tomorrow|yesterday)\b/gi;
+const RELATIVE_DAY_OFFSET = { today: 0, tonight: 0, tomorrow: 1, yesterday: -1 };
+const DAY_MS = 86_400_000;
+const clockTimesIn = (text) =>
+  [...String(text).matchAll(CLOCK_TIME_RE)].map((m) => `${Number(m[1])}:${m[2] || "00"} ${m[3].toUpperCase()}M`);
+function calendarFactsHold(text, reads, payloads, ctx) {
+  const seen = payloads.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join("\n");
+  const known = new Set(clockTimesIn(seen));
+  if (clockTimesIn(text).some((t) => !known.has(t))) return false;
+  const statements = sentencesOf(text).filter((s) => !/\?\s*$/.test(s.trim())).join(" ");
+  const weekdays = new Set((seen.match(WEEKDAY_NAME_RE) || []).map((w) => w.toLowerCase()));
+  if ((statements.match(WEEKDAY_NAME_RE) || []).some((w) => !weekdays.has(w.toLowerCase()))) return false;
+  const now = ctx && Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  return (statements.match(RELATIVE_DAY_RE) || []).every((word) => {
+    const offset = RELATIVE_DAY_OFFSET[word.toLowerCase()];
+    return reads.some((read) => {
+      try {
+        return Date.parse(`${read.date}T00:00:00Z`) - Date.parse(`${localToday(read.timeZone, now)}T00:00:00Z`) === offset * DAY_MS;
+      } catch (_err) {
+        return false;
+      }
+    });
+  });
+}
+
 // The line code speaks when a tool this turn came back with a `data.code` that has one (null otherwise): Google not connected,
 // expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool). Only the
 // non-citing error results carry these codes. The first such result, in the order the tools ran, decides.
@@ -1228,10 +1342,11 @@ const draftReply = (out) => {
 //   messages:   Messages API history ending with the user's latest message (not mutated)
 //   ctx:        { user, rates, db, google? }, handed to the tools (google = the per-user Google adapter; without one the calendar
 //               tools say Google is not connected)
-//   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call or before the next one, the
-//               turn is the code-authored TOOK_TOO_LONG with error:true (like the route's ERROR_TURN, but no throw): no sources,
-//               no change, and `usage` counts the model calls that did finish. `minCallMs` (default 1.5 s) is how little time
-//               left is still worth a model call; it is a test seam.
+//   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call, in the tool calls of a response
+//               (Google ones go out to the network) or before the next model call, the turn is the code-authored TOOK_TOO_LONG
+//               with error:true (like the route's ERROR_TURN, but no throw): no sources, no change, and `usage` counts the model
+//               calls that did finish. `minCallMs` (default 1.5 s) is how little time left is still worth a model call; it is a
+//               test seam.
 //   sources:    citing `source` strings of the tool results used (error labels are not cited)
 //   details:    with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
 //   compose:    with a successful draftEmailTool, the email it set up ({ to, subject, body, links }) for the screen to open in the
@@ -1262,6 +1377,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
+  const calendarReads = [];   // { date, timeZone } of each calendar day read this turn
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
   // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
@@ -1356,6 +1472,8 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       }
       // Grounded: every figure the model speaks must be one the tools returned this turn.
       if (!text || ungroundedNumbers(text, payloads).length > 0) return finish(CANT_VERIFY);
+      // A calendar read also grounds the clock times, the weekday names and the relative days a reply names (Ruling 13).
+      if (calendarReads.length > 0 && !calendarFactsHold(text, calendarReads, payloads, ctx)) return finish(CANT_VERIFY);
       return finish(text, sources);
     }
 
@@ -1367,7 +1485,14 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     convo.push({ role: "assistant", content });
     // On the last allowed call no narration can follow, so only a change to confirm (or an email to set up) matters.
     const runBlocks = lastCall ? toolUses.filter((b) => LAST_CALL_TOOLS.has(b.name)) : toolUses;
-    const outs = await Promise.all(runBlocks.map((block) => runTool(block, ctx)));
+    // The tools get what is left of the turn, like the model calls do: a Google call that hangs cannot hold the mic past the deadline.
+    let outs;
+    try {
+      outs = await withinTurn(Promise.all(runBlocks.map((block) => runTool(block, ctx))), deadline - Date.now());
+    } catch (err) {
+      if (err instanceof TurnDeadline) return tookTooLong();
+      throw err;
+    }
     runBlocks.forEach((b, i) => {
       if (b.name !== "explainTerm") return;
       const { source, data } = outs[i];
@@ -1391,13 +1516,31 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     if (changes.length === 1) {
       const change = changes[0];
       const cited = isCitation(change.source) ? [change.source] : [];
-      if (change.compose) return finish(draftReply(change), cited, undefined, undefined, change.compose);
+      if (change.compose) {
+        // An email is set up only for a user who asked for one (or said yes to the offer of one): on any other turn the model
+        // drafted unasked (an instruction planted in a calendar title or a note can do that), so nothing is handed up.
+        if (!actionTurn) return finish(NOTHING_CHANGED);
+        return finish(draftReply(change), cited, undefined, undefined, change.compose);
+      }
+      // The event title is the model's own words and is spoken and written as it is: a figure in it must be one the tools
+      // returned this turn (this round's results included) or one the user just said ("Chens refi — 5.99%, saves $400" is neither).
+      if (change.sideEffect.type === "createEvent") {
+        // (not the booking's own result: its preview repeats the title, which would ground itself)
+        const reads = outs.filter((o, i) => !o.sideEffect && !o.compose && runBlocks[i].name !== "explainTerm");
+        const seen = [...payloads, ...reads.map((o) => o.toolResult.content), userText];
+        if (ungroundedNumbers(String((change.sideEffect.event || {}).title), seen).length > 0) return finish(CANT_VERIFY);
+      }
       return finish(readBack(change), cited, change.sideEffect, changeDetails(change));
     }
     if (lastCall) break;
 
     for (const [i, o] of outs.entries()) {
       if (isCitation(o.source) && !sources.includes(o.source)) sources.push(o.source);
+      // a calendar read: its date and the calendar's own time zone, which the model is not shown (forModel), are what a "today" or a
+      // "tomorrow" in the reply is checked against (calendarFactsHold)
+      if (isCitation(o.source) && o.source.startsWith("google calendar") && o.data && typeof o.data === "object") {
+        calendarReads.push({ date: o.data.date, timeZone: o.data.timeZone });
+      }
       // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote
       if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);
     }
