@@ -21,7 +21,7 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime } = require("../google/time");
@@ -2046,6 +2046,36 @@ const draftReply = (out) => {
     "Open it in your email to review it and send it yourself — I don't send anything.";
 };
 
+// Ruling 52: Charli never sends email, so when the user asks her to send it ("send it", "ok send it", "can you send it for me?",
+// "email it to them", "send the draft") or asks whether she did ("did you send it?", "was it sent?", "has it gone out?") and the
+// turn sets up no email, code says so (NO_SEND): the model's own words for it ("I can't send email — open it in Gmail") would be
+// held to the action backstop and come out as the nothing-changed line, whose "I'll confirm it with you first" implies she could
+// send it after a yes. Only the email in front of them is meant: "send the Chens a check-in" asks for a draft, and drafts. The
+// email is named ("the email", "the draft", "the note", "the check-in"), or emailed ("email it", "did you email them?"), or it is
+// a bare it / that / this while the email is in view (`emailInView`: the assistant message right before is about an email or a
+// draft, and is neither an offer to act nor a read-back). So "send it" after "Want me to write them a check-in?" or after a
+// cancelled read-back still says yes to that, as before.
+const PRONOUN_MESSAGE = "(?:it|that|this|they)";
+const NAMED_MESSAGE = "the\\s+(?:email|e-mail|draft|note|check[\\s-]?in)";
+const sendRe = (object) => new RegExp(
+  "\\bsend\\s+" + object + "(?![\\w'\\u2019-])" +
+    "|\\bdid\\s+you\\s+send\\s+" + object + "(?![\\w'\\u2019-])" +
+    "|\\b(?:was|were|is|has|have)\\s+" + object + "\\s+(?:(?:been|already|just)\\s+)*sent\\b" +
+    "|\\b(?:has|have|did)\\s+" + object + "\\s+(?:already\\s+)?(?:gone|go)\\s+out\\b",
+  "i"
+);
+const SEND_NAMED_RE = sendRe(NAMED_MESSAGE);
+const SEND_PRONOUN_RE = sendRe(PRONOUN_MESSAGE);
+const EMAILED_RE = /\be-?mail\s+(?:it|that|this)(?![\w'’-])|\bdid\s+you\s+e-?mail\b/i;
+const EMAIL_WORD_RE = /\b(?:e-?mails?|drafts?)\b/i;
+// `before`: the message right before the user's latest one
+const asksToSend = (text, before) => {
+  const prev = messageText(before);
+  const emailInView = !!before && before.role === "assistant" && EMAIL_WORD_RE.test(prev) && !offersAction(before) &&
+    !prev.includes(READ_BACK_PREFIX);
+  return SEND_NAMED_RE.test(text) || EMAILED_RE.test(text) || (emailInView && SEND_PRONOUN_RE.test(text));
+};
+
 // runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
 //   messages:   Messages API history ending with the user's latest message (not mutated)
 //   ctx:        { user, rates, db, google? }, handed to the tools (google = the per-user Google adapter; without one the calendar
@@ -2153,6 +2183,8 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // runs on what is left
       const text = sources.length > 0 ? stripProcessOpeners(said).trim() : said;
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
+      // Ruling 52: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
+      if (asksToSend(userText, messages[messages.length - 2])) return finish(NO_SEND);
       // R5-3, the action backstop: an action was asked for (now, or in the question this message
       // answers), and no change is being handed up for confirmation (a turn that ends in text never
       // carries a sideEffect), so whatever the model says, nothing was done. Only ONE question may

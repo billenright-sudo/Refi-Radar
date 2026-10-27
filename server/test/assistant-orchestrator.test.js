@@ -5638,3 +5638,65 @@ test("Final fix (Ruling 51): writing or drafting a talk track, a script, an open
   });
   assert.equal(r.reply, NOTHING_CHANGED);
 });
+
+const { NO_SEND } = require("../lib/assistant/prompt");
+
+test("Final fix (Ruling 52): asked to send the email, or whether it was sent, code says Charli doesn't send; a request to write one still drafts", async () => {
+  assert.equal(NO_SEND, "I don't send email — open it in your email app and send it yourself.");
+  const DRAFTED = "Here's a check-in email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
+  const after = (u) => history("draft the Chens a check-in", DRAFTED, u);
+  // probe s1: after the compose card, the honest replies and the offer all become the code line
+  for (const u of [
+    "send it", "ok send it", "can you send it for me?", "did you send it?", "go ahead and send it", "send it to them", "great, now send it",
+    "email it to them", "send the email", "send the draft now", "please send the check-in", "was it sent?", "has it gone out?",
+    "did the email go out?", "did you email them?",
+  ]) {
+    for (const said of [
+      "I can't send email — open the draft in Gmail and send it from there.", "I don't send anything — tap Open in Gmail to send it yourself.",
+      "Want me to open it in Gmail for you?",
+    ]) {
+      for (const script of [[], [useTool("findClient", { query: "chen" })]]) {
+        const r = await runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([...script, say(said)]) });
+        assert.equal(r.reply, NO_SEND, `${u} -> ${said}`);
+        assert.deepStrictEqual(r.sources, []);
+        assert.equal(r.sideEffect, undefined);
+        assert.equal("compose" in r, false);
+      }
+    }
+  }
+  // a named email counts with no email in view; a bare "send it" only with one in view: after an offer to act or a cancelled
+  // read-back it still says yes to that, and is held as before
+  for (const u of ["send the email", "did the email go out?", "email it to them"]) {
+    const r = await runTurn({ messages: userSays(u), ctx: mikeCtx, client: fakeClient([say("I can't send email.")]) });
+    assert.equal(r.reply, NO_SEND, u);
+  }
+  for (const messages of [
+    history(CAL_ASK, OFFERS[0], "send it"), history(CAL_ASK, OFFERS[2], "ok send it"),
+    history("log a call with the Chens", "Just to confirm — log a contact for Robert & Linda Chen?\nOkay — I'll leave that.", "send it"),
+  ]) {
+    const r = await runTurn({ messages, ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([say("Sent.")]) });
+    assert.equal(r.reply, NOTHING_CHANGED, messages[1].content);
+  }
+  // a request to write to a client still drafts, whatever its verb
+  for (const u of ["send the Chens a check-in", "email the Chens a check-in", "draft the Chens a check-in"]) {
+    const r = await runTurn({
+      messages: userSays(u), ctx: mikeCtx,
+      client: fakeClient([useTool("findClient", { query: "chen" }), useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" }, "toolu_2")]),
+    });
+    assert.equal(r.reply, DRAFTED, u);
+    assert.equal(r.compose.to, MIKE_CHEN_EMAIL);
+  }
+  // ... and an email set up on a "send it" turn still ends with its compose (the turn ended with one)
+  const r = await runTurn({
+    messages: after("send it"), ctx: mikeCtx,
+    client: fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" })]),
+  });
+  assert.equal(r.reply, DRAFTED);
+  assert.ok(r.compose);
+  // "send me ..." asks for nothing to be sent to a client, and is answered as before
+  for (const u of ["send me today's rates", "can you send me the sweep"]) {
+    const said = SWEEP_NARRATION;
+    const sweep = await runTurn({ messages: userSays(u), ctx: sweepCtx, client: fakeClient([useTool("runSweepTool"), say(said)]) });
+    assert.equal(sweep.reply, said, u);
+  }
+});

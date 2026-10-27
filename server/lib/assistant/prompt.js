@@ -47,6 +47,9 @@ const GOOGLE_UNAVAILABLE = "I couldn't reach Google just now — try that again 
 const NMLS_NEEDED = "Before I write to clients, add your NMLS ID in the Charli panel — it goes in every email signature.";
 // The client has no usable address on the record (a draft goes to the address on file and nowhere else). `name` is the client's name.
 const noEmailLine = (name) => `There's no email on file for ${name} — add one to their record and ask me again.`;
+// Charli never sends email (the broker sends it from their own mail app): what code says when the user asks her to send it, or
+// whether she sent it, and the turn sets up no email.
+const NO_SEND = "I don't send email — open it in your email app and send it yourself.";
 
 const CHARLI_SYSTEM = [
   "You are Charli, the voice co-pilot inside Broker Radar for a mortgage broker or loan officer. " +
@@ -130,5 +133,5 @@ const buildCharliSystem = (user) =>
 
 module.exports = {
   CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND,
 };
