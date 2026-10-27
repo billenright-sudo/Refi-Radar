@@ -227,7 +227,8 @@ function eventProblem({ date, time, durationMinutes, title }) {
 //   1. The shape and the fields are checked (400, nothing recorded). The confirmId is required.
 //   2. One transaction: a 'done' row for this id is a duplicate (answered from the receipt, whatever has changed since: the start
 //      may have passed, Google may be disconnected); a 'pending' row younger than PENDING_SECONDS is 409 "still working on
-//      that one"; anything else is claimed by writing (or taking over) a 'pending' row.
+//      that one" with `pending: true` (the only refusal that is not final); anything else is claimed by writing (or taking over) a
+//      'pending' row.
 //   3. Outside it: the connection and the clock decide (409 / 400), then Google books under the id "br" + the confirmId's hex.
 //   4. Booked (Google's own 409, "that id exists", counts: it is the same booking) -> the row becomes 'done' with the receipt
 //      { eventId, title, date, time }. Not booked -> the row is deleted, so the id is good for a retry, and the broker is told
@@ -274,7 +275,9 @@ async function confirmCreateEvent(req, res, sideEffect) {
     return refuse(500, "Database error");
   }
   if (claim.conflict) return refuse(409, claim.conflict);
-  if (claim.working) return refuse(409, "still working on that one");
+  // (Ruling 53: `pending: true` says the first request may still book, so the client keeps the card and the user can say yes again,
+  // which then meets the done receipt as a duplicate)
+  if (claim.working) return res.status(409).json({ success: false, error: "still working on that one", pending: true });
   if (claim.duplicate) return res.json({ success: true, result: claim.duplicate, reply: confirmReply(type, claim.duplicate), duplicate: true });
 
   // Ours from here: whatever stops the booking gives the claim back, so the same confirmId can be tried again.

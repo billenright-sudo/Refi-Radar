@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
-  CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE,
+  CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE, STILL_WORKING,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -658,6 +658,38 @@ test("a /confirm that may be retried (network, 500, 429) keeps the change; sayin
   }
 });
 
+test("Final fix (Ruling 53): a /confirm that is still being worked on (409 pending:true) keeps the card and says so; a later yes gets the done reply", async () => {
+  assert.equal(STILL_WORKING, "Still working on that — give it a moment, then say yes again.");
+  let n = 0;
+  const { session, server, spoken } = await withPending({
+    "POST /api/assistant/confirm": () => (++n === 1
+      ? reply(409, { success: false, error: "still working on that one", pending: true })
+      : reply(200, { success: true, result: { id: 7 }, reply: "Done — I logged a contact for Robert and Linda Chen.", duplicate: true })),
+  });
+  const pending = session.getState().pending;
+  assert.deepEqual(await session.submit("yes"), { ok: true, action: "confirm" });
+  assert.equal(session.getState().pending, pending, "the pending change is kept as it was");
+  assert.equal(lastTurn(session).kind, "notice");
+  assert.equal(lastTurn(session).content, STILL_WORKING);
+  assert.equal(spoken.at(-1).text, STILL_WORKING);
+  assert.ok(session.getState().turns.every((t) => !String(t.content).includes("didn't go through")), "it is not reported as a failure");
+
+  await session.submit("yes");
+  assert.deepEqual(server.confirms().map((c) => c.body), [{ sideEffect: SIDE_EFFECT }, { sideEffect: SIDE_EFFECT }], "the same confirmId both times");
+  assert.equal(lastTurn(session).content, "Done — I logged a contact for Robert and Linda Chen.");
+  assert.equal(session.getState().pending, null);
+  assert.equal(server.turns().length, 1, "nothing went to /turn");
+});
+
+test("Final fix (Ruling 53): a 409 without pending:true is still final", async () => {
+  const { session } = await withPending({
+    "POST /api/assistant/confirm": () => reply(409, { success: false, error: "still working on that one", pending: "yes" }),
+  });
+  await session.submit("yes");
+  assert.equal(session.getState().pending, null);
+  assert.equal(lastTurn(session).kind, "error");
+});
+
 // ── silence, one thing at a time ─────────────────────────────────────────────
 
 test("empty speech-to-text shows and speaks 'I didn't catch that', is not sent anywhere and is not in the history", async () => {
@@ -891,8 +923,9 @@ function setupHanging(options, routes = {}) {
   return { session, server, net, spoken };
 }
 
-test("the request timeouts are pinned: turn 35 s (the server's 25 s deadline plus a margin), confirm 15 s, auth/me 10 s", () => {
-  assert.deepEqual({ ...REQUEST_TIMEOUTS }, { "/api/assistant/turn": 35_000, "/api/assistant/confirm": 15_000, "/api/auth/me": 10_000 });
+// (final fix, Ruling 53: /confirm gets 35 s like /turn: a booking can take the server ~20 s, a token refresh and the insert)
+test("the request timeouts are pinned: turn 35 s (the server's 25 s deadline plus a margin), confirm 35 s, auth/me 10 s", () => {
+  assert.deepEqual({ ...REQUEST_TIMEOUTS }, { "/api/assistant/turn": 35_000, "/api/assistant/confirm": 35_000, "/api/auth/me": 10_000 });
   assert.ok(Object.isFrozen(REQUEST_TIMEOUTS));
   assert.equal(TOOK_TOO_LONG_CLIENT, "That took too long on my end — could you say it again?");
 });
@@ -953,7 +986,7 @@ test("a fetch that ignores the abort signal cannot hang the session, and a reply
   assert.ok(lateSession.getState().turns.every((x) => x.content !== "Too late."));
 });
 
-test("a /confirm that times out at 15 s keeps the read-back; saying yes again re-posts the same confirmId, and that one lands", async (t) => {
+test("a /confirm that times out at 35 s keeps the read-back; saying yes again re-posts the same confirmId, and that one lands", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { session, net, spoken } = setupHanging({ hang: ["/api/assistant/confirm"] }, pendingRoutes({
     "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done — I logged a contact for Robert and Linda Chen." }),
@@ -964,9 +997,9 @@ test("a /confirm that times out at 15 s keeps the read-back; saying yes again re
 
   const first = session.submit("yes");
   await flush();
-  t.mock.timers.tick(14_999);
+  t.mock.timers.tick(34_999);
   await flush();
-  assert.equal(session.getState().busy, true, "not before the 15 s");
+  assert.equal(session.getState().busy, true, "not before the 35 s");
   t.mock.timers.tick(1);
   assert.deepEqual(await first, { ok: true, action: "confirm" });
   assert.equal(session.getState().busy, false);

@@ -39,12 +39,18 @@ export const LATE_ANSWER = "That answer came in after the change was already han
 export const TOOK_TOO_LONG_CLIENT = "That took too long on my end — could you say it again?";
 
 // How long a request may take before it is given up on, in ms, by URL. /turn is the server's own turn deadline (25 s, see
-// CHARLI_TURN_DEADLINE_MS) plus a margin, so the server's answer to a slow turn arrives before this gives up.
+// CHARLI_TURN_DEADLINE_MS) plus a margin, so the server's answer to a slow turn arrives before this gives up. /confirm gets the
+// same: a booking can take the server about 20 s (a Google token refresh and the insert, 10 s each), and giving up sooner would
+// show the broker a failure for a booking that then goes through.
 export const REQUEST_TIMEOUTS = Object.freeze({
   "/api/assistant/turn": 35_000,
-  "/api/assistant/confirm": 15_000,
+  "/api/assistant/confirm": 35_000,
   "/api/auth/me": 10_000,
 });
+
+// What Charli says when /confirm answered that the same confirmation is still being worked on (409 with pending: true): the card
+// stays, and saying yes again then gets the result of the first request.
+export const STILL_WORKING = "Still working on that — give it a moment, then say yes again.";
 
 // The server keeps the last 20 messages and refuses a body of more than 100; send comfortably under that.
 const MAX_SENT_MESSAGES = 30;
@@ -166,8 +172,10 @@ function failureText(res) {
 
 // A failed /confirm worth retrying with the same confirmId (the server dedupes, so a retry cannot write twice):
 // the network dropped or the request timed out (the write may or may not have happened), the server hiccuped or the rate
-// limit is hit. Anything else (400/401/403/404/409) is final.
+// limit is hit. Anything else (400/401/403/404/409) is final, but for the 409 that says `pending: true` (stillWorking): the first
+// request for this confirmId is still with the server and may yet go through.
 const isRetryable = (res) => res.network || res.timedOut || res.status >= 500 || res.status === 429;
+const stillWorking = (res) => res.status === 409 && !!res.data && res.data.pending === true;
 
 // createSession({ fetch, rates, localHour, user, onSpeak })
 //   fetch      the window fetch (injected so tests need no network)
@@ -360,6 +368,11 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
       addTurn({ role: "assistant", content: reply });
       speak(reply);
       if (sideEffect.type === "setCareerStage") await refreshStage(res.data.result && res.data.result.stage);
+      return;
+    }
+    if (stillWorking(res)) {
+      // The first request may still go through: the read-back stays, and a later yes with the same confirmId gets its result.
+      addNotice(STILL_WORKING, { say: true });
       return;
     }
     if (isRetryable(res)) {

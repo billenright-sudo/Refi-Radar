@@ -220,7 +220,8 @@ test("createEvent: a second confirm while the first is still with Google is 409 
     assert.equal(rowOf(id).state, "pending");
     const second = await confirm(ann, id);
     assert.equal(second.status, 409);
-    assert.deepEqual(second.data, { success: false, error: "still working on that one" });
+    // (final fix, Ruling 53: the live pending claim's 409 says `pending: true`, so the client keeps the card and lets the user retry)
+    assert.deepEqual(second.data, { success: false, error: "still working on that one", pending: true });
   } finally {
     release();
   }
@@ -231,6 +232,18 @@ test("createEvent: a second confirm while the first is still with Google is 409 
   const third = await confirm(ann, id);
   assert.equal(third.data.duplicate, true);
   assert.equal(rowOf(id).state, "done");
+});
+
+test("Final fix (Ruling 53): only the live pending claim's 409 says pending; a refusal that is final does not", async () => {
+  useGoogle(booksEverything());
+  const id = newId();
+  assert.equal((await confirm(ann, id)).status, 200);
+  seedConnection(lou);
+  const other = await confirm(lou, id);
+  assert.equal(other.status, 409);
+  assert.deepEqual(other.data, { success: false, error: "confirmId already used" });
+  const changed = await confirm(ann, id, { time: "11:00" });
+  assert.deepEqual(changed.data, { success: false, error: "confirmId was used for a different action" });
 });
 
 test("createEvent: Google's 409 (that event id already exists) counts as booked", async () => {
