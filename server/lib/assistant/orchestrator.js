@@ -779,22 +779,25 @@ const askedOf = (asked, answer) => {
 // "happy to" and an action verb, with the same carve-outs ("I can book the Chens a follow-up Friday — want me to?" offers a change,
 // "I can run a sweep of your book — want me to?" and "I can update you on rates — want me to?" do not: a bare search for the verb
 // would take the noun "book").
-// The user's message right after such an offer is one of three (offerReplyClass, Ruling 24):
-//   * YES: a yes word, alone or leading (yes, yeah, yep, sure, ok, okay, alright, please, go ahead, do it, sounds good, perfect,
-//     great, that'd be great, would be great, that works, works for me, let's do it, book it, send it, why not, will do, absolutely,
-//     of course, ...), followed by nothing, thanks, or anything that asks nothing ("sure, no problem", "yeah, no worries", "great,
-//     thanks", "yeah, that's fine, no worries"); or a correction of the offered act ("no, make it Thursday", "make it 10", "Thursday
-//     instead", "do Friday at 10", "do the 10 o'clock", "have it at 10", "have them come in Friday", "might as well", "Friday at 10
-//     works", "Thursday at 10", and after no / nah / actually / not: a day or an act, "no, Thursday", "no, just a reminder"); or
-//     "what a great idea". It asks for the act: the turn is an action turn (R5-3 and the Ruling 19 / 23 hold, and the post-offer
-//     claim guard beside them), and the chain walk takes it as the origin.
+// The user's message right after such an offer is one of three (offerReplyClass, Rulings 24 and 26):
+//   * YES: a correction of the offered act ("no, make it Thursday", "make it 10", "Thursday instead", "do Friday at 10", "do the 10
+//     o'clock", "have it at 10", "have them come in Friday", "might as well", "Friday at 10 works", "Thursday at 10", and after no /
+//     nah / actually / not: a day or an act, "no, Thursday", "no, just a reminder"), or "what a great idea"; or a yes word, alone or
+//     leading (yes, yeah, yep, sure, ok, okay, alright, please, go ahead, do it, sounds good, perfect, great, that'd be great, would be
+//     great, that works, works for me, let's do it, book it, send it, why not, will do, absolutely, of course, ...), followed by nothing
+//     or by anything that asks nothing and requests nothing new ("sure, no problem", "yeah, no worries", "yeah, that's fine, no
+//     worries"). It asks for the act: the turn is an action turn (R5-3 and the Ruling 19 / 23 hold, and the claim guard beside them),
+//     and the chain walk takes it as the origin. Not a yes (Ruling 26): an acknowledgement with only thanks after it ("ok thanks",
+//     "okay, thanks", "great, thanks", "perfect, thank you"), and a yes word followed by a new request ("ok, pull up the Chens", "yeah,
+//     run a sweep first") or a question ("sure, what's their balance"): those are OTHER.
 //   * DECLINE (isDecline): every clause a decline or words that add nothing ("no thanks", "ok, never mind", "let's not", "I'd rather
-//     not", "not today", "I'm all set", "forget it", "thanks, I'm good", "don't worry about it"). A plain turn, and the chain ends there.
+//     not", "not today", "I'm all set", "forget it", "thanks, I'm good", "don't worry about it"). A plain turn.
 //   * OTHER: anything else, a new request ("pull up the Chens", "run a sweep"), a question with or without "?" ("when you get a
-//     chance"), small talk ("thanks"), a bare day ("tomorrow"). A plain turn, answered under the post-offer claim guard
-//     (offeredActClaimed, in runTurn). The chain walk goes on through it only as it goes through any question: an action request the
-//     user made BEFORE the offer still holds a reply that only answers it ("log a call with Chen" -> "Which Chen — should I log it for
-//     Robert and Linda, or for Chen Wei?" -> "Robert and Linda"); the offer and the reply add nothing to it.
+//     chance"), small talk ("thanks"), a bare day ("tomorrow"). A plain turn, answered under the claim guard (offeredActClaimed, in
+//     runTurn).
+// A decline or an OTHER reply also ends the chain walk (Ruling 27): an action request the user made before the offer does not reach
+// past it ("book the Chens Friday" -> "What time — and want me to draft a check-in too?" -> "pull up their loan first" is a plain
+// turn); the claim guard covers what is said there.
 // A reply that holds a "?", or has a clause that opens a question (opensQuestion), is never a yes. An auxiliary or a modal opens a
 // question only with a subject after it (I, you, we, they, he, she, it, there, a name; "it" not after do / have, which agree with I /
 // you / we / they): "do Thursday instead", "have it at 10", "will do", "would be great" ask nothing, "can you make it 10" and "does it
@@ -894,7 +897,7 @@ const coreOf = (clause, corrections) => {
 // subject follows it: I / you / we / they / he / she / it / there / y'all, or a name (a capitalized word that is no day, month or
 // article). "it" is no subject after do / have (and don't / haven't), which agree with I / you / we / they: "do it", "have it at 10"
 // tell Charli what to do. With no subject the auxiliary asks nothing: "do Friday at 10", "will do", "would be great", "is fine".
-const WH_OPEN_RE = /^(?:(?:and|or|so)\s+)?(?:what|which|who|whom|whose|when|where|why|how)(?![\w'’-])/i;
+const WH_OPEN_RE = /^(?:(?:and|or|so)\s+)?(?:what|which|who|whom|whose|when|where|why|how)(?:['’](?:s|re|d|ll|ve))?(?![\w'’-])/i;
 const WH_NOT_ASKING_RE =
   /^(?:(?:and|or|so)\s+)?(?:what\s+an?|why\s+not|how\s+(?:nice|great|cool|lovely|wonderful|kind|sweet|perfect|thoughtful|awesome|fun))(?![\w'’-])/i;
 const AUX_OPEN_RE = new RegExp(
@@ -978,7 +981,39 @@ const correction = (clause, corrected) => {
   return corrected && ACT_NOUN_RE.test(core);
 };
 
-// The class of a reply to an offer to act: OFFER_YES, OFFER_DECLINE or OFFER_OTHER (Ruling 24). Pure.
+// Ruling 26. An acknowledgement word (ok / okay / alright / great / perfect / awesome / excellent / fine / cool / nice) with nothing
+// after it but thanks ("ok thanks", "great, thanks", "perfect, thank you") says thanks, not yes: an explicit yes ("yes, thanks", "sure,
+// thanks", "go ahead, thanks") still is one. And a yes word followed by a new request (a clause that opens with an imperative of its
+// own, not one pointing back at the act: "ok, pull up the Chens", "yeah, run a sweep first"; "ok, send it" points back) moves on.
+const ACK_WORD_RE =
+  /^(?:ok(?:ay)?|alright|all\s+right|great|perfect|awesome|excellent|fine|cool|nice)(?![\w'’-])[\s,.!;:—–-]*/i;
+const THANKS_WORD_RE =
+  /^(?:thanks|thank\s+(?:you|u)|thx|ty|cheers)(?:\s+(?:so\s+much|a\s+lot|again))?(?:\s+(?:charli|charlie))?(?![\w'’-])[\s,.!;:—–-]*/i;
+const thanksOnly = (t) => {
+  let c = String(t).trim();
+  let thanked = false;
+  for (let prev = null; c !== prev;) {
+    prev = c;
+    c = c.replace(REPLY_FILLER_RE, "").replace(ACK_WORD_RE, "");
+    const before = c;
+    c = c.replace(THANKS_WORD_RE, "").trim();
+    if (c !== before.trim()) thanked = true;
+  }
+  return thanked && c === "";
+};
+// (IMPERATIVE_LEAD_RE's verbs and the other ways a broker asks for something next)
+const NEW_REQUEST_RE = new RegExp(
+  "^(?:add|log|mark|record|note|update|set|book|schedule|save|create|enter|put|pull|run|show|find|give|send|draft|tell|read|check" +
+    "|look|walk|go\\s+over|remind|take|move\\s+on|next\\s+(?:client|one|up)|let['\\u2019]?s\\s+(?:talk|look|go|see|check)|let\\s+me)" +
+    "(?![\\w'\\u2019-])",
+  "i"
+);
+const asksSomethingNew = (clause) => {
+  const c = coreOf(clause, false);
+  return NEW_REQUEST_RE.test(c) && !PRONOUN_OBJECT_RE.test(c);
+};
+
+// The class of a reply to an offer to act: OFFER_YES, OFFER_DECLINE or OFFER_OTHER (Rulings 24 and 26). Pure.
 function offerReplyClass(text) {
   const t = String(text == null ? "" : text).replace(AUDIO_TAG_RE, " ").replace(/\s+/g, " ").trim();
   if (!t || t.includes("?")) return OFFER_OTHER;
@@ -986,7 +1021,10 @@ function offerReplyClass(text) {
   const clauses = t.split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
   if (clauses.length === 0 || clauses.some(opensQuestion)) return OFFER_OTHER;
   const corrected = CORRECTED_RE.test(clauses[0]);
-  return clauses.some((c) => saysYes(c) || correction(c, corrected)) ? OFFER_YES : OFFER_OTHER;
+  // a correction is a yes whatever else the reply says
+  if (clauses.some((c) => correction(c, corrected))) return OFFER_YES;
+  if (!clauses.some(saysYes) || thanksOnly(t) || clauses.some(asksSomethingNew)) return OFFER_OTHER;
+  return OFFER_YES;
 }
 function offersAction(message) {
   const pieces = sentencesOf(messageText(message)).map((p) => p.trim()).filter(Boolean);
@@ -1007,19 +1045,18 @@ const offerReplyOf = (asked, answer) =>
 function answersActionQuestion(messages) {
   const latest = messages[messages.length - 1];
   if (!latest || latest.role !== "user") return false;
-  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great", "have it at 10"); a decline
-  // ends the act offered, and with it the chain
+  // a yes to an offer to act is the origin by itself (it need not be answer-shaped: "would be great", "have it at 10"); a decline or
+  // any other reply ends the walk (Ruling 27)
   const first = offerReplyOf(messages[messages.length - 2], latest);
-  if (first === OFFER_YES) return true;
-  if (first === OFFER_DECLINE) return false;
+  if (first) return first === OFFER_YES;
   if (!isAnswerShaped(messageText(latest))) return false;
   for (let hop = 0, i = messages.length - 1; hop < MAX_CHAIN_HOPS && i >= 1; hop++, i -= 2) {
     const asked = messages[i - 1];
     if (!asked || asked.role !== "assistant") return false;
-    // a reply to an offer: a yes is the origin, a decline ends the walk, anything else is walked through like any answer
+    // a reply to an offer: a yes is the origin, a decline or anything else ends the walk (Ruling 27): an action request made before
+    // the offer does not reach past it
     const reply = offerReplyOf(asked, messages[i]);
-    if (reply === OFFER_YES) return true;
-    if (reply === OFFER_DECLINE) return false;
+    if (reply) return reply === OFFER_YES;
     const before = messages[i - 2];
     if (i < 2 || !askedOf(asked, messages[i])) return false;
     if (!before || before.role !== "user") return false;
@@ -1031,8 +1068,9 @@ function answersActionQuestion(messages) {
 }
 
 // The post-offer claim guard (Ruling 24): a reply to an offer to act that is no yes makes a plain turn, so the action backstop does
-// not hold what Charli says on it, and this does instead (after a yes it runs beside the backstop, which lets through any reply
-// shaped like a question, and a statement inside one). The reply is a claim nothing backs when
+// not hold what Charli says on it, and this does instead (on every action turn, a yes to an offer or a request, it runs beside the
+// backstop, which lets through any reply shaped like a question, and a statement inside one: Ruling 25). The reply is a claim
+// nothing backs when
 //   * it holds a "now on your calendar" form anywhere (CALENDAR_NOW_FORM_RE, as on an action turn), or says the act is on the calendar
 //     or scheduled with "it" / "that" / "they" ... as its subject (IT_ON_CALENDAR_RE: "Okay, it's on your calendar Friday.", "...
 //     since that's on your calendar?"), anywhere, question or not, read or not: a read narrates its events by their titles;
@@ -1768,10 +1806,12 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // Ruling 24: a reply to an offer to act that is no yes (a decline, or anything else) is a plain turn, answered under the
       // post-offer claim guard: no "now on your calendar" form, no "it's on your calendar" / "it's scheduled", no "you're set" /
       // "locked in" / "went out", no statement that something was drafted or sent, and none that something is on the calendar, booked
-      // or scheduled unless it names an event this turn's calendar read returned (offeredActClaimed). The guard holds after a yes too:
-      // the backstop above passes a reply shaped like a question, and a statement can ride inside one ("What else? The follow-up is
-      // on your calendar Friday — want a reminder?", "Should I add a reminder, since it's on your calendar Friday?").
-      if (afterOffer && offeredActClaimed(text, sources.some((src) => src.startsWith("google calendar")) ? calendarTitles : null)) {
+      // or scheduled unless it names an event this turn's calendar read returned (offeredActClaimed). The guard holds on every action
+      // turn too, a yes to an offer or a request in the user's own words (Ruling 25): the backstop above passes a reply shaped like a
+      // question, and a statement can ride inside one ("What else? The follow-up is on your calendar Friday — want a reminder?",
+      // "Should I add a reminder, since it's on your calendar Friday?").
+      if ((afterOffer || actionTurn) &&
+        offeredActClaimed(text, sources.some((src) => src.startsWith("google calendar")) ? calendarTitles : null)) {
         return finish(NOTHING_CHANGED);
       }
       // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed

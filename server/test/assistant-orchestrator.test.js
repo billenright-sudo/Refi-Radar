@@ -4543,10 +4543,11 @@ test("Task 5 fix 5: on an action turn the hold has no negative lookbehind: 'noth
 
 // replies to OFFERS[1] ("Want me to book another follow-up Friday?") that say yes without the old affirmation words
 // (Task 5b, Ruling 24: "thanks" and "nah, I'll call them myself" moved to the Task 5b tests: they are no yes, and the post-offer
-// claim guard holds the same four replies there)
+// claim guard holds the same four replies there; Ruling 26: "great, thanks" and "Perfect, thanks!" too, an acknowledgement with only
+// thanks after it)
 const AFFIRMS = [
-  "perfect", "great", "great, thanks", "awesome", "that'd be great", "sounds good", "do it", "go ahead", "please", "yes please",
-  "that works", "let's do it", "book it", "Perfect, thanks!", "make it Thursday", "yes, Friday at 10 works",
+  "perfect", "great", "awesome", "that'd be great", "sounds good", "do it", "go ahead", "please", "yes please",
+  "that works", "let's do it", "book it", "make it Thursday", "yes, Friday at 10 works",
   // safer than the letter of the rule: a modal with no subject says yes, and a decline that says more is no decline
   "Would be great", "will do", "no, make it Thursday", "no make it Thursday", "later today", "wait, yes",
   "don't book Friday, make it Thursday",
@@ -4647,11 +4648,11 @@ test("Task 5 fix 5: 'What time should I put it on your calendar?' is a question,
 // A statement that claims nothing and names no offered act: it passes on a turn that is not an action turn, and the action backstop
 // replaces it on one, so it tells the two apart.
 const NEUTRAL = "Okay, the Chens will hear from you soon.";
-// the brief's yes rows: a yes, or a correction of the offered act
+// the brief's yes rows: a yes, or a correction of the offered act ("great, thanks" is OTHER under Ruling 26, see below)
 const OFFER_YESES = [
   "sure, no problem", "yeah, no problem", "ok, no problem", "okay no problem", "yeah no worries", "sure, no worries",
   "yeah, that's fine, no worries", "do Thursday instead", "do Friday at 10", "have it at 10", "might as well", "what a great idea",
-  "perfect", "great, thanks", "that'd be great",
+  "perfect", "that'd be great",
 ];
 // more of the same: corrections of the day, the time or the act, and the yeses the round-5 probes found read as a decline or a
 // question
@@ -4662,7 +4663,10 @@ const MORE_YESES = [
   "that's fine", "fine", "Okay. Not a problem.", "no, that works", "yeah no, go for it", "nah, it's fine, go ahead", "please, no rush",
   "sure, no need to invite anyone", "yeah, nothing fancy", "would be nice", "should be fine", "could be good", "how nice, yes",
   "you bet", "pencil it in", "if you can", "I think so", "that would be great", "it'd be great", "works for me", "send it", "draft it",
-  "ok thanks", "Yes!", "(laughs) yes please", "I'm good with that", "sounds like a plan", "ten", "no, next week",
+  "Yes!", "(laughs) yes please", "I'm good with that", "sounds like a plan", "ten", "no, next week",
+  // an explicit yes with thanks after it is still a yes (Ruling 26 takes only an acknowledgement word), and so is a correction with
+  // a new request after it
+  "yes, thanks", "sure, thanks", "go ahead, thanks", "yes please, thank you", "no, make it Thursday, and pull up their loan",
 ];
 const OFFER_DECLINES = [
   "no thanks", "ok, never mind", "please don't", "let's not", "I'd rather not", "not today", "I'm all set", "forget it",
@@ -4768,15 +4772,88 @@ test("Task 5b: anything else after an offer is answered as a plain turn: a new r
     "is Friday open", "I'll do it myself", "please pull up the Chens", "pull up Patel", "yes?", "sure, can you make it 10?", "what about Thursday",
     "Thursday", "thanks", "not Friday", "not this week", "next Thursday", "tomorrow morning", "maybe tomorrow", "not now, maybe tomorrow",
     "not sure what time works", "I don't think so",
+    // Ruling 26: an acknowledgement with only thanks after it, and a yes word followed by a new request
+    "ok thanks", "okay, thanks", "great, thanks", "perfect, thank you", "Perfect, thanks!", "ok, pull up the Chens", "sure, pull up Patel",
+    // a contracted wh-word opens a question too
+    "ok, who's next", "sure, what's on Friday", "yeah, how's Friday looking",
   ]) {
     for (const offer of [OFFERS[0], OFFERS[1]]) assert.equal((await offerReply(reply, NEUTRAL, offer)).reply, NEUTRAL, `${offer} -> ${reply}`);
   }
-  // an action request behind the offer still holds a reply that only answers it (the walk goes on as through any question)
-  r = await runTurn({
-    messages: history("log a call with Chen", "Which Chen — should I log it for Robert and Linda, or for Chen Wei?", "Robert and Linda"),
-    ctx: twoChensCtx, client: fakeClient([say(NEUTRAL)]),
-  });
+  // Ruling 27: an OTHER reply ends the chain walk, so an action request made before the offer does not hold it; what is said there is
+  // screened (claimsCompletion, the claim guard)
+  const lookup = history("log a call with Chen", "Which Chen — should I log it for Robert and Linda, or for Chen Wei?", "Robert and Linda");
+  for (const [said, expected] of [[NEUTRAL, NEUTRAL], ["Logged it for Robert and Linda.", NOTHING_CHANGED], ["It's on your calendar Friday.", NOTHING_CHANGED]]) {
+    r = await runTurn({ messages: lookup, ctx: twoChensCtx, client: fakeClient([say(said)]) });
+    assert.equal(r.reply, expected, said);
+  }
+});
+
+test("Task 5b (Rulings 26, 27): thanks after an acknowledgement and a new request after a yes are answered; other ends the chain walk", async () => {
+  const chens = "Robert & Linda Chen are at 7.85 percent.";
+  const findChen = () => [useTool("findClient", { query: "chen" })];
+  // Ruling 26: answered as a plain turn
+  for (const reply of ["ok thanks", "okay, thanks", "great, thanks", "perfect, thank you"]) {
+    assert.equal((await answerOffer(reply, [], "You're welcome!")).reply, "You're welcome!", reply);
+  }
+  let r = await answerOffer("ok, pull up the Chens", findChen(), chens);
+  assert.equal(r.reply, chens);
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  r = await answerOffer("sure, what's their balance", findChen(), "Robert & Linda Chen owe $485,000.");
+  assert.equal(r.reply, "Robert & Linda Chen owe $485,000.");
+  r = await answerOffer("yeah, run a sweep first", [useTool("runSweepTool")], SWEEP_NARRATION, googleCtx(fakeGoogle(), sweepCtx));
+  assert.equal(r.reply, SWEEP_NARRATION);
+  // ... and the claim guard still holds a claim in those answers
+  assert.equal((await answerOffer("great, thanks", [], "Great — it's on your calendar for Friday.")).reply, NOTHING_CHANGED);
+  assert.equal((await answerOffer("ok thanks", [], "It's on your calendar now.")).reply, NOTHING_CHANGED);
+  r = await answerOffer("ok, pull up the Chens", findChen(), `${chens} The follow-up is on the calendar for Friday.`);
   assert.equal(r.reply, NOTHING_CHANGED);
+  // Ruling 27: the brief's chain answers the lookup
+  r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "the Chens' rate", "Which Chen — Robert and Linda, or Chen Wei?", "Robert and Linda"),
+    ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...findChen(), say(chens)]),
+  });
+  assert.equal(r.reply, chens);
+  // an action request before the offer does not reach past an OTHER reply: the lookup is answered, a claim is held
+  const earlier = history("book the Chens Friday", "What time — and want me to draft a check-in too?", "pull up their loan first");
+  r = await runTurn({ messages: earlier, ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...findChen(), say(chens)]) });
+  assert.equal(r.reply, chens);
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  for (const script of [[], findChen(), [useTool("getCalendarTool", { date: "friday" })]]) {
+    r = await runTurn({
+      messages: earlier, ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...script, say("It's on your calendar Friday.")]),
+    });
+    assert.equal(r.reply, NOTHING_CHANGED, `${script.length ? script[0].content[0].name : "no tool"}: It's on your calendar Friday.`);
+  }
+});
+
+test("Task 5b (Ruling 25): on an action turn in the user's own words the claim guard runs too", async () => {
+  const smuggled = "What else? The follow-up is on your calendar Friday — want a reminder?";
+  for (const ask of ["book the Chens a follow-up Friday", "put a follow-up with the Chens on my calendar Friday"]) {
+    for (const [label, script, events] of [
+      ["empty calendar read", [useTool("getCalendarTool", { date: "friday" })], []],
+      ["calendar read", [useTool("getCalendarTool", { date: "friday" })], [CHEN_EVENT]],
+      ["client lookup", [useTool("findClient", { query: "chen" })], [CHEN_EVENT]],
+    ]) {
+      for (const said of [smuggled, "What else? Okay, Friday it is, you're set — want a reminder?"]) {
+        const r = await runTurn({ messages: userSays(ask), ctx: googleCtx(fakeGoogle({ events })), client: fakeClient([...script, say(said)]) });
+        assert.equal(r.reply, NOTHING_CHANGED, `${ask} [${label}] -> ${said}`);
+        assert.equal(r.sideEffect, undefined);
+      }
+    }
+  }
+  // the questions that turn exists for still pass, and a booking is still read back
+  for (const said of ["Which Chen — Robert and Linda, or Chen Wei?", "What time should I put it on your calendar?", "Should I put it on your calendar?"]) {
+    const r = await runTurn({
+      messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle({ events: [] })),
+      client: fakeClient([useTool("getCalendarTool", { date: "friday" }), say(said)]),
+    });
+    assert.equal(r.reply, said, said);
+  }
+  const r = await runTurn({
+    messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle()),
+    client: fakeClient([useTool("createEventTool", { date: "friday", time: "10:00", clientId: mikeChen })]),
+  });
+  assert.equal(r.sideEffect.type, "createEvent");
 });
 
 test("Task 5b: after an offer, a reply that is no yes is answered under a claim guard", async () => {
