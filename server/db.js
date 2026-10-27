@@ -148,4 +148,33 @@ for (const column of ["action_type", "target"]) {
   }
 }
 
+// A user's own Google account, connected for Charli's calendar (lib/google/oauth.js). Both tokens are stored encrypted
+// (lib/google/crypto.js); access_expires_at is epoch ms; status flips to 'reconnect' when Google refuses the refresh
+// token. Disconnecting deletes the row.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS google_connections (
+    user_id           INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    google_email      TEXT    NOT NULL,
+    time_zone         TEXT    NOT NULL,
+    scopes            TEXT    NOT NULL,
+    access_token_enc  TEXT    NOT NULL,
+    access_expires_at INTEGER NOT NULL,
+    refresh_token_enc TEXT    NOT NULL,
+    status            TEXT    NOT NULL DEFAULT 'connected' CHECK(status IN ('connected','reconnect')),
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+// One row per sign-in to Google that has been started and not finished: the single-use `state` that comes back on the
+// callback, the user it belongs to (the callback carries no cookie) and the PKCE verifier. expires_at is epoch ms.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS google_oauth_states (
+    state         TEXT    PRIMARY KEY,
+    user_id       INTEGER NOT NULL,
+    code_verifier TEXT    NOT NULL,
+    expires_at    INTEGER NOT NULL
+  );
+`);
+
 module.exports = db;
