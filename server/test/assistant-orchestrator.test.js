@@ -5186,7 +5186,7 @@ test("Task 5b fix 2 (Ruling 35): on an action turn every piece of the one questi
   }
 });
 
-test("Task 5b fix 2 (Ruling 36): a title grounds across a colon and with either case of its first letter; a one-word title keeps its case", async () => {
+test("Task 5b fix 2 (Rulings 36, 38, 39): a title grounds across a colon before it, a lower-case title said with a capital, a distinctive one in lower case; a one-word title keeps its case", async () => {
   const FRIDAY = "2026-10-30";
   const STANDUP = { title: "team standup", start: "9:00 AM", end: "9:15 AM", allDay: false };
   const byDay = (map) => googleCtx(fakeGoogle({ listed: (q) => ({ events: map[q.date] || [] }) }));
@@ -5353,4 +5353,63 @@ test("Task 5b fix 3 (Ruling 40): a statement piece is screened only when it name
       assert.equal((await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said)).reply, NOTHING_CHANGED, said);
     }
   }
+});
+
+// ── Task 5b fix round 4: connective clauses survive a leading break; acknowledgements need a following clause ───────────────────
+
+test("Task 5b fix 4 (Ruling 43): the clause after know / tell keeps its words behind a colon, a comma or a dash", async () => {
+  const afterThanks = (said, script, ctx) => runTurn({ messages: history(CAL_ASK, OFFERS[1], "thanks"), ctx, client: fakeClient([...script, say(said)]) });
+  for (const sep of [":", ",", " —"]) {
+    for (const claim of ["the invite went out", "you booked Friday at 10", "you're locked in for Friday", "you've scheduled Friday at 10", "you emailed the check-in"]) {
+      const said = `Should I let the Chens know${sep} ${claim}?`;
+      for (const [label, script, ctx] of [
+        ["no tool", [], googleCtx(fakeGoogle({ events: [CHEN_EVENT] }))], ["empty Friday read", [r3FridayRead()], r3ByDay({})],
+      ]) {
+        assert.equal((await afterThanks(said, script, ctx)).reply, NOTHING_CHANGED, `${label}: ${said}`);
+      }
+    }
+  }
+  // ... and behind the object of "tell" (held at f1a45cf, let through by the round-3 colon break)
+  for (const said of ["Want me to tell them: the check-in went out this morning?", "Should I tell the Chens — the invite went out?"]) {
+    assert.equal((await afterThanks(said, [r3FridayRead()], r3ByDay({}))).reply, NOTHING_CHANGED, said);
+  }
+  // a question that only asks still passes
+  for (const ask of ["Should I let the Chens know: Friday at 10 or Monday at 2?", "Should I tell them about Friday, or wait?"]) {
+    assert.equal((await afterThanks(ask, [r3FridayRead()], r3ByDay({}))).reply, ask, ask);
+  }
+});
+
+test("Task 5b fix 4 (Ruling 43): an acknowledgement as a dash piece's tag is no statement; one that opens a clause before another still is", async () => {
+  for (const said of [
+    "Want it Friday — at 10, okay?", "Should I book it — Friday at 10 a.m., okay?", "What time — 10 a.m. or 2 p.m., sure?",
+    "Want it Friday — say 10:00 AM, okay?", "Which day — Thursday or Friday, ok?", "What time — after 2, good?",
+  ]) {
+    const r = await runTurn({
+      messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] }), twoChensCtx),
+      client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
+    });
+    assert.equal(r.reply, said, said);
+  }
+  // (the 55 claim forms in the three wrap shapes stay held: the fix round 3 Ruling 40 test)
+  for (const said of ["What else — no rush, okay, Friday morning with the Chens — want a reminder?", "Want a reminder too — okay, Friday morning with the Chens?"]) {
+    assert.equal((await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said)).reply, NOTHING_CHANGED, said);
+  }
+});
+
+test("Task 5b fix 4 (Ruling 43): 'consider it done / handled' reports the act only where it opens a clause", async () => {
+  for (const said of ["I'd consider it done once they sign the disclosures.", "You can consider it handled once the appraisal is in."]) {
+    const r = await runTurn({
+      messages: history(CAL_ASK, OFFERS[1], "what do you think about the Chens' refi?"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+      client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
+    });
+    assert.equal(r.reply, said, said);
+  }
+  for (const said of ["What else — no rush, consider it handled — want a reminder?", "Want a reminder too — consider it done?"]) {
+    assert.equal((await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], said)).reply, NOTHING_CHANGED, said);
+  }
+  const r = await runTurn({
+    messages: history(CAL_ASK, OFFERS[1], "thanks"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
+    client: fakeClient([useTool("findClient", { query: "chen" }), say("Okay, consider it handled.")]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
 });

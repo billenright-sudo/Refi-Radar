@@ -1099,10 +1099,12 @@ function answersActionQuestion(messages) {
 //     "ready to go", an invite, "is in for Friday"), or a state no read can ground (UNGROUNDED_STATE: "drafted", "sent", "emailed",
 //     "in your (Gmail) drafts", "on its way", "notified", "on file"), or a calendar state (CALENDAR_STATE: "on / in your calendar", "on
 //     the calendar", "on your schedule", "on the books", "booked", "scheduled", "set for / up", "confirmed", "penciled in", "reserved",
-//     "in place", "lined up") that the clause does not ground (Rulings 31 and 36): the clause must name an event this turn's calendar
-//     reads returned by its title, a whole word or words (its first letter in either case, "follow-up: Robert & Linda Chen" for
-//     "Follow-up: Robert & Linda Chen", "Team standup" for "team standup"; a one-word title in its own case only, so "call" is not a
-//     "Call"), and every day the clause names (a weekday, today / tonight / tomorrow / yesterday, a month and day) must be the day that
+//     "in place", "lined up") that the clause does not ground (Rulings 31, 36 and 39): the clause must name an event this turn's
+//     calendar reads returned by its title, a whole word or words, in its own case but for its first letter (titlePattern: a title of
+//     more than one word that begins in lower case may be said with a capital, "Team standup" for "team standup"; one that begins with
+//     a capital may be said in lower case only when it is distinctive, "follow-up: Robert & Linda Chen" for "Follow-up: Robert & Linda
+//     Chen", so "follow-up call" is no "Follow-up call"; a one-word title keeps its case, so "call" is not a "Call"), and every day the
+//     clause names (a weekday, today / tonight / tomorrow / yesterday, a month and day) must be the day that
 //     event was read for. So "Follow-up: Robert & Linda Chen is on your calendar tomorrow at 10:00 AM." and "Here's what's on your
 //     calendar Friday: Follow-up: Robert & Linda Chen at 10:00 AM." pass after a read that returned that event for that day, while after
 //     a read of an empty Friday "The follow-up is on your calendar Friday." does not, nor does that title said for Friday when it was
@@ -1118,8 +1120,8 @@ function answersActionQuestion(messages) {
 //     "Want a reminder too — the check-in is waiting in your drafts?"), but for a placing verb's own complement ("put it on your
 //     calendar", "add it as a reminder on your calendar") and "set up" / "set for" used as a verb ("When should I set up the call?").
 //     The accepted cost: a clarifier that names a state word is held ("Should I send it to the address that's on file?").
-// Clauses split at , ; a dash, "but" and "and" (not at ":", Ruling 36), with the read titles kept whole; a clause where a negative
-// stands before the words is skipped ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for them."; "no
+// Clauses split at , ; : a dash, "but" and "and" (Ruling 38: not at the colon of a clock time or one right before a read title), with
+// the read titles kept whole; a clause where a negative stands before the words is skipped ("Okay, I won't put it on your calendar.", "Okay, nothing is on your calendar for them."; "no
 // problem" / "no worries" are no negative). claimsCompletion runs on this turn too, as on every turn. Pure but for `reads.now`.
 const IT_ON_CALENDAR_RE = new RegExp(
   "\\b(?:it|that|this|they|those|these|everything|all\\s+of\\s+(?:it|that|them))(?:['\\u2019](?:s|re)|\\s+(?:is|are|was|were|has\\s+been|have\\s+been))" +
@@ -1129,10 +1131,14 @@ const IT_ON_CALENDAR_RE = new RegExp(
 );
 const ACT_DONE_RE = new RegExp(
   "\\b(?:you['\\u2019]re\\s+(?:all\\s+)?set|locked\\s+in|(?:got|have|put)\\s+(?:\\w+\\s+){0,2}down\\s+for|went\\s+out|gone\\s+out" +
-    "|(?:ready|good)\\s+to\\s+(?:go|send)|invit(?:e|es|ed|ation)s?|consider\\s+it\\s+(?:done|handled|sent|booked|scheduled)" +
+    "|(?:ready|good)\\s+to\\s+(?:go|send)|invit(?:e|es|ed|ation)s?" +
     "|(?:is|are|['\\u2019]s|['\\u2019]re)\\s+(?:all\\s+)?in\\s+for\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|next|this))\\b",
   "i"
 );
+// "consider it done / handled / ..." reports the act only where it opens a clause (Ruling 43): "— no rush, consider it handled —", not
+// "I'd consider it done once they sign the disclosures."
+const CONSIDER_IT_RE = /^\s*(?:(?:so|and|then|just|please)\s+)*consider\s+it\s+(?:done|handled|sent|booked|scheduled)\b/i;
+const actDoneIn = (clause) => unnegated(clause, ACT_DONE_RE) || CONSIDER_IT_RE.test(clause);
 const UNGROUNDED_STATE = "drafted|sent|emailed|in\\s+your\\s+(?:gmail\\s+)?drafts|on\\s+its\\s+way|notified|on\\s+file";
 const CALENDAR_STATE =
   "(?:on|in)\\s+(?:your|the)\\s+(?:google\\s+)?calendar|on\\s+(?:your|the)\\s+schedule|on\\s+the\\s+books|booked|scheduled|set\\s+(?:for|up)" +
@@ -1246,8 +1252,12 @@ const questionClaims = (marked, groups, now) => {
   if (body.split(GUARD_CLAUSE_SPLIT_RE).some((c) => clauseClaims(c, groups, now, true))) return true;
   if ([...body.matchAll(FIRST_PERSON_STATE_RE)].some((m) => !INVERTED_MODAL_BEFORE_RE.test(body.slice(0, m.index)))) return true;
   return [...body.matchAll(QUESTION_CONNECTIVE_RE), ...body.matchAll(AS_CLAUSE_RE)].some((m) => {
-    const clause = body.slice(m.index + m[0].length).split(GUARD_CLAUSE_SPLIT_RE)[0];
-    return unnegated(clause, ACT_DONE_RE) || clauseClaims(clause, groups, now, false);
+    // (Ruling 43: a break right after the connective, or after its object, opens its clause, it does not end it: "let the Chens know:
+    // the invite went out", "tell them: the check-in went out")
+    const clause = body.slice(m.index + m[0].length)
+      .replace(/^\s*(?:(?:them|him|her|us|you|me|the\s+[\w'’-]+|[A-Z][\w'’-]*(?:\s+(?:and|&)\s+[A-Z][\w'’-]*)?)\s*)?(?:[,;:—–]|-\s)\s*/, "")
+      .split(GUARD_CLAUSE_SPLIT_RE)[0];
+    return actDoneIn(clause) || clauseClaims(clause, groups, now, false);
   });
 };
 // Ruling 35: the pieces of the one question of an action turn, each screened in full. A calendar word that is a placing verb's own
@@ -1282,7 +1292,8 @@ const pieceClaims = (piece, groups, now) => {
     if (NEGATIVE_WORD_RE.test(clause.text.slice(0, m.index - clause.offset))) return false;
     return !(isTheAct && isTheAct(m, clause));
   });
-  return said(ACT_DONE_ALL_RE) || said(UNGROUNDED_STATE_ALL_RE) || said(CALENDAR_STATE_ALL_RE, (m, clause) =>
+  return said(ACT_DONE_ALL_RE) || piece.split(GUARD_CLAUSE_SPLIT_RE).some((c) => CONSIDER_IT_RE.test(c)) ||
+    said(UNGROUNDED_STATE_ALL_RE) || said(CALENDAR_STATE_ALL_RE, (m, clause) =>
     (DESTINATION_RE.test(m[0]) && PLACING_DESTINATION_BEFORE_RE.test(piece.slice(0, m.index))) ||
     (/^set\s/i.test(m[0]) && BASE_FORM_BEFORE_RE.test(piece.slice(0, m.index))) ||
     groundedClause(clause.text, groups, now));
@@ -1315,9 +1326,11 @@ const ACK_PIECE_RE = /^(?:okay|ok|great|perfect|alright|all\s+right|done|got\s+i
 const statementPiece = (piece) => {
   const p = piece.trim().replace(/^(?:(?:and|but|so|then|plus)\s+)+/i, "");
   if (!p || !BOOKING_TOPIC_RE.test(p) || QUESTION_START_RE.test(p)) return false;
-  // (an acknowledgement opening any clause of the piece: "— no rush, okay, Friday morning with the Chens —"; and the shortened
-  // passive, which claimsCompletion leaves to a clause that does not end in "?": "— calendar updated?")
-  return FINITE_VERB_RE.test(p) || p.split(GUARD_CLAUSE_SPLIT_RE).some((c) => ACK_PIECE_RE.test(c.trim())) ||
+  // (an acknowledgement opening the piece, or opening a clause with another clause after it, Ruling 43: "— no rush, okay, Friday
+  // morning with the Chens —", not the tag of "— at 10, okay?"; and the shortened passive, which claimsCompletion leaves to a clause
+  // that does not end in "?": "— calendar updated?")
+  return FINITE_VERB_RE.test(p) || ACK_PIECE_RE.test(p) ||
+    p.split(GUARD_CLAUSE_SPLIT_RE).slice(0, -1).some((c) => ACK_PIECE_RE.test(c.trim())) ||
     SHORT_PASSIVE_RE.test(p.replace(/[?\s]+$/, ""));
 };
 // `reads`: null when the turn cited no calendar read, else { events: [{ title, date, timeZone }] (each event this turn's calendar
@@ -1333,7 +1346,7 @@ function offeredActClaimed(text, reads, actionTurn) {
   return guardSentencesOf(text).some(({ s, question }) => {
     const marked = markTitles(s, groups);
     if (question) return questionClaims(marked, groups, now);
-    return marked.split(GUARD_CLAUSE_SPLIT_RE).some((c) => unnegated(c, ACT_DONE_RE) || clauseClaims(c, groups, now, false));
+    return marked.split(GUARD_CLAUSE_SPLIT_RE).some((c) => actDoneIn(c) || clauseClaims(c, groups, now, false));
   });
 }
 
