@@ -450,20 +450,36 @@ test("accessToken: no row is 'not_connected', and a user only ever gets their ow
   assert.strictEqual(fetchFn.calls.length, 0);
 });
 
-test("accessToken: tokens the key cannot open mean 'reconnect' (and it sticks); a missing key is 'unavailable'", async () => {
+// (final fix, Ruling 57: a key that cannot open the tokens is the server's problem, like a missing one, so it is 'unavailable' and
+// the row is not touched; this test pinned 'reconnect', written to the row, before)
+test("accessToken: tokens the key cannot open, or a missing key, are 'unavailable' and leave the row alone; the right key works again", async () => {
   const now = 1_000_000;
+  for (const expiresAt of [now + 5 * MIN, now + 10_000]) {   // the access token as it is, and one due for a refresh
+    seedConnection(ann, { expiresAt });
+    const before = connectionRow(ann);
+    const fetchFn = fakeFetch({});
+    try {
+      delete process.env.GOOGLE_TOKEN_KEY;
+      assert.deepStrictEqual(await oauth.accessToken(db, ann, fetchFn, now), { code: "unavailable" });
+      assert.strictEqual(connectionRow(ann).status, "connected", "a missing key is the server's problem, not the user's");
+
+      process.env.GOOGLE_TOKEN_KEY = crypto.randomBytes(32).toString("base64");
+      assert.deepStrictEqual(await oauth.accessToken(db, ann, fetchFn, now), { code: "unavailable" });
+      assert.deepStrictEqual(connectionRow(ann), before, "nothing is written to the connection");
+    } finally {
+      process.env.GOOGLE_TOKEN_KEY = TOKEN_KEY;
+    }
+    assert.strictEqual(fetchFn.calls.length, 0, "Google is not asked");
+  }
+  // once the key is fixed the same connection works, with no new sign-in
   seedConnection(ann, { expiresAt: now + 5 * MIN });
   try {
-    delete process.env.GOOGLE_TOKEN_KEY;
-    assert.deepStrictEqual(await oauth.accessToken(db, ann, fakeFetch({}), now), { code: "unavailable" });
-    assert.strictEqual(connectionRow(ann).status, "connected", "a missing key is the server's problem, not the user's");
-
     process.env.GOOGLE_TOKEN_KEY = crypto.randomBytes(32).toString("base64");
-    assert.deepStrictEqual(await oauth.accessToken(db, ann, fakeFetch({}), now), { code: "reconnect" });
-    assert.strictEqual(connectionRow(ann).status, "reconnect");
+    assert.deepStrictEqual(await oauth.accessToken(db, ann, fakeFetch({}), now), { code: "unavailable" });
   } finally {
     process.env.GOOGLE_TOKEN_KEY = TOKEN_KEY;
   }
+  assert.strictEqual((await oauth.accessToken(db, ann, fakeFetch({}), now)).token, ACCESS_1);
 });
 
 // ── disconnect ───────────────────────────────────────────────────────────────

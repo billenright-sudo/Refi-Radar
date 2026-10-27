@@ -220,11 +220,12 @@ function refreshTokenOf(db, userId) {
 // A usable access token for the user, refreshed first when under a minute is left on it.
 //   { token, timeZone, googleEmail }                       the token
 //   { code: "not_connected" }                              no connection
-//   { code: "reconnect" }                                  Google refused the refresh token (or the stored tokens can no
-//                                                          longer be opened): only a new sign-in fixes it
-//   { code: "unavailable" }                                Google or the network failed, or the server is not set up;
-//                                                          worth trying again later
-// Never throws.
+//   { code: "reconnect" }                                  Google refused the refresh token: only a new sign-in fixes it
+//   { code: "unavailable" }                                Google or the network failed, or the server is not set up (a
+//                                                          missing GOOGLE_TOKEN_KEY, or one that cannot open the stored
+//                                                          tokens); worth trying again later
+// Never throws. A key that cannot open the tokens writes nothing to the connection (Ruling 57): it is the server's
+// configuration that is wrong, and once the key is fixed the same connection works again with no new sign-in.
 async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.now()) {
   const unavailable = { code: "unavailable" };
   try {
@@ -238,8 +239,7 @@ async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.no
       try {
         return { token: decrypt(row.access_token_enc), ...who };
       } catch {
-        markReconnect(db, userId, row.refresh_token_enc);
-        return { code: "reconnect" };
+        return unavailable;
       }
     }
 
@@ -247,8 +247,7 @@ async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.no
     try {
       refreshToken = decrypt(row.refresh_token_enc);
     } catch {
-      markReconnect(db, userId, row.refresh_token_enc);
-      return { code: "reconnect" };
+      return unavailable;
     }
     const config = googleConfig();
     if (!config) return unavailable;
