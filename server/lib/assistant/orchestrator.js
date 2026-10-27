@@ -503,17 +503,22 @@ const placingComplement = (s, at) => {
   const before = s.slice(0, at);
   return /\?\s*$/.test(s) && !IS_CONTRACTED_BEFORE_RE.test(before) && PLACING_COMPLEMENT_RE.test(before);
 };
-const calendarClaim = (s) =>
+// `plainRead` (Ruling 50): the turn read the calendar and is neither an action turn nor a reply to an offer, so a "now" form
+// narrates what the read returned ("Here's what's on your calendar now: ...", "Right now on your calendar you have ...") and only
+// the first-person placing claims count.
+const calendarClaim = (s, plainRead) =>
   placedClaim(s) ||
-  (!NEGATIVE_START_RE.test(s) && [...s.matchAll(CALENDAR_NOW_ALL_RE)].some((m) => !placingComplement(s, m.index)));
+  (!plainRead && !NEGATIVE_START_RE.test(s) && [...s.matchAll(CALENDAR_NOW_ALL_RE)].some((m) => !placingComplement(s, m.index)));
 
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
-// `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only). Pure: no I/O, no state.
-function claimsCompletion(text, grounded, storedStage, sweep) {
+// `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only); `plainRead` = the turn cited
+// a calendar read and is neither an action turn nor a reply to an offer (the "now" forms are then no claim: Ruling 50). Pure: no
+// I/O, no state.
+function claimsCompletion(text, grounded, storedStage, sweep, plainRead) {
   return sentencesOf(String(text == null ? "" : text)).some((part) => {
     let s = stripOpener(part.trim()).trim();
     if (isOffer(s)) s = s.replace(OFFER_LEAD_RE, "").trim();
-    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s) ||
+    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, plainRead) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
@@ -2181,7 +2186,9 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // stage may be claimed, on every turn, whatever the user said (a stored veteran hearing "you're a Veteran" is told the truth).
       // A set-claim that names a stage ("Your career stage is set to Veteran.") gets the same check inside claimsCompletion.
       if (stageClaims(text).some((id) => id !== storedStage)) return finish(NOTHING_CHANGED);
-      if (claimsCompletion(text, sources.length > 0, storedStage, sources.some((src) => src.startsWith("sweep engine")))) {
+      // (Ruling 50: on a plain turn that read the calendar, a "now" form narrates the read and only placing claims count)
+      const plainRead = calendarCited && !actionTurn && !afterOffer;
+      if (claimsCompletion(text, sources.length > 0, storedStage, sources.some((src) => src.startsWith("sweep engine")), plainRead)) {
         return finish(NOTHING_CHANGED);
       }
       // Ruling 49: a calendar or availability fact on a turn that read no calendar is can't-verify, or, when the user asked about
