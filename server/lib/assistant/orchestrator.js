@@ -1931,40 +1931,112 @@ function calendarFactsHold(text, reads, payloads, ctx) {
   });
 }
 
-// ── A calendar fact with no calendar read (Ruling 49) ────────────────────────────────────────────────────────────────────────────
+// ── A calendar fact with no calendar read (Rulings 49 and 64) ───────────────────────────────────────────────────────────────────
 //
-// Only getCalendarTool can tell what is on the calendar, so on a turn that cited no "google calendar ..." read:
-//   * a sentence that names the calendar or availability (CALENDAR_WORD_RE: calendar, schedule, meeting, appointment, free, busy,
-//     available, availability, booked, wide open, clear, an open slot, and "open" said of a time: "Friday is open") together with a
-//     day or a time (DAY_OR_TIME_RE: today, tonight, tomorrow, yesterday, a morning / afternoon / evening, a weekday, a date, a clock
-//     time, all day, this / next week, the weekend) states a calendar fact nothing backs: "Your sweep is ready, and you're free all
-//     day Friday." on a sweep turn, "Friday afternoon is clear, nothing on your calendar." after a client lookup;
-//   * on a turn that cited nothing at all, any such word does ("Your week looks light — just a couple of meetings.").
-// Either is the can't-verify line, or, when the user's message is about the calendar or availability and Google is not usable for
-// this user (ctx.google.connection() says { code }), the Google line that says why; the same goes for the ungrounded screen's
-// can't-verify ("am I free Friday afternoon?" -> "Yes."). A day with no such word is no calendar fact: "Call the Chens today." on a
-// sweep turn passes, and so do a rates or a client answer that says "today" ("at 6.52 percent" is no clock time).
+// Only getCalendarTool can tell what is on the calendar, so on a turn that cited no "google calendar ..." read, a reply that says
+// what is or is not on the broker's calendar states a fact nothing backs: it is the can't-verify line, or, when the user's message
+// is about the calendar or their availability (asksAboutCalendar) and Google is not usable for this user (ctx.google.connection()
+// says { code }), the Google line that says why; the same goes for the ungrounded screen's can't-verify ("am I free Friday
+// afternoon?" -> "Yes.").
+// Ruling 64 (R1) narrows Ruling 49's word list to availability PREDICATED OF THE BROKER, THEIR CALENDAR, OR A DAY OR A TIME
+// (CALENDAR_FACT_FORMS), with or without a day word beside it:
+//   * the broker: "you're / you are / you'll be free | busy | available | booked | open | clear | wide open | tied up | slammed |
+//     swamped" ("free to call", "open to a refi", "clear of" are other senses);
+//   * a day or a time, or the broker's calendar / schedule / day / week / afternoon ..., is / looks / stays free | clear | open | wide
+//     open | busy | booked | empty | light | full | packed | taken: "Tomorrow is wide open.", "Friday afternoon looks clear.", "Friday
+//     at 10 is free.", "Your calendar's wide open.", "Your week looks light.";
+//   * nothing on it: "you have no meetings", "you've got nothing (else) on (today)", "you don't have anything on your calendar",
+//     "Nothing on your calendar today.", "... nothing else is on.", and, with a day or a time in the sentence, "No conflicts Friday
+//     afternoon.";
+//   * an event said to be theirs: "you have <a meeting / follow-up / appointment / slot / call with ...> <a day or a time>" ("You
+//     have a follow-up with Robert & Linda Chen this morning."), "your next meeting is ...", "your 2 o'clock is ...", "<something>
+//     is on your calendar" ("That's the only thing on your calendar today."), a sentence that opens "On your calendar ...";
+//   * free time of theirs said as a given (R3): "your free Friday afternoon", "your open slot at 2", "your free 3 o'clock", "an open
+//     slot at 2".
+// Other senses of the words are no calendar fact and pass, as at 6be3093: "the clear winner today", "clear, simple language", "a busy
+// afternoon of calls", "the best available this month", "your call schedule for today", a client who is "busy after work" or
+// "available evenings", "have a great meeting", "the scheduled appraisal".
 // Not facts, and so not screened:
-//   * a question (it ends with "?" and opens with a question word) asks for a day or a slot rather than stating one, so only what it
-//     says after its first clause (a comma, colon, semicolon or dash, or since / because / now that / given / an "as" with its
-//     subject) is screened: "What time should I put it on your calendar?" passes, "Want me to book them Friday, since you're free all
-//     afternoon?" does not;
-//   * a calendar word whose own clause (split at , ; : a dash, but / and / so, since / because / given / now that) says before it what
-//     Charli did not or cannot do ("I couldn't read your calendar just now.", "Okay, I won't put it on your calendar.", "I haven't
-//     booked anything.", "No problem, I'll leave your calendar alone."), what she offers or is able to do ("I can schedule a follow-up
-//     for Friday if you like.", "..., want me to book a meeting Friday?"), or a condition ("a good one to call today if you're free"):
-//     "I couldn't read your calendar, but you're free Friday." and "I can book them Friday, since you're free then." still say the
-//     rest, and "I can't see anything on your calendar today." is a reading, not an inability;
-//   * "feel free", "free and clear", "loud and clear", "crystal clear", "clear of", "clear to close", a rate or a loan that is
-//     "available".
-const CALENDAR_WORD_RE = new RegExp(
-  "(?<![\\w'\\u2019-])(?:calendars?|schedul(?:e|es|ed|ing)|meetings?|appointments?|busy|availability|booked|wide\\s+open|open\\s+slots?" +
-    "|(?<!\\bfeel\\s+)free(?!\\s+(?:and\\s+clear|of)\\b)|(?<!\\b(?:(?:loud|free)\\s+and|crystal)\\s+)clear(?!\\s+(?:to\\s+close|of)\\b)" +
-    "|(?<!\\b(?:rates?|loans?|options?|products?|programs?|terms?|pricing)\\s+)available(?!\\s+(?:rates?|loans?|options?|products?|programs?|terms?)\\b)" +
-    "|(?:is|are|['\\u2019]s|['\\u2019]re|looks?|stays?|still|completely|totally|all)\\s+open)(?![\\w'\\u2019-])",
-  "i"
-);
-const CALENDAR_WORD_ALL_RE = new RegExp(CALENDAR_WORD_RE.source, "gi");
+//   * a form ASKED rather than stated (R3): an inverted question matches no form ("Are you free Friday at 10, or should I pick another
+//     time?", "Is Friday afternoon open for a call with them?", "Do you have anything on Friday?"), and "anything on your calendar"
+//     counts only in a statement; a form a question STATES is what it presupposes, and is held like any statement ("Did you know
+//     you're free all Friday afternoon?", "Want me to book them into your free afternoon Friday?", "Since Friday's open, want me to
+//     book them?");
+//   * a form whose own clause (split at , ; : a dash, but / and / so, since / because / given / now that) sets a condition or asks
+//     whether ("call them today if you're free", "I can check whether you're free Friday afternoon");
+//   * an EVENT form (the act words: calendar, schedule, meeting, appointment, booked; R3) in a clause that says what Charli did not
+//     or cannot do, or offers to do ("Okay, I won't put anything on your calendar.", "I haven't put anything on your calendar for
+//     Friday."); an availability form there is still held ("I can book the Chens into your open slot Friday at 2.", "I could schedule
+//     them in your free Friday afternoon.", "I won't book over your free Friday afternoon."), and a reading said as an inability is a
+//     reading ("I can't see anything on your calendar today.");
+const WEEKDAY_WORD = "(?:mon|tues|wednes|thurs|fri|satur|sun)day";
+const DAY_PART = "(?:morning|afternoon|evening|night)";
+const CLOCK_WORDS = "(?:\\d{1,2}(?::\\d{2})?\\s*(?:[ap]\\.?m\\b\\.?|o['\\u2019]clock)|\\d{1,2}:\\d{2}|noon|midnight)";
+const HOUR_WORD = "(?:" + CLOCK_WORDS + "|\\d{1,2}(?![\\d.,%:])|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
+const NAMED_DAY = "(?:today|tonight|tomorrow|" + WEEKDAY_WORD + "|this\\s+(?:week(?:end)?|" + DAY_PART + "))";
+const NOT_THIS_SENSE = "(?![\\w'\\u2019-])(?!\\s+(?:to|of|and\\s+clear)\\b)";
+const DEGREE = "(?:\\s+(?:still|completely|totally|all|pretty|fairly|really|very|quite|mostly|not|also|now|already))*";
+// a day or a time said as the subject of its availability: "Tomorrow", "Friday afternoon", "Friday at 10", "this afternoon", "your
+// week", "your calendar for Friday", "the rest of the day", "10:00 AM", "that slot"
+const DAY_SUBJECT =
+  "(?:(?:today|tonight|tomorrow|" + WEEKDAY_WORD + ")(?:\\s+" + DAY_PART + ")?" +
+  "|(?:this|that|the|your|today['\\u2019]s|tomorrow['\\u2019]s|" + WEEKDAY_WORD + "['\\u2019]s)\\s+(?:" + DAY_PART +
+    "|day|week|weekend|slot|hour|window)" +
+  "|(?:this|next)\\s+week(?:end)?|the\\s+rest\\s+of\\s+(?:the|your)\\s+(?:day|week|" + DAY_PART + ")" +
+  "|your\\s+(?:google\\s+)?(?:calendar|schedule)|" + CLOCK_WORDS + ")" +
+  "(?:\\s+(?:at|from|after|before|around|until|till)\\s+" + HOUR_WORD + ")?" +
+  "(?:\\s+(?:(?:for|on)\\s+)?" + NAMED_DAY + ")?";
+const EVENT_NOUN =
+  "(?:meetings?|appointments?|follow[\\s-]?ups?|events?|slots?|windows?|calls?(?=\\s+with\\b)|lunch(?:es)?|coffee|standups?" +
+  "|consult(?:ation)?s?)(?![\\w'\\u2019-])(?!\\s+(?:due|to|overdue)\\b)";
+// not after an auxiliary that asks it ("Do you have a meeting Friday?") or a condition ("if you have ...")
+const YOU_HAVE =
+  "(?<!\\b(?:do|does|did|don['\\u2019]?t|didn['\\u2019]?t|if|whether|when)\\s+)\\byou(?:['\\u2019]ve(?:\\s+got)?|\\s+have(?:\\s+got)?|\\s+got)";
+const ON_YOUR_CALENDAR = "on\\s+(?:your|the)\\s+(?:google\\s+)?(?:calendar|schedule)(?![\\w'\\u2019-])";
+// `event`: an event form, whose act words (calendar, schedule, meeting, appointment, booked) an offer or a did-not clause may
+// carry (R3); `needsDay`: counts only with a day or a time in the sentence; `statement`: counts only in a sentence that is no question
+const CALENDAR_FACT_FORMS = [
+  // you're free / busy / ...
+  { re: "\\byou(?:['\\u2019]re|\\s+are|\\s+were|['\\u2019]ll\\s+be|\\s+will\\s+be)" + DEGREE +
+      "\\s+(?:free|busy|available|booked(?:\\s+(?:up|solid))?|open|clear|wide\\s+open|tied\\s+up|slammed|swamped)" + NOT_THIS_SENSE },
+  // Friday afternoon is clear / your calendar's wide open / your week looks light (not a client's day: "their Friday is open",
+  // "the Chens' Friday is free")
+  { re: "(?<![\\w'\\u2019-])(?<!(?:\\b(?:their|his|her)|['\\u2019]s?)\\s+)" + DAY_SUBJECT +
+      "(?:\\s+(?:is|are|looks?|seems?|stays?|remains?|will\\s+be|should\\s+be)|['\\u2019](?:s|re|ll\\s+be))" +
+      DEGREE + "\\s+(?:free|clear|open|wide\\s+open|busy|booked(?:\\s+(?:up|solid))?|empty|light|full|packed|slammed|available" +
+      "|blocked(?:\\s+off)?|taken|tight)" + NOT_THIS_SENSE },
+  // you have no meetings / you've got nothing (else) on (today) / you don't have anything on your calendar
+  { re: YOU_HAVE + "\\s+(?:nothing(?:\\s+(?:else|more))?\\s+(?:on(?=\\s*(?:[.!?,;:\\u2014\\u2013]|$)|\\s+(?:(?:for\\s+)?" + NAMED_DAY +
+      "|the\\s+(?:rest|" + DAY_PART + ")|(?:your|the)\\s+(?:google\\s+)?(?:calendar|schedule)(?![\\w'\\u2019-])))|booked|scheduled|planned|lined\\s+up)" +
+      "|no\\s+(?:other\\s+|more\\s+)?(?:meetings?|appointments?|events?|conflicts?)(?![\\w'\\u2019-]))" +
+      "|\\byou\\s+(?:don['\\u2019]?t|do\\s+not)\\s+have\\s+(?:anything(?:\\s+else)?\\s+(?:on\\b|booked|scheduled|planned)" +
+      "|any\\s+(?:other\\s+|more\\s+)?(?:meetings?|appointments?|events?|conflicts?)(?![\\w'\\u2019-]))" },
+  // Nothing on your calendar today. / Nothing on Friday. / Nothing's booked. / ... nothing else is on.
+  { re: "\\b(?:nothing|no\\s+(?:other\\s+)?(?:meetings?|appointments?|events?))(?:\\s+else)?(?:\\s+is|['\\u2019]s)?(?:\\s+still)?\\s+" +
+      "(?:" + ON_YOUR_CALENDAR + "|(?:on\\s+)?(?:for\\s+)?" + NAMED_DAY + "\\b|booked|scheduled|planned)" +
+      "|\\bnothing(?:\\s+else)?(?:\\s+is|['\\u2019]s)?\\s+on(?=\\s*(?:[.!?,;:\\u2014\\u2013]|$))" },
+  // No conflicts Friday afternoon.
+  { re: "\\bno\\s+(?:other\\s+)?(?:meetings?|appointments?|events?|conflicts?)(?![\\w'\\u2019-])", needsDay: true },
+  // your free Friday afternoon / your open slot at 2 / your free 3 o'clock / an open slot at 2
+  { re: "\\b(?:your\\s+(?:(?:today['\\u2019]s|tomorrow['\\u2019]s|" + WEEKDAY_WORD + "['\\u2019]s)\\s+)?(?:free|open|empty|clear|unbooked|available)\\s+" +
+      "(?:(?:today|tomorrow|tonight|" + WEEKDAY_WORD + ")\\s+)?(?:" + DAY_PART + "s?|slots?|spots?|hours?|windows?|blocks?|" + WEEKDAY_WORD +
+      "|" + CLOCK_WORDS + "|\\d{1,2}(?![\\d.,%:]))" +
+      "|(?:an?|the|that|this)\\s+(?:free|open|empty|unbooked)\\s+(?:slots?|spots?|hours?|windows?|blocks?))(?![\\w'\\u2019-])" },
+  // you have a follow-up with the Chens this morning / you have an open slot at 2:00 PM
+  { re: YOU_HAVE + "\\s+(?:[\\w&'\\u2019:-]+\\s+){0,4}?" + EVENT_NOUN, event: true, needsDay: true },
+  // Your next meeting is at 3:00 PM. / Your 2 o'clock is the Chens.
+  { re: "\\byour\\s+(?:(?:next|first|last|only|other|earliest|later)\\s+(?:meeting|appointment|event)s?|" + CLOCK_WORDS +
+      "(?:\\s+(?:meeting|appointment|call|slot))?)(?![\\w'\\u2019-])\\s*(?:is\\b|are\\b|['\\u2019]s\\b|['\\u2019]re\\b|was\\b|:|with\\b)", event: true },
+  // That's the only thing on your calendar today. / Their follow-up is on your calendar. (not "what's on your calendar?")
+  { re: "(?<=[\\w'\\u2019)])(?<!\\b(?:what|whatever|anything|something|who|which|whoever)(?:\\s+else)?)(?:\\s+(?:is|are|was|were)|['\\u2019](?:s|re))" +
+      "(?:\\s+(?:still|also|already|now|all|just|only|not))*\\s+" +
+      "(?:(?:the|a|an|one|only|first|last|next|other|thing|things|event|events|item|items|meeting|meetings|nothing|else|what['\\u2019]s)\\s+){0,4}" +
+      ON_YOUR_CALENDAR, event: true },
+  // On your calendar today: ... / Right now on your calendar you have ...
+  { re: "^(?:(?:right\\s+)?now\\s+|today\\s+|tomorrow\\s+)?" + ON_YOUR_CALENDAR, event: true },
+  // (a statement only) I can't see anything on your calendar today.
+  { re: "\\banything(?:\\s+else)?\\s+" + ON_YOUR_CALENDAR, event: true, statement: true },
+].map((form) => ({ ...form, re: new RegExp(form.re, "gi") }));
 const DAY_OR_TIME_RE = new RegExp(
   "\\b(?:today|tonight|tomorrow|yesterday|mornings?|afternoons?|evenings?|noon|midnight|all\\s+day|weekends?|(?:this|next)\\s+week" +
     "|(?:mon|tues|wednes|thurs|fri|satur|sun)days?" +
@@ -1975,9 +2047,6 @@ const DAY_OR_TIME_RE = new RegExp(
     "(?![\\d,%]|\\.\\d|\\s*(?:percent|basis|bps|points?)\\b))\\b",
   "i"
 );
-// where a question's first clause ends (not at its first character)
-const FIRST_CLAUSE_END_RE =
-  /[,;:—–]|--|\s-\s|\b(?:since|because|now\s+that|given|as(?=\s+(?:you|your|it|the|that|there|they|we|I)\b))\b/i;
 const FACT_CLAUSE_BREAK_ALL_RE = /[,;:—–]|--|\s-\s|\b(?:but|and|so|since|because|given|now\s+that)\b/gi;
 // what Charli did not or cannot do to the calendar
 const SHE_DID_NOT_RE = new RegExp(
@@ -1996,31 +2065,50 @@ const SHE_OFFERS_RE = new RegExp(
     "(?:read|check|look\\s+at|look\\s+up|pull\\s+up|open|access|book|put|add|schedule|set\\s+up|pencil|block|move)\\b",
   "i"
 );
-// a condition ("if you're free", "whenever you're free")
-const CONDITION_RE = /\b(?:if|whenever|unless|when)\b/i;
+// a condition, or a question put inside a clause ("if you're free", "whenever you're free", "whether you're free")
+const CONDITION_RE = /\b(?:if|whenever|unless|when|whether)\b/i;
 // sentences split at . ! ? (not at a decimal point), with "a.m." / "p.m." read as "am" / "pm" so they end no sentence
 const factSentencesOf = (text) =>
   (String(text).replace(/\b([ap])\.\s?m\b\.?/gi, "$1m").match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean);
-// `cited`: some tool result this turn was cited (then a calendar word needs a day or a time beside it to be a fact). Pure.
-function ungroundedCalendarFact(text, cited) {
+// Pure.
+function ungroundedCalendarFact(text) {
   return factSentencesOf(text).some((sentence) => {
     const s = stripOpener(sentence).trim();
-    let screened = s;
-    if (/\?\s*$/.test(s) && QUESTION_START_RE.test(s)) {
-      const end = FIRST_CLAUSE_END_RE.exec(s.slice(1));
-      if (!end) return false;
-      screened = s.slice(end.index + 1);
-    }
-    const said = [...screened.matchAll(CALENDAR_WORD_ALL_RE)].some((m) => {
-      const before = screened.slice(0, m.index);
-      const breaks = [...before.matchAll(FACT_CLAUSE_BREAK_ALL_RE)];
-      // (its clause up to and with the word: "I can schedule", "I haven't booked")
-      const clause = (breaks.length ? before.slice(breaks[breaks.length - 1].index + breaks[breaks.length - 1][0].length) : before) + m[0];
-      return !SHE_DID_NOT_RE.test(clause) && !SHE_OFFERS_RE.test(clause) && !CONDITION_RE.test(clause);
+    const asks = /\?\s*$/.test(s);
+    return CALENDAR_FACT_FORMS.some((form) => {
+      if ((form.statement && asks) || (form.needsDay && !DAY_OR_TIME_RE.test(s))) return false;
+      return [...s.matchAll(form.re)].some((m) => {
+        // the form's own clause, up to and with it
+        const before = s.slice(0, m.index);
+        const breaks = [...before.matchAll(FACT_CLAUSE_BREAK_ALL_RE)];
+        const last = breaks[breaks.length - 1];
+        const clause = (last ? before.slice(last.index + last[0].length) : before) + m[0];
+        if (CONDITION_RE.test(clause)) return false;
+        return !(form.event && (SHE_DID_NOT_RE.test(clause) || SHE_OFFERS_RE.test(clause)));
+      });
     });
-    return said && (!cited || DAY_OR_TIME_RE.test(s));
   });
 }
+// R6: the user's message is about the calendar or their availability in that sense (the Google line answers it when Google is not
+// usable): the calendar, their schedule or a scheduling verb (not a payment / amortization / fee ... schedule), their meetings or
+// appointments, "am I free / busy / available ...", "is Friday afternoon open?", "is my afternoon clear?", "do I have anything / any
+// meetings / time ...", "when am I free?", "what's on (for) tomorrow?". "is the 5/1 ARM available?", "how busy is the market?", "what
+// rates are available today?", "what's the Chens' payment schedule?" and "I'm free now, who should I call?" are not.
+const ASKS_CALENDAR_RE = new RegExp(
+  "\\bcalendars?(?![\\w'\\u2019-])(?!\\s+(?:years?|months?|quarters?|days?)\\b)" +
+  "|(?<!\\b(?:payment|amortization|amortisation|fee|rate|pricing|loan|draw|repayment|disbursement|closing|escrow|tax|interest|billing)\\s+)" +
+    "\\bschedul(?:e|es|ed|ing)(?![\\w'\\u2019-])" +
+  "|\\b(?:my|any|next)\\s+(?:(?:next|other|first)\\s+)?(?:meetings?|appointments?)(?![\\w'\\u2019-])" +
+  "|\\b(?:am\\s+I|are\\s+we|is\\s+(?:my|our)\\s+(?:" + DAY_PART + "|day|week|weekend)|is\\s+(?:today|tonight|tomorrow|" + WEEKDAY_WORD +
+    ")(?:\\s+[\\w:]+){0,3}?)(?:\\s+(?:still|totally|completely|really|actually))?\\s+(?:free|busy|available|booked|open|clear|wide\\s+open|empty)" +
+    "(?![\\w'\\u2019-])" +
+  "|\\bdo\\s+(?:I|we)\\s+have\\s+(?:anything|any\\s+(?:free\\s+)?(?:time|meetings?|appointments?|openings?)|(?:a|an)\\s+(?:free|open|meeting" +
+    "|appointment|opening|slot)|time|free\\s+time)(?![\\w'\\u2019-])" +
+  "|\\bwhen\\s+am\\s+I\\s+(?:free|available|busy)\\b" +
+  "|\\bwhat(?:['\\u2019]s|\\s+is|\\s+do\\s+I\\s+have)\\s+on\\s+(?:for\\s+)?" + NAMED_DAY + "\\b",
+  "i"
+);
+const asksAboutCalendar = (text) => ASKS_CALENDAR_RE.test(String(text == null ? "" : text));
 // The code ctx.google's connection gives (null when it is usable or cannot be read, or there is no adapter: the route always
 // builds one).
 const googleCodeOf = (ctx) => {
@@ -2153,10 +2241,10 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     return out;
   };
   const tookTooLong = () => ({ ...finish(TOOK_TOO_LONG), error: true });
-  // The can't-verify line, or (Ruling 49) the Google line when the user's message is about the calendar or availability and
-  // Google is not usable for them: then the reason nothing could be checked is that one.
+  // The can't-verify line, or (Ruling 49) the Google line when the user's message is about the calendar or availability (in that
+  // sense: asksAboutCalendar, Ruling 64) and Google is not usable for them: then the reason nothing could be checked is that one.
   const cantVerifyCalendar = () =>
-    (CALENDAR_WORD_RE.test(latestUserText(messages)) && GOOGLE_LINES.get(googleCodeOf(ctx))) || CANT_VERIFY;
+    (asksAboutCalendar(latestUserText(messages)) && GOOGLE_LINES.get(googleCodeOf(ctx))) || CANT_VERIFY;
 
   // Nothing to answer: no API call.
   const last = messages[messages.length - 1];
@@ -2284,9 +2372,9 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       if (claimsCompletion(text, sources.length > 0, storedStage, sources.some((src) => src.startsWith("sweep engine")), plainReads)) {
         return finish(NOTHING_CHANGED);
       }
-      // Ruling 49: a calendar or availability fact on a turn that read no calendar is can't-verify, or, when the user asked about
-      // the calendar and Google is not usable, the Google line that says why (ungroundedCalendarFact)
-      if (!calendarCited && ungroundedCalendarFact(text, sources.length > 0)) return finish(cantVerifyCalendar());
+      // Rulings 49 and 64: a calendar or availability fact on a turn that read no calendar is can't-verify, or, when the user asked
+      // about the calendar and Google is not usable, the Google line that says why (ungroundedCalendarFact)
+      if (!calendarCited && ungroundedCalendarFact(text)) return finish(cantVerifyCalendar());
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
       if (sources.length === 0) {
@@ -2332,7 +2420,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     // below and before the model is handed the results (it would only put it into its own words). It wins over a change another
     // tool packaged in the same response: the user asked for both, so nothing is handed up and they ask again. (A calendar read the
     // user did not ask for, beside other tools, is the exception: its result goes back to the model like any other, Ruling 55.)
-    const line = codeAuthoredLine(outs, runBlocks, CALENDAR_WORD_RE.test(userText));
+    const line = codeAuthoredLine(outs, runBlocks, asksAboutCalendar(userText));
     if (line) return finish(line);
 
     // The tools only package a change; here it is handed up for confirmation, not acted on. An email set up by draftEmailTool
