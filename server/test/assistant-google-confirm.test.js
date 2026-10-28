@@ -132,7 +132,7 @@ const eventIdOf = (confirmId) => "br" + confirmId.replace(/-/g, "");
 const EVENT = { title: "Follow-up: Robert & Linda Chen", date: "2099-06-15", time: "10:00", durationMinutes: 30, timeZone: PHX };   // a Monday, far enough ahead that these never go stale
 const booking = (confirmId, event = {}) => ({ sideEffect: { type: "createEvent", event: { ...EVENT, ...event }, confirmId } });
 const confirm = (userId, confirmId, event) => as(userId)("POST", "/api/assistant/confirm", booking(confirmId, event));
-const REPLY = 'Done — "Follow-up: Robert & Linda Chen" is on your calendar for Monday, June 15th at 10:00 AM.';
+const REPLY = 'Done — "Follow-up: Robert & Linda Chen" is on your calendar for Monday, June 15th at 10:00 AM Mountain Standard Time.';
 const TARGET = JSON.stringify([EVENT.date, EVENT.time, EVENT.durationMinutes, EVENT.title]);
 
 const waitFor = async (condition, what) => {
@@ -170,7 +170,7 @@ test("createEvent: confirmed -> one events POST (id br + the confirmId's hex, se
   assert.equal(r.status, 200);
   assert.deepEqual(r.data, {
     success: true,
-    result: { eventId: eventIdOf(id), title: EVENT.title, date: EVENT.date, time: EVENT.time },
+    result: { eventId: eventIdOf(id), title: EVENT.title, date: EVENT.date, time: EVENT.time, timeZone: EVENT.timeZone },
     reply: REPLY,
   });
   assert.equal(google.calls.length, 1);
@@ -260,7 +260,7 @@ test("createEvent: Google's 409 (that event id already exists) counts as booked"
   assert.equal(r.status, 200);
   assert.equal(r.data.success, true);
   assert.equal(r.data.duplicate, undefined, "the reply is a first confirm's, whatever Google said");
-  assert.deepEqual(r.data.result, { eventId: eventIdOf(id), title: EVENT.title, date: EVENT.date, time: EVENT.time });
+  assert.deepEqual(r.data.result, { eventId: eventIdOf(id), title: EVENT.title, date: EVENT.date, time: EVENT.time, timeZone: EVENT.timeZone });
   assert.equal(r.data.reply, REPLY);
   assert.equal(rowOf(id).state, "done");
 });
@@ -559,7 +559,7 @@ test("turn: the Google adapter is wired in, so a booking turn proposes a createE
   });
   assert.equal(turn.status, 200);
   assert.equal(turn.data.error, undefined, JSON.stringify(turn.data));
-  assert.equal(turn.data.reply, 'Just to confirm — put "Call the title company" on your calendar for Monday, June 15th at 10:00 AM, 30 minutes? Nobody gets an invite.');
+  assert.equal(turn.data.reply, 'Just to confirm — put "Call the title company" on your calendar for Monday, June 15th at 10:00 AM Mountain Standard Time, 30 minutes? Nobody gets an invite.');
   const side = turn.data.sideEffect;
   assert.equal(side.type, "createEvent");
   assert.deepEqual(side.event, { title: "Call the title company", date: "2099-06-15", time: "10:00", durationMinutes: 30, timeZone: PHX });
@@ -569,7 +569,7 @@ test("turn: the Google adapter is wired in, so a booking turn proposes a createE
 
   const done = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: side });
   assert.equal(done.status, 200);
-  assert.equal(done.data.reply, 'Done — "Call the title company" is on your calendar for Monday, June 15th at 10:00 AM.');
+  assert.equal(done.data.reply, 'Done — "Call the title company" is on your calendar for Monday, June 15th at 10:00 AM Mountain Standard Time.');
   assert.equal(google.calls.filter(isInsert).length, 1);
   assert.equal(google.calls[0].json.id, eventIdOf(side.confirmId));
 });

@@ -17,6 +17,7 @@ const refi = require("../lib/refi");
 const { TOOL_SCHEMA } = require("../lib/assistant/tools");
 const {
   CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG, buildCharliSystem,
+  BOOKING_ASK,
 } = require("../lib/assistant/prompt");
 const {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
@@ -116,6 +117,9 @@ const say = (t, usage) => resp([{ type: "text", text: t }], "end_turn", usage);
 const useTool = (name, input = {}, id = "toolu_1", usage) =>
   resp([{ type: "tool_use", id, name, input }], "tool_use", usage);
 const userSays = (t) => [{ role: "user", content: t }];
+// A reply held on an action turn: NOTHING_CHANGED, or BOOKING_ASK when the user asked for a booking and the reply was not one
+// plain question (live check 2026-10-28). Neither claims anything.
+const HELD = new Set([NOTHING_CHANGED, BOOKING_ASK]);
 // The JSON the model received for the tool_result at `idx` of the last user message.
 const toolResultPayload = (params, idx = 0) => {
   const msg = params.messages[params.messages.length - 1];
@@ -3524,11 +3528,11 @@ test("Task 5: createEventTool ends the turn with the code-authored read-back, th
   const r = await runTurn({ messages: userSays("put a follow-up with the Chens on my calendar Friday at ten"), ctx: googleCtx(google), client });
   assert.equal(
     r.reply,
-    'Just to confirm — put "Follow-up: Robert & Linda Chen" on your calendar for Friday, October 30th at 10:00 AM, 30 minutes? Nobody gets an invite.'
+    'Just to confirm — put "Follow-up: Robert & Linda Chen" on your calendar for Friday, October 30th at 10:00 AM Mountain Standard Time, 30 minutes? Nobody gets an invite.'
   );
   assert.deepStrictEqual(r.details, [
     { label: "Title", value: "Follow-up: Robert & Linda Chen" },
-    { label: "When", value: "Friday, October 30th, 10:00 AM – 10:30 AM" },
+    { label: "When", value: "Friday, October 30th, 10:00 AM – 10:30 AM Mountain Standard Time" },
     { label: "Invites", value: "None — your calendar only" },
   ]);
   assert.deepStrictEqual(r.sideEffect, {
@@ -3547,20 +3551,20 @@ test("Task 5: the createEvent read-back and When row speak the title, the length
   let r = await bookOf({ date: "tomorrow", time: "9:30", title: "Call the title company", durationMinutes: 90 });
   assert.equal(
     r.reply,
-    'Just to confirm — put "Call the title company" on your calendar for Wednesday, October 28th at 9:30 AM, 90 minutes? Nobody gets an invite.'
+    'Just to confirm — put "Call the title company" on your calendar for Wednesday, October 28th at 9:30 AM Mountain Standard Time, 90 minutes? Nobody gets an invite.'
   );
-  assert.deepStrictEqual(r.details.map((d) => d.value), ["Call the title company", "Wednesday, October 28th, 9:30 AM – 11:00 AM", "None — your calendar only"]);
+  assert.deepStrictEqual(r.details.map((d) => d.value), ["Call the title company", "Wednesday, October 28th, 9:30 AM – 11:00 AM Mountain Standard Time", "None — your calendar only"]);
   // an event that runs past midnight names both days
   r = await bookOf({ date: "friday", time: "23:45", title: "Late close" });
-  assert.equal(r.details[1].value, "Friday, October 30th, 11:45 PM – Saturday, October 31st, 12:15 AM");
+  assert.equal(r.details[1].value, "Friday, October 30th, 11:45 PM – Saturday, October 31st, 12:15 AM Mountain Standard Time");
   // the calendar's own zone, not the server's
   const ny = fakeGoogle({ connection: { timeZone: "America/New_York", googleEmail: "ann@gmail.example" } });
   r = await bookOf({ date: "friday", time: "14:30", title: "Walkthrough", durationMinutes: 60 }, ny);
-  assert.equal(r.details[1].value, "Friday, October 30th, 2:30 PM – 3:30 PM");
+  assert.equal(r.details[1].value, "Friday, October 30th, 2:30 PM – 3:30 PM Eastern Time");
   assert.equal(r.sideEffect.event.timeZone, "America/New_York");
   // an end time across a clock change is the real wall clock (2026-11-01: 02:00 -> 01:00 in New York), 120 minutes after 00:30
   r = await bookOf({ date: "2026-11-01", time: "00:30", title: "Overnight", durationMinutes: 120 }, ny);
-  assert.equal(r.details[1].value, "Sunday, November 1st, 12:30 AM – 1:30 AM");
+  assert.equal(r.details[1].value, "Sunday, November 1st, 12:30 AM – 1:30 AM Eastern Time");
   assert.equal(r.sideEffect.event.date, "2026-11-01");
 });
 
@@ -3877,6 +3881,42 @@ test("Task 5: CHARLI_SYSTEM carries the Calendar and Email paragraphs, and creat
   assert.ok(buildCharliSystem(null).startsWith(CHARLI_SYSTEM + "\n\n"));
 });
 
+// Live check 2026-10-28: "book a call with Dave" (Dave not in the book) got findClient -> no match -> "I don't see a Dave in your
+// book — want me to book it without linking it to a client, or did you mean someone else?", which the one-question rule replaced
+// with NOTHING_CHANGED. Anyone can go on the broker's calendar; the read-back still shows the title before anything is booked.
+test("booking someone who is not a client: the prompt and createEventTool say to book it with a title naming them, not to ask", () => {
+  assert.ok(CHARLI_SYSTEM.includes(
+    "Anyone can go on the calendar, not only clients: when the person is not in the book (findClient finds no match, or they are a " +
+    "realtor, a CPA, a prospect), call createEventTool anyway with a short title that names them, for example 'Call Dave', and no " +
+    "clientId; never ask whether to link a client. If the day or the time is missing, ask only for that, in one question."
+  ));
+  const createEvent = TOOL_SCHEMA.find((t) => t.name === "createEventTool");
+  assert.match(createEvent.description, /Someone who is not a client is fine: pass a title that names them \(for example 'Call Dave'\) and no clientId\./);
+});
+
+// Live check 2026-10-28: "Book an appointment on my calendar to call Dave Nave" got "I need to prepare that — which day did you
+// want to schedule the call?" (an opener the one-question rule does not know), held as NOTHING_CHANGED: "tell me what to do" to a
+// broker who just did. On a booking request the held reply is now a code-written ask for what a booking needs (still no claim).
+test("a booking request whose reply is held for not being one question gets the code-written booking ask, not 'I haven't made that change'", async () => {
+  const held = (userText, said) => runTurn({ messages: userSays(userText), ctx: googleCtx(fakeGoogle()), client: fakeClient([say(said)]) });
+  for (const [userText, said] of [
+    ["Book an appointment on my calendar to call Dave Nave", "I need to prepare that — which day did you want to schedule the call?"],
+    ["Book an appointment on my calendar to call Dave later at 2:00 PM Eastern",
+      "I don't see a Dave in your book — want me to book the calendar event without linking it to a client, or did you mean someone else?"],
+    ["schedule a meeting with the Chens", "Sure thing. The Chens are on your calendar Friday. Want a reminder?"],
+  ]) {
+    const r = await held(userText, said);
+    assert.equal(r.reply, BOOKING_ASK, userText);
+    assert.equal(r.sideEffect, undefined);
+  }
+  // not a booking request: the line it always was ("my book" is the broker's clients, not a booking)
+  for (const [userText, said] of [
+    ["add Dave Nave to my book", "I need his details first. What's his loan balance?"],
+    ["log a call with the Chens", "I see two Chens. Which one?"],
+  ]) assert.equal((await held(userText, said)).reply, NOTHING_CHANGED, userText);
+  assert.equal(BOOKING_ASK, "Tell me who it's with, the day and the time, and I'll read it back before anything goes on your calendar.");
+});
+
 // ── Task 5 fix round 1: the offer-then-yes flow, send-me reads, the deadline over tools, calendar facts, titles, unasked drafts ──────
 
 // Charli may offer to write a check-in or book a follow-up after a calendar read; the user's "yes" is then a request, though the
@@ -4145,7 +4185,7 @@ test("Task 5 fix: a booking's title is spoken and written, so a figure in it mus
   assert.equal(r.reply, CANT_VERIFY);
   // a number the user said is theirs
   r = await bookWith("Lunch with Bob at 12", "book lunch with Bob Friday at 12");
-  assert.equal(r.reply, 'Just to confirm — put "Lunch with Bob at 12" on your calendar for Friday, October 30th at 12:00 PM, 30 minutes? Nobody gets an invite.');
+  assert.equal(r.reply, 'Just to confirm — put "Lunch with Bob at 12" on your calendar for Friday, October 30th at 12:00 PM Mountain Standard Time, 30 minutes? Nobody gets an invite.');
   assert.equal(r.sideEffect.event.title, "Lunch with Bob at 12");
   // ... and a number a tool returned this turn is the tool's (the client's name has one)
   const numbered = Number(db.prepare(
@@ -4573,14 +4613,14 @@ test("Task 5 fix 5: a yes to an offer to act (the AFFIRMS rows) makes an action 
       "Should I add a reminder for the follow-up now on your calendar?", NOW_CLAIMS_ROUND_4[0],
     ]) {
       const r = await offerReply(yes, said);
-      assert.equal(r.reply, NOTHING_CHANGED, `${yes} -> ${said}`);
+      assert.ok(HELD.has(r.reply), `${yes} -> ${said}`);
       assert.equal(r.sideEffect, undefined);
     }
   }
   // the same through every offer that offers a change
   for (const offer of OFFERS) {
     for (const yes of ["perfect", "great, thanks", "awesome"]) {
-      assert.equal((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply, NOTHING_CHANGED, `${offer} -> ${yes}`);
+      assert.ok(HELD.has((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply), `${offer} -> ${yes}`);
     }
   }
   // the tool path after such a yes is unchanged: the booking is read back
@@ -4684,17 +4724,17 @@ test("Task 5b: a yes or a correction after an offer to act is an action turn: th
   for (const yes of [...OFFER_YESES, ...MORE_YESES]) {
     for (const said of ["Okay, it's on your calendar Friday.", NEUTRAL]) {
       const r = await offerReply(yes, said);
-      assert.equal(r.reply, NOTHING_CHANGED, `${yes} -> ${said}`);
+      assert.ok(HELD.has(r.reply), `${yes} -> ${said}`);
       assert.equal(r.sideEffect, undefined);
       assert.equal("compose" in r, false);
     }
   }
   // every yes of the earlier rounds is still one
-  for (const yes of AFFIRMS) assert.equal((await offerReply(yes, NEUTRAL)).reply, NOTHING_CHANGED, yes);
+  for (const yes of AFFIRMS) assert.ok(HELD.has((await offerReply(yes, NEUTRAL)).reply), yes);
   // the same through every offer to act
   for (const offer of OFFERS) {
     for (const yes of ["sure, no problem", "do Friday at 10", "what a great idea"]) {
-      assert.equal((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply, NOTHING_CHANGED, `${offer} -> ${yes}`);
+      assert.ok(HELD.has((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply), `${offer} -> ${yes}`);
     }
   }
   // on that turn a question still passes, and the booking is read back
@@ -4708,7 +4748,7 @@ test("Task 5b: a yes or a correction after an offer to act is an action turn: th
       "What time? The follow-up was booked for Friday — want another?", "Which day? Friday is locked in — want a reminder?",
     ]) {
       for (const script of [[], [useTool("getCalendarTool", {})]]) {
-        assert.equal((await answerOffer(yes, script, said)).reply, NOTHING_CHANGED, `${script.length ? "read" : "no tool"}: ${yes} -> ${said}`);
+        assert.ok(HELD.has((await answerOffer(yes, script, said)).reply), `${script.length ? "read" : "no tool"}: ${yes} -> ${said}`);
       }
     }
   }
@@ -4839,7 +4879,7 @@ test("Task 5b (Ruling 25): on an action turn in the user's own words the claim g
     ]) {
       for (const said of [smuggled, "What else? Okay, Friday it is, you're set — want a reminder?"]) {
         const r = await runTurn({ messages: userSays(ask), ctx: googleCtx(fakeGoogle({ events })), client: fakeClient([...script, say(said)]) });
-        assert.equal(r.reply, NOTHING_CHANGED, `${ask} [${label}] -> ${said}`);
+        assert.ok(HELD.has(r.reply), `${ask} [${label}] -> ${said}`);
         assert.equal(r.sideEffect, undefined);
       }
     }
@@ -5023,7 +5063,7 @@ test("Task 5b fix 1 (Ruling 30): on an action turn the reply is one question, an
   for (const [label, messages, script, events] of turns) {
     for (const said of [...PRESUPPOSING, ...WRAPPED]) {
       const r = await runTurn({ messages, ctx: googleCtx(fakeGoogle({ events })), client: fakeClient([...script, say(said)]) });
-      assert.equal(r.reply, NOTHING_CHANGED, `${label}: ${said}`);
+      assert.ok(HELD.has(r.reply), `${label}: ${said}`);
       assert.equal(r.sideEffect, undefined);
     }
   }
@@ -5229,7 +5269,7 @@ test("Task 5b fix 2 (Ruling 37): e.g., i.e., vs., approx., etc. and a.m. / p.m. 
   }
   // a real second sentence is still one too many
   const r = await onActionTurn(userSays("book the Chens a follow-up Friday"), [useTool("findClient", { query: "chen" })], "I see two Chens. Which one?");
-  assert.equal(r.reply, NOTHING_CHANGED);
+  assert.equal(r.reply, BOOKING_ASK, "a booking request: the held reply asks for who and when");
 });
 
 // ── Task 5b fix round 3: colons split claims again, generic titles need their own case, statement pieces screened only for a booking ─
@@ -5556,7 +5596,7 @@ test("Final fix (Ruling 50): on a plain turn that read the calendar, a true narr
       ["a booking request", userSays("book the Chens a follow-up Friday"), [useTool("getCalendarTool", {})]],
     ]) {
       const held = await runTurn({ messages, ctx: read(), client: fakeClient([...script, say(said)]) });
-      assert.equal(held.reply, NOTHING_CHANGED, `${label}: ${said}`);
+      assert.ok(HELD.has(held.reply), `${label}: ${said}`);
     }
     // (Ruling 60: the 5th argument is the plain read's { events }; null when there is none)
     assert.equal(claimsCompletion(said, true, null, false, { events: [CHEN_EVENT, TEAM] }), false, said);
@@ -5567,7 +5607,7 @@ test("Final fix (Ruling 50): on a plain turn that read the calendar, a true narr
     "I put it on your calendar now.", "I've put a follow-up on your calendar.", "We just placed the Chens on your calendar for 10:00 AM.",
   ]) {
     const r = await runTurn({ messages: userSays(CAL_ASK), ctx: read(), client: fakeClient([useTool("getCalendarTool", {}), say(said)]) });
-    assert.equal(r.reply, NOTHING_CHANGED, said);
+    assert.ok(HELD.has(r.reply), said);
     assert.equal(claimsCompletion(said, true, null, false, { events: [CHEN_EVENT, TEAM] }), true, said);
   }
 });

@@ -485,7 +485,8 @@ const TOOL_SCHEMA = [
       "preview, and the event is only created after the user confirms. Pass the day as the user said it and the time as 24-hour " +
       "HH:MM; the day is worked out for you, so never work out a date yourself. Nobody is invited and nobody is emailed. For a " +
       "follow-up with a client pass their clientId from findClient (the title defaults to 'Follow-up: <client name>'); " +
-      "without a client a title is required. Length is 15 to 240 minutes, 30 if not said. Ask for a missing day or time rather than guessing.",
+      "without a client a title is required. Someone who is not a client is fine: pass a title that names them (for example " +
+      "'Call Dave') and no clientId. Length is 15 to 240 minutes, 30 if not said. Ask for a missing day or time rather than guessing.",
     input_schema: {
       type: "object",
       properties: {

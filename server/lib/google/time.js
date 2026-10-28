@@ -217,4 +217,19 @@ function spokenTime(time) {
   return `${hour % 12 || 12}:${pad2(minute)} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-module.exports = { localToday, resolveDate, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime };
+// "America/Los_Angeles" -> "Pacific Time": the calendar's zone as a person names it, so a read-back says whose clock its time is on
+// (Arizona, which keeps no summer time, is "Mountain Standard Time"). Named as of a fixed day, so this stays clock-free. A zone Intl
+// cannot name is its own id; no zone is "".
+const ZONE_NAMED_AT = new Date(Date.UTC(2026, 0, 1));
+function zoneName(timeZone) {
+  if (typeof timeZone !== "string" || !timeZone) return "";
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longGeneric" })
+      .formatToParts(ZONE_NAMED_AT).find((p) => p.type === "timeZoneName");
+    return part && !/^GMT/.test(part.value) ? part.value : timeZone;
+  } catch (_err) {
+    return timeZone;
+  }
+}
+
+module.exports = { localToday, resolveDate, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime, zoneName };

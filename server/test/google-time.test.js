@@ -5,7 +5,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  localToday, resolveDate, parseTime, toInstant, dayBounds, localTimeOf, spokenDay, spokenTime, wallTimeExists,
+  localToday, resolveDate, parseTime, toInstant, dayBounds, localTimeOf, spokenDay, spokenTime, wallTimeExists, zoneName,
 } = require("../lib/google/time");
 
 const PHX = "America/Phoenix";
@@ -225,4 +225,13 @@ test("wallTimeExists: false for a time the clocks skip (spring forward), true fo
   assert.throws(() => wallTimeExists("2027-02-30", t(2, 30), NY), /date/i);
   assert.throws(() => wallTimeExists("2027-03-14", t(25, 0), NY), /time/i);
   assert.throws(() => wallTimeExists("2027-03-14", t(2, 30), "Mars/Olympus"), /Invalid time zone/);
+});
+
+test("zoneName: the calendar zone as a person names it, for read-backs; an unreadable zone is its own id", () => {
+  assert.equal(zoneName("America/Los_Angeles"), "Pacific Time");
+  assert.equal(zoneName(NY), "Eastern Time");
+  assert.equal(zoneName("America/Chicago"), "Central Time");
+  assert.equal(zoneName(PHX), "Mountain Standard Time");
+  assert.equal(zoneName("Not/AZone"), "Not/AZone");
+  assert.equal(zoneName(undefined), "");
 });

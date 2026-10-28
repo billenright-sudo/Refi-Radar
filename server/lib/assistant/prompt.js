@@ -18,6 +18,10 @@ const GUIDELINE_HANDOFF =
 const NOTHING_CHANGED =
   "I haven't made that change — tell me what to do and I'll confirm it with you first.";
 
+// NOTHING_CHANGED's place when the user asked for a booking and the reply was held for not being one plain question (an opener
+// or a statement before the ask): what a booking needs, in code's words. It claims nothing either.
+const BOOKING_ASK = "Tell me who it's with, the day and the time, and I'll read it back before anything goes on your calendar.";
+
 // One response asked for more than one change at once; confirmations happen one at a time.
 const ONE_AT_A_TIME = "Let's do those one at a time — which first?";
 
@@ -107,7 +111,10 @@ const CHARLI_SYSTEM = [
 
   "Calendar: use getCalendarTool for what is on the user's calendar and read days and times exactly as it gives them. To book " +
     "something, call createEventTool with the day as the user said it (today, tomorrow, a weekday, or YYYY-MM-DD) and the time as " +
-    "24-hour HH:MM; never work out a date yourself. Bookings go on the user's own calendar and nobody is invited.",
+    "24-hour HH:MM; never work out a date yourself. Bookings go on the user's own calendar and nobody is invited. Anyone can go on the " +
+    "calendar, not only clients: when the person is not in the book (findClient finds no match, or they are a realtor, a CPA, a " +
+    "prospect), call createEventTool anyway with a short title that names them, for example 'Call Dave', and no clientId; never ask " +
+    "whether to link a client. If the day or the time is missing, ask only for that, in one question.",
 
   "Email: to write to a client, find the client, then call draftEmailTool with a purpose, check_in or refi_review. You never write " +
     "the email yourself and you never send email: it opens in the user's own email for them to review and send. After a sweep or a " +
@@ -135,6 +142,6 @@ const buildCharliSystem = (user) =>
   CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
+  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 };

@@ -28,7 +28,7 @@ const {
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { createClientForUser, logContactForUser } = require("./clients");
 const { googleFor } = require("../lib/google");
-const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../lib/google/time");
+const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, zoneName } = require("../lib/google/time");
 
 const DEFAULT_USAGE_DAYS = 30;
 const MAX_USAGE_DAYS = 365;
@@ -167,7 +167,9 @@ const fingerprintName = (name) => (typeof name === "string" ? name.trim().replac
 // read-back says it ("Veteran, ten or more years"): the screen label's "(10+ years)" reads aloud as "ten+".
 function confirmReply(type, receipt) {
   if (type === "createEvent") {
-    return `Done — "${receipt.title}" is on your calendar for ${spokenDay(receipt.date)} at ${spokenTime(parseTime(receipt.time))}.`;
+    // the zone as the read-back said it (a receipt kept before the zone was stored has none, and is read without it)
+    const zone = zoneName(receipt.timeZone);
+    return `Done — "${receipt.title}" is on your calendar for ${spokenDay(receipt.date)} at ${spokenTime(parseTime(receipt.time))}${zone ? ` ${zone}` : ""}.`;
   }
   if (type === "setCareerStage") return `Done — your career stage is set to ${spokenStageLabel(receipt.stage) || receipt.label}.`;
   return type === "logContact" ? `Done — I logged a contact for ${receipt.name}.` : `Done — I added ${receipt.name} as a new client.`;
@@ -309,7 +311,7 @@ async function confirmCreateEvent(req, res, sideEffect) {
   }
 
   // The event is on the calendar. If keeping the receipt fails, the row stays pending and a retry meets Google's own 409.
-  const receipt = { eventId: booked.eventId || eventId, title, date, time };
+  const receipt = { eventId: booked.eventId || eventId, title, date, time, timeZone };
   try {
     db.prepare("UPDATE assistant_confirmations SET result_json = ?, state = 'done' WHERE confirm_id = ? AND user_id = ?")
       .run(JSON.stringify(receipt), confirmId, req.user.id);

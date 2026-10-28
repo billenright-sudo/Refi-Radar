@@ -20,11 +20,11 @@
 const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
-  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
+  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
-const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime } = require("../google/time");
+const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 
@@ -292,6 +292,10 @@ function isQuestionShaped(reply) {
 // (e.g. i.e. vs. approx. etc. a.m. p.m.: Ruling 37). Pure.
 const SENTENCE_END_RE = /(?<!\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|approx|etc)|\b[ap]\.m|\be\.g|\bi\.e)[.!?]+(?=\s+\S)/i;
 const isOneQuestion = (reply) => isQuestionShaped(reply) && !SENTENCE_END_RE.test(stripOpener(reply).trim());
+
+// A user message asking for a booking (for BOOKING_ASK): a calendar, appointment, meeting or scheduling word, or "book" that is not
+// the broker's book of clients ("my book", "the book", "book of business").
+const BOOKING_REQUEST_RE = /\b(?:calendars?|appointments?|meetings?|schedul(?:e|ing))\b|(?<!\b(?:my|the|your|our|whole)\s+)\bbook(?:ing)?\b(?!\s+of\b)/i;
 
 // A completion claim. runTurn never performs an action, so by construction anything the model
 // says that reads as "it's done" is false. Each sentence (split on . ! ? ; and em/en dashes) is
@@ -1760,17 +1764,20 @@ function addClientReadBack(fields) {
 
 // A packaged booking in words, all of it from the event createEventTool packaged (never from the model): the spoken day and start
 // time, and the end time on the calendar's own wall clock (the start instant plus the length, so a clock change in between shows
-// as it will be on the calendar; an end on another day names that day). null when the event is not something the tool could have
-// packaged, and the caller falls back to the generic read-back.
+// as it will be on the calendar; an end on another day names that day), and the calendar's zone (" Pacific Time": the broker may be
+// on another clock). null when the event is not something the tool could have packaged, and the caller falls back to the generic
+// read-back.
 function eventSpeech(event) {
   try {
     const time = parseTime(event.time);
     if (!time || !Number.isInteger(event.durationMinutes)) return null;
     const end = localTimeOf(new Date(toInstant(event.date, time, event.timeZone) + event.durationMinutes * 60_000).toISOString(), event.timeZone);
     const endAt = spokenTime({ hour: end.hour, minute: end.minute });
+    const zone = zoneName(event.timeZone);
     return {
       day: spokenDay(event.date), at: spokenTime(time),
       until: end.date === event.date ? endAt : `${spokenDay(end.date)}, ${endAt}`,
+      zone: zone ? ` ${zone}` : "",
     };
   } catch (_err) {
     return null;
@@ -1787,7 +1794,7 @@ function readBack(out) {
       const event = se.event || {};
       const said = eventSpeech(event);
       return said
-        ? `${READ_BACK_PREFIX} put "${event.title}" on your calendar for ${said.day} at ${said.at}, ${event.durationMinutes} minutes? Nobody gets an invite.`
+        ? `${READ_BACK_PREFIX} put "${event.title}" on your calendar for ${said.day} at ${said.at}${said.zone}, ${event.durationMinutes} minutes? Nobody gets an invite.`
         : `${READ_BACK_PREFIX} go ahead with that?`;
     }
     case "logContact":
@@ -1840,7 +1847,7 @@ function changeDetails(out) {
     const said = eventSpeech(event);
     return said ? [
       { label: "Title", value: String(event.title) },
-      { label: "When", value: `${said.day}, ${said.at} – ${said.until}` },
+      { label: "When", value: `${said.day}, ${said.at} – ${said.until}${said.zone}` },
       { label: "Invites", value: "None — your calendar only" },
     ] : [];
   }
@@ -2591,7 +2598,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // carries a sideEffect), so whatever the model says, nothing was done. Only ONE question may
       // reach the user (Ruling 30: one sentence past one opener, as the prompt asks); anything else is replaced, a statement and
       // a question beside it included ("What else? The follow-up is on your calendar Friday. Want a reminder?").
-      if (actionTurn && !isOneQuestion(text)) return finish(NOTHING_CHANGED);
+      if (actionTurn && !isOneQuestion(text)) return finish(BOOKING_REQUEST_RE.test(userText) ? BOOKING_ASK : NOTHING_CHANGED);
       // Rulings 19 and 23: and on that turn no "now on your calendar" wording reaches the user at all (CALENDAR_NOW_FORM_RE anywhere
       // in the reply, question or statement, with no placing-verb exemption and no negative lookbehind): "Should I add a reminder for
       // the follow-up now on your calendar?" after "yes" to a booking offer reads as the booking having been made, and so does
