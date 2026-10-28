@@ -1996,12 +1996,14 @@ const CALENDAR_WORD_RE = new RegExp(
     "|(?<!\\b(?:rates?|loans?|products?|programs?|terms?|pricing)\\s+)available(?!\\s+(?:rates?|loans?|products?|programs?|terms?)\\b)" +
     "|(?:is|are|looks?|stays?|still|completely|totally|all)\\s+open(?!\\s+to\\b))(?![\\w'\\u2019-])" +
   // (the contracted copula and "double-booked", which the lookbehind above cannot see: "Friday's open", "it's open")
-  "|['\\u2019](?:s|re)\\s+open(?![\\w'\\u2019-])(?!\\s+to\\b)|\\bdouble[\\s-]booked\\b" +
-  // (Ruling 70 e) an opening: "Your only opening is Friday at 2." (not an opening line, statement, question, pitch ...)
-  "|\\bopenings?(?![\\w'\\u2019-])(?!\\s+(?:lines?|statements?|remarks?|questions?|pitch(?:es)?|bids?|offers?|balances?|prices?|rates?)\\b)",
+  "|['\\u2019](?:s|re)\\s+open(?![\\w'\\u2019-])(?!\\s+to\\b)|\\bdouble[\\s-]booked\\b",
   "i"
 );
 const CALENDAR_WORD_ALL_RE = new RegExp(CALENDAR_WORD_RE.source, "gi");
+// in a reply (not in the user's own words, Ruling 72), an opening too (Ruling 70 e): "Your only opening is Friday at 2." (not an opening
+// line, statement, question, pitch ...)
+const REPLY_WORD_ALL_RE = new RegExp(CALENDAR_WORD_RE.source +
+  "|\\bopenings?(?![\\w'\\u2019-])(?!\\s+(?:lines?|statements?|remarks?|questions?|pitch(?:es)?|bids?|offers?|balances?|prices?|rates?)\\b)", "gi");
 // the act words, which a did-not or an offer clause may carry (Ruling 64, R3)
 const ACT_WORD_RE = /^(?:calendars?|schedul\w*|meetings?|appointments?|(?:double[\s-])?booked)$/i;
 // the words a clear-before-a-noun subtraction does not take: a day, a time or a word that links a clause ("clear Friday", "clear until
@@ -2021,10 +2023,8 @@ const NOT_AVAILABILITY_RES = [
   new RegExp("\\bbusy\\s+(?:day|week|weekend|afternoon|morning|evening|night|season|stretch|month|quarter|year|time|market)s?\\s+" +
     "(?:of|ahead|for\\s+(?!you\\b|yourself\\b))", "gi"),
   /\bbusy\s+(?:market|season)\b|\b(?:market|season)(?:['’]s|\s+is|\s+has\s+been|\s+was)?(?:\s+\w+)?\s+busy\b|\bhow\s+busy\s+is\s+the\s+market\b/gi,
-  // the best available
+  // the best available (a product that is available: PRODUCT_AVAILABLE_RES, below)
   /\bbest\s+available\b/gi,
-  // a product that is available ("FHA is available at that level too", "the 15-year is still available too", "is the 5/1 ARM
-  // available?"): Ruling 70 (b), only a product word, and only in a clause that names no day or time (PRODUCT_AVAILABLE_RES, below)
   // a client available evenings (not "you're available after 3")
   /(?<!\byou(?:['’]re|\s+are|['’]ll\s+be|\s+will\s+be)\s+(?:\w+\s+)?)\bavailable\s+(?:evenings|mornings|afternoons|weekends|nights|weeknights|after\s+(?:work|hours))\b/gi,
   // a call / payment / amortization ... schedule, a schedule of ...
@@ -2032,15 +2032,27 @@ const NOT_AVAILABILITY_RES = [
   // have a great meeting
   /\b(?:have|enjoy|had)\s+(?:a\s+)?(?:great|good|nice|productive|fun|wonderful|successful)\s+meeting\b/gi,
 ];
-// Ruling 70 (b): a product word ("rates", "the 5/1 ARM", "FHA", "the 15-year", "jumbo pricing", "lock periods", a rate's or a loan's
-// options), never a day, a time, a slot, "you" or an adverb ("Thursday at 4 is still available.", "Two options are available Thursday")
+// A product that is available ("FHA is available at that level too", "the 15-year is still available too", "is the 5/1 ARM
+// available?", "FHA options are available for the Chens.", "Better terms are available to them now."). Ruling 70 (b): a product word
+// (rates, loans, programs, pricing, terms, the 5/1 ARM, FHA, the 15-year, refinancing, a cash-out, lock periods ...), with up to two
+// words before it that are no day, time, slot or "you" ("Better terms", "a cash-out", "Streamline refinancing") and, Ruling 72, its
+// options after a gap ("refinance options", "FHA loan options"); never a day, a time, a slot, "you" or an adverb ("Thursday at 4 is
+// still available.", "Two options are available Thursday"); in a reply, only in a clause that names no day or time (notAvailabilitySpans).
+// In the user's own words, options with no product named too ("what options are available for the Chens?").
+const NOT_A_MODIFIER =
+  "(?!(?:today|tonight|tomorrow|this|next|you|your|that|those|slots?|" + WEEKDAY_WORD + "s?|" + DAY_PART + "s?)\\b)(?!\\d)";
+const PRODUCT_WORD =
+  "(?:rates?|loans?|products?|programs?|pricing|terms|ARMs?|refis?|refinanc\\w*|streamlines?|locks?(?:\\s+periods?)?|jumbo|FHA|VA|USDA" +
+  "|HELOCs?|cash[\\s-]?outs?|\\d+\\/\\d+(?:\\s+ARMs?)?|\\d+[\\s-]?(?:year|yr)(?:\\s+fixed)?|fixed)";
 const PRODUCT =
-  "(?:the\\s+)?(?:rates?|loans?|products?|programs?|pricing|ARMs?|refis?|locks?(?:\\s+periods?)?|jumbo(?:\\s+pricing)?|FHA|VA|USDA|HELOCs?" +
-  "|cash[\\s-]?outs?|\\d+\\/\\d+(?:\\s+ARMs?)?|\\d+[\\s-]?(?:year|yr)(?:\\s+fixed)?|fixed|(?:rate|loan|lock|program|product|pricing|refi|ARM)\\s+options?)";
-const PRODUCT_AVAILABLE_RES = [
-  new RegExp("\\b" + PRODUCT + "\\s+(?:is|are|was|were|isn['\\u2019]t|aren['\\u2019]t)\\s+(?:still\\s+|now\\s+|also\\s+|not\\s+)*available\\b", "gi"),
-  new RegExp("\\b(?:is|are|isn['\\u2019]t|aren['\\u2019]t)\\s+(?:any\\s+)?" + PRODUCT + "\\s+(?:still\\s+)?available\\b", "gi"),
+  "(?:" + NOT_A_MODIFIER + "[\\w-]+\\s+){0,2}?" + PRODUCT_WORD + "(?:(?:\\s+" + NOT_A_MODIFIER + "[\\w-]+){0,2}?\\s+options?)?";
+const USER_PRODUCT = "(?:" + PRODUCT + "|(?:" + NOT_A_MODIFIER + "[\\w-]+\\s+){0,2}?options?)";
+const productAvailableRes = (product) => [
+  new RegExp("\\b" + product + "\\s+(?:is|are|was|were|isn['\\u2019]t|aren['\\u2019]t)\\s+(?:still\\s+|now\\s+|also\\s+|not\\s+)*available\\b", "gi"),
+  new RegExp("\\b(?:is|are|isn['\\u2019]t|aren['\\u2019]t)\\s+" + product + "\\s+(?:still\\s+)?available\\b", "gi"),
 ];
+const PRODUCT_AVAILABLE_RES = productAvailableRes(PRODUCT);
+const USER_PRODUCT_AVAILABLE_RES = productAvailableRes(USER_PRODUCT);
 // Availability said of someone who is not the broker (Ruling 70 a): they / he / she (and their / his / her <noun>: "Their Friday is
 // open, per your notes"), or a client this turn's tools returned, by name ("Linda is usually free after 5", "The Chens are free after
 // 5", "Robert's free most Saturdays") — never any other capitalized word ("Calendar's clear Friday.", "Luckily Friday is free.").
@@ -2062,13 +2074,19 @@ const nameVariants = (name) => {
   }
   return [...out].filter((v) => v.length > 1);
 };
+// (case-sensitive: the third-party regex is) no day, time or part of the day, in either case of its first letter, and no digit
+const NOT_A_DAY_CASED =
+  "(?!(?:[Tt]oday|[Tt]onight|[Tt]omorrow|[Tt]his|[Nn]ext|[Nn]oon|[Mm]idnight|(?:[Mm]on|[Tt]ues|[Ww]ednes|[Tt]hurs|[Ff]ri|[Ss]atur|[Ss]un)days?" +
+  "|[Mm]ornings?|[Aa]fternoons?|[Ee]venings?|[Nn]ights?|[Ww]eekends?|[Ww]eeks?)\\b)(?!\\d)";
 const thirdPartyRes = new Map();
 const thirdPartyRe = (names) => {
   const variants = [...new Set(names.flatMap(nameVariants))].sort((a, b) => b.length - a.length);
   const key = variants.join("\u0000");
   if (!thirdPartyRes.has(key)) {
-    const subject = "\\b(?:[Tt]hey|[Hh]e|[Ss]he|(?:[Tt]heir|[Hh]is|[Hh]er)\\s+[\\w-]+" +
-      (variants.length ? "|(?:[Tt]he\\s+)?(?:" + variants.map(escapeName).join("|") + ")(?![\\w'\\u2019-])" : "") + ")";
+    // (Ruling 72: "her" is also the object pronoun, so "her" + a day is the broker's day: "Tell her Friday is free."; a name may take the
+    // contracted copula: "Linda's usually free after 5", "the Chens're free after 5")
+    const subject = "\\b(?:[Tt]hey|[Hh]e|[Ss]he|(?:[Tt]heir|[Hh]is)\\s+[\\w-]+|[Hh]er\\s+" + NOT_A_DAY_CASED + "[\\w-]+" +
+      (variants.length ? "|(?:[Tt]he\\s+)?(?:" + variants.map(escapeName).join("|") + ")(?![\\w-])" : "") + ")";
     thirdPartyRes.set(key, new RegExp(subject + THIRD_PARTY_PREDICATE, "g"));
   }
   return thirdPartyRes.get(key);
@@ -2092,7 +2110,7 @@ const notAvailabilitySpans = (s, names = [], user = false) => {
     .flatMap((re) => [...s.matchAll(re)].map((m) => [m.index, m.index + m[0].length]));
   // (a day in the clause keeps a reply's "available" a calendar word; the user asking "what rates are available today?" asks about
   // rates: Ruling 64 R6)
-  for (const re of PRODUCT_AVAILABLE_RES) {
+  for (const re of user ? USER_PRODUCT_AVAILABLE_RES : PRODUCT_AVAILABLE_RES) {
     for (const m of s.matchAll(re)) {
       if (user || !DAY_OR_TIME_RE.test(factClauseAround(s, m.index, m.index + m[0].length))) spans.push([m.index, m.index + m[0].length]);
     }
@@ -2263,7 +2281,7 @@ const exemptInClause = (s, m, act) => {
 // `names`: this turn's clients (Ruling 70 a); `user`: `s` is the user's own message
 const calendarWordIn = (s, exempt, names = [], user = false) => {
   const spans = notAvailabilitySpans(s, names, user);
-  return [...s.matchAll(CALENDAR_WORD_ALL_RE)].some((m) =>
+  return [...s.matchAll(user ? CALENDAR_WORD_ALL_RE : REPLY_WORD_ALL_RE)].some((m) =>
     !spans.some(([a, b]) => m.index >= a && m.index < b) && !(exempt && exemptInClause(s, m, ACT_WORD_RE.test(m[0].trim()))));
 };
 const formIn = (s, forms) => forms.some((form) => (!form.needsDay || DAY_OR_TIME_RE.test(s)) &&

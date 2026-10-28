@@ -6321,3 +6321,46 @@ test("Task 9 fix 2 (Ruling 70 d): when the calendar read failed this turn, a sen
     assert.equal(b, GOOGLE_NOT_CONNECTED, `failed read: ${u}`);
   }
 });
+
+// ── Task 9 fix round 3 (Ruling 72) ───────────────────────────────────────────────────────────────────────────────────────────────
+
+test("Task 9 fix 3 (Ruling 72): 'her' before a day is no client; a client's contracted copula and a product's options subtract again; an opening stays reply-side", async () => {
+  const sweep = () => useTool("runSweepTool", {});
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const mkt = () => useTool("getMarketUpdate");
+  const reply = async (u, script, said) => (await runTurn({
+    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...[].concat(script()), say(said)]),
+  })).reply;
+  const CONTEXTS = [["who should I call today?", sweep], ["pull up the Chens", lookup], ["thanks", () => []], ["what are rates today?", mkt]];
+  // (1, rv70 reg) the object pronoun "her" before a day: the broker's day, held on every turn
+  for (const said of [
+    "Tell her Friday is free.", "Remind her tomorrow is free.", "Email her Thursday's open.", "Text her tomorrow's clear for a call.",
+    "Tell her Friday is free, so book it.",
+  ]) {
+    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+  }
+  // ... while their / his / her + a noun that is no day stays a client's ("Their Friday is open" is pinned in the R1 test)
+  assert.equal(await reply("how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent. Her calendar is busy this week, per your notes."),
+    "Robert & Linda Chen are at 7.85 percent. Her calendar is busy this week, per your notes.");
+  // (2, rv70 reg2) a client this turn's lookup returned, with the contracted copula
+  for (const said of [
+    "Robert & Linda Chen are at 7.85 percent; Linda's usually free after 5.", "Robert & Linda Chen are at 7.85 percent; Robert's free most Saturdays.",
+    "Robert & Linda Chen are at 7.85 percent; the Chens're free after 5.",
+  ]) assert.equal(await reply("how are the Chens?", lookup, said), said, said);
+  // (4) a product's options and terms, with no tool and on the other turns
+  for (const said of ["FHA options are available for the Chens.", "Better terms are available to them now."]) {
+    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), said, `${u}: ${said}`);
+  }
+  // (3) the user's own product and opening questions: their normal answers beside an unasked read, Google not connected
+  const nc = () => googleCtx(unusableGoogle("not_connected"));
+  const par = () => resp([
+    { type: "tool_use", id: "t0", name: "findClient", input: { query: "chen" } }, { type: "tool_use", id: "t1", name: "getCalendarTool", input: { date: "today" } },
+  ], "tool_use");
+  const said = "Robert & Linda Chen are at 7.85 percent.";
+  for (const u of [
+    "what refinance options are available for the Chens?", "is a cash-out available for the Chens?", "what options are available for the Chens?",
+    "what's a good opening for the Chens?",
+  ]) assert.equal((await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient([par(), say(said)]) })).reply, said, u);
+  // ... and an opening said in a reply is still the reply-side availability word (Ruling 70 e)
+  assert.equal(await reply("pull up the Chens", lookup, "Your only opening is Friday at 2."), CANT_VERIFY);
+});
