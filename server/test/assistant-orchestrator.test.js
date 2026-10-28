@@ -5703,12 +5703,11 @@ test("Final fix (Ruling 58): only 'tell' skips an object before its clause; only
   }
   const either = "Want me to tell them, or would you rather confirm the time first?";
   for (const context of CONTEXTS) assert.equal(await run(context, either), either, `${context[0]}: ${either}`);
-  // (Task 9 R1: "the scheduled appraisal" says nothing about the broker's availability, so with no citation at all it passes too,
-  // as at 6be3093; Ruling 49 held it there as a bare calendar word)
+  // (with no citation at all, "the scheduled appraisal" is a calendar word nothing backs: Ruling 49)
   const appraisal = "Should I tell Robert and Linda, or just Robert, about the scheduled appraisal?";
   const outcomes = [];
   for (const context of CONTEXTS) outcomes.push(await run(context, appraisal));
-  assert.deepStrictEqual(outcomes, [appraisal, appraisal, appraisal]);
+  assert.deepStrictEqual(outcomes, [CANT_VERIFY, appraisal, appraisal]);
   // on an action turn an acknowledgement at the end of a piece excuses it only in the last piece (probe11 r8, r9)
   const clarify = async (said) => (await runTurn({
     messages: userSays("book the Chens a follow-up Friday"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] }), twoChensCtx),
@@ -5770,77 +5769,92 @@ test("Final fix (Ruling 60): on a plain read a 'now' form is released only in a 
 
 // ── Task 9 (Ruling 64): the residuals of the final fix wave ──────────────────────────────────────────────────────────────────────
 
-test("Task 9 (R1): the calendar-fact rule holds availability said of the broker, their calendar or a day or a time; other senses of clear / busy / schedule / meeting pass as at 6be3093", async () => {
+test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on a cited turn, less the senses that are no availability: other senses of clear / busy / schedule / meeting pass", async () => {
   const sweep = () => useTool("runSweepTool", {});
   const lookup = () => useTool("findClient", { query: "chen" });
   const mkt = () => useTool("getMarketUpdate");
   // `script()`: the tool call the model makes first, or [] for none
   const reply = async (u, script, said, ctx = mikeCtx) =>
     (await runTurn({ messages: userSays(u), ctx, client: fakeClient([...[].concat(script()), say(said)]) })).reply;
-  // (rereview14 f1sweep, f1ord) answers that passed at 6be3093: sweep, rates, client facts, coaching, greetings; [user, tools, reply]
+  // (rereview14 f1sweep, f1ord) answers that passed at 6be3093 and use another sense of the words: sweep, rates, client facts, coaching,
+  // greetings (the brief's R1 rows among them); [user, tools, reply]
   const PASSES = [
     ["who should I call today?", sweep, "The Chens are the clear winner today — call them first."],
     ["who should I call today?", sweep, "Clear first call today: the Chens."],
     ["who should I call today?", sweep, "Here's your call schedule for today: the Chens first."],
     ["who should I call today?", sweep, "Make the Chens your first appointment-setting call this morning."],
-    ["who should I call today?", sweep, "Start with the Chens this morning — they're the most likely to book a meeting."],
     ["who should I call today?", sweep, "Call the Chens today; they're available for a refi now that rates dropped."],
     ["who should I call today?", sweep, "The Chens first today — it's a clear savings story."],
     ["who should I call today?", sweep, "Call the Chens today — they're clear winners on savings."],
     ["who should I call today?", sweep, "The Chens are open to a refi, so call them this morning."],
     ["who should I call today?", sweep, "Clear your morning for the Chens — they're your best call."],
     ["who should I call today?", sweep, "Your sweep is ready today: the Chens are first."],
-    ["who should I call today?", sweep, "Schedule time this afternoon to call the Chens."],
     ["what are rates today?", mkt, "Today's 30-year fixed is 6.52 percent — expect a busy afternoon of calls."],
     ["what are rates today?", mkt, "Rates held steady today at 6.52 percent on the 30-year, with a clear dip from last week."],
     ["what are rates today?", mkt, "The 30-year fixed is 6.52 percent today, the best available this month."],
     ["what are rates today?", mkt, "Today's 30-year fixed is 6.52 percent, so it's a busy day for refis."],
     ["what are rates today?", mkt, "Rates are open to more movement this week; the 30-year is 6.52 percent."],
     ["what are rates today?", mkt, "The 30-year fixed is 6.52 percent today — clear improvement from last week."],
+    ["what are rates today?", mkt, "Rates are available from Optimal Blue as of today: 6.52 percent on the 30-year."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent; they asked for a meeting after tax season, per your notes."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent — mornings are best, they're busy after work."],
-    ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent and their last meeting with you was Tuesday."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent and said they're free after 5 most days."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent. They're busy this week, per your notes."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent, available evenings."],
+    ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent. Their Friday is open, per your notes."],
     ["any coaching for today?", () => [], "Focus on clear, simple language today."],
     ["how do I set a meeting with a referral partner?", () => [], "Offer two times and let them pick — it makes saying yes easy."],
-    ["how do I set a meeting with a referral partner?", () => [], "Suggest coffee and offer two times that work for your schedule."],
     ["what's a good opener?", () => [], "Try: Hi, it's been a while — do you have a minute, or are you busy?"],
     ["good morning", () => [], "Good morning! Busy day ahead?"],
     ["hello", () => [], "Hi! I'm free whenever you need me."],
     ["hello", () => [], "Hi there! I'm all yours this morning."],
     ["thanks", () => [], "Anytime — have a great meeting."],
     ["thanks", () => [], "You're welcome — enjoy your afternoon."],
-    ["how are you?", () => [], "Doing great and ready when you are — what's on your schedule?"],
+    // (review9 Important 5) no day word on a cited turn, or no word on the list at all
+    ["who should I call today?", sweep, "I know you're busy, so here's the short version: call the Chens first."],
+    ["who should I call today?", sweep, "Today's packed with refi opportunities: the Chens lead."],
+    ["who should I call today?", sweep, "Your week looks light on refis — the Chens are the only strong one."],
+    ["thanks", () => [], "Your week looks light."],
   ];
   for (const [u, script, said] of PASSES) assert.equal(await reply(u, script, said), said, `${u} -> ${said}`);
-  // ("the scheduled appraisal" with no tool passes again too: see the Ruling 58 test)
+  // other words of the list beside a day stay held, as at f55c228 (fail closed): a meeting the clients book, a scheduling verb, a past
+  // meeting, "your schedule" and "I'm free" said with no tool
+  for (const [u, script, said] of [
+    ["who should I call today?", sweep, "Start with the Chens this morning — they're the most likely to book a meeting."],
+    ["who should I call today?", sweep, "Schedule time this afternoon to call the Chens."],
+    ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent and their last meeting with you was Tuesday."],
+    ["how do I set a meeting with a referral partner?", () => [], "Suggest coffee and offer two times that work for your schedule."],
+    ["how are you?", () => [], "Doing great and ready when you are — what's on your schedule?"],
+  ]) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u} -> ${said}`);
 
-  // availability said of the broker, of their calendar or schedule, or of a day or a time, and an event said to be theirs on a day,
-  // with no calendar read this turn: held on a sweep turn, after a client lookup and with no tool, with a day word or without one
+  // availability or an event said with a day or a time, with no calendar read this turn: held on a sweep turn, after a client lookup and
+  // with no tool (the word list, and the forms it has no word for: nothing on, no conflicts, your 2 o'clock, a follow-up, slammed)
   const HELD = [
-    "Call the Chens first — you're free.", "Call the Chens first — you're busy until noon.", "You're slammed all day Thursday.",
-    "Tomorrow is wide open.", "Friday afternoon looks clear.", "Thursday's open for a call.", "Friday at 10 is free.",
-    "Call the Chens first — your calendar's wide open.", "Call the Chens first; your calendar is clear.", "Your schedule is packed today.",
-    "Your week looks light.", "Call the Chens first; you have no meetings.", "Call the Chens first — you've got nothing else on today.",
-    "You've got nothing on Friday.", "You don't have anything on your calendar.", "Nothing on your calendar.",
-    "Friday at 10 works — nothing else is on.", "No conflicts Friday afternoon.",
+    "Call the Chens first — you're busy until noon.", "You're slammed all day Thursday.", "Tomorrow is wide open.", "Friday afternoon looks clear.",
+    "Thursday's open for a call.", "Friday at 10 is free.", "Your schedule is packed today.", "Call the Chens first — you've got nothing else on today.",
+    "You've got nothing on Friday.", "Friday at 10 works — nothing else is on.", "No conflicts Friday afternoon.",
     "You have a follow-up with Robert & Linda Chen this morning.", "You have an open slot at 2:00 PM.", "You have two appointments tomorrow.",
     "Your next meeting is at 3:00 PM.", "Your 2 o'clock is the Chens.", "That's the only thing on your calendar today.",
-    "Their follow-up is on your calendar.",
   ];
   const CONTEXTS = [
     ["sweep", "who should I call today?", sweep], ["client lookup", "pull up the Chens", lookup], ["no tool", "thanks", () => []],
   ];
+  const connected = () => googleCtx(fakeGoogle({ events: [CHEN_EVENT] }));
   for (const said of HELD) {
-    for (const [label, u, script] of CONTEXTS) {
-      assert.equal(await reply(u, script, said, googleCtx(fakeGoogle({ events: [CHEN_EVENT] }))), CANT_VERIFY, `${label}: ${said}`);
-    }
+    for (const [label, u, script] of CONTEXTS) assert.equal(await reply(u, script, said, connected()), CANT_VERIFY, `${label}: ${said}`);
+  }
+  // with no day or time beside it, a word on the list is held only on a turn that cited nothing (Ruling 65)
+  for (const said of [
+    "You're free.", "Your calendar's wide open.", "You have no meetings.", "You don't have anything on your calendar.", "Nothing on your calendar.",
+    "Their follow-up is on your calendar.",
+  ]) {
+    assert.equal(await reply("who should I call today?", sweep, said, connected()), said, `sweep: ${said}`);
+    assert.equal(await reply("pull up the Chens", lookup, said, connected()), said, `client lookup: ${said}`);
+    assert.equal(await reply("thanks", () => [], said, connected()), CANT_VERIFY, `no tool: ${said}`);
   }
   // (Ruling 62's row, probe s6) and asked about the calendar with Google not connected, the Google line says why
   const s6 = "You have a follow-up with Robert & Linda Chen this morning.";
-  assert.equal(await reply(CAL_ASK, lookup, s6, googleCtx(fakeGoogle({ events: [CHEN_EVENT] }))), CANT_VERIFY);
+  assert.equal(await reply(CAL_ASK, lookup, s6, connected()), CANT_VERIFY);
   assert.equal(await reply(CAL_ASK, lookup, s6, googleCtx(unusableGoogle())), GOOGLE_NOT_CONNECTED);
   // what Charli did not or cannot put on the calendar is no reading; a condition or a "whether" asserts nothing
   for (const said of [
@@ -5875,7 +5889,7 @@ test("Task 9 (R2): a script for the broker to say, after a script lead or in quo
     "Something like: Hi Linda, I know your week is packed, so I'll be brief — rates have moved.",
     "You could say: Hi Robert, I know you're swamped — your afternoon looks busy, so pick any day that suits you.",
     "Here's an opener: \"Hi Robert, I know you're slammed this week — is Thursday afternoon open for a quick call?\"",
-    "Tell them \"I know your schedule is full, so I'll keep it short,\" then ask about the house.",
+    "You could say \"Hi Robert, I know your schedule is full Thursday, so I'll keep it short,\" then ask about the house.",
   ]) assert.equal(await afterYes(said), said, said);
   // the exemption is the script's only: Charli's own words beside a quoted script are screened, and so is a reply with no lead
   for (const said of [
@@ -6063,6 +6077,81 @@ test("Task 9 (R6, F3): a talk track, a pitch or an intro written TO a client is 
 });
 
 // ── Task 9 fix round 1 (Rulings 65-68): the review of the Task 9 pass ───────────────────────────────────────────────────────────
+
+test("Task 9 fix 1 (Ruling 65): every calendar fact f55c228 held with no calendar read is held again (review9 leak)", async () => {
+  const sweep = () => useTool("runSweepTool", {});
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const reply = async (u, script, said) => (await runTurn({
+    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...script, say(said)]),
+  })).reply;
+  const CONTEXTS = [["who should I call today?", sweep], ["pull up the Chens", lookup], ["thanks", () => []]];
+  const LINE = { C: CANT_VERIFY, N: NOTHING_CHANGED };
+  // [reply, f55c228's outcome on a sweep turn / after a client lookup / with no tool: C can't-verify, N nothing-changed, - passed]
+  for (const [said, at55] of [
+    ["Your meeting with the Chens is at 10 tomorrow.", "CCC"], ["Your appointment with the Chens is Friday at 2.", "CCC"],
+    ["You're meeting the Chens tomorrow at 10.", "CCC"], ["You're scheduled with the Chens at 10 tomorrow.", "CCC"],
+    ["The Chens are scheduled for 10 tomorrow.", "CCC"], ["There's a meeting with the Chens at 10 tomorrow.", "CCC"],
+    ["Your calendar has the Chens at 10 tomorrow.", "CCC"], ["Your calendar shows the Chens at 10 tomorrow.", "CCC"],
+    ["Here's your schedule for today: Team meeting at 9, then the Chens at 10.", "CCC"], ["Your schedule today: Team meeting at 9 and the Chens at 10.", "CCC"],
+    ["First up today is Team meeting at 9.", "CCC"], ["You have Friday afternoon free.", "CCC"], ["You've got Friday wide open.", "CCC"],
+    ["You have availability Friday at 2.", "CCC"], ["Friday is a busy day for you.", "CCC"], ["Friday is fully booked.", "CCC"],
+    ["Friday is pretty much free.", "CCC"], ["You aren't busy Friday.", "CCC"], ["You won't be busy Friday afternoon.", "CCC"],
+    ["You should be free Friday afternoon.", "CCC"], ["You look free Friday afternoon.", "CCC"], ["Free all afternoon, so call them then.", "CCC"],
+    ["Wide open Friday — want me to book them?", "CCC"], ["All clear Friday afternoon.", "CCC"], ["The 2 o'clock slot is open tomorrow.", "CCC"],
+    ["Friday from 2 to 4 is open.", "CCC"], ["Friday after lunch is open.", "CCC"], ["The Chens are booked at 10 tomorrow.", "NNN"],
+    ["Good news — you can say yes to the Chens: you're free all Friday afternoon.", "CCC"],
+    ["Just say the word and I'll book Friday — you're wide open then.", "CCC"], ["You could say your week is light — just two meetings Friday.", "CCC"],
+    ["Friday afternoon shows as \"free\" on your calendar.", "CCC"],
+    ["Call the Chens first. Say: Hi Robert, rates dropped. You're free all Friday afternoon, so pitch that.", "CCC"],
+    ["Tomorrow's calendar is empty.", "CCC"], ["Friday's calendar is clear.", "CCC"], ["The calendar is clear Friday.", "CCC"],
+    ["You have a free afternoon Friday.", "CCC"], ["You have a busy afternoon tomorrow.", "CCC"], ["Your afternoon has two meetings.", "CCC"],
+    ["There are two meetings tomorrow.", "CCC"], ["Two meetings tomorrow, both in the morning.", "CCC"], ["Only one meeting tomorrow — the Chens at 10.", "CCC"],
+    ["Team meeting at 9 is your only meeting today.", "CCC"], ["Friday works — there's no meeting then.", "CCC"], ["Friday at 2 works; nothing's booked.", "NNN"],
+    ["You're available after 3 today.", "CCC"], ["Friday's free for the Chens.", "CCC"], ["You're free Friday after 2.", "CCC"],
+    ["Sure — you're free Friday at 2, so I can book them.", "CCC"], ["Try calling them Friday at 2 — you're free then.", "CCC"],
+    ["Friday at 2 is open — say the word and I'll book it.", "CCC"], ["Say the word and I'll book Friday at 2 — it's open.", "--C"],
+    ["I'd suggest Friday at 2, since that's open.", "--C"], ["Friday at 2 is the open slot.", "CCC"], ["Your only opening is Friday at 2.", "--C"],
+    ["You have one opening: Friday at 2.", "--C"], ["There's an opening Friday at 2.", "--C"],
+  ]) {
+    for (const [i, [u, script]] of CONTEXTS.entries()) {
+      if (at55[i] === "-") continue;
+      assert.equal(await reply(u, [].concat(script()), said), LINE[at55[i]], `${u}: ${said}`);
+    }
+  }
+});
+
+test("Task 9 fix 1 (Ruling 66): a script lead ends in a colon or opens a quotation, an unquoted script ends with its sentence, and a quotation counts only after a lead", async () => {
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const reply = async (u, script, said) => (await runTurn({
+    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...script, say(said)]),
+  })).reply;
+  // (review9) Charli's own words that a lead-like phrase or a quotation hid: held on a sweep turn, after a lookup and with no tool
+  for (const said of [
+    "Just say the word and I'll book Friday — you're wide open then.",
+    "Good news — you can say yes to the Chens: you're free all Friday afternoon.",
+    "You could say your week is light — just two meetings Friday.",
+    "Try this: call the Chens at 2 — you're free all afternoon.",
+    "Friday afternoon shows as \"free\" on your calendar.",
+    "Call the Chens first. Say: Hi Robert, rates dropped. You're free all Friday afternoon, so pitch that.",
+    "Say: Hi Robert. By the way, your calendar is clear Friday.",
+  ]) {
+    for (const [u, script] of [["who should I call today?", [useTool("runSweepTool", {})]], ["pull up the Chens", [lookup()]], ["thanks", []]]) {
+      assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+    }
+  }
+  // talk tracks after the leads the review used, and with a day in them: said
+  for (const said of [
+    "Here's a quick one: Hi Linda, I know you're busy — got two minutes?",
+    "Start with: Hi Robert, I know your week is busy.",
+    "Use this: Hi Linda, I know you're busy, so I'll be brief.",
+    "Open with something like: Hi Robert, I know your schedule's packed, so I'll be quick.",
+    "Here's a quick one: Hi Linda, I know you're busy Thursday — got two minutes Friday?",
+    "Start with: Hi Robert, I know your week is busy, but is Thursday afternoon free for ten minutes?",
+    "Use this: Hi Linda, I know you're busy this week, so I'll be brief.",
+    "Open with something like: Robert, I know your schedule's full Thursday, so I'll be quick.",
+    "You could say \"Hi Robert, I know your schedule is full Thursday, so I'll keep it short,\" then ask about the house.",
+  ]) assert.equal(await reply("help me write an opener for the Chens", [lookup()], said), said, said);
+});
 
 test("Task 9 fix 1 (Ruling 67): asking her to send the email in view is NO_SEND however it is put; only a negation of the send itself, the user's own plan or advice is answered; a past send to a client is NO_SENT_PAST", async () => {
   const { NO_SENT_PAST } = require("../lib/assistant/prompt");
