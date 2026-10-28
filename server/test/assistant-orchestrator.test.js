@@ -5431,7 +5431,8 @@ test("Final fix (Ruling 49): a calendar or availability fact needs a calendar re
   // the review's probe rows (s6, s7), then the rest of s6 / s7 that also passed at 6be3093; [messages, tools, reply, asks the calendar]
   const ROWS = [
     [history(CAL_ASK, CAL_LINE, "and tomorrow?"), [], "Tomorrow is wide open.", false],
-    [history(CAL_ASK, CAL_LINE, "anything this afternoon?"), [], "No, your afternoon is clear.", false],
+    // (Ruling 69: "anything this afternoon?" and "what does my week look like?" ask how the broker's day or week looks: calendar questions)
+    [history(CAL_ASK, CAL_LINE, "anything this afternoon?"), [], "No, your afternoon is clear.", true],
     [userSays(CAL_ASK), [], "Your calendar is clear today.", true],
     [userSays("run a sweep, and am I free Friday?"), [sweep()], "Your sweep is ready, and you're free all day Friday.", true],
     [userSays("am I free Friday afternoon?"), [lookup()], "Yes — Friday afternoon is clear, nothing on your calendar.", true],
@@ -5439,7 +5440,7 @@ test("Final fix (Ruling 49): a calendar or availability fact needs a calendar re
     [userSays(CAL_ASK), [], "Nothing on your calendar today.", true],
     [history(CAL_ASK, CAL_LINE, "what about tomorrow?"), [], "Nothing on your calendar tomorrow.", false],
     [history(CAL_ASK, CAL_LINE, "what else today?"), [], "That's the only thing on your calendar today.", false],
-    [userSays("what does my week look like?"), [], "Your week looks light — just a couple of meetings.", false],
+    [userSays("what does my week look like?"), [], "Your week looks light — just a couple of meetings.", true],
     [userSays("am I free Friday afternoon?"), [], "You're wide open Friday afternoon.", true],
     [userSays("who should I call today?"), [sweep()], "Call the Chens today — your afternoon is free.", false],
     [userSays("pull up the Chens"), [lookup()], "Want me to book them Friday, since you're free all afternoon?", false],
@@ -6213,4 +6214,33 @@ test("Task 9 fix 1 (Ruling 68): a calendar, booking or meeting question with Goo
       assert.equal(r.reply, GOOGLE_NOT_CONNECTED, `${u} (${script.length} calls)`);
     }
   }
+});
+
+test("Task 9 fix 1 (Ruling 69): a question about how the broker's day or week looks is a calendar question: the Google line, or the calendar grounding when connected", async () => {
+  const nc = () => googleCtx(unusableGoogle("not_connected"));
+  const parallel = (date = "today") => resp([
+    { type: "tool_use", id: "t0", name: "findClient", input: { query: "chen" } }, { type: "tool_use", id: "t1", name: "getCalendarTool", input: { date } },
+  ], "tool_use");
+  // (review9 gline2's four, and close variants) Google not connected: with no tool, and with a lookup beside the calendar read
+  for (const u of [
+    "how's my Friday looking?", "what does tomorrow look like?", "got anything Friday?", "what's my day look like?",
+    "how does my week look?", "what's on for tomorrow?", "am I clear Friday?", "anything on this afternoon?", "how's tomorrow looking?",
+  ]) {
+    for (const script of [[say("You're free all day.")], [parallel(), say("It's at 10 tomorrow.")], [parallel(), say("Your meeting with the Chens is Friday morning.")]]) {
+      const r = await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient(script) });
+      assert.equal(r.reply, GOOGLE_NOT_CONNECTED, `${u} (${script.length} calls)`);
+    }
+  }
+  // not about the broker's day: their normal answers (here the ungrounded screen's can't-verify, no Google line)
+  for (const [u, said] of [
+    ["what's the Chens' payment schedule?", "They pay $2,400 a month."], ["is the 5/1 ARM available?", "Yes, the 5/1 ARM is at 6.1 percent."],
+    ["how's my pipeline looking?", "You're free all day."], ["what does the 30-year look like today?", "You're free all day."],
+  ]) assert.equal((await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient([say(said)]) })).reply, CANT_VERIFY, u);
+  // Google connected: the calendar grounding decides — a time on a day the read did not cover is held, one it returned is said
+  const connected = () => googleCtx(fakeGoogle({ events: [CHEN_EVENT] }));
+  let r = await runTurn({ messages: userSays("what does tomorrow look like?"), ctx: connected(), client: fakeClient([parallel("today"), say("It's at 10 tomorrow.")]) });
+  assert.equal(r.reply, CANT_VERIFY);
+  const said = "Tomorrow you have Follow-up: Robert & Linda Chen at 10:00 AM.";
+  r = await runTurn({ messages: userSays("what does tomorrow look like?"), ctx: connected(), client: fakeClient([useTool("getCalendarTool", { date: "tomorrow" }), say(said)]) });
+  assert.equal(r.reply, said);
 });

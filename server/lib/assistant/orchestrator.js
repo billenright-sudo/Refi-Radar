@@ -2224,9 +2224,16 @@ function ungroundedCalendarFact(text, cited) {
 // payment schedule?" and "I'm free now, who should I call?" are not), or a booking or meeting question the list has no word for
 // ("anything booked Friday?", "is the Chens' meeting still on?", "is Friday good for a call with the Chens?", "am I double-booked
 // tomorrow?", "is 2 o'clock open?", "can I fit the Chens in Friday at 2?", "when is the Chens' follow-up?", "what time is my call with the
-// Chens?", "any openings Friday?", "what's next on my agenda?", "do I have time today?", "what's on for tomorrow?").
+// Chens?", "any openings Friday?", "what's next on my agenda?", "do I have time today?", "what's on for tomorrow?"), or (Ruling 69) a
+// question about how the broker's own day or week looks ("how's my Friday looking?", "how does my week look?", "what does tomorrow look
+// like?", "what's my day look like?", "got anything Friday?", "anything this afternoon?"; not "how's my pipeline looking?").
+const BROKERS_DAY = "(?:(?:my|our|the|this|next)\\s+)?(?:today|tonight|tomorrow|" + WEEKDAY_WORD + "|day|week|weekend|" + DAY_PART +
+  "|schedule|calendar)(?:['\\u2019]s)?(?:\\s+" + DAY_PART + ")?";
 const ASKS_CALENDAR_RE = new RegExp(
-  "\\b(?:any|an|my|your)\\s+openings?\\b|\\b(?:my|the)\\s+agenda\\b" +
+  "\\bhow(?:['\\u2019]s|\\s+is|\\s+are|\\s+does|\\s+do)\\s+" + BROKERS_DAY + "\\s+(?:look(?:s|ing)?|shaping\\s+up)\\b" +
+  "|\\bwhat(?:['\\u2019]s|\\s+is|\\s+does|\\s+do)\\s+" + BROKERS_DAY + "\\s+look(?:ing)?\\s+like\\b" +
+  "|\\banything\\s+(?:else\\s+)?(?:on\\s+)?" + NAMED_DAY + "\\b" +
+  "|\\b(?:any|an|my|your)\\s+openings?\\b|\\b(?:my|the)\\s+agenda\\b" +
   "|\\bmy\\s+(?:next\\s+|first\\s+|last\\s+)?(?:calls?|follow[\\s-]?ups?)\\s+(?:with|today|tomorrow|tonight|on|at)\\b" +
   "|\\b(?:when|what\\s+time)(?:['\\u2019]s|\\s+is|\\s+was|\\s+are)\\s+(?:[\\w&'\\u2019-]+\\s+){0,4}?(?:follow[\\s-]?ups?|calls?)(?![\\w'\\u2019-])" +
   "|\\bfit\\s+(?:[\\w&'\\u2019-]+\\s+){1,4}?in\\b" +
