@@ -5766,3 +5766,45 @@ test("Final fix (Ruling 60): on a plain read a 'now' form is released only in a 
   assert.equal(claimsCompletion(NAMED[1], true, null, false, null), true);
   assert.equal(claimsCompletion("Everything else is now on your calendar.", true, null, false, { events: [CHEN_EVENT] }), true);
 });
+
+// ── Task 9 (Ruling 64): the residuals of the final fix wave ──────────────────────────────────────────────────────────────────────
+
+test("Task 9 (R4): on a plain read a 'now' form is released only in its own clause naming a read title; a 'now' claim joined by a comma or 'and' is held", async () => {
+  const TEAM = { title: "Team meeting", start: "9:00 AM", end: "9:30 AM", allDay: false };
+  const plain = (messages, said, events) => runTurn({
+    messages, ctx: googleCtx(fakeGoogle({ events })), client: fakeClient([useTool("getCalendarTool", {}), say(said)]),
+  });
+  // (rereview14 r60d) after a declined booking, a plain read that says the booking is now there
+  const DECLINED = history(
+    "book the Chens a follow-up today at 10", "Just to confirm — book Follow-up: Robert & Linda Chen today at 10:00 AM?", "no",
+    "Okay — I'll leave that.", CAL_ASK
+  );
+  for (const said of [
+    "Team meeting is at 9:00 AM, and the Chens' follow-up is now on your calendar too.",
+    "You have Team meeting at 9:00 AM, and the Chens are now on your calendar as well.",
+    "Team meeting at 9:00 AM — and the Chens' follow-up is now on your calendar too.",
+    "Team meeting is at 9:00 AM; the Chens' follow-up is now on your calendar too.",
+  ]) assert.equal((await plain(DECLINED, said, [TEAM])).reply, NOTHING_CHANGED, said);
+  // (rereview14 r60c) a read title in another clause of the sentence releases nothing
+  for (const said of [
+    "Team meeting is there, and everything else is now on your calendar.", "Everything else is now on your calendar, along with Team meeting.",
+    "Team meeting is at 9:00 AM, plus the Parks are now on your calendar.",
+  ]) assert.equal((await plain(userSays(CAL_ASK), said, [CHEN_EVENT, TEAM])).reply, NOTHING_CHANGED, said);
+  // the six s2 narrations still pass on the plain read, and so does a "now" clause that names its title beside another clause
+  for (const said of [
+    "Here's what's on your calendar now: Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "Right now on your calendar you have Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "On your calendar now: Team meeting at 9:00 AM and Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "You have Team meeting at 9:00 AM and Follow-up: Robert & Linda Chen at 10:00 AM today.",
+    "Today you have two things: Team meeting at 9:00 AM and Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "What's on your calendar now is Team meeting at 9:00 AM, then Follow-up: Robert & Linda Chen at 10:00 AM.",
+    "Team meeting and Follow-up: Robert & Linda Chen are on your calendar now.",
+  ]) {
+    const r = await plain(userSays(CAL_ASK), said, [CHEN_EVENT, TEAM]);
+    assert.equal(r.reply, said, said);
+    assert.deepStrictEqual(r.sources, ["google calendar 2026-10-27"]);
+  }
+  // the pure screen
+  assert.equal(claimsCompletion("Team meeting is there, and everything else is now on your calendar.", true, null, false, { events: [TEAM] }), true);
+  assert.equal(claimsCompletion("Team meeting is on your calendar now, and nothing else is.", true, null, false, { events: [TEAM] }), false);
+});
