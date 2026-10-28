@@ -5796,7 +5796,7 @@ test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on
     ["what are rates today?", mkt, "Today's 30-year fixed is 6.52 percent, so it's a busy day for refis."],
     ["what are rates today?", mkt, "Rates are open to more movement this week; the 30-year is 6.52 percent."],
     ["what are rates today?", mkt, "The 30-year fixed is 6.52 percent today — clear improvement from last week."],
-    ["what are rates today?", mkt, "Rates are available from Optimal Blue as of today: 6.52 percent on the 30-year."],
+    ["what are rates today?", mkt, "The 30-year is 6.52 percent today; jumbo pricing is available on request."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent; they asked for a meeting after tax season, per your notes."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent — mornings are best, they're busy after work."],
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent and said they're free after 5 most days."],
@@ -5807,7 +5807,6 @@ test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on
     ["how do I set a meeting with a referral partner?", () => [], "Offer two times and let them pick — it makes saying yes easy."],
     ["what's a good opener?", () => [], "Try: Hi, it's been a while — do you have a minute, or are you busy?"],
     ["good morning", () => [], "Good morning! Busy day ahead?"],
-    ["hello", () => [], "Hi! I'm free whenever you need me."],
     ["hello", () => [], "Hi there! I'm all yours this morning."],
     ["thanks", () => [], "Anytime — have a great meeting."],
     ["thanks", () => [], "You're welcome — enjoy your afternoon."],
@@ -5815,7 +5814,6 @@ test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on
     ["who should I call today?", sweep, "I know you're busy, so here's the short version: call the Chens first."],
     ["who should I call today?", sweep, "Today's packed with refi opportunities: the Chens lead."],
     ["who should I call today?", sweep, "Your week looks light on refis — the Chens are the only strong one."],
-    ["thanks", () => [], "Your week looks light."],
   ];
   for (const [u, script, said] of PASSES) assert.equal(await reply(u, script, said), said, `${u} -> ${said}`);
   // other words of the list beside a day stay held, as at f55c228 (fail closed): a meeting the clients book, a scheduling verb, a past
@@ -5826,6 +5824,11 @@ test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on
     ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent and their last meeting with you was Tuesday."],
     ["how do I set a meeting with a referral partner?", () => [], "Suggest coffee and offer two times that work for your schedule."],
     ["how are you?", () => [], "Doing great and ready when you are — what's on your schedule?"],
+    // (Ruling 70: "I" is no third-person pronoun and no client of this turn's tools; "as of today" names a day in the product's clause;
+    // "light" said of a week is an availability word again)
+    ["hello", () => [], "Hi! I'm free whenever you need me."],
+    ["what are rates today?", mkt, "Rates are available from Optimal Blue as of today: 6.52 percent on the 30-year."],
+    ["thanks", () => [], "Your week looks light."],
   ]) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u} -> ${said}`);
 
   // availability or an event said with a day or a time, with no calendar read this turn: held on a sweep turn, after a client lookup and
@@ -6243,4 +6246,48 @@ test("Task 9 fix 1 (Ruling 69): a question about how the broker's day or week lo
   const said = "Tomorrow you have Follow-up: Robert & Linda Chen at 10:00 AM.";
   r = await runTurn({ messages: userSays("what does tomorrow look like?"), ctx: connected(), client: fakeClient([useTool("getCalendarTool", { date: "tomorrow" }), say(said)]) });
   assert.equal(r.reply, said);
+});
+
+// ── Task 9 fix round 2 (Ruling 70) ───────────────────────────────────────────────────────────────────────────────────────────────
+
+test("Task 9 fix 2 (Ruling 70 a, b, c, e): a client's availability only for this turn's clients or they / he / she; a product's availability only for a product; packed / full / light / taken and openings are availability", async () => {
+  const sweep = () => useTool("runSweepTool", {});
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const mkt = () => useTool("getMarketUpdate");
+  const reply = async (u, script, said) => (await runTurn({
+    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...[].concat(script()), say(said)]),
+  })).reply;
+  const CONTEXTS = [["who should I call today?", sweep], ["pull up the Chens", lookup], ["thanks", () => []]];
+  // (rr15 ff3, ff2, ff) held on a sweep turn, after a client lookup and with no tool
+  for (const said of [
+    // (a) a capitalized word is no client: only the clients this turn's tools returned, and they / he / she
+    "Calendar's clear Friday.", "Schedule's clear tomorrow afternoon.", "Calendar's open after 2 today.",
+    "Lunch is free tomorrow — want me to book the Chens then?", "Only Friday is free this week.", "Luckily Friday is free.", "Both are free tomorrow.",
+    "Lunchtime's free tomorrow.", "Early Thursday is open.", "Calendar is clear Friday.",
+    // (b) an adverb, a day, a time, a slot or "you" is no product, and a day in the clause keeps the availability
+    "Thursday at 4 is still available.", "Friday afternoon is also available.", "Thursday is totally available.",
+    "Tomorrow at 10 is still available for the Chens.", "That slot is still available tomorrow.", "Both slots are still available Friday.",
+    "You are still available Friday at 2.", "Two options are available Thursday: 10 or 3.",
+    // (c) packed / full / light / taken said of a day
+    "Tomorrow is packed.", "Friday afternoon is full.", "Thursday morning is taken.", "Your Friday looks packed.", "Thursday's pretty light — just one call.",
+    // (e) an opening
+    "Your only opening is Friday at 2.", "You have one opening: Friday at 2.", "There's an opening Friday at 2.", "Your next opening is Thursday at 10.",
+  ]) {
+    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+  }
+  // a client this turn's tools returned, a third-person pronoun, a product, "packed with" / "light on" / "full of": said
+  for (const [u, script, said] of [
+    ["who should I call today?", sweep, "Call the Chens first today; Linda is usually free after 5."],
+    ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent; Robert is free most Saturdays, per your notes."],
+    ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent. The Chens are free after 5 on weekdays, per your notes."],
+    ["how are the Chens?", lookup, "Robert & Linda Chen are at 7.85 percent; they're busy this week, per your notes."],
+    ["what are rates today?", mkt, "The 30-year is 6.52 percent today, and FHA is available at that level too."],
+    ["what are rates today?", mkt, "The 30-year fixed is 6.52 percent today; the 15-year is still available too."],
+    ["who should I call today?", sweep, "Today's packed with refi opportunities: the Chens lead."],
+    ["who should I call today?", sweep, "Your week looks light on refis — the Chens are the only strong one."],
+    ["who should I call today?", sweep, "Your day is full of good calls — start with the Chens."],
+  ]) assert.equal(await reply(u, script, said), said, `${u}: ${said}`);
+  // a name this turn's tools did not return is no client: held with no tool, and after a lookup of someone else
+  assert.equal(await reply("thanks", () => [], "Robert is free Friday afternoon."), CANT_VERIFY);
+  assert.equal(await reply("pull up the Chens", lookup, "Garcia is free Friday afternoon."), CANT_VERIFY);
 });

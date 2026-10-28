@@ -1939,20 +1939,24 @@ function calendarFactsHold(text, reads, payloads, ctx) {
 // line that says why; the same goes for the ungrounded screen's can't-verify ("am I free Friday afternoon?" -> "Yes.").
 // Ruling 65 (it amends Ruling 64's narrower forms, which failed open) restores Ruling 49's trigger, failing closed:
 //   * a sentence with a calendar or availability word (CALENDAR_WORD_RE: calendar, schedule, meeting, appointment, free, busy,
-//     available, availability, booked, double-booked, wide open, clear, an open slot, and "open" said of a time: "Friday is open",
-//     "it's open") together with a day or a time (DAY_OR_TIME_RE) holds on a turn that cited a tool; on a turn that cited nothing at
-//     all, any such word does ("Your week looks light — just a couple of meetings.");
+//     available, availability, booked, double-booked, wide open, clear, an open slot, an opening (Ruling 70 e), and "open" said of a
+//     time: "Friday is open", "it's open") together with a day or a time (DAY_OR_TIME_RE) holds on a turn that cited a tool; on a turn
+//     that cited nothing at all, any such word does ("Your week looks light — just a couple of meetings.");
 //   * the same goes for the few calendar facts the list has no word for (KEPT_FORMS: "you've got nothing (else) on today", "Nothing on
 //     Friday.", "... nothing else is on.", "No conflicts Friday afternoon.", "you're slammed / swamped / tied up", "you have a
-//     follow-up / a slot / a call with ... <a day>", "your 2 o'clock is ...");
+//     follow-up / a slot / a call with ... <a day>", "your 2 o'clock is ...", and (Ruling 70 c) a day that is packed / full / light /
+//     taken: "Tomorrow is packed.", "Your Friday looks packed.", but not "packed with ...", "light on ...", "full of ...");
 //   * and SUBTRACTED from the list are only the precise senses that say nothing about the broker's availability (NOT_AVAILABILITY_RES,
-//     THIRD_PARTY_AVAILABILITY_RE): a clear winner / a clear dip / clear, simple language / be or make it clear / "Clear your morning
-//     ..."; a busy afternoon of calls, a busy day for refis, a busy day ahead, a busy market or season (but "a busy day for you"); the
-//     best available, a product that is available ("Rates are available from ...", "is the 5/1 ARM available?"), a client available
-//     evenings; a call / payment / amortization schedule, a schedule of ...; availability said of a client or someone else ("they're
-//     busy after work", "The Chens are free after 5", "Their Friday is open", and Charli's own "I'm free whenever you need me"); "have
-//     a great meeting"; "open to (a refi)". Also no words: "feel free", "free and clear", "loud and clear", "crystal clear", "clear of",
-//     "clear to close", a rate or a loan that is "available".
+//     PRODUCT_AVAILABLE_RES, thirdPartyRe): a clear winner / a clear dip / clear, simple language / be or make it clear / "Clear your
+//     morning ..."; a busy afternoon of calls, a busy day for refis, a busy day ahead, a busy market or season (but "a busy day for
+//     you"); the best available; a product that is available (Ruling 70 b: only a product word, "FHA is available at that level", "is
+//     the 5/1 ARM available?", and in a reply only in a clause that names no day or time: "Two options are available Thursday", "Thursday
+//     at 4 is still available." are held); a client available evenings; a call / payment / amortization schedule, a schedule of ...;
+//     availability said of a client (Ruling 70 a: they / he / she / their <noun>, or a client this turn's tools returned, by name:
+//     "they're busy after work", "Linda is usually free after 5", "Their Friday is open"; never any other capitalized word, so
+//     "Calendar's clear Friday." and "Luckily Friday is free." are held); "have a great meeting"; "open to (a refi)". Also no words:
+//     "feel free", "free and clear", "loud and clear", "crystal clear", "clear of", "clear to close", a rate or a loan that is
+//     "available".
 // So "Call the Chens today." on a sweep turn passes, and so do "I know you're busy, so here's the short version: call the Chens
 // first." and "Your week looks light on refis ..." (no day word, or no word on the list); "Your meeting with the Chens is at 10
 // tomorrow.", "There are two meetings tomorrow." and "You aren't busy Friday." are held.
@@ -1987,10 +1991,12 @@ const DEGREE = "(?:\\s+(?:still|completely|totally|all|pretty|fairly|really|very
 const CALENDAR_WORD_RE = new RegExp(
   "(?<![\\w'\\u2019-])(?:calendars?|schedul(?:e|es|ed|ing)|meetings?|appointments?|busy|availability|booked|wide\\s+open|open\\s+slots?" +
     "|(?<!\\bfeel\\s+)free(?!\\s+(?:and\\s+clear|of)\\b)|(?<!\\b(?:(?:loud|free)\\s+and|crystal)\\s+)clear(?!\\s+(?:to\\s+close|of)\\b)" +
-    "|(?<!\\b(?:rates?|loans?|options?|products?|programs?|terms?|pricing)\\s+)available(?!\\s+(?:rates?|loans?|options?|products?|programs?|terms?)\\b)" +
+    "|(?<!\\b(?:rates?|loans?|products?|programs?|terms?|pricing)\\s+)available(?!\\s+(?:rates?|loans?|products?|programs?|terms?)\\b)" +
     "|(?:is|are|looks?|stays?|still|completely|totally|all)\\s+open(?!\\s+to\\b))(?![\\w'\\u2019-])" +
   // (the contracted copula and "double-booked", which the lookbehind above cannot see: "Friday's open", "it's open")
-  "|['\\u2019](?:s|re)\\s+open(?![\\w'\\u2019-])(?!\\s+to\\b)|\\bdouble[\\s-]booked\\b",
+  "|['\\u2019](?:s|re)\\s+open(?![\\w'\\u2019-])(?!\\s+to\\b)|\\bdouble[\\s-]booked\\b" +
+  // (Ruling 70 e) an opening: "Your only opening is Friday at 2." (not an opening line, statement, question, pitch ...)
+  "|\\bopenings?(?![\\w'\\u2019-])(?!\\s+(?:lines?|statements?|remarks?|questions?|pitch(?:es)?|bids?|offers?|balances?|prices?|rates?)\\b)",
   "i"
 );
 const CALENDAR_WORD_ALL_RE = new RegExp(CALENDAR_WORD_RE.source, "gi");
@@ -2013,14 +2019,10 @@ const NOT_AVAILABILITY_RES = [
   new RegExp("\\bbusy\\s+(?:day|week|weekend|afternoon|morning|evening|night|season|stretch|month|quarter|year|time|market)s?\\s+" +
     "(?:of|ahead|for\\s+(?!you\\b|yourself\\b))", "gi"),
   /\bbusy\s+(?:market|season)\b|\b(?:market|season)(?:['’]s|\s+is|\s+has\s+been|\s+was)?(?:\s+\w+)?\s+busy\b|\bhow\s+busy\s+is\s+the\s+market\b/gi,
-  // the best available, a product that is available, "is the 5/1 ARM available?"
+  // the best available
   /\bbest\s+available\b/gi,
-  new RegExp("\\b(?:rates?|loans?|options?|products?|programs?|terms?|pricing|ARMs?|fixed|refis?|refinanc\\w*|locks?|jumbo|FHA|VA|USDA" +
-    "|HELOCs?|cash[\\s-]?outs?|\\d+\\/\\d+|\\d+[\\s-]?(?:year|yr))(?:\\s+[\\w/.-]+){0,3}?\\s+(?:is|are|was|were|isn['\\u2019]t|aren['\\u2019]t)\\s+" +
-    "(?:still\\s+|now\\s+|also\\s+|not\\s+)*available\\b", "gi"),
-  new RegExp("\\b(?:is|are|isn['\\u2019]t|aren['\\u2019]t)\\s+(?:(?:the|a|an|any|that|this|those|these)\\s+)?(?!(?:today|tonight|tomorrow|" +
-    WEEKDAY_WORD + "|this|next|my|our|your|you|we|I|he|she|they|it|there|" + DAY_PART + "|day|week|weekend|calendar|schedule|time|slot" +
-    "|\\d{1,2}(?::\\d{2})?\\s*(?:[ap]m|o['\\u2019]clock)?)\\b)[\\w/.-]+(?:\\s+[\\w/.-]+){0,3}?\\s+(?:still\\s+)?available\\b", "gi"),
+  // a product that is available ("FHA is available at that level too", "the 15-year is still available too", "is the 5/1 ARM
+  // available?"): Ruling 70 (b), only a product word, and only in a clause that names no day or time (PRODUCT_AVAILABLE_RES, below)
   // a client available evenings (not "you're available after 3")
   /(?<!\byou(?:['’]re|\s+are|['’]ll\s+be|\s+will\s+be)\s+(?:\w+\s+)?)\bavailable\s+(?:evenings|mornings|afternoons|weekends|nights|weeknights|after\s+(?:work|hours))\b/gi,
   // a call / payment / amortization ... schedule, a schedule of ...
@@ -2028,21 +2030,73 @@ const NOT_AVAILABILITY_RES = [
   // have a great meeting
   /\b(?:have|enjoy|had)\s+(?:a\s+)?(?:great|good|nice|productive|fun|wonderful|successful)\s+meeting\b/gi,
 ];
-// availability said of someone who is not the broker: a client ("they're busy after work", "The Chens are free after 5", "Their Friday
-// is open, per your notes") or Charli herself ("I'm free whenever you need me"; in the user's own words, "I'm free now" says, and asks,
-// nothing about the calendar). Case-sensitive: a name is a capitalized word that is no day, month, pronoun or sentence word.
-const THIRD_PARTY_AVAILABILITY_RE = new RegExp(
-  "(?:\\b(?:[Tt]hey|[Hh]e|[Ss]he|I)|\\b[Tt]he\\s+clients?|\\b[Tt]heir\\s+[\\w-]+|\\b(?:[Tt]he\\s+)?(?!(?:Today|Tonight|Tomorrow|Yesterday|Monday|Tuesday" +
-    "|Wednesday|Thursday|Friday|Saturday|Sunday|Your|You|This|That|These|Those|It|There|We|My|Our|Everything|Nothing|Here|What|When|Which|Who" +
-    "|Where|How|Why|All|Each|Every|No|So|And|But|Or|If|Since|Then|Now|Next|Just|Sure|Okay|OK|Yes|Good|Great|Morning|Afternoon|Evening" +
-    "|Mornings|Afternoons|Evenings|Noon|Midnight|Weekend|Weekends|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Team)\\b)[A-Z][\\w'\\u2019-]*(?:\\s+(?:&|and)\\s+[A-Z][\\w'\\u2019-]*)*(?:\\s+[A-Z][\\w'\\u2019-]*)?)" +
-    "(?:['\\u2019](?:re|s|m)|\\s+(?:is|are|am|was|were|seem|seems|look|looks|will\\s+be|should\\s+be|tend\\s+to\\s+be))" +
-    "(?:\\s+(?:usually|often|always|still|also|mostly|pretty|really|very|not|both|generally|typically|only|all|most))*\\s+(?:busy|available|free|clear|open)\\b",
-  "g"
-);
-// the [start, end) spans of `s` that the subtractions take
-const notAvailabilitySpans = (s) =>
-  [...NOT_AVAILABILITY_RES, THIRD_PARTY_AVAILABILITY_RE].flatMap((re) => [...s.matchAll(re)].map((m) => [m.index, m.index + m[0].length]));
+// Ruling 70 (b): a product word ("rates", "the 5/1 ARM", "FHA", "the 15-year", "jumbo pricing", "lock periods", a rate's or a loan's
+// options), never a day, a time, a slot, "you" or an adverb ("Thursday at 4 is still available.", "Two options are available Thursday")
+const PRODUCT =
+  "(?:the\\s+)?(?:rates?|loans?|products?|programs?|pricing|ARMs?|refis?|locks?(?:\\s+periods?)?|jumbo(?:\\s+pricing)?|FHA|VA|USDA|HELOCs?" +
+  "|cash[\\s-]?outs?|\\d+\\/\\d+(?:\\s+ARMs?)?|\\d+[\\s-]?(?:year|yr)(?:\\s+fixed)?|fixed|(?:rate|loan|lock|program|product|pricing|refi|ARM)\\s+options?)";
+const PRODUCT_AVAILABLE_RES = [
+  new RegExp("\\b" + PRODUCT + "\\s+(?:is|are|was|were|isn['\\u2019]t|aren['\\u2019]t)\\s+(?:still\\s+|now\\s+|also\\s+|not\\s+)*available\\b", "gi"),
+  new RegExp("\\b(?:is|are|isn['\\u2019]t|aren['\\u2019]t)\\s+(?:any\\s+)?" + PRODUCT + "\\s+(?:still\\s+)?available\\b", "gi"),
+];
+// Availability said of someone who is not the broker (Ruling 70 a): they / he / she (and their / his / her <noun>: "Their Friday is
+// open, per your notes"), or a client this turn's tools returned, by name ("Linda is usually free after 5", "The Chens are free after
+// 5", "Robert's free most Saturdays") — never any other capitalized word ("Calendar's clear Friday.", "Luckily Friday is free.").
+// Case-sensitive. `names`: the client names this turn's tool results carry (clientNamesOf).
+const THIRD_PARTY_PREDICATE =
+  "(?:['\\u2019](?:re|s)|\\s+(?:is|are|was|were|seem|seems|look|looks|will\\s+be|should\\s+be|tend\\s+to\\s+be))" +
+  "(?:\\s+(?:usually|often|always|still|also|mostly|pretty|really|very|not|both|generally|typically|only|all|most))*\\s+(?:busy|available|free|clear|open)\\b";
+const escapeName = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+// "Robert & Linda Chen" -> the whole name, "Robert & Linda", "Robert and Linda", "Robert", "Linda", "Chen", "Chens"
+const nameVariants = (name) => {
+  const whole = String(name).replace(/\s+/g, " ").trim();
+  const words = whole.match(/[A-Z][A-Za-z'’-]+/g) || [];
+  const out = new Set(whole ? [whole] : []);
+  words.forEach((w) => out.add(w));
+  if (words.length > 1) {
+    out.add(`${words[words.length - 1]}s`);
+    out.add(words.slice(0, -1).join(" & "));
+    out.add(words.slice(0, -1).join(" and "));
+  }
+  return [...out].filter((v) => v.length > 1);
+};
+const thirdPartyRes = new Map();
+const thirdPartyRe = (names) => {
+  const variants = [...new Set(names.flatMap(nameVariants))].sort((a, b) => b.length - a.length);
+  const key = variants.join("\u0000");
+  if (!thirdPartyRes.has(key)) {
+    const subject = "\\b(?:[Tt]hey|[Hh]e|[Ss]he|(?:[Tt]heir|[Hh]is|[Hh]er)\\s+[\\w-]+" +
+      (variants.length ? "|(?:[Tt]he\\s+)?(?:" + variants.map(escapeName).join("|") + ")(?![\\w'\\u2019-])" : "") + ")";
+    thirdPartyRes.set(key, new RegExp(subject + THIRD_PARTY_PREDICATE, "g"));
+  }
+  return thirdPartyRes.get(key);
+};
+// In the user's own words, "I'm free (now)" says, and asks, nothing about the calendar (Ruling 64 R6: "I'm free now, who should I
+// call?" gets its normal answer).
+const USER_SAYS_FREE_RE = /\bI(?:['’]m|\s+am)(?:\s+(?:still|totally|completely|all|pretty|really|now))*\s+(?:free|available|open|clear|busy)\b/g;
+// the rest of the clause of `s` around [a, b) (split as FACT_CLAUSE_BREAK_ALL_RE splits), without [a, b) itself (so the 5/1 of "the
+// 5/1 ARM" is no date)
+const factClauseAround = (s, a, b) => {
+  let start = 0, end = s.length;
+  for (const m of s.matchAll(FACT_CLAUSE_BREAK_ALL_RE)) {
+    if (m.index + m[0].length <= a) start = m.index + m[0].length;
+    else if (m.index >= b) { end = m.index; break; }
+  }
+  return s.slice(start, a) + " " + s.slice(b, end);
+};
+// the [start, end) spans of `s` that the subtractions take; `names`: this turn's clients; `user`: `s` is the user's own message
+const notAvailabilitySpans = (s, names = [], user = false) => {
+  const spans = [...NOT_AVAILABILITY_RES, thirdPartyRe(names), ...(user ? [USER_SAYS_FREE_RE] : [])]
+    .flatMap((re) => [...s.matchAll(re)].map((m) => [m.index, m.index + m[0].length]));
+  // (a day in the clause keeps a reply's "available" a calendar word; the user asking "what rates are available today?" asks about
+  // rates: Ruling 64 R6)
+  for (const re of PRODUCT_AVAILABLE_RES) {
+    for (const m of s.matchAll(re)) {
+      if (user || !DAY_OR_TIME_RE.test(factClauseAround(s, m.index, m.index + m[0].length))) spans.push([m.index, m.index + m[0].length]);
+    }
+  }
+  return spans;
+};
 // a day or a time said as the subject of its availability: "Tomorrow", "Friday afternoon", "Friday at 10", "this afternoon", "your
 // week", "your calendar for Friday", "the rest of the day", "10:00 AM", "that slot"
 const DAY_SUBJECT =
@@ -2073,6 +2127,12 @@ const KEPT_FORMS = formsOf([
   { re: "\\bno\\s+(?:other\\s+)?conflicts?(?![\\w'\\u2019-])", needsDay: true },
   // you're slammed / swamped / tied up
   { re: "\\byou(?:['\\u2019]re|\\s+are|['\\u2019]ll\\s+be|\\s+will\\s+be)" + DEGREE + "\\s+(?:tied\\s+up|slammed|swamped)(?![\\w'\\u2019-])" },
+  // (Ruling 70 c) Tomorrow is packed. / Friday afternoon is full. / Thursday morning is taken. / Your Friday looks packed. / Thursday's
+  // pretty light. Not "packed with ...", "light on ...", "full of ..." ("Today's packed with refi opportunities", "Your week looks light
+  // on refis", "Your day is full of good calls"), nor a client's day
+  { re: "(?<![\\w'\\u2019-])(?<!(?:\\b(?:their|his|her)|['\\u2019]s?)\\s+)" + DAY_SUBJECT +
+      "(?:\\s+(?:is|are|looks?|seems?|stays?|remains?|will\\s+be|should\\s+be)|['\\u2019](?:s|re|ll\\s+be))" + DEGREE +
+      "\\s+(?:packed(?!\\s+with\\b)|full(?!\\s+of\\b)|light(?!\\s+on\\b)|taken(?!\\s+care\\b))(?![\\w'\\u2019-])" },
   // you have a follow-up with the Chens this morning (the event nouns the list has no word for)
   { re: YOU_HAVE + "\\s+(?:[\\w&'\\u2019:-]+\\s+){0,4}?(?:follow[\\s-]?ups?|slots?|windows?|calls?(?=\\s+with\\b)|lunch(?:es)?|coffee|standups?" +
       "|consult(?:ation)?s?)(?![\\w'\\u2019-])(?!\\s+(?:due|to|overdue)\\b)", event: true, needsDay: true },
@@ -2198,15 +2258,17 @@ const exemptInClause = (s, m, act) => {
   return CONDITION_RE.test(clause) || (act && (SHE_DID_NOT_RE.test(clause) || SHE_OFFERS_RE.test(clause)));
 };
 // a calendar or availability word of the list in `s`, in a sense the subtractions leave (with `exempt`, not in a clause that exempts it)
-const calendarWordIn = (s, exempt) => {
-  const spans = notAvailabilitySpans(s);
+// `names`: this turn's clients (Ruling 70 a); `user`: `s` is the user's own message
+const calendarWordIn = (s, exempt, names = [], user = false) => {
+  const spans = notAvailabilitySpans(s, names, user);
   return [...s.matchAll(CALENDAR_WORD_ALL_RE)].some((m) =>
     !spans.some(([a, b]) => m.index >= a && m.index < b) && !(exempt && exemptInClause(s, m, ACT_WORD_RE.test(m[0].trim()))));
 };
 const formIn = (s, forms) => forms.some((form) => (!form.needsDay || DAY_OR_TIME_RE.test(s)) &&
   [...s.matchAll(form.re)].some((m) => !exemptInClause(s, m, form.event)));
-// `cited`: some tool result this turn was cited (then a fact needs a day or a time in its sentence). Pure.
-function ungroundedCalendarFact(text, cited) {
+// `cited`: some tool result this turn was cited (then a fact needs a day or a time in its sentence); `names`: the client names this
+// turn's tool results carry (clientNamesOf), whose availability is no calendar fact. Pure.
+function ungroundedCalendarFact(text, cited, names = []) {
   return factSentencesOf(withoutScripts(String(text).replace(AM_PM_RE, "$1m"))).some((sentence) => {
     const s = stripOpener(sentence).trim();
     const question = /\?\s*$/.test(s) && QUESTION_START_RE.test(s);
@@ -2215,7 +2277,7 @@ function ungroundedCalendarFact(text, cited) {
       const end = FIRST_CLAUSE_END_RE.exec(s.slice(1));
       screened = end ? s.slice(end.index + 1) : "";
     }
-    const said = calendarWordIn(screened, true) || formIn(screened, KEPT_FORMS) || (question && formIn(s, PRESUPPOSED_FORMS));
+    const said = calendarWordIn(screened, true, names) || formIn(screened, KEPT_FORMS) || (question && formIn(s, PRESUPPOSED_FORMS));
     return said && (!cited || DAY_OR_TIME_RE.test(s));
   });
 }
@@ -2251,7 +2313,21 @@ const ASKS_CALENDAR_RE = new RegExp(
 );
 const asksAboutCalendar = (text) => {
   const t = String(text == null ? "" : text);
-  return calendarWordIn(t, false) || ASKS_CALENDAR_RE.test(t);
+  return calendarWordIn(t, false, [], true) || ASKS_CALENDAR_RE.test(t);
+};
+// The client names a tool result carries (findClient's matches, the sweep's opportunities and check-ins: their "name" values).
+const clientNamesOf = (data) => {
+  const names = [];
+  const walk = (v, depth) => {
+    if (depth > 4 || !v || typeof v !== "object") return;
+    if (Array.isArray(v)) { v.forEach((x) => walk(x, depth + 1)); return; }
+    for (const [k, x] of Object.entries(v)) {
+      if (k === "name" && typeof x === "string" && x.trim()) names.push(x.trim());
+      else walk(x, depth + 1);
+    }
+  };
+  walk(data, 0);
+  return names;
 };
 // The code ctx.google's connection gives (null when it is usable or cannot be read, or there is no adapter: the route always
 // builds one).
@@ -2416,6 +2492,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
   const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
   const calendarReads = [];   // { date, timeZone } of each calendar day read this turn
   const calendarEvents = [];  // { title, date, timeZone } of each event those reads returned (the title as the model saw it)
+  const clientNames = new Set();   // the client names this turn's cited tool results carry (Ruling 70 a)
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
   // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
@@ -2530,7 +2607,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       }
       // Rulings 49, 64 and 65: a calendar or availability fact on a turn that read no calendar is can't-verify, or, when the user asked
       // about the calendar and Google is not usable, the Google line that says why (ungroundedCalendarFact)
-      if (!calendarCited && ungroundedCalendarFact(text, sources.length > 0)) return finish(cantVerifyCalendar());
+      if (!calendarCited && ungroundedCalendarFact(text, sources.length > 0, [...clientNames])) return finish(cantVerifyCalendar());
       // No cited tool result behind the text: it may only be conversation (screenUngroundedText
       // is stricter than the figure check: it refuses any digit).
       if (sources.length === 0) {
@@ -2607,6 +2684,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
 
     for (const [i, o] of outs.entries()) {
       if (isCitation(o.source) && !sources.includes(o.source)) sources.push(o.source);
+      if (isCitation(o.source)) clientNamesOf(o.data).forEach((name) => clientNames.add(name));
       // a calendar read: its date and the calendar's own time zone, which the model is not shown (forModel), are what a "today" or a
       // "tomorrow" in the reply is checked against (calendarFactsHold)
       if (isCitation(o.source) && o.source.startsWith("google calendar") && o.data && typeof o.data === "object") {
