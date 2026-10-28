@@ -15,10 +15,13 @@
 //   dates      2026-01-01 -> January first, twenty twenty-six; a time right after the date (2026-01-01 14:03:11,
 //              2026-01-01T14:03:11Z, as a stored last contact reads) is dropped: the date alone is read
 //   negatives  -3 -> minus three
+//   times      2:00 PM -> two PM, 9:05 AM -> nine oh five AM, 9:30 -> nine thirty, 4:00 -> four o'clock,
+//              14:00 -> two PM (a bare 24-hour time gets its AM or PM)
+//   YTD        -> year to date
 //   also       "&" -> "and", markdown symbols (* _ # `) dropped, whitespace collapsed
 //
-// Words are left alone. Not handled (read as the plain numbers they contain): times like 9:30, other
-// slash forms such as 10/21, phone numbers, ZIP codes, and non-ISO dates.
+// Words are left alone. Not handled (read as the plain numbers they contain): other slash forms such as
+// 10/21, phone numbers, ZIP codes, and non-ISO dates.
 
 const ONES = [
   "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
@@ -93,6 +96,8 @@ function replaceNumbers(text, pattern, render) {
 // (the optional " HH:MM:SS" / "THH:MM:SS" tail, with fractional seconds and a zone, is matched so that it is dropped)
 const ISO_DATE =
   /(?<!\d)((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?:[ T](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?(?!\d)/g;
+// A clock time: "2:30 PM", "3:15pm", "9:30", "14:00" (not a piece of a longer run such as 14:03:11).
+const CLOCK = /(?<![\d:.])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])(?:\s?([AaPp][Mm])\b)?/g;
 const ORDINAL = /(?<![\d.,])(\d+)(?:st|nd|rd|th)\b/gi;
 const MINUS = /(^|[\s(])-(?=\$?\d)/g;
 // The loan type "5/1 ARM" (also 7/6, 10/6): brokers say "five one ARM", not "five slash one".
@@ -114,13 +119,26 @@ function moneyWords(whole, fraction, magnitude) {
   return Number(digits) === 0 ? centsWords : `${dollars} and ${centsWords}`;
 }
 
+// "2", "30", "PM" -> "two thirty PM"; "4", "00" -> "four o'clock"; "14", "00" -> "two PM"
+function clockWords(hourDigits, minuteDigits, meridiem) {
+  let hour = Number(hourDigits);
+  const minute = Number(minuteDigits);
+  let suffix = meridiem;
+  if (!suffix && (hour === 0 || hour > 12)) { suffix = hour < 12 ? "AM" : "PM"; hour = hour % 12 || 12; }
+  const minutes = minute === 0 ? "" : ` ${minute < 10 ? "oh " + ONES[minute] : integerWords(String(minute))}`;
+  if (!suffix) return `${integerWords(String(hour))}${minutes || " o'clock"}`;
+  return `${integerWords(String(hour))}${minutes} ${suffix}`;
+}
+
 function toSpeech(text) {
   if (typeof text !== "string") return "";
   let s = text;
   s = s.replace(/[*_#`]/g, "");                      // markdown
   s = s.replace(/&/g, " and ");
+  s = s.replace(/\bYTD\b/gi, "year to date");
   s = replaceNumbers(s, ISO_DATE, (year, month, day) =>
     `${MONTHS[Number(month) - 1]} ${ordinalWords(integerWords(String(Number(day))))}, ${yearWords(Number(year))}`);
+  s = replaceNumbers(s, CLOCK, clockWords);
   s = replaceNumbers(s, ORDINAL, (digits) => ordinalWords(integerWords(digits)));
   s = s.replace(MINUS, "$1minus ");
   s = replaceNumbers(s, ARM, (fixed, adjustable) => `${integerWords(fixed)} ${integerWords(adjustable)}`);

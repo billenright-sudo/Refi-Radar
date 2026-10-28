@@ -313,3 +313,29 @@ test("deterministic and idempotent: the output has nothing left to normalize", (
     assert.doesNotMatch(toSpeech(s), /[0-9&*_#`$%]/, "no digits or symbols left: " + s);
   }
 });
+
+test("clock times are read as a person says them: on the hour as just the hour, minutes as words, AM and PM kept", () => {
+  table([
+    ["12:00 PM", "twelve PM"],
+    ["at 2:00 PM Pacific Time", "at two PM Pacific Time"],
+    ["2:30 PM", "two thirty PM"],
+    ["9:05 AM", "nine oh five AM"],
+    ["10:45 am", "ten forty-five am"],
+    ["12:30 AM", "twelve thirty AM"],
+    ["3:15pm", "three fifteen pm"],
+    ["Friday, 10:00 AM – 10:30 AM", "Friday, ten AM – ten thirty AM"],
+    ["9:30", "nine thirty"],
+    ["at 4:00 for half an hour", "at four o'clock for half an hour"],
+    ["14:00", "two PM"],
+    ["00:15", "twelve fifteen AM"],
+  ]);
+});
+
+test("YTD is read as 'year to date'", () => {
+  table([
+    ["YTD", "year to date"],
+    ["Your YTD volume is $1.2 million.", "Your year to date volume is one point two million dollars."],
+    ["ytd", "year to date"],
+    ["YTDX stays", "YTDX stays"],
+  ]);
+});
