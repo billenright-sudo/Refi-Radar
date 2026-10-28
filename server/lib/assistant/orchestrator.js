@@ -1957,6 +1957,8 @@ function calendarFactsHold(text, reads, payloads, ctx) {
 //     "Calendar's clear Friday." and "Luckily Friday is free." are held); "have a great meeting"; "open to (a refi)". Also no words:
 //     "feel free", "free and clear", "loud and clear", "crystal clear", "clear of", "clear to close", a rate or a loan that is
 //     "available".
+// And (Ruling 70 d, in runTurn): when a calendar read this turn came back with a Google code and was handed back to the model, a
+// sentence that names a day or a time is the Google line, whatever the question.
 // So "Call the Chens today." on a sweep turn passes, and so do "I know you're busy, so here's the short version: call the Chens
 // first." and "Your week looks light on refis ..." (no day word, or no word on the list); "Your meeting with the Chens is at 10
 // tomorrow.", "There are two meetings tomorrow." and "You aren't busy Friday." are held.
@@ -2493,6 +2495,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
   const calendarReads = [];   // { date, timeZone } of each calendar day read this turn
   const calendarEvents = [];  // { title, date, timeZone } of each event those reads returned (the title as the model saw it)
   const clientNames = new Set();   // the client names this turn's cited tool results carry (Ruling 70 a)
+  let calendarCode = null;    // the Google code a calendar read this turn came back with, handed back to the model (Ruling 70 d)
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
   // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
@@ -2555,6 +2558,11 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // Rulings 52 and 67: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
       const noSend = sendLine(userText, messages[messages.length - 2]);
       if (noSend) return finish(noSend);
+      // Ruling 70 (d): a calendar read this turn came back with a Google code (not connected, expired, unreachable) and was handed back
+      // to the model (Ruling 55: the user did not ask about the calendar). Whatever the question, a sentence of the reply that names a
+      // day or a time is the Google line that says why: nothing read the calendar, and the failed read is why ("Call the Chens first."
+      // still passes).
+      if (calendarCode && factSentencesOf(text).some((sentence) => DAY_OR_TIME_RE.test(sentence))) return finish(GOOGLE_LINES.get(calendarCode));
       // R5-3, the action backstop: an action was asked for (now, or in the question this message
       // answers), and no change is being handed up for confirmation (a turn that ends in text never
       // carries a sideEffect), so whatever the model says, nothing was done. Only ONE question may
@@ -2685,6 +2693,7 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
     for (const [i, o] of outs.entries()) {
       if (isCitation(o.source) && !sources.includes(o.source)) sources.push(o.source);
       if (isCitation(o.source)) clientNamesOf(o.data).forEach((name) => clientNames.add(name));
+      if (runBlocks[i].name === "getCalendarTool" && !isCitation(o.source) && o.data && GOOGLE_LINES.has(o.data.code)) calendarCode = o.data.code;
       // a calendar read: its date and the calendar's own time zone, which the model is not shown (forModel), are what a "today" or a
       // "tomorrow" in the reply is checked against (calendarFactsHold)
       if (isCitation(o.source) && o.source.startsWith("google calendar") && o.data && typeof o.data === "object") {

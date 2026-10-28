@@ -5507,12 +5507,13 @@ test("Final fix (Ruling 55): an unasked calendar read beside other tools does no
     const fed = client.calls[1].messages[client.calls[1].messages.length - 1].content.map((b) => JSON.parse(b.content));
     assert.equal(fed[1].source, "(not connected)");
     assert.equal(fed[1].data.code, code);
-    // ... and what it says is screened as on any turn
+    // ... and what it says is screened as on any turn (Ruling 70 d: a sentence that names a day or a time, after a calendar read that
+    // failed this turn, is the Google line that says why; it was the can't-verify line)
     r = await runTurn({
       messages: userSays("who should I call today?"), ctx: googleCtx(unusableGoogle(code)),
       client: fakeClient([sweepAndRead(), say("Call the Chens first — and you're free all afternoon.")]),
     });
-    assert.equal(r.reply, CANT_VERIFY, code);
+    assert.equal(r.reply, line, code);
     // the Google line when the calendar read is the only tool, or the user asked about the calendar or availability
     for (const [messages, script] of [
       [userSays("who should I call today?"), [useTool("getCalendarTool", { date: "today" })]],
@@ -6290,4 +6291,33 @@ test("Task 9 fix 2 (Ruling 70 a, b, c, e): a client's availability only for this
   // a name this turn's tools did not return is no client: held with no tool, and after a lookup of someone else
   assert.equal(await reply("thanks", () => [], "Robert is free Friday afternoon."), CANT_VERIFY);
   assert.equal(await reply("pull up the Chens", lookup, "Garcia is free Friday afternoon."), CANT_VERIFY);
+});
+
+test("Task 9 fix 2 (Ruling 70 d): when the calendar read failed this turn, a sentence that names a day or a time is the Google line, whatever the question", async () => {
+  const LINES = { not_connected: GOOGLE_NOT_CONNECTED, reconnect: GOOGLE_RECONNECT, unavailable: GOOGLE_UNAVAILABLE };
+  const par = (name, input = {}) => resp([
+    { type: "tool_use", id: "t0", name, input }, { type: "tool_use", id: "t1", name: "getCalendarTool", input: { date: "today" } },
+  ], "tool_use");
+  for (const [code, line] of Object.entries(LINES)) {
+    const ctx = () => googleCtx(unusableGoogle(code));
+    const run = async (u, script, said) => (await runTurn({ messages: userSays(u), ctx: ctx(), client: fakeClient([...script, say(said)]) })).reply;
+    // a day or a time beside the failed read: the line; none: the turn's own answer (Ruling 55)
+    assert.equal(await run("who should I call today?", [par("runSweepTool")], "Call the Chens today."), line, code);
+    assert.equal(await run("who should I call today?", [par("runSweepTool")], "Call the Chens first, then the Parks at 2 o'clock."), line, code);
+    assert.equal(await run("who should I call today?", [par("runSweepTool")], "Call the Chens first."), "Call the Chens first.", code);
+    assert.equal(await run("what are rates today?", [par("getMarketUpdate")], "The 30-year fixed is at 6.52 percent."), "The 30-year fixed is at 6.52 percent.", code);
+  }
+  // (rr15 fa) calendar questions the question rules miss: no false time reaches the broker, with no tool or beside a failed read
+  const nc = () => googleCtx(unusableGoogle("not_connected"));
+  for (const u of [
+    "when's my next meeting?", "who am I meeting tomorrow?", "is my calendar clear this afternoon?", "when am I free Thursday?",
+    "what does my afternoon look like?", "how's next week shaping up?", "anything on for tonight?", "is my 2 o'clock still on?",
+    "do I have room for the Chens Thursday?", "is Thursday morning taken?", "can I squeeze the Garcias in tomorrow?", "am I seeing the Chens tomorrow?",
+    "what's on my plate tomorrow?", "how packed is my Thursday?", "anything on the books for Friday?", "when do I see the Chens?",
+  ]) {
+    const a = (await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient([say("You're wide open.")]) })).reply;
+    assert.notEqual(a, "You're wide open.", `no tool: ${u}`);
+    const b = (await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient([par("findClient", { query: "chen" }), say("It's at 10 tomorrow.")]) })).reply;
+    assert.equal(b, GOOGLE_NOT_CONNECTED, `failed read: ${u}`);
+  }
 });
