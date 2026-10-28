@@ -5849,6 +5849,45 @@ test("Task 9 (R1): the calendar-fact rule holds availability said of the broker,
   ]) assert.equal(await reply("pull up the Chens", lookup, said), said, said);
 });
 
+test("Task 9 (R2): a script for the broker to say, after a script lead or in quotation marks, is exempt from the availability rule only", async () => {
+  const OFFER = "The Chens are first. Want me to write up a quick talk track for the call?";
+  const afterYes = async (said) => (await runTurn({
+    messages: history("who should I call first?", OFFER, "yes"), ctx: mikeCtx,
+    client: fakeClient([useTool("findClient", { query: "chen" }), say(said)]),
+  })).reply;
+  // (rereview14 f3f1) the talk tracks that propose a time, after the offer and a lookup: said, as at b542904
+  const TRACKS = [
+    "Try this: Hi Robert, rates have moved — are you free Thursday to go over your options?",
+    "Say: Hi Linda, rates dropped this morning, and I'd love to schedule a quick call — does Thursday work?",
+    "Open with: Hi Robert, I have some availability Thursday afternoon if you want to talk numbers.",
+    "Try: Hi Robert, are you available for a quick call tomorrow?",
+  ];
+  for (const said of TRACKS) assert.equal(await afterYes(said), said, said);
+  // asked for with no tool, the ungrounded screen decides them as at b542904 (a book word -> can't-verify)
+  const outcomes = [];
+  for (const said of TRACKS) {
+    outcomes.push((await runTurn({ messages: userSays("help me write an opener for the Chens"), ctx: mikeCtx, client: fakeClient([say(said)]) })).reply);
+  }
+  assert.deepStrictEqual(outcomes, [CANT_VERIFY, CANT_VERIFY, TRACKS[2], CANT_VERIFY]);
+  // a script that says the client is busy or free is the broker's words to the client, not a fact told to the broker
+  for (const said of [
+    "Try this: Hi Robert, I know you're busy, so I'll keep it quick — got two minutes this week?",
+    "Something like: Hi Linda, I know your week is packed, so I'll be brief — rates have moved.",
+    "You could say: Hi Robert, I know you're swamped — your afternoon looks busy, so pick any day that suits you.",
+    "Here's an opener: \"Hi Robert, I know you're slammed this week — is Thursday afternoon open for a quick call?\"",
+    "Tell them \"I know your schedule is full, so I'll keep it short,\" then ask about the house.",
+  ]) assert.equal(await afterYes(said), said, said);
+  // the exemption is the script's only: Charli's own words beside a quoted script are screened, and so is a reply with no lead
+  for (const said of [
+    "Try this: \"Hi Robert, are you free Thursday?\" You're free all Thursday afternoon, so offer that.",
+    "You're busy Thursday, so call them Friday.",
+  ]) assert.equal(await afterYes(said), CANT_VERIFY, said);
+  // every other screen still applies inside a script: a figure no tool gave, a claim of having done it
+  assert.equal(await afterYes("Try this: Hi Robert, the 30-year is down to 5.25 percent — are you free Thursday?"), CANT_VERIFY);
+  assert.equal(await afterYes("Try this: Hi Robert, I've booked us for Thursday morning."), NOTHING_CHANGED);
+  assert.equal(await afterYes("Say: \"Hi Linda, I already sent you the numbers.\""), NOTHING_CHANGED);
+});
+
 test("Task 9 (R3): availability presupposed in an offer, a did-not clause or a question needs a calendar read; a genuine clarifier still passes", async () => {
   const reply = async (u, script, said) => (await runTurn({
     messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...script, say(said)]),

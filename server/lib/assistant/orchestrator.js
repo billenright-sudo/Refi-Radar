@@ -1969,6 +1969,10 @@ function calendarFactsHold(text, reads, payloads, ctx) {
 //     Friday."); an availability form there is still held ("I can book the Chens into your open slot Friday at 2.", "I could schedule
 //     them in your free Friday afternoon.", "I won't book over your free Friday afternoon."), and a reading said as an inability is a
 //     reading ("I can't see anything on your calendar today.");
+//   * a script for the broker to say to the client (R2): the words after a script lead ("Try this:", "Try:", "Say:", "Open with:",
+//     "Something like:", "Here's a script:", "Here's an opener:", "You could say" ...), to the end of the reply unless a quotation
+//     follows the lead, and anything inside quotation marks. Only this rule skips it: every other screen (figures, claims) still
+//     reads the whole reply.
 const WEEKDAY_WORD = "(?:mon|tues|wednes|thurs|fri|satur|sun)day";
 const DAY_PART = "(?:morning|afternoon|evening|night)";
 const CLOCK_WORDS = "(?:\\d{1,2}(?::\\d{2})?\\s*(?:[ap]\\.?m\\b\\.?|o['\\u2019]clock)|\\d{1,2}:\\d{2}|noon|midnight)";
@@ -2070,9 +2074,31 @@ const CONDITION_RE = /\b(?:if|whenever|unless|when|whether)\b/i;
 // sentences split at . ! ? (not at a decimal point), with "a.m." / "p.m." read as "am" / "pm" so they end no sentence
 const factSentencesOf = (text) =>
   (String(text).replace(/\b([ap])\.\s?m\b\.?/gi, "$1m").match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean);
+// R2: a script for the broker to say. A lead opens the reply or a sentence (after one opener: "Sure — try this: ...") or follows a
+// dash; the script it leads runs to the end of the reply, unless a quotation follows the lead (then the quotation is the script).
+const SCRIPT_LEAD_RE = new RegExp(
+  "(?:^|[.!?]\\s+|[\\u2014\\u2013]\\s*|\\s-\\s)" +
+    "(?:(?:sure|okay|ok|great|perfect|got\\s+it|absolutely|of\\s+course|happy\\s+to|here\\s+you\\s+go)[\\s,.!\\u2014\\u2013-]+)?" +
+    "(?:(?:try(?:\\s+this|\\s+something\\s+like(?:\\s+this)?)?|say|open\\s+with|lead\\s+with|something\\s+like(?:\\s+this)?" +
+    "|here['\\u2019]s\\s+(?:a|an|the|one|your)(?:\\s+(?:quick|short|simple|good|sample|possible))?\\s+(?:script|opener|opening(?:\\s+line)?" +
+    "|talk\\s+track|pitch|intro|line|voicemail(?:\\s+script)?))\\s*[:\\u2014\\u2013]" +
+    "|(?:you\\s+(?:could|can|might|may)\\s+(?:just\\s+)?say|try\\s+saying|just\\s+say)(?![\\w'\\u2019-])[\\s,:\\u2014\\u2013]*)",
+  "gi"
+);
+const QUOTED_RE = /"[^"]*"|“[^”]*”/g;
+const withoutScripts = (text) => {
+  let t = String(text);
+  for (const m of t.matchAll(SCRIPT_LEAD_RE)) {
+    if (!/^\s*["“]/.test(t.slice(m.index + m[0].length))) {
+      t = t.slice(0, m.index);
+      break;
+    }
+  }
+  return t.replace(QUOTED_RE, " ");
+};
 // Pure.
 function ungroundedCalendarFact(text) {
-  return factSentencesOf(text).some((sentence) => {
+  return factSentencesOf(withoutScripts(text)).some((sentence) => {
     const s = stripOpener(sentence).trim();
     const asks = /\?\s*$/.test(s);
     return CALENDAR_FACT_FORMS.some((form) => {
