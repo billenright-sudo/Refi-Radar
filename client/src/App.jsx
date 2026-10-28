@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import CharliView from "./charli/CharliView.jsx";
 import { returnNotice } from "./charli/google.mjs";
+import { endKeptSession } from "./charli/keep.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -2032,10 +2033,12 @@ export default function App() {
     setAuthState("authenticated");
     setView("dashboard");
     setGoogleNotice(null);   // a Google result from before this sign-in is stale
+    endKeptSession();        // and so is any Charli conversation: a sign-in starts a fresh one
   };
 
   const handleLogout = async () => {
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
+    endKeptSession();
     setUser(null);
     setAuthState("unauthenticated");
     setAuthView("login");

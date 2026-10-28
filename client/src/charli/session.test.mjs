@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
   CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE, STILL_WORKING,
+  LEFT_UNCONFIRMED, LEFT_UNFINISHED,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -884,6 +885,128 @@ test("after dispose nothing is sent: a late utterance (say, one still being tran
   assert.deepEqual(await session.heard("hello"), { ok: false, reason: "closed" });
   assert.deepEqual(await session.setStage("veteran"), { ok: false, reason: "closed" });
   assert.equal(server.calls.length, 0);
+});
+
+// ── leaving the screen and coming back ───────────────────────────────────────
+
+test("coming back after leave() shows the same conversation and does not greet again", async () => {
+  const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Good morning."), turnReply("Sure.")) } });
+  await session.open();
+  await session.submit("run a sweep");
+  const before = session.getState().turns;
+  session.leave();
+  await session.open();
+  assert.equal(server.turns().length, 2, "one greeting and one turn: no second greeting");
+  assert.deepEqual(session.getState().turns, before);
+  assert.equal(session.getState().opening, false);
+});
+
+test("coming back re-reads the shown stage from /api/auth/me", async () => {
+  const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Hi.")) } });
+  await session.open();
+  const reads = () => server.calls.filter((c) => c.url === "/api/auth/me").length;
+  const first = reads();
+  session.leave();
+  await session.open();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(reads(), first + 1);
+});
+
+test("leaving drops a change still waiting for a yes: the transcript and the history say so, nothing is spoken", async () => {
+  const { session, server, spoken } = setup({
+    routes: { "POST /api/assistant/turn": queue(turnReply("Hi."), turnReply(READ_BACK, { sideEffect: SIDE_EFFECT }), turnReply("Sure.")) },
+  });
+  await session.open();
+  await session.submit("log a contact for the Chens");
+  const spokenBefore = spoken.length;
+  session.leave();
+  assert.equal(session.getState().pending, null);
+  assert.equal(lastTurn(session).content, LEFT_UNCONFIRMED);
+  assert.equal(spoken.length, spokenBefore);
+  await session.open();
+  assert.deepEqual(await session.submit("yes"), { ok: true, action: "turn" }, "with nothing pending a yes is an ordinary message");
+  assert.equal(server.confirms().length, 0);
+  assert.deepEqual(messagesOf(server.turns()[2]).slice(-3), [
+    { role: "assistant", content: READ_BACK }, { role: "assistant", content: LEFT_UNCONFIRMED }, { role: "user", content: "yes" },
+  ]);
+});
+
+test("a reply that lands after leave() is kept for when the user comes back, but never spoken", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { session, spoken } = setup({ routes: { "POST /api/assistant/turn": async () => { await gate; return turnReply("Rates are flat."); } } });
+  const inFlight = session.submit("how are rates");
+  session.leave();
+  release();
+  await inFlight;
+  assert.equal(lastTurn(session).content, "Rates are flat.");
+  assert.equal(spoken.length, 0);
+  assert.equal(session.getState().busy, false);
+});
+
+test("a read-back that lands after leave() is not left waiting for a yes", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { session, spoken } = setup({
+    routes: { "POST /api/assistant/turn": async () => { await gate; return turnReply(READ_BACK, { sideEffect: SIDE_EFFECT }); } },
+  });
+  const inFlight = session.submit("log a contact for the Chens");
+  session.leave();
+  release();
+  await inFlight;
+  assert.deepEqual(session.getState().turns.slice(-2).map((t) => t.content), [READ_BACK, LEFT_UNCONFIRMED]);
+  assert.equal(session.getState().pending, null);
+  assert.equal(spoken.length, 0);
+});
+
+test("a confirm already sent when the user leaves finishes, and its result is shown (not spoken)", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { session, spoken } = await withPending({
+    "POST /api/assistant/confirm": async () => { await gate; return reply(200, { success: true, result: {}, reply: "Logged." }); },
+  });
+  const spokenBefore = spoken.length;
+  const confirming = session.confirmPending();
+  session.leave();
+  release();
+  await confirming;
+  assert.equal(session.getState().pending, null);
+  assert.equal(lastTurn(session).content, "Logged.");
+  assert.equal(spoken.length, spokenBefore);
+});
+
+test("a confirm that could not finish while the user was away is not left waiting, and the user is told to check it", async () => {
+  for (const answer of [reply(503, { error: "busy" }), reply(409, { pending: true })]) {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { session } = await withPending({ "POST /api/assistant/confirm": async () => { await gate; return answer; } });
+    const confirming = session.confirmPending();
+    session.leave();
+    release();
+    await confirming;
+    assert.equal(session.getState().pending, null, String(answer.status));
+    assert.equal(lastTurn(session).content, LEFT_UNFINISHED, "it may have gone through: never 'I didn't make that change'");
+  }
+});
+
+test("a view-level notice that comes in while away (say, a transcription that failed after the user left) is dropped", async () => {
+  const { session, spoken } = setup();
+  session.leave();
+  session.notice("Sorry, I couldn't make that out. Could you say it again?", { say: true });
+  assert.equal(session.getState().turns.length, 0);
+  assert.equal(spoken.length, 0);
+});
+
+test("while away nothing is sent: a late utterance or a typed line is refused until the user comes back", async () => {
+  const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Hi."), turnReply("Sure.")) } });
+  session.leave();
+  assert.deepEqual(await session.submit("hello"), { ok: false, reason: "closed" });
+  assert.deepEqual(await session.heard("hello"), { ok: false, reason: "closed" });
+  assert.deepEqual(await session.heard(""), { ok: false, reason: "closed" });
+  assert.deepEqual(await session.setStage("veteran"), { ok: false, reason: "closed" });
+  assert.equal(server.calls.length, 0);
+  await session.open();
+  assert.deepEqual(await session.submit("hello"), { ok: true, action: "turn" });
 });
 
 test("a view-level notice is shown (and spoken on request) but never enters the history", async () => {

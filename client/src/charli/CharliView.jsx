@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createSession, CAREER_STAGES, pendingRows, voiceNoteFor } from "./session.mjs";
+import { keptSession } from "./keep.mjs";
 import { googleCard, validNmls, connectUrlOk, inputAfterReload, createCoalescer } from "./google.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
@@ -342,15 +343,16 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
   const pausedRef = useRef(false);
   pausedRef.current = paused;
 
-  // The session and the audio are built once per visit to this screen.
+  // The conversation outlives a visit to this screen (keep.mjs): coming back shows it again, with no second greeting. The audio
+  // is built once per visit.
   const parts = useRef(null);
   if (!parts.current) {
-    const session = createSession({
+    const { session, voice } = keptSession(user && user.id, (onSpeak) => createSession({
       rates,
       localHour: new Date().getHours(),
       user,
-      onSpeak: (line) => { if (!pausedRef.current) parts.current.audio.speak(line); },
-    });
+      onSpeak,
+    }));
 
     const handleUtterance = async (blob) => {
       setTranscribing(true);
@@ -385,14 +387,16 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
       onTtsOk: () => { setVoiceNote(""); setNeedsStart(false); },   // it played, so no tap is needed after all
       onTtsError: (status, body) => setVoiceNote(voiceNoteFor(status, body)),
     });
-    parts.current = { session, audio };
+    parts.current = { session, audio, voice };
   }
-  const { session, audio } = parts.current;
+  const { session, audio, voice } = parts.current;
 
   useEffect(() => {
+    voice.speak = (line) => { if (!pausedRef.current) audio.speak(line); };
     audio.startMic();
     session.open();
-    return () => { session.dispose(); audio.dispose(); };   // leaving the screen ends the session: mic off, speech cut
+    // leaving the screen: mic off, speech cut, a change waiting for a yes dropped; the conversation is kept for coming back
+    return () => { voice.speak = null; session.leave(); audio.dispose(); };
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { session.setRates(rates); }, [rates]);   // eslint-disable-line react-hooks/exhaustive-deps

@@ -33,6 +33,11 @@ export const DIDNT_CATCH = "I didn't catch that — could you say it again?";
 // Shown (never spoken, never sent) when a spoken yes / no comes back from speech-to-text after the change it was said to
 // had already been confirmed, cancelled or replaced on screen.
 export const LATE_ANSWER = "That answer came in after the change was already handled, so I left it alone.";
+// Shown (never spoken) when the user left the Charli screen with a change still waiting for a yes: it is dropped, not kept for later.
+export const LEFT_UNCONFIRMED = "You left before confirming, so I didn't make that change.";
+// Shown (never spoken) when the user left while a confirmed change was still with the server and it came back unfinished: it may
+// still have gone through, so it is dropped without saying it was not made.
+export const LEFT_UNFINISHED = "You left before I heard back on that change, so I can't tell whether it went through — check before asking again.";
 
 // What Charli says when /turn did not answer in time (REQUEST_TIMEOUTS): the turn is dropped here and nothing was written. (The
 // server has its own line, TOOK_TOO_LONG, for a turn it cut off itself; that one arrives as an ordinary error reply.)
@@ -184,8 +189,12 @@ const stillWorking = (res) => res.status === 409 && !!res.data && res.data.pendi
 //   user       { careerStage } from /api/auth/me
 //   onSpeak    ({ text, turnId? }) called, in order, for every line Charli should say aloud (the line is
 //              already in the transcript when it is called)
-// Returns { getState, subscribe, setRates, open, submit, heard, confirmPending, cancelPending, setStage,
+// Returns { getState, subscribe, setRates, open, leave, submit, heard, confirmPending, cancelPending, setStage,
 //           notice, dispose }.
+//
+// open() and leave() follow the Charli screen: the session outlives a visit to it (keep.mjs), so coming back shows the same
+// conversation and greets nobody twice. While away nothing is spoken and nothing new is sent; a request already out finishes and
+// its result is kept, but a change waiting for a yes is dropped. dispose() ends the session for good (sign-out, another user).
 //
 // getState() -> { turns, pending, busy, opening, hasRates, careerStage }
 //   turns    [{ id, role, content, sources, turnId, kind: "message" | "unverified" | "error" | "notice", inHistory, compose? }]
@@ -201,6 +210,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   let currentRates = rates;
   let nextId = 1;
   let disposed = false;
+  let away = false;   // the Charli screen is not showing (leave() until the next open())
   let openPromise = null;
   let emptyRun = false;   // the last transcript was empty and "I didn't catch that" was already said (see heard)
   let releaseRates;
@@ -228,7 +238,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
     return full;
   };
   const speak = (text, turnId) => {
-    if (disposed || !text || typeof onSpeak !== "function") return;
+    if (disposed || away || !text || typeof onSpeak !== "function") return;
     try { onSpeak({ text, turnId: turnId || undefined }); } catch { /* a speaker problem must not break the session */ }
   };
   // Said and shown, never sent to the model.
@@ -279,10 +289,18 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   // Only one thing is in flight at a time: a second request while one is running is refused, not queued, so a
   // "yes" said while Charli is still thinking can never be read against a read-back the user has not seen.
   async function exclusive(fn) {
-    if (disposed) return { ok: false, reason: "closed" };
+    if (disposed || away) return { ok: false, reason: "closed" };
     if (state.busy) return { ok: false, reason: "busy" };
     set({ busy: true });
-    try { return await fn(); } finally { set({ busy: false }); }
+    try { return await fn(); } finally { set({ busy: false }); dropIfAway(); }
+  }
+
+  // Away from the screen, a change waiting for a yes is dropped, never kept for later: its card is not in front of the user. One
+  // being confirmed is left to finish first (exclusive() calls this again when it is done).
+  function dropIfAway() {
+    if (!away || !state.pending || state.busy) return;
+    set({ pending: null });
+    addTurn({ role: "assistant", content: LEFT_UNCONFIRMED });   // in the history: the read-back is no longer the last thing said
   }
 
   async function refreshStage(fallback) {
@@ -331,8 +349,13 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
     }
   }
 
-  // Greets once rates are in. Safe to call more than once (it returns the same promise).
+  // Greets once rates are in. Safe to call more than once (it returns the same promise): coming back after leave() greets no one
+  // again, and only re-reads the shown stage.
   function open() {
+    if (away) {
+      away = false;
+      if (openPromise) refreshStage();
+    }
     if (!openPromise) {
       set({ opening: true });
       openPromise = (async () => {
@@ -368,6 +391,12 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
       addTurn({ role: "assistant", content: reply });
       speak(reply);
       if (sideEffect.type === "setCareerStage") await refreshStage(res.data.result && res.data.result.stage);
+      return;
+    }
+    if (away && (stillWorking(res) || isRetryable(res))) {
+      // The user left while this was out, and it may yet have gone through: dropped, and they are told to check.
+      set({ pending: null });
+      addTurn({ role: "assistant", content: LEFT_UNFINISHED });
       return;
     }
     if (stillWorking(res)) {
@@ -415,6 +444,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   // noise is an empty transcript: "I didn't catch that" is SPOKEN only for the first of a run of them (each one is still
   // shown), and the run ends with the next transcript that has words in it.
   async function heard(text, { pendingAtStart } = {}) {
+    if (disposed || away) return { ok: false, reason: "closed" };
     const said = withoutAudioTags(text).trim();
     if (said) emptyRun = false;
     if (said && pendingAtStart !== undefined && state.pending !== pendingAtStart && !disposed) {
@@ -476,12 +506,13 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
       if (currentRates) releaseRates();
     },
     open,
+    leave() { away = true; dropIfAway(); },
     submit,
     heard,
     confirmPending,
     cancelPending,
     setStage,
-    notice: (text, opts) => addNotice(text, opts),
+    notice: (text, opts) => { if (!away) addNotice(text, opts); },   // a line from the screen, which is gone while away
     dispose() { disposed = true; listeners.clear(); releaseRates(); },
   };
 }
