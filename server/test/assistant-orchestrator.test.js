@@ -5808,3 +5808,58 @@ test("Task 9 (R4): on a plain read a 'now' form is released only in its own clau
   assert.equal(claimsCompletion("Team meeting is there, and everything else is now on your calendar.", true, null, false, { events: [TEAM] }), true);
   assert.equal(claimsCompletion("Team meeting is on your calendar now, and nothing else is.", true, null, false, { events: [TEAM] }), false);
 });
+
+test("Task 9 (R5): NO_SEND is for sending what already exists or asking whether it went; a send naming a recipient drafts, and advice, a negation or the user's own plan is answered", async () => {
+  const DRAFTED = "Here's a check-in email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const draft = () => useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" }, "toolu_2");
+  const turn = async (messages, script, said) => (await runTurn({ messages, ctx: mikeCtx, client: fakeClient([...script, say(said)]) })).reply;
+  // (rereview14 nosend) a send or email naming a recipient is a fresh request: an action turn whose clarifier is said, as at 6be3093
+  for (const [u, script, said] of [
+    ["email this to the Chens", [lookup()], "Which Chens — Robert & Linda, or Mike?"],
+    ["email that rate update to Mike", [], "Which Mike do you mean?"],
+    ["send the check-in to the Chens", [lookup()], "Which Chens — Robert & Linda, or Mike?"],
+    ["send the check-in about their savings", [lookup()], "Which client is it for?"],
+  ]) {
+    assert.equal(isActionRequest(u), true, u);
+    assert.equal(await turn(userSays(u), script, said), said, u);
+  }
+  // ... and the flow completes (rereview14 nosend2): the clarifier, then the answer sets up the email
+  for (const u of ["email this to the Chens", "send the check-in to the Chens"]) {
+    const asked = await runTurn({ messages: userSays(u), ctx: mikeCtx, client: fakeClient([lookup(), say("Which Chens — Robert & Linda, or Mike?")]) });
+    const r = await runTurn({ messages: history(u, asked.reply, "Robert and Linda"), ctx: mikeCtx, client: fakeClient([lookup(), draft()]) });
+    assert.equal(r.reply, DRAFTED, u);
+    assert.equal(r.compose.to, MIKE_CHEN_EMAIL);
+  }
+  // after the compose card a send naming a new recipient is a fresh request too: it drafts
+  const re = await runTurn({ messages: history("draft the Chens a check-in", DRAFTED, "send it to Linda only"), ctx: mikeCtx, client: fakeClient([draft()]) });
+  assert.equal(re.reply, DRAFTED);
+  // advice, a negation and the user's own plan are answered, after the compose card and with no email in view, as at 6be3093 (a
+  // yes/no question or a book word in the user's message is the ungrounded screen's can't-verify, as it was then)
+  const after = (u) => history("draft the Chens a check-in", DRAFTED, u);
+  for (const [messages, said, outcome] of [
+    [after("don't send it yet"), "Okay.", "Okay."],
+    [after("I'll send it after lunch"), "Sounds good.", "Sounds good."],
+    [after("should I send it today or tomorrow?"), "Today is better.", "Today is better."],
+    [after("what should I say before I send it?"), "Keep it short and personal.", "Keep it short and personal."],
+    [after("is it okay to send this to Linda only?"), "Yes — it goes to the address on file.", CANT_VERIFY],
+    [userSays("when's the best time to send the email to the Chens?"), "Mid-morning usually works best.", "Mid-morning usually works best."],
+    [userSays("should I send the check-in today or wait till Friday?"), "Today is better.", CANT_VERIFY],
+    [userSays("what subject line should I use before I send the email?"), "Keep it short and personal.", "Keep it short and personal."],
+    [userSays("I'll send the email myself later"), "Sounds good.", "Sounds good."],
+    [userSays("don't send the email yet"), "Got it.", "Got it."],
+  ]) {
+    const r = await runTurn({ messages, ctx: mikeCtx, client: fakeClient([say(said)]) });
+    assert.equal(r.reply, outcome, messages[messages.length - 1].content);
+  }
+  // an email that is no compose card is nothing to send: "great, send it" after a client answer is answered, as at 6be3093
+  assert.equal(await turn(
+    history("pull up the Chens", "Robert & Linda Chen are at 7.85 percent; their email is on file.", "great, send it"), [lookup()],
+    "Want me to draft them a check-in?"
+  ), "Want me to draft them a check-in?");
+  // still NO_SEND: sending the email in view (after the card, or after NO_SEND itself) and asking whether she sent one
+  for (const messages of [
+    after("ok, send"), history("draft the Chens a check-in", DRAFTED, "send it", NO_SEND, "just send it"),
+    userSays("did you email the Chens last week?"), userSays("did you send the Chens anything?"), userSays("was the check-in sent?"),
+  ]) assert.equal(await turn(messages, [], "I can't send email."), NO_SEND, messages[messages.length - 1].content);
+});

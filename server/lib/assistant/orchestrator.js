@@ -2064,34 +2064,60 @@ const draftReply = (out) => {
     "Open it in your email to review it and send it yourself — I don't send anything.";
 };
 
-// Ruling 52: Charli never sends email, so when the user asks her to send it ("send it", "ok send it", "can you send it for me?",
-// "email it to them", "send the draft") or asks whether she did ("did you send it?", "was it sent?", "has it gone out?") and the
-// turn sets up no email, code says so (NO_SEND): the model's own words for it ("I can't send email — open it in Gmail") would be
-// held to the action backstop and come out as the nothing-changed line, whose "I'll confirm it with you first" implies she could
-// send it after a yes. Only the email in front of them is meant: "send the Chens a check-in" asks for a draft, and drafts. The
-// email is named ("the email", "the draft", "the note", "the check-in"), or emailed ("email it", "did you email them?"), or it is
-// a bare it / that / this while the email is in view (`emailInView`: the assistant message right before is about an email or a
-// draft, and is neither an offer to act nor a read-back). So "send it" after "Want me to write them a check-in?" or after a
-// cancelled read-back still says yes to that, as before.
+// Rulings 52 and 64 (R5): Charli never sends email, so when the user asks her to send the email that already exists, or asks whether
+// she sent it, and the turn sets up no email, code says so (NO_SEND): the model's own words for it ("I can't send email — open it in
+// Gmail") would be held to the action backstop and come out as the nothing-changed line, whose "I'll confirm it with you first"
+// implies she could send it after a yes. Two kinds of message:
+//   (a) a request to send what exists, with no new recipient and no purpose (tested clause by clause): the email named ("send the
+//       email / the draft / the note / the check-in", "email it / that / this"), or a bare it / that / this, or no object at all ("ok,
+//       send"), while the email is in view (`emailInView`: the assistant message right before is the compose card's own line,
+//       draftReply, or NO_SEND itself). "send it to them" and "email it to them" name no new recipient. So "send it" after "Want me to
+//       write them a check-in?", after a cancelled read-back, or after "their email is on file" still answers that, as before;
+//   (b) a question whether she sent one: "did you send / email ...", "was it / the email sent?", "has it / the check-in gone out?",
+//       "did the email go out?" (it / that / this / they only while the email is in view).
+// Not NO_SEND: a send or email that names a recipient ("email this to the Chens", "send the check-in to the Chens", "send it to Linda
+// only") or a purpose ("... about their savings") asks for a fresh draft (an action turn: a compose, or the clarifier, as at
+// 6be3093, so "email this to the Chens" -> "Which Chens ...?" -> "Robert and Linda" sets it up); nor a send that is advice asked, a
+// negation or the user's own plan ("should I send it today or tomorrow?", "when's the best time to send the email?", "before I send
+// it", "is it okay to send this to Linda?", "don't send it yet", "I'll send it after lunch", "I'll send the email myself later").
 const PRONOUN_MESSAGE = "(?:it|that|this|they)";
 const NAMED_MESSAGE = "the\\s+(?:email|e-mail|draft|note|check[\\s-]?in)";
-const sendRe = (object) => new RegExp(
-  "\\bsend\\s+" + object + "(?![\\w'\\u2019-])" +
-    "|\\bdid\\s+you\\s+send\\s+" + object + "(?![\\w'\\u2019-])" +
-    "|\\b(?:was|were|is|has|have)\\s+" + object + "\\s+(?:(?:been|already|just)\\s+)*sent\\b" +
+const sentAskedRe = (object) => new RegExp(
+  "\\b(?:was|were|is|has|have)\\s+" + object + "\\s+(?:(?:been|already|just)\\s+)*sent\\b" +
     "|\\b(?:has|have|did)\\s+" + object + "\\s+(?:already\\s+)?(?:gone|go)\\s+out\\b",
   "i"
 );
-const SEND_NAMED_RE = sendRe(NAMED_MESSAGE);
-const SEND_PRONOUN_RE = sendRe(PRONOUN_MESSAGE);
-const EMAILED_RE = /\be-?mail\s+(?:it|that|this)(?![\w'’-])|\bdid\s+you\s+e-?mail\b/i;
-const EMAIL_WORD_RE = /\b(?:e-?mails?|drafts?)\b/i;
+const SENT_NAMED_RE = sentAskedRe(NAMED_MESSAGE);
+const SENT_PRONOUN_RE = sentAskedRe(PRONOUN_MESSAGE);
+const DID_YOU_SEND_RE = /\bdid\s+you\s+(?:send|e-?mail)(?![\w'’-])(?!\s+(?:me|us)\b)/i;
+const SEND_NAMED_RE = new RegExp("\\bsend\\s+" + NAMED_MESSAGE + "(?![\\w'\\u2019-])", "i");
+const EMAIL_IT_RE = /\be-?mail\s+(?:it|that|this)(?![\w'’-])/i;
+// (only while the email is in view) "send it / that / this", or "send" with no object: "ok, send", "go ahead and send now"
+const SEND_PRONOUN_RE = /\bsend(?:\s+(?:it|that|this)(?![\w'’-])|(?=(?:\s+(?:now|please|away|over|for\s+me))?[\s.!?]*$))/i;
+// after the object: a recipient who is not the one in view, or a purpose
+const NEW_RECIPIENT_RE = /\bto\s+(?!(?:them|him|her|me|us|you|it|that|this)(?![\w'’-]))[\w&'’-]|\b(?:about|regarding)\b/i;
+// before the send, in its clause: a negation, the user's own plan, advice asked, or the user's own sending as a time
+const NOT_A_SEND_REQUEST_RE = new RegExp(
+  "\\b(?:don['\\u2019]?t|do\\s+not|never|not|won['\\u2019]?t|wouldn['\\u2019]?t|shouldn['\\u2019]?t|no\\s+need\\s+to)(?![\\w'\\u2019-])" +
+    "|\\bI(?:['\\u2019]ll|\\s+will|['\\u2019]m\\s+(?:going\\s+to|gonna)|\\s+(?:can|could|might|may|plan\\s+to|should|shall)" +
+    "|['\\u2019]d(?!\\s+(?:like|love|appreciate)\\b))(?![\\w'\\u2019-])" +
+    "|\\b(?:should|shall|can|could|may|might|would)\\s+(?:I|we)(?![\\w'\\u2019-])" +
+    "|\\b(?:time|okay|ok|fine|good|better|best|wise|smart|safe|alright|right)\\s+(?:idea\\s+)?to\\s*$" +
+    "|\\b(?:before|after|when|once|until|till|if|whether)\\s+(?:I|we)(?![\\w'\\u2019-])",
+  "i"
+);
+const EMAIL_IN_VIEW_RE = /\be-?mail\s+for\s+.+,\s+ready\s+on\s+your\s+screen\b/i;   // draftReply's own words
 // `before`: the message right before the user's latest one
 const asksToSend = (text, before) => {
   const prev = messageText(before);
-  const emailInView = !!before && before.role === "assistant" && EMAIL_WORD_RE.test(prev) && !offersAction(before) &&
-    !prev.includes(READ_BACK_PREFIX);
-  return SEND_NAMED_RE.test(text) || EMAILED_RE.test(text) || (emailInView && SEND_PRONOUN_RE.test(text));
+  const emailInView = !!before && before.role === "assistant" && (EMAIL_IN_VIEW_RE.test(prev) || prev.includes(NO_SEND));
+  const t = String(text == null ? "" : text).replace(AUDIO_TAG_RE, " ");
+  if (DID_YOU_SEND_RE.test(t) || SENT_NAMED_RE.test(t) || (emailInView && SENT_PRONOUN_RE.test(t))) return true;
+  const forms = emailInView ? [SEND_NAMED_RE, EMAIL_IT_RE, SEND_PRONOUN_RE] : [SEND_NAMED_RE, EMAIL_IT_RE];
+  return t.split(USER_CLAUSE_BREAK_RE).some((clause) => forms.some((re) => {
+    const m = re.exec(clause);
+    return !!m && !NOT_A_SEND_REQUEST_RE.test(clause.slice(0, m.index)) && !NEW_RECIPIENT_RE.test(clause.slice(m.index + m[0].length));
+  }));
 };
 
 // runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
