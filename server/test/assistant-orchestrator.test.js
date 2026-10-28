@@ -3588,7 +3588,7 @@ test("Task 5: draftEmailTool ends the turn at once with the code-authored reply 
   );
   assert.deepStrictEqual(r.sources, ["client record"]);
   assert.equal(r.compose.to, MIKE_CHEN_EMAIL);
-  assert.equal(r.compose.subject, "Checking in");
+  assert.equal(r.compose.subject, "How's everything with your home?");
   assert.ok(r.compose.body.startsWith("Hi Robert & Linda Chen,\n\n"));
   assert.ok(r.compose.links.gmail.startsWith("https://mail.google.com/mail/?view=cm"));
   assert.equal(r.sideEffect, undefined, "an email is set up, not a change to confirm");

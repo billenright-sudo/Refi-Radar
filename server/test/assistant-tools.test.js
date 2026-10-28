@@ -663,7 +663,7 @@ const queryOfUrl = (url) => new URL(url).searchParams;
 
 const CHECK_IN_TEXT =
   "Hi Robert & Linda Chen,\n\n" +
-  "It's been a little while since we last talked, so I wanted to check in and see how everything is going with the house.\n\n" +
+  "It's been a little while since we last talked, so I wanted to check in and see how everything is going with your home.\n\n" +
   "If anything has changed on your end, like plans to move, renovate, or put some of your equity to work, I'd be glad to walk through your options with you. Just reply here whenever it's convenient.\n\n" +
   "Best,\nBill Enright\nNMLS #123456\nPremier Mortgage Group\nNMLS #654321";
 
@@ -674,12 +674,12 @@ test("draftEmailTool: Chen + check_in is the approved template, to the record's 
   assert.equal(r.sideEffect, undefined);
   assert.equal(r.source, "client record");
   assert.deepStrictEqual(r.data, {
-    client: "Robert & Linda Chen", email: "linda.chen@example.com", purpose: "check_in", subject: "Checking in", body: CHECK_IN_TEXT,
+    client: "Robert & Linda Chen", email: "linda.chen@example.com", purpose: "check_in", subject: "How's everything with your home?", body: CHECK_IN_TEXT,
   });
   assert.ok(r.data.body.endsWith("Best,\nBill Enright\nNMLS #123456\nPremier Mortgage Group\nNMLS #654321"));
   assert.deepStrictEqual(r.compose, {
-    to: "linda.chen@example.com", subject: "Checking in", body: CHECK_IN_TEXT,
-    links: composeLinks({ to: "linda.chen@example.com", subject: "Checking in", body: CHECK_IN_TEXT }),
+    to: "linda.chen@example.com", subject: "How's everything with your home?", body: CHECK_IN_TEXT,
+    links: composeLinks({ to: "linda.chen@example.com", subject: "How's everything with your home?", body: CHECK_IN_TEXT }),
   });
   assert.ok(r.compose.links.gmail.startsWith("https://mail.google.com/mail/?view=cm"));
   assert.equal(queryOfUrl(r.compose.links.gmail).get("to"), "linda.chen@example.com");

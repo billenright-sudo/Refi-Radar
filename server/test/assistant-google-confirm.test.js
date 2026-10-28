@@ -600,7 +600,7 @@ test("turn: a draftEmail turn carries `compose` with the client's address from t
   assert.equal(turn.data.details, undefined);
   const { compose } = turn.data;
   assert.equal(compose.to, CHEN_EMAIL);
-  assert.equal(compose.subject, "Checking in");
+  assert.equal(compose.subject, "How's everything with your home?");
   assert.ok(compose.body.startsWith("Hi Robert & Linda Chen,\n\n"));
   assert.ok(compose.body.includes("NMLS #123456"));
   assert.ok(compose.links.gmail.startsWith("https://mail.google.com/mail/?view=cm"));

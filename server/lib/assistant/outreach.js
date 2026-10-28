@@ -1,7 +1,7 @@
 "use strict";
 // The client emails Charli can set up, and the compose links that open them in the broker's own mail app.
 //
-// Charli never writes an email and never sends one. The wording below is code-authored and fixed (Bill approves it):
+// Charli never writes an email and never sends one. The wording below is code-authored and fixed (approved by Bill, 2026-10-28):
 // it quotes no rate and no dollar figure (advertising a mortgage figure carries disclosure duties), and every email ends
 // with the sender's NMLS ID (and the company's, when it has one), as mortgage advertising rules expect. The broker
 // reads the email in their own Gmail, Outlook or mail app and sends it from there, or doesn't.
@@ -13,10 +13,10 @@ const PURPOSE_WORDS = { check_in: "check-in", refi_review: "refinance review" };
 // Null-prototype: a model-supplied purpose like "constructor" must not resolve to an inherited function.
 const TEMPLATES = Object.freeze(Object.assign(Object.create(null), {
   check_in: {
-    subject: "Checking in",
+    subject: "How's everything with your home?",
     paragraphs: [
       "Hi {clientName},",
-      "It's been a little while since we last talked, so I wanted to check in and see how everything is going with the house.",
+      "It's been a little while since we last talked, so I wanted to check in and see how everything is going with your home.",
       "If anything has changed on your end, like plans to move, renovate, or put some of your equity to work, I'd be glad to walk through your options with you. Just reply here whenever it's convenient.",
       "Best,\n{SIGNATURE}",
     ],

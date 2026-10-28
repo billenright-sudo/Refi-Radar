@@ -275,7 +275,7 @@ test("seam: 'draft the Chens a check-in' - the spoken compose reply and the emai
   // the compose survived the session's checks: the address from the client's record, the three links, and the NMLS signature
   assert.ok(turn.compose, "the turn carries the compose");
   assert.equal(turn.compose.to, CHEN_EMAIL);
-  assert.equal(turn.compose.subject, "Checking in");
+  assert.equal(turn.compose.subject, "How's everything with your home?");
   assert.ok(turn.compose.body.startsWith("Hi Robert & Linda Chen,\n\n"));
   assert.ok(turn.compose.body.endsWith("Best,\nAnn User\nNMLS #654321\nSeam Org\nNMLS #112233"), "signed with her NMLS ID and the company's");
   assert.deepEqual(Object.keys(turn.compose.links), ["gmail", "outlook", "mailto"]);
@@ -298,7 +298,7 @@ test("seam: 'draft the Chens a check-in' - the spoken compose reply and the emai
   assert.equal(model.calls.length - modelCallsBefore, 2, "findClient, then the draft; the model never narrates it");
   assert.equal(model.queue.length, 0, "every scripted answer was used");
   const sentToModel = JSON.stringify(model.calls.slice(modelCallsBefore).map((c) => c.messages));
-  for (const never of [CHEN_EMAIL, "654321", "112233", "Checking in"]) assert.ok(!sentToModel.includes(never), `"${never}" never reaches the model`);
+  for (const never of [CHEN_EMAIL, "654321", "112233", "How's everything with your home?"]) assert.ok(!sentToModel.includes(never), `"${never}" never reaches the model`);
 
   // the next turn's history is plain text: the email is on the screen, not in the conversation
   model.queue.push(say("Anything else?"));

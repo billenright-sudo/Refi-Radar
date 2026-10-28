@@ -14,7 +14,7 @@ const SENDER = {
 const CHECK_IN_BODY = [
   "Hi Robert & Linda Chen,",
   "",
-  "It's been a little while since we last talked, so I wanted to check in and see how everything is going with the house.",
+  "It's been a little while since we last talked, so I wanted to check in and see how everything is going with your home.",
   "",
   "If anything has changed on your end, like plans to move, renovate, or put some of your equity to work, I'd be glad to walk through your options with you. Just reply here whenever it's convenient.",
   "",
@@ -46,7 +46,7 @@ test("the purposes and their spoken words", () => {
 
 test("check_in renders the approved subject and body, signature last, no trailing newline", () => {
   const mail = renderEmail({ ...SENDER, purpose: "check_in" });
-  assert.deepStrictEqual(mail, { subject: "Checking in", body: CHECK_IN_BODY });
+  assert.deepStrictEqual(mail, { subject: "How's everything with your home?", body: CHECK_IN_BODY });
   assert.ok(!mail.body.endsWith("\n"));
 });
 
