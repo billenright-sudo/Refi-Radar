@@ -2219,26 +2219,33 @@ function ungroundedCalendarFact(text, cited) {
     return said && (!cited || DAY_OR_TIME_RE.test(s));
   });
 }
-// R6: the user's message is about the calendar or their availability in that sense (the Google line answers it when Google is not
-// usable): the calendar, their schedule or a scheduling verb (not a payment / amortization / fee ... schedule), their meetings or
-// appointments, "am I free / busy / available ...", "is Friday afternoon open?", "is my afternoon clear?", "do I have anything / any
-// meetings / time ...", "when am I free?", "what's on (for) tomorrow?". "is the 5/1 ARM available?", "how busy is the market?", "what
-// rates are available today?", "what's the Chens' payment schedule?" and "I'm free now, who should I call?" are not.
+// Rulings 64 (R6) and 68: the user's message is about the calendar or their availability: a word of the list in its calendar sense (the
+// same subtractions: "is the 5/1 ARM available?", "how busy is the market?", "what rates are available today?", "what's the Chens'
+// payment schedule?" and "I'm free now, who should I call?" are not), or a booking or meeting question the list has no word for
+// ("anything booked Friday?", "is the Chens' meeting still on?", "is Friday good for a call with the Chens?", "am I double-booked
+// tomorrow?", "is 2 o'clock open?", "can I fit the Chens in Friday at 2?", "when is the Chens' follow-up?", "what time is my call with the
+// Chens?", "any openings Friday?", "what's next on my agenda?", "do I have time today?", "what's on for tomorrow?").
 const ASKS_CALENDAR_RE = new RegExp(
-  "\\bcalendars?(?![\\w'\\u2019-])(?!\\s+(?:years?|months?|quarters?|days?)\\b)" +
-  "|(?<!\\b(?:payment|amortization|amortisation|fee|rate|pricing|loan|draw|repayment|disbursement|closing|escrow|tax|interest|billing)\\s+)" +
-    "\\bschedul(?:e|es|ed|ing)(?![\\w'\\u2019-])" +
-  "|\\b(?:my|any|next)\\s+(?:(?:next|other|first)\\s+)?(?:meetings?|appointments?)(?![\\w'\\u2019-])" +
-  "|\\b(?:am\\s+I|are\\s+we|is\\s+(?:my|our)\\s+(?:" + DAY_PART + "|day|week|weekend)|is\\s+(?:today|tonight|tomorrow|" + WEEKDAY_WORD +
-    ")(?:\\s+[\\w:]+){0,3}?)(?:\\s+(?:still|totally|completely|really|actually))?\\s+(?:free|busy|available|booked|open|clear|wide\\s+open|empty)" +
-    "(?![\\w'\\u2019-])" +
+  "\\b(?:any|an|my|your)\\s+openings?\\b|\\b(?:my|the)\\s+agenda\\b" +
+  "|\\bmy\\s+(?:next\\s+|first\\s+|last\\s+)?(?:calls?|follow[\\s-]?ups?)\\s+(?:with|today|tomorrow|tonight|on|at)\\b" +
+  "|\\b(?:when|what\\s+time)(?:['\\u2019]s|\\s+is|\\s+was|\\s+are)\\s+(?:[\\w&'\\u2019-]+\\s+){0,4}?(?:follow[\\s-]?ups?|calls?)(?![\\w'\\u2019-])" +
+  "|\\bfit\\s+(?:[\\w&'\\u2019-]+\\s+){1,4}?in\\b" +
+  "|\\bis\\s+(?:today|tonight|tomorrow|" + WEEKDAY_WORD + "|" + CLOCK_WORDS + ")(?:\\s+[\\w:'\\u2019]+){0,3}?\\s+(?:good|okay|ok|fine|better|best)\\s+for\\s+" +
+    "(?:a\\s+|the\\s+)?(?:meeting|call|follow[\\s-]?up|appointment)" +
+  "|\\b(?:is|are)\\s+(?:today|tonight|tomorrow|" + WEEKDAY_WORD + "|" + CLOCK_WORDS + "|\\d{1,2})(?:\\s+[\\w:'\\u2019]+){0,3}?\\s+(?:still\\s+)?" +
+    "(?:free|open|clear|available|booked|busy|wide\\s+open)\\b" +
+  "|\\bis\\s+(?:my|our)\\s+(?:" + DAY_PART + "|day|week|weekend)(?:\\s+(?:still|totally|completely|really|actually))?\\s+(?:free|open|clear|available|booked|busy|empty)\\b" +
+  "|\\bis\\s+[\\w&'\\u2019 -]+?\\s+(?:meeting|appointment|call|follow[\\s-]?up)\\s+still\\s+on\\b" +
+  "|\\banything\\s+(?:else\\s+)?(?:booked|scheduled|planned)\\b" +
   "|\\bdo\\s+(?:I|we)\\s+have\\s+(?:anything|any\\s+(?:free\\s+)?(?:time|meetings?|appointments?|openings?)|(?:a|an)\\s+(?:free|open|meeting" +
     "|appointment|opening|slot)|time|free\\s+time)(?![\\w'\\u2019-])" +
-  "|\\bwhen\\s+am\\s+I\\s+(?:free|available|busy)\\b" +
   "|\\bwhat(?:['\\u2019]s|\\s+is|\\s+do\\s+I\\s+have)\\s+on\\s+(?:for\\s+)?" + NAMED_DAY + "\\b",
   "i"
 );
-const asksAboutCalendar = (text) => ASKS_CALENDAR_RE.test(String(text == null ? "" : text));
+const asksAboutCalendar = (text) => {
+  const t = String(text == null ? "" : text);
+  return calendarWordIn(t, false) || ASKS_CALENDAR_RE.test(t);
+};
 // The code ctx.google's connection gives (null when it is usable or cannot be read, or there is no adapter: the route always
 // builds one).
 const googleCodeOf = (ctx) => {

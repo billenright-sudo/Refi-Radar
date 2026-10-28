@@ -6196,3 +6196,21 @@ test("Task 9 fix 1 (Ruling 67): asking her to send the email in view is NO_SEND 
     assert.equal((await runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([say("Yes.")]) })).reply, NO_SEND, u);
   }
 });
+
+test("Task 9 fix 1 (Ruling 68): a calendar, booking or meeting question with Google not connected hears the Google line", async () => {
+  const nc = () => googleCtx(unusableGoogle("not_connected"));
+  const parallel = () => resp([
+    { type: "tool_use", id: "t0", name: "findClient", input: { query: "chen" } }, { type: "tool_use", id: "t1", name: "getCalendarTool", input: { date: "today" } },
+  ], "tool_use");
+  // (review9 gline2) with no tool, and with a lookup beside the calendar read
+  for (const u of [
+    "anything booked Friday?", "is the Chens' meeting still on?", "is Friday good for a meeting with the Chens?", "am I double-booked tomorrow?",
+    "is 2 o'clock open?", "can I fit the Chens in Friday at 2?", "when is the Chens' follow-up?", "what time is my call with the Chens?",
+    "any openings Friday?", "what's next on my agenda?", "is Friday good for a call with the Chens?",
+  ]) {
+    for (const script of [[say("You're free all day.")], [parallel(), say("It's at 10 tomorrow.")], [parallel(), say("Your meeting with the Chens is Friday morning.")]]) {
+      const r = await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient(script) });
+      assert.equal(r.reply, GOOGLE_NOT_CONNECTED, `${u} (${script.length} calls)`);
+    }
+  }
+});
