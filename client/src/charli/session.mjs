@@ -64,7 +64,7 @@ const MAX_SENT_MESSAGES = 30;
 
 // (as normalize leaves them: lower case, punctuation gone, so "Mm-hmm." is "mm hmm" and "uh-huh" is "uh huh")
 const YES_PHRASES = [
-  "yes", "yeah", "yep", "yup", "sure", "confirm", "do it", "go ahead", "please do", "correct",
+  "yes", "yeah", "yep", "yup", "sure", "confirm", "confirmed", "do it", "go ahead", "please do", "correct",
   "that's right", "that's correct", "ok", "okay",
   "absolutely", "sure thing", "go for it", "sounds good", "definitely", "mm hmm", "mhm", "uh huh", "yes please", "yeah sure",
   "let's do it", "do that",

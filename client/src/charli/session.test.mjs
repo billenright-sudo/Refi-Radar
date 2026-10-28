@@ -76,6 +76,14 @@ test("classifyReply: short bare yes, no, and everything else", () => {
   for (const t of other) assert.equal(classifyReply(t), "other", `"${t}" should be other`);
 });
 
+test("live check: \"confirmed\" is a yes, and a spoken \"Yes, confirmed\" confirms the pending change", async () => {
+  for (const t of ["confirmed", "Confirmed.", "Yes, confirmed", "yes confirm", "confirmed, thanks"]) assert.equal(classifyReply(t), "yes", t);
+  for (const t of ["not confirmed", "confirmed for Friday", "Yes, confirm You're in. You're in the office."]) assert.equal(classifyReply(t), "other", t);
+  const p = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
+  assert.deepEqual(await p.session.heard("Yes, confirmed"), { ok: true, action: "confirm" });
+  assert.equal(p.server.turns().length, 1);
+});
+
 test("B1.3: audio-event tags are stripped before a reply is read, and a transcript that is only tags heard nothing", async () => {
   for (const [t, kind] of [
     ["(background noise) Yes.", "yes"], ["[laughter] no", "no"], ["yes (cough)", "yes"], ["(background noise) okay never mind", "no"],
