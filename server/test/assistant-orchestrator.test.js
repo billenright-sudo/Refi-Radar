@@ -6364,3 +6364,38 @@ test("Task 9 fix 3 (Ruling 72): 'her' before a day is no client; a client's cont
   // ... and an opening said in a reply is still the reply-side availability word (Ruling 70 e)
   assert.equal(await reply("pull up the Chens", lookup, "Your only opening is Friday at 2."), CANT_VERIFY);
 });
+
+// ── Task 9 fix round 4 (Ruling 73) ───────────────────────────────────────────────────────────────────────────────────────────────
+
+test("Task 9 fix 4 (Ruling 73): a product's lead words never swallow a calendar claim across a conjunction", async () => {
+  const sweep = () => useTool("runSweepTool", {});
+  const lookup = () => useTool("findClient", { query: "chen" });
+  const mkt = () => useTool("getMarketUpdate");
+  const reply = async (u, script, said) => (await runTurn({
+    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...[].concat(script()), say(said)]),
+  })).reply;
+  const CONTEXTS = [["who should I call today?", sweep], ["pull up the Chens", lookup], ["thanks", () => []], ["what are rates today?", mkt]];
+  // (rv71 p2 / p3) with a day in the sentence: held on every turn, as at b3feed2
+  for (const said of [
+    "Friday: you're free and FHA is available.", "Friday works; you're free and pricing is available.", "Friday, you're free and rates are available.",
+    "Tomorrow works, you're free and rates are available.",
+  ]) {
+    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+  }
+  // with no day word: held with no tool (a turn that cited nothing), as at b3feed2
+  for (const said of [
+    "You're free and FHA is available.", "You're free and pricing is available.", "You're free and jumbo is available.", "You're free and VA is available.",
+    "You're free and HELOCs are available.", "Your calendar's clear and FHA is available.", "Your calendar's clear and pricing is available.",
+    "You're busy but rates are available.", "Nothing's scheduled and rates are available.", "You have no meetings and rates are available.",
+    // (the accepted cost: "free" is never a product's lead word)
+    "Free refinancing is available.",
+  ]) assert.equal(await reply("thanks", () => [], said), CANT_VERIFY, said);
+  // a product's own lead and gap words still subtract (Ruling 72, items 3 and 4)
+  for (const said of ["FHA options are available for the Chens.", "Better terms are available to them now."]) {
+    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), said, `${u}: ${said}`);
+  }
+  // (with no tool "refinancing" is a book word the ungrounded screen refuses, as before; on a cited turn it is said)
+  for (const [u, script] of CONTEXTS.filter(([u]) => u !== "thanks")) {
+    assert.equal(await reply(u, script, "Streamline refinancing is available."), "Streamline refinancing is available.", u);
+  }
+});

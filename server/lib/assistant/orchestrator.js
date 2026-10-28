@@ -2039,8 +2039,13 @@ const NOT_AVAILABILITY_RES = [
 // options after a gap ("refinance options", "FHA loan options"); never a day, a time, a slot, "you" or an adverb ("Thursday at 4 is
 // still available.", "Two options are available Thursday"); in a reply, only in a clause that names no day or time (notAvailabilitySpans).
 // In the user's own words, options with no product named too ("what options are available for the Chens?").
+// Ruling 73: a lead or gap word is never a conjunction or a calendar / availability word either, so a product never swallows the claim
+// beside it ("Friday: you're free and FHA is available.", "You're busy but rates are available.", "Nothing's scheduled and rates are
+// available."). The accepted cost: "Free refinancing is available." is held with no tool.
 const NOT_A_MODIFIER =
-  "(?!(?:today|tonight|tomorrow|this|next|you|your|that|those|slots?|" + WEEKDAY_WORD + "s?|" + DAY_PART + "s?)\\b)(?!\\d)";
+  "(?!(?:today|tonight|tomorrow|this|next|you|your|that|those|slots?|and|or|but|so|yet|nor|while|since|because|if|when|than|then|plus" +
+  "|free|busy|booked|clear|open|available|calendars?|schedul\\w*|meetings?|appointments?|availability|wide|double|" + WEEKDAY_WORD + "s?|" +
+  DAY_PART + "s?)\\b)(?!\\d)";
 const PRODUCT_WORD =
   "(?:rates?|loans?|products?|programs?|pricing|terms|ARMs?|refis?|refinanc\\w*|streamlines?|locks?(?:\\s+periods?)?|jumbo|FHA|VA|USDA" +
   "|HELOCs?|cash[\\s-]?outs?|\\d+\\/\\d+(?:\\s+ARMs?)?|\\d+[\\s-]?(?:year|yr)(?:\\s+fixed)?|fixed)";
