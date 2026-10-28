@@ -21,7 +21,7 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime } = require("../google/time");
@@ -2176,29 +2176,35 @@ function codeAuthoredLine(outs, blocks, aboutCalendar) {
 }
 
 // What is said once an email is set up: the kind of email and the client, from the tool's own data. The address and the text
-// are on the screen (`compose`), and nothing here says or implies that anything was sent.
+// are on the screen (`compose`), and nothing here says or implies that anything was sent. DRAFT_READY is also how a later turn knows
+// that the compose card is the message right before (sendLine).
+const DRAFT_READY = "ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
 const draftReply = (out) => {
   const purpose = out.data && Object.hasOwn(PURPOSE_WORDS, out.data.purpose) ? PURPOSE_WORDS[out.data.purpose] : "client";
-  return `Here's a ${purpose} email for ${cleanName(out.data && out.data.client) || "that client"}, ready on your screen. ` +
-    "Open it in your email to review it and send it yourself — I don't send anything.";
+  return `Here's a ${purpose} email for ${cleanName(out.data && out.data.client) || "that client"}, ${DRAFT_READY}`;
 };
 
-// Rulings 52 and 64 (R5): Charli never sends email, so when the user asks her to send the email that already exists, or asks whether
-// she sent it, and the turn sets up no email, code says so (NO_SEND): the model's own words for it ("I can't send email — open it in
-// Gmail") would be held to the action backstop and come out as the nothing-changed line, whose "I'll confirm it with you first"
-// implies she could send it after a yes. Two kinds of message:
-//   (a) a request to send what exists, with no new recipient and no purpose (tested clause by clause): the email named ("send the
-//       email / the draft / the note / the check-in", "email it / that / this"), or a bare it / that / this, or no object at all ("ok,
-//       send"), while the email is in view (`emailInView`: the assistant message right before is the compose card's own line,
-//       draftReply, or NO_SEND itself). "send it to them" and "email it to them" name no new recipient. So "send it" after "Want me to
-//       write them a check-in?", after a cancelled read-back, or after "their email is on file" still answers that, as before;
-//   (b) a question whether she sent one: "did you send / email ...", "was it / the email sent?", "has it / the check-in gone out?",
-//       "did the email go out?" (it / that / this / they only while the email is in view).
-// Not NO_SEND: a send or email that names a recipient ("email this to the Chens", "send the check-in to the Chens", "send it to Linda
-// only") or a purpose ("... about their savings") asks for a fresh draft (an action turn: a compose, or the clarifier, as at
-// 6be3093, so "email this to the Chens" -> "Which Chens ...?" -> "Robert and Linda" sets it up); nor a send that is advice asked, a
-// negation or the user's own plan ("should I send it today or tomorrow?", "when's the best time to send the email?", "before I send
-// it", "is it okay to send this to Linda?", "don't send it yet", "I'll send it after lunch", "I'll send the email myself later").
+// Rulings 52, 64 (R5) and 67: Charli never sends email, so when the user asks her to send the email that already exists, or asks
+// whether she sent one, and the turn sets up no email, code says so: the model's own words for it would be held to the action backstop
+// and come out as the nothing-changed line, whose "I'll confirm it with you first" implies she could send it after a yes, or would be
+// its "Sure, I'll send it." (sendLine, null otherwise):
+//   (a) NO_SEND, a request to send what exists, with no new recipient and no purpose (tested clause by clause): the email named
+//       ("send the email / the draft / the note / the check-in", "email it / that / this"), or a bare it / that / this, or no object at
+//       all ("ok, send"), while the email is in view (`emailInView`: the assistant message right before is the compose card's own line,
+//       DRAFT_READY, or NO_SEND itself), however the request is put ("why don't you send it?", "won't you send it?", "why not just send
+//       it?", "can I get you to send it?", "can I just have you send it?", "I'll let you send it", "can we send it now?"). "send it to
+//       them" and "email it to them" name no new recipient. So "send it" after "Want me to write them a check-in?", after a cancelled
+//       read-back, or after "their email is on file" still answers that, as before;
+//   (b) a question whether she sent one: "did you send / email ...?" is NO_SEND with the email in view and NO_SENT_PAST with none
+//       ("did you email the Chens last week?": anything that reached them came from the broker's own email); "was it / the email
+//       sent?", "has it / the check-in gone out?", "did the email go out?" are NO_SEND (it / that / this / they only while the email is
+//       in view).
+// Not a send request: one that names a recipient ("email this to the Chens", "send the check-in to the Chens", "send it to Linda only")
+// or a purpose ("... about their savings") asks for a fresh draft (an action turn: a compose, or the clarifier, as at 6be3093); and a
+// send governed by a negation of the send itself ("don't send it yet", "never send it"), the user's own plan ("I'll send it after
+// lunch", "I'll just send it myself"), advice about the user's own send ("should I send it today or tomorrow?", "when should I send
+// it?", "when's the best time to send the email?", "is it okay to send this to Linda?") or the user's own send as a time ("before I
+// send it").
 const PRONOUN_MESSAGE = "(?:it|that|this|they)";
 const NAMED_MESSAGE = "the\\s+(?:email|e-mail|draft|note|check[\\s-]?in)";
 const sentAskedRe = (object) => new RegExp(
@@ -2215,28 +2221,33 @@ const EMAIL_IT_RE = /\be-?mail\s+(?:it|that|this)(?![\w'’-])/i;
 const SEND_PRONOUN_RE = /\bsend(?:\s+(?:it|that|this)(?![\w'’-])|(?=(?:\s+(?:now|please|away|over|for\s+me))?[\s.!?]*$))/i;
 // after the object: a recipient who is not the one in view, or a purpose
 const NEW_RECIPIENT_RE = /\bto\s+(?!(?:them|him|her|me|us|you|it|that|this)(?![\w'’-]))[\w&'’-]|\b(?:about|regarding)\b/i;
-// before the send, in its clause: a negation, the user's own plan, advice asked, or the user's own sending as a time
+// what stands right before the send, in its clause (Ruling 67: it must govern the send itself)
 const NOT_A_SEND_REQUEST_RE = new RegExp(
-  "\\b(?:don['\\u2019]?t|do\\s+not|never|not|won['\\u2019]?t|wouldn['\\u2019]?t|shouldn['\\u2019]?t|no\\s+need\\s+to)(?![\\w'\\u2019-])" +
-    "|\\bI(?:['\\u2019]ll|\\s+will|['\\u2019]m\\s+(?:going\\s+to|gonna)|\\s+(?:can|could|might|may|plan\\s+to|should|shall)" +
-    "|['\\u2019]d(?!\\s+(?:like|love|appreciate)\\b))(?![\\w'\\u2019-])" +
-    "|\\b(?:should|shall|can|could|may|might|would)\\s+(?:I|we)(?![\\w'\\u2019-])" +
-    "|\\b(?:time|okay|ok|fine|good|better|best|wise|smart|safe|alright|right)\\s+(?:idea\\s+)?to\\s*$" +
-    "|\\b(?:before|after|when|once|until|till|if|whether)\\s+(?:I|we)(?![\\w'\\u2019-])",
+  // a negation of the send: "don't send it yet", "never send it", "do not just send it" (not "why don't you send it?", "why not send it?")
+  "\\b(?:don['\\u2019]?t|do\\s+not|never|(?<!\\bwhy\\s)not)\\s+(?:just\\s+|yet\\s+)?$" +
+    // the user's own plan: "I'll send it", "I'm going to send it", "I can just send it myself" (not "I'll let you send it")
+    "|\\bI(?:['\\u2019]ll|\\s+will|['\\u2019]m\\s+(?:going\\s+to|gonna)|\\s+(?:can|could|might|may|plan\\s+to|should|shall)|['\\u2019]d)" +
+    "\\s+(?:just\\s+|probably\\s+|then\\s+|go\\s+ahead\\s+and\\s+)?$" +
+    // advice about the user's own send: "should I send it?", "can I send it now?" (not "can I get you to send it?", "can we send it?")
+    "|\\b(?:should|shall|can|could|may|might|would)\\s+I\\s+(?:just\\s+|go\\s+ahead\\s+and\\s+)?$" +
+    "|\\b(?:time|okay|ok|fine|good|better|best|wise|smart|safe|alright|right)\\s+(?:idea\\s+)?to\\s+(?:just\\s+)?$" +
+    // the user's own send as a time: "before I send it"
+    "|\\b(?:before|after|when|once|until|till|if|whether)\\s+(?:I|we)\\s+(?:just\\s+)?$",
   "i"
 );
-const EMAIL_IN_VIEW_RE = /\be-?mail\s+for\s+.+,\s+ready\s+on\s+your\s+screen\b/i;   // draftReply's own words
 // `before`: the message right before the user's latest one
-const asksToSend = (text, before) => {
+const sendLine = (text, before) => {
   const prev = messageText(before);
-  const emailInView = !!before && before.role === "assistant" && (EMAIL_IN_VIEW_RE.test(prev) || prev.includes(NO_SEND));
+  const emailInView = !!before && before.role === "assistant" && (prev.includes(DRAFT_READY) || prev.includes(NO_SEND));
   const t = String(text == null ? "" : text).replace(AUDIO_TAG_RE, " ");
-  if (DID_YOU_SEND_RE.test(t) || SENT_NAMED_RE.test(t) || (emailInView && SENT_PRONOUN_RE.test(t))) return true;
+  if (DID_YOU_SEND_RE.test(t)) return emailInView ? NO_SEND : NO_SENT_PAST;
+  if (SENT_NAMED_RE.test(t) || (emailInView && SENT_PRONOUN_RE.test(t))) return NO_SEND;
   const forms = emailInView ? [SEND_NAMED_RE, EMAIL_IT_RE, SEND_PRONOUN_RE] : [SEND_NAMED_RE, EMAIL_IT_RE];
-  return t.split(USER_CLAUSE_BREAK_RE).some((clause) => forms.some((re) => {
+  const asks = t.split(USER_CLAUSE_BREAK_RE).some((clause) => forms.some((re) => {
     const m = re.exec(clause);
     return !!m && !NOT_A_SEND_REQUEST_RE.test(clause.slice(0, m.index)) && !NEW_RECIPIENT_RE.test(clause.slice(m.index + m[0].length));
   }));
+  return asks ? NO_SEND : null;
 };
 
 // runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
@@ -2346,8 +2357,9 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // runs on what is left
       const text = sources.length > 0 ? stripProcessOpeners(said).trim() : said;
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
-      // Ruling 52: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
-      if (asksToSend(userText, messages[messages.length - 2])) return finish(NO_SEND);
+      // Rulings 52 and 67: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
+      const noSend = sendLine(userText, messages[messages.length - 2]);
+      if (noSend) return finish(noSend);
       // R5-3, the action backstop: an action was asked for (now, or in the question this message
       // answers), and no change is being handed up for confirmation (a turn that ends in text never
       // carries a sideEffect), so whatever the model says, nothing was done. Only ONE question may

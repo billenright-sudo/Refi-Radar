@@ -50,6 +50,9 @@ const noEmailLine = (name) => `There's no email on file for ${name} — add one 
 // Charli never sends email (the broker sends it from their own mail app): what code says when the user asks her to send it, or
 // whether she sent it, and the turn sets up no email.
 const NO_SEND = "I don't send email — open it in your email app and send it yourself.";
+// Ruling 67: asked whether she emailed a client ("did you email the Chens last week?") with no email set up in front of them, code says
+// where anything that reached the client came from.
+const NO_SENT_PAST = "I don't send email — anything that went to them came from your own email.";
 
 const CHARLI_SYSTEM = [
   "You are Charli, the voice co-pilot inside Broker Radar for a mortgage broker or loan officer. " +
@@ -133,5 +136,5 @@ const buildCharliSystem = (user) =>
 
 module.exports = {
   CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 };

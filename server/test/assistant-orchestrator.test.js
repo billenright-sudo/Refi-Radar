@@ -6015,7 +6015,7 @@ test("Task 9 (R5): NO_SEND is for sending what already exists or asking whether 
   // still NO_SEND: sending the email in view (after the card, or after NO_SEND itself) and asking whether she sent one
   for (const messages of [
     after("ok, send"), history("draft the Chens a check-in", DRAFTED, "send it", NO_SEND, "just send it"),
-    userSays("did you email the Chens last week?"), userSays("did you send the Chens anything?"), userSays("was the check-in sent?"),
+    userSays("was the check-in sent?"), userSays("did the email go out?"),
   ]) assert.equal(await turn(messages, [], "I can't send email."), NO_SEND, messages[messages.length - 1].content);
 });
 
@@ -6060,4 +6060,50 @@ test("Task 9 (R6, F3): a talk track, a pitch or an intro written TO a client is 
     "help me write an opener for the Chens", "write me a quick script", "write a talk track to use with the Chens",
     "draft a pitch for a call to the Chens", "write out how to say it to them",
   ]) assert.equal(isActionRequest(u), false, u);
+});
+
+// ── Task 9 fix round 1 (Rulings 65-68): the review of the Task 9 pass ───────────────────────────────────────────────────────────
+
+test("Task 9 fix 1 (Ruling 67): asking her to send the email in view is NO_SEND however it is put; only a negation of the send itself, the user's own plan or advice is answered; a past send to a client is NO_SENT_PAST", async () => {
+  const { NO_SENT_PAST } = require("../lib/assistant/prompt");
+  assert.equal(NO_SENT_PAST, "I don't send email — anything that went to them came from your own email.");
+  // the compose card as a real draft turn says it
+  const drafted = await runTurn({
+    messages: userSays("draft the Chens a check-in"), ctx: mikeCtx,
+    client: fakeClient([useTool("findClient", { query: "chen" }), useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" }, "toolu_2")]),
+  });
+  assert.ok(drafted.compose);
+  const after = (u) => history("draft the Chens a check-in", drafted.reply, u);
+  // (review9 nosend3) the model's "will do" never reaches the broker
+  for (const u of [
+    "why don't you send it?", "why don't you just send it for me?", "won't you send it?", "can I get you to send it?", "could I get you to send it?",
+    "can I just have you send it?", "may I have you send it now?", "I'll let you send it", "why not just send it?", "can we send it now?",
+    "could we send it now?", "can we just send it?", "can't you just send it?", "would you send it?", "send it",
+  ]) {
+    for (const said of ["Sure, I'll send it.", "Okay, sending it now.", "Will do."]) {
+      const r = await runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([say(said)]) });
+      assert.equal(r.reply, NO_SEND, `${u} -> ${said}`);
+    }
+  }
+  // a negation of the send itself, the user's own plan and advice are answered
+  for (const [u, said] of [
+    ["don't send it yet", "Okay."], ["never send it without my okay", "Got it."], ["I'll send it after lunch", "Sounds good."],
+    ["I'll just send it myself", "Sounds good."], ["should I send it today or tomorrow?", "Today is better."], ["when should I send it?", "Mid-morning."],
+  ]) {
+    const r = await runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([say(said)]) });
+    assert.equal(r.reply, said, u);
+  }
+  // with no compose card in view, "did you email / send <them> ...?" asks about a past send: the code line says where it came from
+  for (const u of [
+    "did you email the Chens last week?", "did you email Robert about the rate drop?", "did you send the Chens the rate update?",
+    "did you send the Chens anything?", "did you email them?",
+  ]) {
+    const r = await runTurn({ messages: userSays(u), ctx: mikeCtx, client: fakeClient([say("Yes, this morning.")]) });
+    assert.equal(r.reply, NO_SENT_PAST, u);
+    assert.deepStrictEqual(r.sources, []);
+  }
+  // ... and with the card in view it is the email on the screen
+  for (const u of ["did you send it?", "did you email them?"]) {
+    assert.equal((await runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([say("Yes.")]) })).reply, NO_SEND, u);
+  }
 });
