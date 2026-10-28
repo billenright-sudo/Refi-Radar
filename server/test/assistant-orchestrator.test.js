@@ -5863,3 +5863,20 @@ test("Task 9 (R5): NO_SEND is for sending what already exists or asking whether 
     userSays("did you email the Chens last week?"), userSays("did you send the Chens anything?"), userSays("was the check-in sent?"),
   ]) assert.equal(await turn(messages, [], "I can't send email."), NO_SEND, messages[messages.length - 1].content);
 });
+
+test("Task 9 (R6, F3): a talk track, a pitch or an intro written TO a client is a draft request, as at 6be3093; one for the broker's own use stays coaching", async () => {
+  // (rereview14 f3) a client as the recipient, after the noun or before it
+  for (const u of ["draft a quick intro to the Chens", "write a short pitch to the Chens", "write them a quick script"]) {
+    assert.equal(isActionRequest(u), true, u);
+    const r = await runTurn({
+      messages: userSays(u), ctx: mikeCtx,
+      client: fakeClient([useTool("findClient", { query: "chen" }), useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" }, "toolu_2")]),
+    });
+    assert.equal(r.compose && r.compose.to, MIKE_CHEN_EMAIL, u);
+  }
+  // ... while one written for the broker's own use stays coaching
+  for (const u of [
+    "help me write an opener for the Chens", "write me a quick script", "write a talk track to use with the Chens",
+    "draft a pitch for a call to the Chens", "write out how to say it to them",
+  ]) assert.equal(isActionRequest(u), false, u);
+});

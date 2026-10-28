@@ -224,10 +224,15 @@ function isYesNoQuestion(text) {
 // voicemail script, "what to say" or "how to say" ("help me write an opener for the Chens", "write a talk track for a refi call",
 // "Want me to write up a quick talk track for the call?"). A client's name in between keeps it a request ("write the Chens a
 // check-in"), and so does an email, a note, a letter, a message or a text after the noun ("draft an intro email to the Chens").
+// Ruling 64 (R6): so does a client as its recipient, before the noun ("write them a quick script") or right after it ("draft a quick
+// intro to the Chens", "write a short pitch to the Chens"): writing to a client is drafting to them, as at 6be3093. Written for the
+// broker's own use it stays coaching ("write me a quick script", "an opener for the Chens", "a talk track to use with the Chens",
+// "what to say to the Chens", whose "to" is the saying's).
 const COACHING_OBJECT =
-  "(?!(?:\\s+(?:up|out))?(?:\\s+(?:a|an|the|some|me|us|them|him|her|quick|short|brief|little|good|great|simple|solid|strong|new|better" +
-  "|rough|first|catchy|friendly|casual|fresh|few|couple|of))*\\s+(?:talk\\s+tracks?|scripts?|openers?|opening\\s+lines?|pitch(?:es)?|intros?" +
-  "|voicemail\\s+scripts?|what\\s+to\\s+say|how\\s+to\\s+say)(?![\\w'\\u2019-])(?!\\s+(?:e-?mails?|notes?|letters?|messages?|texts?)\\b))";
+  "(?!(?:\\s+(?:up|out))?(?:\\s+(?:a|an|the|some|me|us|quick|short|brief|little|good|great|simple|solid|strong|new|better" +
+  "|rough|first|catchy|friendly|casual|fresh|few|couple|of))*\\s+(?:(?:talk\\s+tracks?|scripts?|openers?|opening\\s+lines?|pitch(?:es)?" +
+  "|intros?|voicemail\\s+scripts?)(?![\\w'\\u2019-])(?!\\s+to\\s+(?:the\\s+(?!point\\b)[\\w'\\u2019-]+|them|him|her)(?![\\w'\\u2019-]))" +
+  "|(?:what|how)\\s+to\\s+say(?![\\w'\\u2019-]))(?!\\s+(?:e-?mails?|notes?|letters?|messages?|texts?)\\b))";
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)" +
   "|draft" + COACHING_OBJECT + "|write(?!\\s+(?:me|us|down)\\b)" + COACHING_OBJECT +
