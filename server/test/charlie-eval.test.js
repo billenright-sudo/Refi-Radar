@@ -317,3 +317,11 @@ test("charlie eval summary (E3): a blocked reply with no source, no code line, n
   assert.strictEqual(text[at + 1], "  totally  Totally.");
   assert.ok(text[at + 3].startsWith("Chat cases blocked"), text[at + 3]);
 });
+
+test("charlie eval detectors (E4): \"won't\" is no live fact, \"won\" is", () => {
+  const chiefs = { id: "l", expect: "lookup", messages: [{ role: "user", content: "Did the Chiefs win?" }] };
+  assert.deepStrictEqual(rules(chiefs, { reply: "I won't search for a client's name." }), []);
+  assert.deepStrictEqual(rules(chiefs, { reply: "I won’t search for him." }), []);
+  assert.deepStrictEqual(rules(chiefs, { reply: "The Chiefs won." }), ["live-fact"]);
+  assert.deepStrictEqual(rules(chiefs, { reply: "They won't say, but they won." }), ["live-fact"]);
+});

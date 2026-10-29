@@ -170,9 +170,9 @@ function groundedFigures(result) {
   for (const l of Array.isArray(result.lookups) ? result.lookups : []) if (l && typeof l.answer === "string") texts.push(l.answer);
   return new Set(texts.flatMap((text) => figuresOf(text).map((f) => f.key)));
 }
-// What a live answer from memory sounds like beyond its figures: a temperature, a result, a condition.
+// What a live answer from memory sounds like beyond its figures: a temperature, a result, a condition ("won", but not "won't").
 const LIVE_FACT_RE = new RegExp(
-  "\\b(?:degrees?|teens|twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties|won|beat|lost|defeated" +
+  "\\b(?:degrees?|teens|twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties|won(?!['’]t)|beat|lost|defeated" +
     "|sunny|cloudy|overcast|raining|rainy|snowing|showers|storms?)\\b",
   "i"
 );
