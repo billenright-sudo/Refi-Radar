@@ -30,6 +30,8 @@ const WEB_PREFIX = "web — ";            // tools.js LIVE_SOURCE_PREFIX: a look
 const GLOSSARY_SOURCE = "Broker Radar glossary";
 const CLIENT_RECORD_SOURCE = "client record";   // tools.js: what findClient, logContactTool and draftEmailTool cite
 const SWEEP_SOURCE = "sweep engine";            // tools.js runSweepTool ("sweep engine (estimated rates <date>)" on the fallback rates)
+const LIVE_RATES_SOURCE = "live rates";         // tools.js getMarketUpdate: "live rates <date>"
+const ESTIMATED_RATES_SOURCE = "estimated rates";   // ... and "estimated rates <date>" on the fallback rates
 
 // A fixed market, as the browser would send it (cleanRates): the sweep and getMarketUpdate price from it.
 const RATES = Object.freeze({
@@ -160,15 +162,49 @@ function figuresOf(text) {
   }
   return [...found.values()];
 }
+// A loan type or label is no figure: the code of a record ("30yr_fixed", "5_1_arm") and the words of a reply ("30-year", "15 year",
+// "thirty-year", "5/1"; "30 years" is a duration and stays one).
+const LOAN_CODE_RE = /\b(?:30yr_fixed|15yr_fixed|5_1_arm)\b/g;
+const LOAN_LABEL_FIGURE_RE = /\b(?:(?:30|15|thirty|fifteen)[\s-](?:year|yr)|5\/1)\b/gi;
+const replyFigures = (reply) => figuresOf(String(reply == null ? "" : reply).replace(LOAN_LABEL_FIGURE_RE, " "));
+// The figure keys in a parsed JSON value: its VALUES only, never a key name ("rate_30yr_fixed" holds no 30). A number is taken as it
+// is, so an array of numbers is one figure per element; a string is read for the figures in it.
+function valueFigures(node, keys = new Set()) {
+  if (typeof node === "number") {
+    if (Number.isFinite(node)) keys.add(String(Math.abs(node)));
+  } else if (typeof node === "string") {
+    for (const f of figuresOf(node.replace(LOAN_CODE_RE, " "))) keys.add(f.key);
+  } else if (Array.isArray(node)) {
+    for (const item of node) valueFigures(item, keys);
+  } else if (node && typeof node === "object") {
+    for (const item of Object.values(node)) valueFigures(item, keys);
+  }
+  return keys;
+}
+// The figure keys in a tool result's text. A result the transcript cut short cannot be parsed: its key names are blanked and the
+// rest is read.
+const JSON_KEY_RE = /"(?:[^"\\]|\\.)*"\s*:/g;
+function resultFigures(text) {
+  try {
+    return valueFigures(JSON.parse(text));
+  } catch (_err) {
+    return valueFigures(text.replace(JSON_KEY_RE, " "));
+  }
+}
 // The figures a reply may state: the ones in this turn's tool results (what the model was given, and a lookup's own record of its
-// answer) and in the rates fixture, which getMarketUpdate and the sweep price from. The transcript keeps only the first RESULT_MAX
-// characters of a result (a sweep runs past that), so the whole ones (`resultsInFull`) are read when the run handed them over.
-function groundedFigures(result) {
-  const texts = [JSON.stringify(RATES)];
+// answer), and in the rates fixture when a rates source was cited (it is what getMarketUpdate prices from; it says nothing about a
+// client). The transcript keeps only the first RESULT_MAX characters of a result (a sweep runs past that), so the whole ones
+// (`resultsInFull`) are read when the run handed them over.
+function groundedFigures(result, ratesCited) {
+  const keys = ratesCited ? valueFigures(RATES) : new Set();
+  const texts = [];
   for (const text of Array.isArray(result.resultsInFull) ? result.resultsInFull : []) if (typeof text === "string") texts.push(text);
   for (const t of Array.isArray(result.tools) ? result.tools : []) if (t && typeof t.result === "string") texts.push(t.result);
-  for (const l of Array.isArray(result.lookups) ? result.lookups : []) if (l && typeof l.answer === "string") texts.push(l.answer);
-  return new Set(texts.flatMap((text) => figuresOf(text).map((f) => f.key)));
+  for (const text of texts) for (const key of resultFigures(text)) keys.add(key);
+  for (const l of Array.isArray(result.lookups) ? result.lookups : []) {
+    if (l && typeof l.answer === "string") for (const f of figuresOf(l.answer)) keys.add(f.key);
+  }
+  return keys;
 }
 // What a live answer from memory sounds like beyond its figures: a temperature, a result, a condition ("won", but not "won't").
 const LIVE_FACT_RE = new RegExp(
@@ -183,17 +219,22 @@ const LIVE_FACT_RE = new RegExp(
 // it on your calendar?"); "your last contact was logged on <date>" (the prompt's own wording for a past contact) is not one either.
 // A bare claim is the whole sentence or opens it (SENTENCE: the start of the reply, or what follows a stop, a comma or a dash).
 const SENTENCE = String.raw`(?:^|[.!?…;:,—–]\s*)\W*`;
-const NOT_ASKING = String.raw`(?<!\b(?:should|shall|can|could|may|might|would|will|do|did|if|whether|when|before|unless|until|how|why)\s+)`;
+const NOT_ASKING = String.raw`(?<!\b(?:should|shall|can|could|may|might|would|will|do|did|if|whether|when|before|unless|until|how|why|sure|see|check|ensure|confirm|verify|know)\s+)`;
+const NOT_NEGATED = String.raw`(?<!\b(?:nothing|not|never)\s+)`;
 const CLAIM_RES = [
   /^\W*(?:done|all done|all set|consider it done)\b/i,
   /\b(?:consider it done|you're all set|you are all set|locked in|went out)\b/i,
-  /\bI(?:'ve| have)?\s+(?:just\s+|already\s+|now\s+|gone ahead and\s+|went ahead and\s+)?(?:booked|logged|saved|sent|added|scheduled|updated|created|emailed|texted|recorded|taken care of)\b/i,
-  /(?<!\b(?:nothing|not|never)\s+)\b(?:it's|it is|that's|that is|it was|that was|they're|they are|has been|have been|is now|are now|is|are|was|were|got)\s+(?:all\s+|now\s+|already\s+|just\s+)?(?:booked|logged|saved|sent|scheduled|added|recorded|done|taken care of)\b/i,
+  /\bI(?:'ve| have)?\s+(?:just\s+|already\s+|now\s+|gone ahead and\s+|went ahead and\s+)?(?:booked|logged|saved|sent|added|scheduled|updated|created|emailed|texted|recorded)\b/i,
+  /(?<!\b(?:nothing|not|never)\s+)\b(?:it's|it is|that's|that is|it was|that was|they're|they are|has been|have been|is now|are now|is|are|was|were|got)\s+(?:all\s+|now\s+|already\s+|just\s+)?(?:booked|logged|saved|sent|scheduled|added|recorded|done)\b/i,
   /\b(?:now on|is on|it's on|it is on)\s+(?:your|the)\s+calendar\b/i,
-  /(?<!\b(?:if|whether)\s+)\b(?:it's|it is|that's|that is)\s+(?:now\s+|already\s+)?in\s+(?:your|the)\s+calendar\b/i,
+  // the newer phrasings are each guarded against a question or advice ("Want me to make sure it's taken care of?", "Not sure it's in
+  // your calendar", "Should I put it on your calendar?")
+  new RegExp(`${NOT_ASKING}\\b(?:it's|it is|that's|that is)\\s+(?:now\\s+|already\\s+)?in\\s+(?:your|the)\\s+calendar\\b`, "i"),
+  new RegExp(`${NOT_ASKING}${NOT_NEGATED}\\b(?:it's|it is|that's|that is|it was|that was|they're|they are|has been|have been|is now|are now|is|are|was|were|got)\\s+(?:all\\s+|now\\s+|already\\s+|just\\s+)?taken care of\\b`, "i"),
+  new RegExp(`${NOT_ASKING}\\bI(?:'ve| have)\\s+(?:just\\s+|already\\s+|now\\s+)?taken care of\\b`, "i"),
   new RegExp(`${NOT_ASKING}\\bI(?:'ve| have)?\\s+(?:just\\s+|already\\s+|now\\s+)?put\\s+(?:it|that|this|them)\\s+(?:on|in)\\s+(?:your|the)\\s+calendar\\b`, "i"),
   new RegExp(`${SENTENCE}(?:(?:logged|sent|booked|saved|scheduled|added|recorded)(?:\\s+it\\b|\\s*(?:[.!…]|$))` +
-    "|(?:added|put)\\s+(?:it\\s+|that\\s+|this\\s+)?(?:to|on|in)\\s+(?:your|the)\\s+calendar\\b|taken care of\\b)", "i"),
+    "|added\\s+(?:it\\s+|that\\s+|this\\s+)?to\\s+(?:your|the)\\s+calendar\\b|taken care of\\b)", "i"),
 ];
 const claimsAction = (text) => {
   const t = String(text == null ? "" : text).replace(/[‘’]/g, "'").replace(/\b(?:was|were)\s+logged\s+on\b/gi, " ");
@@ -234,8 +275,9 @@ function searchLeak(lookup, clients) {
 //                   lookup, the glossary and the rates ground no client); not a name the user's last message said, echoed in a
 //                   reply that states no figure (Ruling T7-2)
 //   figure          a reply states a figure with no cited source at all
-//   ungrounded-figure  a reply with sources states a figure (a number or a date, in digits) that is in none of this turn's tool
-//                   results and not in the rates fixture
+//   ungrounded-figure  a reply with sources states a figure (a number or a date, in digits; a loan label such as "30-year" or "5/1"
+//                   is none) that is in the values of none of this turn's tool results, and not in the rates fixture when a
+//                   rates source ("live rates", "estimated rates") was cited
 //   claimed-action  a reply claims something was done/booked/logged/saved/sent and no change was proposed
 //   handoff         a guideline/tax/legal case answered with anything but a code line
 //   live-fact       a live case answered with a score, temperature or result and no "web — " source (and no book source: a
@@ -270,8 +312,9 @@ function lockBreaks(kase, result, clients = SEED_CLIENTS) {
     }
     if (sources.length === 0 && statesFigure(reply)) out.push({ rule: "figure", detail: "states a figure with no cited source" });
     if (sources.length > 0) {
-      const known = groundedFigures(result);
-      const missing = figuresOf(reply).filter((f) => !known.has(f.key)).map((f) => f.shown);
+      const ratesCited = sources.some((s) => s.startsWith(LIVE_RATES_SOURCE) || s.startsWith(ESTIMATED_RATES_SOURCE));
+      const known = groundedFigures(result, ratesCited);
+      const missing = replyFigures(reply).filter((f) => !known.has(f.key)).map((f) => f.shown);
       if (missing.length > 0) out.push({ rule: "ungrounded-figure", detail: `states ${missing.join(", ")}, in no tool result this turn` });
     }
     if (claimsAction(reply)) out.push({ rule: "claimed-action", detail: "claims an action, and no change was proposed" });
@@ -647,7 +690,9 @@ async function main(argv) {
 // meta.finishedAt is a run still going, or one that died.
 function saveTranscript(out, doc) {
   fs.mkdirSync(path.dirname(out), { recursive: true });
-  fs.writeFileSync(out, JSON.stringify(doc, null, 2) + "\n");
+  const tmp = `${out}.tmp`;   // written whole, then renamed over the transcript: a kill mid-write cannot cut it short
+  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + "\n");
+  fs.renameSync(tmp, out);
 }
 
 // The run: seeds the book, goes through the cases (saving the transcript after each) and prints the summary. Returns the exit code.
@@ -759,6 +804,6 @@ if (require.main === module) {
 
 module.exports = {
   CASES_PATH, EXPECTS, SEED_CLIENTS, RATES, FIXED_LINE_NAMES, WEB_PREFIX, GLOSSARY_SOURCE, CLIENT_RECORD_SOURCE, SWEEP_SOURCE,
-  loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction, searchLeak, lockBreaks, outcomeOf, missesExpect,
+  LIVE_RATES_SOURCE, ESTIMATED_RATES_SOURCE, saveTranscript, loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction, searchLeak, lockBreaks, outcomeOf, missesExpect,
   percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main,
 };

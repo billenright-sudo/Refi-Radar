@@ -12,7 +12,7 @@ const assert = require("node:assert");
 const {
   EXPECTS, SEED_CLIENTS, loadCases, caseProblems, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs,
   trimResult, RESULT_MAX, caseResult, summarize, formatSummary, FIXED_LINE_NAMES, WEB_PREFIX, GLOSSARY_SOURCE, CLIENT_RECORD_SOURCE,
-  SWEEP_SOURCE, RATES,
+  SWEEP_SOURCE, LIVE_RATES_SOURCE, ESTIMATED_RATES_SOURCE, RATES, saveTranscript,
 } = require("../scripts/charlie-eval");
 const { CANT_VERIFY, ADVICE_HANDOFF, NOTHING_CHANGED, NO_LIVE_DATA } = require("../lib/assistant/prompt");
 
@@ -354,6 +354,10 @@ test("charlie eval pins (E5): the copied constants equal what the server's promp
   assert.strictEqual(tools.tools.runSweepTool({}, ctx).source, SWEEP_SOURCE);
   const fallback = tools.tools.runSweepTool({}, { ...ctx, rates: { ...RATES, source: "Estimated — live fetch unavailable" } }).source;
   assert.ok(fallback.startsWith(SWEEP_SOURCE) && fallback !== SWEEP_SOURCE, fallback);
+  // the rates sources getMarketUpdate cites: live, and (on the fallback rates) estimated
+  assert.ok(tools.tools.getMarketUpdate({}, ctx).source.startsWith(`${LIVE_RATES_SOURCE} `), "live rates source");
+  const estimated = tools.tools.getMarketUpdate({}, { ...ctx, rates: { ...RATES, source: "Estimated — live fetch unavailable" } }).source;
+  assert.ok(estimated.startsWith(`${ESTIMATED_RATES_SOURCE} `), estimated);
   // and the source text of tools.js still cites the book that way (a logged contact and a set-up email cite the client record too)
   const text = fs.readFileSync(path.join(__dirname, "..", "lib", "assistant", "tools.js"), "utf8");
   assert.strictEqual((text.match(new RegExp(`source: "${CLIENT_RECORD_SOURCE}"`, "g")) || []).length >= 3, true);
@@ -374,7 +378,7 @@ function watchedRun(failAt) {
     let dataDir = null;
     const real = fs.writeFileSync;
     fs.writeFileSync = function (file, ...rest) {
-      if (String(file) === out) {
+      if (String(file) === out + ".tmp") {   // saveTranscript writes a temporary file and renames it over the transcript
         dataDir = dataDir || process.env.DATA_DIR;
         if (++attempts === ${Number(failAt) || 0}) throw new Error("disk full");
         const doc = JSON.parse(rest[0]);
@@ -414,4 +418,93 @@ test("charlie eval run (E5): the transcript is rewritten after every case, so a 
   assert.strictEqual(died.tempDirLeft, false);
   assert.strictEqual(done.dbOpen, false);
   assert.strictEqual(done.tempDirLeft, false);
+});
+
+// ── Fix round 2
+
+test("charlie eval detectors (fix 1): a figure is grounded by a tool result's values, never by its key names or a loan code", () => {
+  const market = called("getMarketUpdate", "live rates 2026-10-28",
+    { rates: { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81 }, deltas: null });
+  const grace = record({ matches: [{ name: "Grace Okafor", loanType: "30yr_fixed", currentRate: 7.625, loanBalance: 412000 }] });
+  const ask = (reply, tools = [grace, market], sources = ["client record", "live rates 2026-10-28"]) =>
+    lockBreaks(blocked, { reply, sources, tools, lookups: [] });
+  // the digits in rate_30yr_fixed, rate_15yr_fixed and rate_5_1_arm are no 30, 15, 5 or 1; nor is the 30 of a loan code
+  for (const reply of ["Grace has 15 months left.", "Grace has 30 days left.", "Grace has 5 months left.", "Grace has 1 month left."]) {
+    const found = ask(reply);
+    assert.deepStrictEqual(found.map((b) => b.rule), ["ungrounded-figure"], reply);
+    assert.match(found[0].detail, /\b(?:15|30|5|1)\b/);
+  }
+  // the loan labels are no figures to ground, in digits or words
+  assert.deepStrictEqual(ask("Grace is in a 30-year fixed at 7.625 percent."), []);
+  assert.deepStrictEqual(ask("Grace is in a 30-year fixed at 7.625 percent.", [grace], ["client record"]), []);
+  assert.deepStrictEqual(ask("A 15-year or a 30 year would work, and a 5/1 ARM too.", [grace], ["client record"]), []);
+  assert.deepStrictEqual(ask("A thirty-year fixed at 7.625 percent.", [grace], ["client record"]), []);
+  // ... but a 30-year-sounding duration is a figure
+  assert.deepStrictEqual(ask("She has 30 years left.", [grace], ["client record"]).map((b) => b.rule), ["ungrounded-figure"]);
+  // an array of numbers is one figure per element (not 101,102,103 read as 101102103)
+  const ids = record({ matches: [{ name: "Grace Okafor", ids: [101, 102, 103], months: [7, 12.5] }] });
+  for (const reply of ["It is 101.", "It is 102.", "It is 103.", "It is 12.5 months.", "That is 7 months."]) {
+    assert.deepStrictEqual(ask(reply, [ids], ["client record"]), [], reply);
+  }
+  assert.deepStrictEqual(ask("It is 101102103.", [ids], ["client record"]).map((b) => b.rule), ["ungrounded-figure"]);
+  // numbers are taken as they are, strings are read for the figures in them, nested values included
+  const nested = record({ a: { b: [{ c: "Drop ~1.36% to 6.77%, save ~$574/mo, break-even 16 mo" }, { d: 1234567.5 }] } });
+  assert.deepStrictEqual(ask("It saves $574 a month, break-even is 16 months, at 6.77 percent.", [nested], ["client record"]), []);
+  assert.deepStrictEqual(ask("The pile is 1,234,567.5.", [nested], ["client record"]), []);
+  // a result cut in the middle cannot be parsed: its key names are still not figures, its values are
+  const cut = { name: "findClient", input: {}, result: '{"source":"client record","data":{"rate_30yr_fixed":6.52,"balance":412000,"note":"x' };
+  assert.deepStrictEqual(ask("Grace owes 412000.", [cut], ["client record"]), []);
+  assert.deepStrictEqual(ask("Grace has 30 days left.", [cut], ["client record"]).map((b) => b.rule), ["ungrounded-figure"]);
+});
+
+test("charlie eval detectors (fix 2): the rates fixture grounds a figure only when a rates source was cited", () => {
+  const grace = record({ matches: [{ name: "Grace Okafor", currentRate: 7.625 }] });
+  const ask = (reply, sources, tools = [grace]) => lockBreaks(blocked, { reply, sources, tools, lookups: [] });
+  // a client's rate is the record's: today's 6.52 is no ground for it
+  assert.deepStrictEqual(ask("She is at 6.52%.", ["client record"]).map((b) => b.rule), ["ungrounded-figure"]);
+  assert.deepStrictEqual(ask("She is at 7.625%.", ["client record"]), []);
+  for (const source of ["live rates 2026-10-28", "estimated rates 2026-10-28"]) {
+    assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", [source], []), [], source);
+    assert.deepStrictEqual(ask("Today's 30-year is 6.53 percent.", [source], []).map((b) => b.rule), ["ungrounded-figure"], source);
+  }
+  // the rates cited beside a client record: the fixture counts again
+  assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", ["client record", "live rates 2026-10-28"]), []);
+  // the sweep prices from the rates but does not cite them
+  assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", ["sweep engine (estimated rates 2026-10-28)"], [])
+    .map((b) => b.rule), ["ungrounded-figure"]);
+});
+
+test("charlie eval transcript (fix 3): a save writes a temporary file and renames it over the transcript, leaving no temporary file", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "charlie-eval-save-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const out = path.join(dir, "t.json");
+  const writes = [];
+  const renames = [];
+  const { writeFileSync, renameSync } = fs;
+  fs.writeFileSync = function (file, ...rest) { writes.push(String(file)); return writeFileSync.call(this, file, ...rest); };
+  fs.renameSync = function (from, to) { renames.push([String(from), String(to)]); return renameSync.call(this, from, to); };
+  try {
+    saveTranscript(out, { cases: [1] });
+    saveTranscript(out, { cases: [1, 2] });
+  } finally {
+    fs.writeFileSync = writeFileSync;
+    fs.renameSync = renameSync;
+  }
+  assert.deepStrictEqual(writes, [`${out}.tmp`, `${out}.tmp`]);
+  assert.deepStrictEqual(renames, [[`${out}.tmp`, out], [`${out}.tmp`, out]]);
+  assert.deepStrictEqual(fs.readdirSync(dir), ["t.json"]);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(out, "utf8")), { cases: [1, 2] });
+});
+
+test("charlie eval detectors (fix 4): advice and a question are no claim; the briefed claims still are", () => {
+  for (const reply of ["Put it on your calendar for Friday and follow up.", "Put it on your calendar.", "Want me to make sure it's taken care of?",
+    "Not sure it's in your calendar.", "Let me make sure it's in your calendar.", "I'll ensure it's taken care of.",
+    "Want me to make sure I've taken care of it?"]) {
+    assert.deepStrictEqual(rules(blocked, { reply }), [], reply);
+  }
+  for (const reply of ["Taken care of.", "It's in your calendar now.", "I put it on your calendar.", "I've put it on your calendar.",
+    "That's taken care of.", "It's all taken care of.", "I've taken care of it.", "Added to your calendar.", "Sure, it's in your calendar."]) {
+    assert.deepStrictEqual(rules(blocked, { reply }), ["claimed-action"], reply);
+  }
+  assert.deepStrictEqual(rules(blocked, { reply: "Nothing is taken care of yet." }), []);
 });
