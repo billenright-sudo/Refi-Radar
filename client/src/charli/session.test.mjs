@@ -42,7 +42,7 @@ const me = (careerStage = null) => () => reply(200, { success: true, user: { id:
 function setup({ routes = {}, rates = RATES, user = { careerStage: null } } = {}) {
   const server = fakeServer({ "GET /api/auth/me": me(), ...routes });
   const spoken = [];
-  const session = createSession({ fetch: server.fetch, rates, localHour: 9, user, onSpeak: (s) => spoken.push(s) });
+  const session = createSession({ fetch: server.fetch, rates, localHour: 9, localDate: "2026-10-28", user, onSpeak: (s) => spoken.push(s) });
   return { session, server, spoken };
 }
 
@@ -149,7 +149,7 @@ test("a 429 that is the limiter (or has no readable body) is a short break, not 
 
 // ── greeting ─────────────────────────────────────────────────────────────────
 
-test("greeting: waits for rates, then asks /turn once with greeting:true, rates and localHour", async () => {
+test("greeting: waits for rates, then asks /turn once with greeting:true, rates, localHour and localDate", async () => {
   const { session, server, spoken } = setup({
     rates: null,
     routes: { "POST /api/assistant/turn": queue(turnReply("Good morning, Ann. Want a market update?", { sources: ["sweep engine", "live rates 2026-10-25"], turnId: "g1" })) },
@@ -162,7 +162,7 @@ test("greeting: waits for rates, then asks /turn once with greeting:true, rates 
   session.setRates(RATES);
   await opened;
   assert.equal(server.turns().length, 1);
-  assert.deepEqual(server.turns()[0].body, { greeting: true, rates: RATES, localHour: 9 });
+  assert.deepEqual(server.turns()[0].body, { greeting: true, rates: RATES, localHour: 9, localDate: "2026-10-28" });
   const t = lastTurn(session);
   assert.equal(t.role, "assistant");
   assert.equal(t.content, "Good morning, Ann. Want a market update?");
@@ -171,6 +171,39 @@ test("greeting: waits for rates, then asks /turn once with greeting:true, rates 
   assert.deepEqual(spoken, [{ text: t.content, turnId: "g1" }]);
   assert.equal(session.getState().busy, false);
   assert.equal(session.getState().opening, false);
+});
+
+async function greetingBody(options) {
+  const server = fakeServer({ "GET /api/auth/me": me(), "POST /api/assistant/turn": queue(turnReply("Good morning, Ann.")) });
+  const session = createSession({ fetch: server.fetch, rates: RATES, user: { careerStage: null }, onSpeak: () => {}, ...options });
+  await session.open();
+  return server.turns()[0].body;
+}
+
+test("greeting: with no localDate given, the body carries the device's own date (YYYY-MM-DD), not the UTC one", async (t) => {
+  const zone = process.env.TZ;
+  t.after(() => { if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone; });
+  process.env.TZ = "America/Los_Angeles";
+  // 03:30 UTC on Friday the 30th is still Thursday evening on the US west coast: the date is the 29th, the hour is 20
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 30, 3, 30) });
+  const body = await greetingBody({});
+  assert.match(body.localDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(body.localDate, "2026-10-29");
+  assert.equal(body.localHour, 20);
+
+  // the other side of the clock: east of Greenwich the user's day is already the next one (15:00 UTC on the 29th is 04:00 on the 30th in Auckland)
+  t.mock.timers.reset();
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 29, 15, 0) });
+  process.env.TZ = "Pacific/Auckland";
+  assert.equal((await greetingBody({})).localDate, "2026-10-30");
+});
+
+test("greeting: a localDate handed to createSession is the one sent; one that is not YYYY-MM-DD falls back to the clock", async (t) => {
+  assert.equal((await greetingBody({ localDate: "2026-10-30" })).localDate, "2026-10-30");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 15, 10, 0).getTime() });   // 15 June 2026, 10:00 on this machine's clock
+  for (const bad of ["yesterday", "2026-1-5", 20261030, null, ""]) {
+    assert.equal((await greetingBody({ localDate: bad })).localDate, "2026-06-15", String(bad));
+  }
 });
 
 test("open() is idempotent: one greeting however many times it is called", async () => {

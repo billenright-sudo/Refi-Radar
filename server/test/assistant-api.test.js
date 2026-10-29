@@ -21,6 +21,7 @@ const db = require("../db");
 const { signToken } = require("../middleware/auth");
 const refi = require("../lib/refi");
 const assistantTools = require("../lib/assistant/tools");
+const { toSpeech } = require("../lib/assistant/speech");
 const { ERROR_TURN, NOTHING_CHANGED, TOOK_TOO_LONG } = require("../lib/assistant/prompt");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 const { normalizeHistory, SESSION_STARTED, MAX_HISTORY, MAX_MESSAGE_CHARS } = require("../lib/assistant/history");
@@ -383,6 +384,100 @@ test("greeting: morning before noon, afternoon before 5pm, evening after (from t
     const r = await greet(zoe, { localHour });
     assert.ok(r.data.reply.startsWith(`Good ${part}, Zoe. `) || new Date().getHours() !== hour, `${String(localHour)}: ${r.data.reply}`);
   }
+});
+
+// ── greeting openers: the opening words vary with the browser's local date, nothing else does ──
+
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DATES_2026 = Array.from({ length: 365 }, (_, i) => new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10));
+const weekdayOf = (isoDate) => WEEKDAY_NAMES[new Date(`${isoDate}T00:00:00Z`).getUTCDay()];
+const HOUR_FOR = { morning: 9, afternoon: 14, evening: 20 };
+const NUMBER_WORD = /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|teen|twenty|thirty|forty|fifty|hundred|thousand|million|first|second|third|half|once|twice|dozen)\b/i;
+
+test("greeting: a missing or malformed localDate keeps the plain opener (Review Focus 5)", async () => {
+  const bad = [undefined, null, "", "2026-13-40", "2026-02-30", "2026-00-10", "yesterday", 20261028, "2026-10-28T10:00:00Z",
+    " 2026-10-28", "10/28/2026", "26-10-28", ["2026-10-28"], {}, true];
+  for (const localDate of bad) {
+    const r = await greet(sam, { localHour: 9, localDate });
+    assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due; the 30-year is at 6.52%. ${WANT_MORE}`, JSON.stringify(localDate));
+    assert.equal(assistantRoutes.openerFor({ localHour: 14, localDate, name: "Sam" }), "Good afternoon, Sam.", JSON.stringify(localDate));
+    assert.equal(assistantRoutes.openerFor({ localHour: 20, localDate, name: "" }), "Good evening.", JSON.stringify(localDate));
+  }
+});
+
+test("greeting: openers are deterministic, digit-free, spoken-safe, and read well with or without a name", () => {
+  const { openerFor, GREETING_OPENERS } = assistantRoutes;
+  for (const part of ["morning", "afternoon", "evening"]) assert.ok(GREETING_OPENERS.partOfDay[part].length >= 3, part);
+  for (const day of WEEKDAY_NAMES) assert.ok(GREETING_OPENERS.weekday[day.toLowerCase()].length >= 2, day);
+  for (const localHour of [0, 11, 12, 16, 17, 23]) {
+    for (const localDate of DATES_2026) {
+      for (const name of ["Ann", ""]) {
+        const said = openerFor({ localHour, localDate, name });
+        const where = `${localHour} ${localDate} ${JSON.stringify(name)}: ${said}`;
+        assert.equal(said, openerFor({ localHour, localDate, name }), where);
+        assert.doesNotMatch(said, /\d/, where);
+        assert.doesNotMatch(said, NUMBER_WORD, where);
+        assert.doesNotMatch(said, /\?/, "the greeting asks one thing, and that is its close: " + where);
+        assert.match(said, /^[A-Z].*[.!]$/, where);
+        assert.equal(toSpeech(said), said, "the speech screen leaves the opener alone: " + where);
+        if (name) assert.ok(said.includes("Ann"), where);
+        else assert.doesNotMatch(said, /undefined|null|\s[,.!]|,\s*[.!]/, where);
+      }
+    }
+  }
+});
+
+test("greeting: each weekday can produce its own opener, no other day's, and the day keeps the plain 'Good ...' in the mix", () => {
+  const { openerFor } = assistantRoutes;
+  assert.equal(weekdayOf("2026-10-30"), "Friday");
+  assert.equal(weekdayOf("2026-10-28"), "Wednesday");
+  for (const [part, localHour] of Object.entries(HOUR_FOR)) {
+    const plain = `Good ${part}, Wil.`;
+    for (const day of WEEKDAY_NAMES) {
+      const said = DATES_2026.filter((d) => weekdayOf(d) === day).map((localDate) => openerFor({ localHour, localDate, name: "Wil" }));
+      assert.ok(said.some((s) => s.includes(day)), `${part} ${day}: some date says the day`);
+      assert.ok(said.includes(plain), `${part} ${day}: the plain opener is still one of the choices`);
+      assert.ok(new Set(said).size >= 3, `${part} ${day}: varies from week to week`);
+    }
+    for (const localDate of DATES_2026) {
+      const said = openerFor({ localHour, localDate, name: "Wil" });
+      for (const day of WEEKDAY_NAMES) if (day !== weekdayOf(localDate)) assert.ok(!said.includes(day), `${localDate} (${weekdayOf(localDate)}): ${said}`);
+    }
+  }
+  // the example in the design
+  const fridays = DATES_2026.filter((d) => weekdayOf(d) === "Friday");
+  assert.ok(fridays.some((localDate) => openerFor({ localHour: 9, localDate, name: "William" }) === "Happy Friday, William."));
+});
+
+test("greeting: the opener comes from localDate and the hour; the facts and the close are exactly what they were", async () => {
+  const { openerFor } = assistantRoutes;
+  const facts = "You have 1 opportunity and 1 check-in due; the 30-year is at 6.52%.";
+  for (const localDate of ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01", "2024-02-29"]) {
+    for (const localHour of [9, 14, 19]) {
+      const r = await greet(sam, { localHour, localDate });
+      assert.equal(r.data.reply, `${openerFor({ localHour, localDate, name: "Sam" })} ${facts} ${WANT_MORE}`, `${localDate} ${localHour}`);
+      // asked again, the same day says the same thing
+      assert.equal((await greet(sam, { localHour, localDate })).data.reply, r.data.reply);
+      assert.deepStrictEqual(r.data.sources, ["sweep engine", "live rates 2026-10-21"]);
+    }
+  }
+  // a Friday morning: the facts stay on the same ground when a tool is down
+  const friday = "2026-10-30";
+  const said = openerFor({ localHour: 9, localDate: friday, name: "Sam" });
+  await withTool("runSweepTool", toolFails, async () => {
+    assert.equal((await greet(sam, { localHour: 9, localDate: friday })).data.reply, `${said} The 30-year is at 6.52%. ${WANT_MORE}`);
+  });
+  await withTool("getMarketUpdate", toolFails, async () => {
+    assert.equal((await greet(sam, { localHour: 9, localDate: friday })).data.reply, `${said} You have 1 opportunity and 1 check-in due. ${WANT_MORE}`);
+  });
+  await withTool("runSweepTool", toolFails, () => withTool("getMarketUpdate", toolFails, async () => {
+    assert.equal((await greet(sam, { localHour: 9, localDate: friday })).data.reply, `${said} ${WANT_MORE}`);
+  }));
+  // no first name: the opener loses the name, nothing else moves
+  const nameless = addUser(addOrg("Nameless"), "broker", "nameless@x.co", "");
+  db.prepare("UPDATE users SET career_stage = 'established' WHERE id = ?").run(nameless);
+  const r = await greet(nameless, { localHour: 9, localDate: friday });
+  assert.equal(r.data.reply, `${openerFor({ localHour: 9, localDate: friday, name: "" })} You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${WANT_MORE}`);
 });
 
 test("A4: the greeting speaks a three-decimal FRED rate to two decimals", async () => {

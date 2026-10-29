@@ -865,6 +865,19 @@ test("greeting: a user with a career stage keeps the existing close", async () =
   }
 });
 
+test("greeting: a varied opener leaves the career question, and the single question, exactly as they were", async () => {
+  const who = addUser(addOrg("NoStageDated"), "broker", "Nell");
+  const staged = addUser(addOrg("StagedDated"), "broker", "Sid", "veteran");
+  for (const localDate of ["2026-10-26", "2026-10-30", "2026-10-31", "2026-11-01"]) {
+    const asked = await greet(who, { localHour: 9, localDate });
+    const opener = assistantRoutes.openerFor({ localHour: 9, localDate, name: "Nell" });
+    assert.equal(asked.data.reply, `${opener} You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${CAREER_QUESTION}`, localDate);
+    assert.equal((asked.data.reply.match(/\?/g) || []).length, 1, "the greeting asks exactly one thing");
+    const close = await greet(staged, { localHour: 14, localDate });
+    assert.equal(close.data.reply, `${assistantRoutes.openerFor({ localHour: 14, localDate, name: "Sid" })} You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${WANT_MORE}`, localDate);
+  }
+});
+
 test("greeting: a stored stage that is not one of the four ids is treated as not set (never assumed)", async () => {
   const who = addUser(addOrg("Garbage"), "broker", "Gil");
   db.prepare("UPDATE users SET career_stage = 'guru' WHERE id = ?").run(who);

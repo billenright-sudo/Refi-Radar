@@ -108,10 +108,12 @@ function newNet() {
   };
   return n;
 }
+// The client always sends its local date and the opener varies with it, so the seam pins the date it sends.
+const GREETING_DATE = "2026-10-30";
 function newSession(user) {
   net = newNet();
   const spoken = [];
-  const session = createSession({ fetch: net.fetch, rates: LIVE, localHour: 9, user, onSpeak: (s) => spoken.push(s.text) });
+  const session = createSession({ fetch: net.fetch, rates: LIVE, localHour: 9, localDate: GREETING_DATE, user, onSpeak: (s) => spoken.push(s.text) });
   return { session, spoken, state: () => session.getState() };
 }
 const me = async () => (await (await fetch(base + "/api/auth/me", { headers: { cookie } })).json()).user;
@@ -127,7 +129,7 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   const greeting = state().turns[0];
   assert.equal(greeting.role, "assistant");
   assert.equal(greeting.kind, "message");
-  assert.match(greeting.content, /^Good morning, Ann\./);
+  assert.ok(greeting.content.startsWith(assistantRoutes.openerFor({ localHour: 9, localDate: GREETING_DATE, name: "Ann" })), greeting.content);
   assert.ok(greeting.content.endsWith(CAREER_QUESTION), "a user with no stage is asked the career question");
   assert.ok(greeting.sources.length > 0 && greeting.sources.every((s) => typeof s === "string" && s), "the greeting cites its tools");
   assert.deepEqual(spoken, [greeting.content]);

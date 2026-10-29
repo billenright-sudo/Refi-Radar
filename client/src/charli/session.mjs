@@ -7,7 +7,7 @@
 // a spoken or typed "yes" is never sent to /turn (the model would just propose the change again).
 //
 // Server contracts (server/routes/assistant.js):
-//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour } -> { reply, sources, sideEffect?, details?, compose?, turnId, error? }
+//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, turnId, error? }
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
@@ -182,10 +182,17 @@ function failureText(res) {
 const isRetryable = (res) => res.network || res.timedOut || res.status >= 500 || res.status === 429;
 const stillWorking = (res) => res.status === 409 && !!res.data && res.data.pending === true;
 
-// createSession({ fetch, rates, localHour, user, onSpeak })
+// The device's own calendar day as YYYY-MM-DD (not UTC: Cloud Run's clock is, the user's is not). The greeting sends it so the
+// server can open with the day of the week.
+const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const localDateOf = (date) =>
+  `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+// createSession({ fetch, rates, localHour, localDate, user, onSpeak })
 //   fetch      the window fetch (injected so tests need no network)
 //   rates      today's rates, as App.jsx holds them (may be null at first: setRates() when they arrive)
 //   localHour  0-23 for the greeting; defaults to the clock
+//   localDate  YYYY-MM-DD for the greeting; defaults to the clock's local date (tests pin it)
 //   user       { careerStage } from /api/auth/me
 //   onSpeak    ({ text, turnId? }) called, in order, for every line Charli should say aloud (the line is
 //              already in the transcript when it is called)
@@ -205,7 +212,7 @@ const stillWorking = (res) => res.status === 409 && !!res.data && res.data.pendi
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
-export function createSession({ fetch: fetchFn, rates = null, localHour, user = null, onSpeak } = {}) {
+export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak } = {}) {
   const doFetch = fetchFn || ((...args) => globalThis.fetch(...args));
   let currentRates = rates;
   let nextId = 1;
@@ -337,8 +344,10 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, user = 
   }
 
   async function runGreeting() {
-    const hour = Number.isInteger(localHour) ? localHour : new Date().getHours();
-    const res = await request("POST", "/api/assistant/turn", { greeting: true, rates: currentRates, localHour: hour });
+    const now = new Date();
+    const hour = Number.isInteger(localHour) ? localHour : now.getHours();
+    const date = typeof localDate === "string" && LOCAL_DATE_RE.test(localDate) ? localDate : localDateOf(now);
+    const res = await request("POST", "/api/assistant/turn", { greeting: true, rates: currentRates, localHour: hour, localDate: date });
     if (res.ok && res.data && typeof res.data.reply === "string" && res.data.reply.trim()) {
       showTurnResult(res);
     } else {
