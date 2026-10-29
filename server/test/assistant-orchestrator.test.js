@@ -7960,3 +7960,41 @@ test("Round 4 V2: on an ungrounded turn and a lookup-only turn the five-way judg
     assert.deepStrictEqual([five.calls.length, advice.calls.length], [1, 0]);
   });
 });
+
+// ── Round 4, V4: the tax and legal word list (re-review M-3) ────────────────────────────────────────────────────────────────────
+
+test("Round 4 V4: 'write those off', 'amortize', 'expense' and 'depreciate' fire the advice check on a cited turn; 'expensive' does not", async () => {
+  await capturingInfo(async () => {
+    // the re-review's probe: the user's words alone hold the tax question, and the reply states only the rate
+    let adviceJudge = recordingAdviceJudge("ADVICE");
+    let r = await r3Turn("What's the thirty-year today, and can my client write those off?", "The thirty-year is 6.52 percent.", { adviceJudge });
+    assert.equal(adviceJudge.calls.length, 1);
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    // the new words, in the user's message or in the reply, whole words in any case
+    for (const phrase of [
+      "write those off", "write the points off", "write it off", "Write Off", "write off", "amortize", "amortized", "amortization",
+      "AMORTIZING", "expense", "expenses", "expensed", "expensing", "depreciate", "depreciation", "depreciating",
+    ]) {
+      adviceJudge = recordingAdviceJudge("NONE");
+      await r3Turn(`What's the thirty-year today, and what about ${phrase}?`, "The thirty-year is 6.52 percent.", { adviceJudge });
+      assert.equal(adviceJudge.calls.length, 1, `user: ${phrase}`);
+      adviceJudge = recordingAdviceJudge("NONE");
+      await r3Turn("What's the thirty-year today?", `The thirty-year is 6.52 percent; ${phrase} is the next question.`, { adviceJudge });
+      assert.equal(adviceJudge.calls.length, 1, `reply: ${phrase}`);
+    }
+    // not "expensive", and not a write or an off on its own
+    for (const said of [
+      "The thirty-year is 6.52 percent. That's expensive.", "The thirty-year is 6.52 percent; write that down and take the day off.",
+      "The thirty-year is 6.52 percent, so write offers today.", "The thirty-year is 6.52 percent, inexpensive next to last year.",
+    ]) {
+      adviceJudge = recordingAdviceJudge("ADVICE");
+      r = await r3Turn("What's the thirty-year today?", said, { adviceJudge });
+      assert.equal(adviceJudge.calls.length, 0, said);
+      assert.equal(r.reply, said, said);
+    }
+  });
+  // I-1's soft path reads the same list: an unsourced "expense" goes to the judge, "expensive" does not
+  assert.deepStrictEqual(classifyUngrounded("hey", "That's an expense."), { kind: "soft", line: null });
+  assert.deepStrictEqual(classifyUngrounded("how do I write those off?", "Good question."), { kind: "soft", line: null });
+  assert.deepStrictEqual(classifyUngrounded("hey", "That's expensive."), { kind: "pass", line: null });
+});

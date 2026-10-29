@@ -555,6 +555,8 @@ const LENDING_TERMS_RE = Object.freeze(new RegExp("\\b(?:" + [
   "lend\\w*", "underwrit\\w*", "DTI", "debt-to-income", "LTV", "loan-to-value", "PMI", "MIP", "down\\s+payments?", "closing\\s+costs?",
   "credit\\s+scores?", "borrowing\\s+costs?", "\\d+-year", "(?:ten|fifteen|twenty|thirty)-year", "\\d+\\s+year", "\\d+-yr",
   "(?:ten|fifteen|twenty|thirty)\\s+year",
+  // round 4, V4 (re-review M-1): "30 yr", "30yr", "20 yrs", "thirty-yr", "fifteen yr"
+  "\\d+\\s*-?\\s*yrs?", "(?:ten|fifteen|twenty|thirty)[\\s-]yrs?",
 ].join("|") + ")\\b", "i"));
 const APR_RE = Object.freeze(/\bAPR\b/);
 // Final review C-1: a mortgage rate, the rate market, a loan guideline or a lending fact never comes from the web, so a sentence or a

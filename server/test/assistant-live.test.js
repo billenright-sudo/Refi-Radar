@@ -330,6 +330,22 @@ test("lookUpLive (residual round 2, S4): '30 year', '30-yr' and 'thirty year' ar
   }
 });
 
+test("lookUpLive (round 4, V4): '30 yr', 'thirty-yr' and '20 yr', and their other spellings, are dropped too; a score and a word stay", async () => {
+  const look = (answer) =>
+    lookUpLive({ kind: "news", query: "top news today" }, ctxWith(recordingLive({ answer, sources: [{ title: "Headline", domain: "npr.org" }] })));
+  const KEPT = ["The game is Apr. 3 at noon.", "The Chiefs lost 20-3 at Seattle."];
+  for (const dropped of [
+    "The 30 yr hit 6.1 percent.", "The thirty-yr fell.", "The 20 yr rose.",
+    "The 30yr fell.", "The 15 - yr eased.", "Ten yrs ago it was 3 percent.", "The fifteen yr held.", "The Twenty-YR rose.", "The 30 yrs fixed fell.",
+  ]) {
+    assert.equal((await look(`${KEPT[0]} ${dropped} ${KEPT[1]}`)).data.answer, KEPT.join(" "), dropped);
+  }
+  // a word that only holds the letters, or a loan code glued to more, keeps its sentence
+  for (const kept of ["The yrly parade is Sunday.", "Lakers won 110-102 in overtime.", "They played 30 yards from goal."]) {
+    assert.equal((await look(`${kept} ${KEPT[1]}`)).data.answer, `${kept} ${KEPT[1]}`, kept);
+  }
+});
+
 test("TOOL_SCHEMA: lookUpLive takes kind, query and place, for the outside world only — never clients, rates or guidelines", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "lookUpLive");
   assert.ok(t, "lookUpLive is described");

@@ -83,10 +83,12 @@ const LIVE_TOPIC_RE = wordRe([
 ]);
 // Final review I-1: what may be a tax or legal answer, in the user's message or the reply ("How are points taxed?", "A living
 // trust can hold title"), and a mortgage question in the user's words. With no tool behind the reply, the judge's ADVICE makes it
-// the CPA/attorney hand-off.
+// the CPA/attorney hand-off. Round 4, V4 (re-review M-3): also "write those off" (up to two words between), "amortize", "expense"
+// (not "expensive") and "depreciate", all whole words.
 const TAX_LEGAL_RE = wordRe([
   "tax\\w*", "deduct\\w*", "IRS", "write-?offs?", "legal\\w*", "laws?", "lawyers?", "attorneys?", "trusts?", "estates?", "probate",
   "liens?", "gifts?", "capital\\s+gains",
+  "write\\s+(?:\\S+\\s+){0,2}off", "amortiz\\w*", "expens(?:e|es|ed|ing)", "depreciat\\w*",
 ]);
 const MORTGAGE_RE = wordRe(["mortgages?"]);
 
