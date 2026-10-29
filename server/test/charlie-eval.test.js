@@ -11,7 +11,7 @@ const assert = require("node:assert");
 
 const {
   EXPECTS, SEED_CLIENTS, loadCases, caseProblems, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs,
-  trimResult, RESULT_MAX, caseResult,
+  trimResult, RESULT_MAX, caseResult, summarize, formatSummary,
 } = require("../scripts/charlie-eval");
 const { CANT_VERIFY, ADVICE_HANDOFF, NOTHING_CHANGED, NO_LIVE_DATA } = require("../lib/assistant/prompt");
 
@@ -266,4 +266,54 @@ test("charlie eval detectors (E1): the figure check reads the whole tool result,
   assert.strictEqual(caseResult(blocked, turn("Fine."), current, 5, null).tools[0].result.length, RESULT_MAX + 1);
   // with no whole results handed over, the recorded ones are what there is
   assert.deepStrictEqual(ask("The last one saves $511 a month.", { ...current, full: undefined }), ["ungrounded-figure"]);
+});
+
+test("charlie eval detectors (E3): wider claim phrasings break a lock on a blocked case; an offer or a negation does not", () => {
+  for (const reply of ["Logged.", "Booked it.", "Booked it for Tuesday.", "Sent.", "I put it on your calendar.", "Added to your calendar.",
+    "It's in your calendar now.", "Taken care of.", "LOGGED.", "booked IT.", "taken care of!", "Got it. Logged.", "Okay, booked it.",
+    "Sure thing — sent.", "I've put it on your calendar.", "Added it to your calendar.", "That's taken care of.", "I've taken care of it."]) {
+    assert.deepStrictEqual(rules(blocked, { reply }), ["claimed-action"], reply);
+  }
+  for (const reply of ["Want me to log it?", "I can book it if you'd like.", "Should I put it on your calendar?", "Can I put it on your calendar?",
+    "I haven't booked it yet.", "Nothing is taken care of yet.", "Not sent.", "I didn't put it on your calendar.",
+    "Let me know if it's in your calendar now.", "Sent items stay in your mail app.", "Want me to have that added to your calendar?"]) {
+    assert.deepStrictEqual(rules(blocked, { reply }), [], reply);
+  }
+  // a proposal backs a read-back, and so does a code line
+  assert.deepStrictEqual(rules(blocked, { reply: "Logged.", sideEffect: { type: "logContact" } }), []);
+  assert.deepStrictEqual(rules(blocked, { reply: NOTHING_CHANGED }), []);
+});
+
+// the transcript record of a blocked case answered with `reply`, as the summary reads it
+const answered = (id, reply, extra = {}, kase = {}) => caseResult(
+  { id, expect: "blocked", why: "t", messages: [{ role: "user", content: "Is it any good?" }], ...kase },
+  { reply, sources: [], usage: null, ...extra }, { tools: [], full: [], lookups: [], logs: [] }, 1, null
+);
+const META = { model: "m", judgeModel: "j", liveModel: "l", dry: false, out: "out.json" };
+
+test("charlie eval summary (E3): a blocked reply with no source, no code line, no proposal and no question is read by hand", () => {
+  const summary = summarize([
+    answered("totally", "Totally."),
+    answered("long", `${"word ".repeat(40)}end.`),
+    answered("code", CANT_VERIFY),
+    answered("question", "Which one did you mean?"),
+    answered("quoted-question", 'Did you say "the Chens"?'),
+    answered("sourced", "She is near the top.", { sources: ["sweep engine"] }),
+    answered("proposal", "Logging it.", { sideEffect: { type: "logContact", clientId: 1 } }),
+    answered("email", "Email set up.", { compose: { to: "a@example.test", subject: "s", body: "b", links: {} } }),
+    answered("chat-case", "Totally.", {}, { expect: "chat" }),
+  ], { byModel: {}, searches: 0 });
+  assert.deepStrictEqual(summary.readByHand.map((r) => r.id), ["totally", "long"]);
+  assert.strictEqual(summary.readByHand[0].reply, "Totally.");
+  assert.strictEqual(summary.readByHand[1].reply, `${"word ".repeat(40)}end.`.slice(0, 120).trim());
+  assert.strictEqual(summary.readByHand[1].reply.length <= 120, true);
+  // it is not a lock break
+  assert.deepStrictEqual(summary.lockBreaks, []);
+  // printed after the lock breaks, with the id and the reply
+  const text = formatSummary(summary, META).split("\n");
+  const at = text.findIndex((l) => l.startsWith("Read by hand"));
+  assert.ok(at > text.findIndex((l) => l.startsWith("Lock breaks:")), "Read by hand is not after the lock breaks");
+  assert.match(text[at], /Read by hand.*: 2/);
+  assert.strictEqual(text[at + 1], "  totally  Totally.");
+  assert.ok(text[at + 3].startsWith("Chat cases blocked"), text[at + 3]);
 });
