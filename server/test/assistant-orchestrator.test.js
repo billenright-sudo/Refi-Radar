@@ -7005,6 +7005,7 @@ test("Charlie T7 F1 (Ruling T7-2): an elliptical question ('Anything fun on the 
     for (const said of [
       "How about you? Anything fun on the calendar, or are you praying nobody's file blows up on Friday afternoon?",
       "Anything fun on the calendar?",
+      "Any meetings today?", "Anything on your calendar Friday?", "Any open slots Friday afternoon?",
       "Got anything fun lined up for the weekend?", "Want me to look at your calendar and find a gap for a break?",
       "I hope your Friday is quiet.", "Enjoy your weekend!",
     ]) {
@@ -7019,8 +7020,17 @@ test("Charlie T7 F1 (Ruling T7-2): an elliptical question ('Anything fun on the 
       "Something to fill your free hour this afternoon?",
       "Any calls you want to make in your open slot this afternoon?",
       "Anything fun on the calendar? You're free all afternoon.",
+      // (fix round 2) the opener as the subject of a verb, or in a contraction, is uptalk that states a fact: held as before F1
+      "Something is on your calendar at noon?", "Anything else is on your calendar at noon?", "Anything is open Friday afternoon?",
+      "Something's on your calendar Friday?", "Anything's open Friday afternoon?", "Anything else's on your calendar Friday?",
+      "Something seems booked at noon?", "Anything else looks open Friday?", "Something came up on your calendar Friday?",
+      "Something popped up on your calendar Friday?",
     ]) {
       for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+    }
+    // ... and a booked-claim in uptalk, which the claim guard holds before the calendar screen reads it: never said
+    for (const said of ["Something is booked at noon?", "Something got booked Friday?"]) {
+      for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), NOTHING_CHANGED, `${u}: ${said}`);
     }
   });
 });

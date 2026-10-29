@@ -2359,9 +2359,14 @@ const calendarWordIn = (s, exempt, names = [], user = false) => {
 const formIn = (s, forms) => forms.some((form) => (!form.needsDay || DAY_OR_TIME_RE.test(s)) &&
   [...s.matchAll(form.re)].some((m) => !exemptInClause(s, m, form.event)));
 // (Ruling T7-2: an elliptical question asks too, "Anything fun on the calendar?", "Any calls to make?", "Something to prep?", so here it
-// is screened as a question is, what it presupposes included; not "Anything's ..." or "Something's ...", which state. Local to this
-// screen: QUESTION_START_RE is left as it is for the others)
-const ELLIPTICAL_QUESTION_RE = /^(?:anything|any|something)(?![\w'’-])/i;
+// is screened as a question is, what it presupposes included; not when the opener is the subject of a verb or a contraction, uptalk that
+// states: "Something's on your calendar Friday?", "Anything else is on your calendar at noon?", "Something got booked Friday?",
+// "Something popped up on your calendar?". Local to this screen: QUESTION_START_RE is left as it is for the others)
+const ELLIPTICAL_QUESTION_RE = new RegExp(
+  "^(?:anything|any|something)(?![\\w'\\u2019-])(?!(?:\\s+else)?(?:['\\u2019]|\\s+(?:is|are|was|were|has|have|had|will|would|can" +
+    "|could|should|may|might|must|shall|does|did|got|gets|looks?|seems?|stays?|remains?|shows?|came|comes|went|goes|[a-z]+[^\\We]ed)\\b))",
+  "i"
+);
 // `cited`: some tool result this turn was cited (then a fact needs a day or a time in its sentence); `names`: the client names this
 // turn's tool results carry (clientNamesOf), whose availability is no calendar fact. Pure.
 function ungroundedCalendarFact(text, cited, names = []) {
