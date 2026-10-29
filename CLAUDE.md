@@ -113,7 +113,8 @@ restyle without asking.**
 Referenced by env var; stored in **Google Secret Manager** (`ANTHROPIC_API_KEY`,
 `FRED_API_KEY`, `JWT_SECRET`, and on Charli's deploy `ELEVENLABS_API_KEY`,
 `GOOGLE_CLIENT_SECRET`, `GOOGLE_TOKEN_KEY`) and Cloud Run env (`GOOGLE_CLIENT_ID`,
-`GOOGLE_REDIRECT_URI`, `DATA_DIR`, `CLAUDE_MODEL`, `ELEVENLABS_VOICE_ID_CHARLI`,
+`GOOGLE_REDIRECT_URI`, `DATA_DIR`, `CLAUDE_MODEL` (the rates route's model),
+`CHARLI_MODEL` (Charlie's model, default `claude-sonnet-5-5`), `ELEVENLABS_VOICE_ID_CHARLI`,
 `ELEVENLABS_TTS_MODEL`, `ELEVENLABS_STT_MODEL`, `CHARLI_TTS_DAILY_CHARS`,
 `CHARLI_TURN_DEADLINE_MS`); locally
 in `server/.env` (git-ignored). Google (Charli Plan B): `GOOGLE_CLIENT_ID` and
