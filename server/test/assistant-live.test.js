@@ -271,6 +271,32 @@ test("lookUpLive (final review C-1 a): every answer sentence and result title ab
   }
 });
 
+test("lookUpLive (final review C-1 follow-up): a lending sentence or title is dropped too; 'Richmond, VA' and a score are kept", async () => {
+  const UNAVAILABLE = { data: { error: "the lookup didn't work just now" }, source: "(unavailable)" };
+  const look = (answer, sources = [{ title: "Headline", domain: "npr.org" }]) =>
+    lookUpLive({ kind: "news", query: "top news today" }, ctxWith(recordingLive({ answer, sources })));
+  // each lending sentence is dropped beside a kept one, and each kept sentence comes through whole
+  const KEPT = ["Richmond, VA saw heavy rain.", "The Chiefs lost 20-3 at Seattle."];
+  for (const dropped of [
+    "The FHA raised its loan limits.", "Student loan payments resume in May.", "Lenders tightened their underwriting.",
+    "Fannie Mae and Freddie Mac cut fees.", "The CFPB fined a jumbo lender.", "VA loans now need no PMI.",
+    "Average closing costs rose.", "Down payments hit a record.", "Credit scores fell nationwide.", "HUD changed its rules.",
+    "The USDA expanded rural lending.", "Conforming limits went up.", "Buyers face higher DTI and LTV caps.",
+    "Debt-to-income rules eased.", "Loan-to-value limits changed.", "FHA MIP was cut.",
+  ]) {
+    const r = await look(`${KEPT[0]} ${dropped} ${KEPT[1]}`);
+    assert.equal(r.data.answer, KEPT.join(" "), dropped);
+  }
+  // a lending title is blanked, its domain still cited; a plain one is kept
+  const r = await look(KEPT[0], [{ title: "FHA raises loan limits", domain: "npr.org" }, { title: "Storms in Richmond, VA", domain: "pbs.org" }]);
+  assert.deepStrictEqual(r.data.sources, [{ title: "", domain: "npr.org" }, { title: "Storms in Richmond, VA", domain: "pbs.org" }]);
+  assert.equal(r.source, "web — npr.org, pbs.org");
+  // a lookup whose every sentence is a lending sentence fails, as the all-rates one does
+  for (const answer of ["The FHA raised its loan limits.", "Student loan payments resume in May. Lenders expect more defaults."]) {
+    assert.deepStrictEqual(await look(answer), UNAVAILABLE, answer);
+  }
+});
+
 test("TOOL_SCHEMA: lookUpLive takes kind, query and place, for the outside world only — never clients, rates or guidelines", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "lookUpLive");
   assert.ok(t, "lookUpLive is described");

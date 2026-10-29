@@ -453,9 +453,16 @@ function answerSentences(text) {
   }
   return out;
 }
-// Final review C-1: a mortgage rate, the rate market or a loan guideline never comes from the web, so a sentence or a result title
-// about one is dropped from what a lookup hands back, whatever the query was ("top news today" may answer with the Fed).
-const aboutRatesOrGuidelines = (text) => RATE_QUERY_RE.test(text) || isGuidelineQuestion(text);
+// Final review C-1 follow-up: lending terms, whole words in any case ("The FHA raised its loan limits." names no guideline word, and
+// is one). "VA" only as "VA loan(s)", so "Richmond, VA" stays.
+const LENDING_TERMS_RE = Object.freeze(new RegExp("\\b(?:" + [
+  "FHA", "VA\\s+loans?", "USDA", "Fannie\\s+Mae", "Freddie\\s+Mac", "HUD", "CFPB", "conforming", "jumbo", "loan\\s+limits?", "loans?",
+  "lend\\w*", "underwrit\\w*", "DTI", "debt-to-income", "LTV", "loan-to-value", "PMI", "MIP", "down\\s+payments?", "closing\\s+costs?",
+  "credit\\s+scores?",
+].join("|") + ")\\b", "i"));
+// Final review C-1: a mortgage rate, the rate market, a loan guideline or a lending fact never comes from the web, so a sentence or a
+// result title about one is dropped from what a lookup hands back, whatever the query was ("top news today" may answer with the Fed).
+const aboutRatesOrGuidelines = (text) => RATE_QUERY_RE.test(text) || isGuidelineQuestion(text) || LENDING_TERMS_RE.test(text);
 
 // One live lookup (design §6), for outside-world questions only: a score, the news, the weather, what's happening. Before
 // anything leaves the server, code refuses whatever the query or the place could carry out of it, and nothing is searched: a
