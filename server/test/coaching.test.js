@@ -25,6 +25,11 @@ const { tools, TOOL_SCHEMA, setCareerStageTool } = assistantTools;
 const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, STAGE_REASK, buildCharliSystem } = require("../lib/assistant/prompt");
 const { CAREER_STAGES, coachingStyle, stageById, stageForYears } = require("../lib/assistant/coaching");
 const { runTurn, claimsCompletion, claimsStage, stageClaims } = require("../lib/assistant/orchestrator");
+// runTurn closes the system prompt with a random joke topic's sentence (polish P3): what is left is buildCharliSystem(user) as it was
+const withoutJoke = (system) => {
+  const at = system.lastIndexOf("\n\nIf you tell a joke this turn,");
+  return at < 0 ? system : system.slice(0, at);
+};
 const { SESSION_STARTED } = require("../lib/assistant/history");
 const authRoutes = require("../routes/auth");
 const orgRoutes = require("../routes/org");
@@ -378,7 +383,7 @@ test("runTurn sends buildCharliSystem(ctx.user) as the system prompt", async () 
   for (const stage of [...IDS, null]) {
     const client = fakeClient([say("Good morning! How can I help?")]);
     await runTurn({ messages: userMsgs("good morning"), ctx: ctxFor(ann, "broker", orgA, stage), client });
-    assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: stage }), String(stage));
+    assert.equal(withoutJoke(client.calls[0].system), buildCharliSystem({ career_stage: stage }), String(stage));
     assert.ok(client.calls[0].system.includes(CHARLI_SYSTEM));
   }
 });
@@ -415,8 +420,8 @@ test("runTurn as a New user and as a Veteran user: identical tool calls, args, s
   // and only `system` differs: five different prompts for five different users
   const systems = Object.values(runs).map(({ calls }) => calls[0].system);
   assert.equal(new Set(systems).size, 5);
-  assert.equal(runs.new.calls[0].system, buildCharliSystem({ career_stage: "new" }));
-  assert.equal(runs.veteran.calls[0].system, buildCharliSystem({ career_stage: "veteran" }));
+  assert.equal(withoutJoke(runs.new.calls[0].system), buildCharliSystem({ career_stage: "new" }));
+  assert.equal(withoutJoke(runs.veteran.calls[0].system), buildCharliSystem({ career_stage: "veteran" }));
   assert.equal(runs.new.calls[1].system, runs.new.calls[0].system, "the same prompt for every call of a turn");
 });
 
@@ -498,7 +503,7 @@ test("[(Session started.), greeting asking for the years, 'about 20 years']: the
   assert.deepStrictEqual(viaModel.sideEffect, { type: "setCareerStage", stage: "veteran" });
   assert.deepStrictEqual(client.calls[0].messages.map((m) => m.role), ["user", "assistant", "user"]);
   assert.equal(client.calls[0].messages[2].content, "a while now, since the crash");
-  assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: null }));
+  assert.equal(withoutJoke(client.calls[0].system), buildCharliSystem({ career_stage: null }));
   // B4 FLIPS (Tier 2): a plain statement (was passed through) and a statement that names a stage (was the nothing-changed
   // line) are both the code-authored re-ask: nothing was saved
   for (const text of ["Nice, that's a long run.", "Your stage is now Veteran.", "Got it, you're a Veteran now.", "Twenty years! Veteran it is.", "Great — I'll coach you as a Veteran from here on."]) {
@@ -815,7 +820,7 @@ test("end to end: greeting asks, 'about 20 years' reads back, confirm saves, the
   const next = fakeClient([say("Good morning! How can I help?")]);
   setClient(next);
   await asKit("POST", "/api/assistant/turn", { rates: LIVE, messages: userMsgs("good morning") });
-  assert.equal(next.calls[0].system, buildCharliSystem({ career_stage: "veteran" }));
+  assert.equal(withoutJoke(next.calls[0].system), buildCharliSystem({ career_stage: "veteran" }));
   setClient(fakeClient([]));
   const again = await asKit("POST", "/api/assistant/turn", { greeting: true, rates: LIVE, localHour: 9 });
   assert.ok(again.data.reply.endsWith(WANT_MORE), again.data.reply);
@@ -829,7 +834,7 @@ test("turn: requireAuth hands the stage to the prompt for each user (a different
     setClient(client);
     await as(who)("POST", "/api/assistant/turn", { rates: LIVE, messages: userMsgs("hello") });
     seen[String(stage)] = client.calls[0].system;
-    assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: stage }), String(stage));
+    assert.equal(withoutJoke(client.calls[0].system), buildCharliSystem({ career_stage: stage }), String(stage));
   }
   assert.equal(new Set(Object.values(seen)).size, 5);
 });
@@ -886,7 +891,7 @@ test("greeting: a stored stage that is not one of the four ids is treated as not
   const client = fakeClient([say("Hello there!")]);
   setClient(client);
   await as(who)("POST", "/api/assistant/turn", { rates: LIVE, messages: userMsgs("hello") });
-  assert.equal(client.calls[0].system, buildCharliSystem({ career_stage: null }));
+  assert.equal(withoutJoke(client.calls[0].system), buildCharliSystem({ career_stage: null }));
 });
 
 test("greeting: the question follows a failed sweep or market tool too, and an LO is asked like a broker", async () => {

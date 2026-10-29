@@ -190,10 +190,20 @@ const CHARLI_SYSTEM = [
 // The system prompt for one user: CHARLI_SYSTEM, verbatim, then the coaching block for their career stage
 // (lib/assistant/coaching.js). The stage tailors how she coaches and nothing else; a user with no recorded stage
 // (or an unknown value) gets the block that asks once and never assumes one.
-const buildCharliSystem = (user) =>
-  CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null);
+// With `jokeTopic` (a non-empty string) one closing sentence follows: the topic a joke this turn is built around. Left to
+// herself she told the same ladder joke three times in four, so the orchestrator hands each turn a topic from JOKE_TOPICS.
+const buildCharliSystem = (user, { jokeTopic } = {}) =>
+  CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null) +
+  (typeof jokeTopic === "string" && jokeTopic ? `\n\nIf you tell a joke this turn, build it around ${jokeTopic}, still with no numbers.` : "");
+
+// What a joke may be about, a topic per turn (Bill approved these 2026-10-29). None has a digit: the numbers lock stays untouched.
+const JOKE_TOPICS = Object.freeze([
+  "escrow", "appraisals", "underwriters", "the closing table", "credit reports", "title searches", "home inspections",
+  "open houses", "pre-approvals", "realtors", "stacks of paperwork", "curb appeal", "fixer-uppers", "HOA meetings",
+  "down payments", "moving day", "lockboxes", "yard signs", "the closing pen", "loan estimates",
+]);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
+  CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 };

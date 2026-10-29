@@ -17,11 +17,11 @@ const refi = require("../lib/refi");
 const { TOOL_SCHEMA } = require("../lib/assistant/tools");
 const {
   CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG, buildCharliSystem,
-  BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ERROR_TURN,
+  BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ERROR_TURN, JOKE_TOPICS,
 } = require("../lib/assistant/prompt");
 const {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel, randomJokeTopic,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -437,8 +437,9 @@ test("request shape: Charlie's own CHARLI_MODEL (default claude-sonnet-5-5), sys
     const p = await sent();
     assert.equal(p.model, "claude-sonnet-5-5");
     assert.equal(charliModel(), "claude-sonnet-5-5");
-    // Task 7: the system prompt is CHARLI_SYSTEM plus the coaching block for the user's career stage (brokerCtx's user has none)
-    assert.equal(p.system, buildCharliSystem(brokerCtx.user));
+    // Task 7: the system prompt is CHARLI_SYSTEM plus the coaching block for the user's career stage (brokerCtx's user has none),
+    // then this turn's joke topic (polish P3)
+    assert.ok(JOKE_TOPICS.some((t) => p.system === buildCharliSystem(brokerCtx.user, { jokeTopic: t })), p.system.slice(-120));
     assert.ok(p.system.startsWith(CHARLI_SYSTEM + "\n\n"));
     assert.deepStrictEqual(p.tools, TOOL_SCHEMA);
     // thinking counts toward max_tokens on Sonnet 5.5, so the cap has room for it; the prompt holds the reply's length
@@ -458,6 +459,67 @@ test("request shape: Charlie's own CHARLI_MODEL (default claude-sonnet-5-5), sys
   } finally {
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
+});
+
+// ── a rotating joke topic (polish P3) ──────────────────────────────────────────────────────────────────────────────────────
+
+const jokeLine = (topic) => `If you tell a joke this turn, build it around ${topic}, still with no numbers.`;
+
+test("JOKE_TOPICS (polish P3): exactly the twenty approved topics, frozen, no digit in any", () => {
+  assert.deepStrictEqual([...JOKE_TOPICS], [
+    "escrow", "appraisals", "underwriters", "the closing table", "credit reports", "title searches", "home inspections",
+    "open houses", "pre-approvals", "realtors", "stacks of paperwork", "curb appeal", "fixer-uppers", "HOA meetings",
+    "down payments", "moving day", "lockboxes", "yard signs", "the closing pen", "loan estimates",
+  ]);
+  assert.ok(Object.isFrozen(JOKE_TOPICS));
+  for (const t of JOKE_TOPICS) assert.ok(!/\d/.test(t), t);
+});
+
+test("buildCharliSystem (polish P3): a joke topic is one closing sentence after the coaching block; without one nothing changes", () => {
+  const plain = buildCharliSystem(brokerCtx.user);
+  assert.ok(plain.startsWith(CHARLI_SYSTEM + "\n\n"));
+  assert.ok(!plain.includes("If you tell a joke"));
+  const withTopic = buildCharliSystem(brokerCtx.user, { jokeTopic: "escrow" });
+  assert.equal(withTopic, plain + "\n\n" + jokeLine("escrow"));
+  assert.ok(withTopic.endsWith("If you tell a joke this turn, build it around escrow, still with no numbers."));
+  // no options, empty options, or a topic that is not a non-empty string: byte-for-byte today's prompt
+  for (const opts of [undefined, {}, { jokeTopic: "" }, { jokeTopic: undefined }, { jokeTopic: null }, { jokeTopic: 7 }, { jokeTopic: ["escrow"] }]) {
+    assert.equal(buildCharliSystem(brokerCtx.user, opts), plain, JSON.stringify(opts));
+  }
+});
+
+test("randomJokeTopic (polish P3): always one of JOKE_TOPICS, and it varies", () => {
+  const seen = new Set();
+  for (let i = 0; i < 300; i += 1) {
+    const t = randomJokeTopic();
+    assert.ok(JOKE_TOPICS.includes(t), String(t));
+    seen.add(t);
+  }
+  assert.ok(seen.size > 1, "a random pick that never changes is not random");
+});
+
+test("runTurn (polish P3): ctx.jokeTopic is the topic when set; otherwise each turn gets one from JOKE_TOPICS", async () => {
+  // ctx.jokeTopic (tests and the eval set it): the system prompt ends with that topic's sentence
+  let client = fakeClient([say("Hello!")]);
+  await runTurn({ messages: userSays("hello"), ctx: { ...brokerCtx, jokeTopic: "escrow" }, client });
+  assert.equal(client.calls[0].system, buildCharliSystem(brokerCtx.user, { jokeTopic: "escrow" }));
+  assert.ok(client.calls[0].system.endsWith(jokeLine("escrow")));
+  // not set (or not a non-empty string): a topic of JOKE_TOPICS, picked per turn
+  for (const ctx of [brokerCtx, { ...brokerCtx, jokeTopic: "" }, { ...brokerCtx, jokeTopic: 3 }]) {
+    client = fakeClient([say("Hello!")]);
+    await runTurn({ messages: userSays("hello"), ctx, client });
+    const { system } = client.calls[0];
+    assert.ok(JOKE_TOPICS.some((t) => system.endsWith("\n\n" + jokeLine(t))), system.slice(-120));
+    assert.ok(system.startsWith(CHARLI_SYSTEM + "\n\n"));
+  }
+  // the pick is made again each turn, not once per process
+  const topics = new Set();
+  for (let i = 0; i < 60; i += 1) {
+    client = fakeClient([say("Hello!")]);
+    await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client });
+    topics.add(client.calls[0].system.split("build it around ")[1]);
+  }
+  assert.ok(topics.size > 1, "the same topic every turn");
 });
 
 test("a refusal (HTTP 200, stop_reason refusal) ends the turn with the error line, whatever text it carries", async () => {

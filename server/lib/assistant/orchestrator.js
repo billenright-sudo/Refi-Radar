@@ -22,7 +22,7 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX } = require("./tools");
 const { isGuidelineQuestion } = require("./guidelines");
 const {
-  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
+  buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
   ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
@@ -53,6 +53,9 @@ const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool"]);
 // Charlie's own model setting. CLAUDE_MODEL stays the setting of routes/rates.js (and index.js's log line) and does not move her.
 // Read per call so the env can change.
 const charliModel = () => process.env.CHARLI_MODEL || "claude-sonnet-5-5";
+
+// One of JOKE_TOPICS, uniformly at random: the topic a joke this turn is built around (runTurn's, unless ctx sets one).
+const randomJokeTopic = () => JOKE_TOPICS[Math.floor(Math.random() * JOKE_TOPICS.length)];
 
 // ── Text screening ───────────────────────────────────────────────────────────
 
@@ -2623,8 +2626,10 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
   const storedStage = (ctx && ctx.user && stageById(ctx.user.career_stage) && stageById(ctx.user.career_stage).id) || null;
   // CHARLI_SYSTEM plus the coaching block for this user's career stage: it tailors how she coaches. The screening below runs
   // on the model's text and this turn's tool results, and its stage check compares the stage a reply claims (stageClaims, and a
-  // set-claim that names a stage) with the stored stage above: only a claim equal to it is true
-  const system = buildCharliSystem(ctx && ctx.user);
+  // set-claim that names a stage) with the stored stage above: only a claim equal to it is true. A closing line gives this turn
+  // a joke topic: ctx.jokeTopic when a test or the eval sets one, a random one otherwise.
+  const jokeTopic = ctx && typeof ctx.jokeTopic === "string" && ctx.jokeTopic ? ctx.jokeTopic : randomJokeTopic();
+  const system = buildCharliSystem(ctx && ctx.user, { jokeTopic });
 
   // The answer to the greeting's career question (answersCareerQuestion). Tier 1: a plain duration is packaged by code, with
   // no model call (a zero-token turn, metered like the greeting). Tier 2 (`careerAnswerTurn`) screens the model's reply below.
@@ -2876,5 +2881,5 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
-  classifyUngrounded, verdictLine, charliModel,
+  classifyUngrounded, verdictLine, charliModel, randomJokeTopic,
 };
