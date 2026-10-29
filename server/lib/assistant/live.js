@@ -29,6 +29,23 @@ const KIND_WORDS = Object.freeze({
   general: "something happening in the world right now",
 });
 
+// Where each kind of lookup may search, as the search tool's allowed_domains (Bill approved these outlets on 2026-10-29: the
+// first eval's headlines came from random sites, one a partisan blog). Weather is null: it is not restricted. An unknown kind
+// searches where general does, the way KIND_WORDS falls back.
+const NEWS_OUTLETS = Object.freeze(["apnews.com", "reuters.com", "npr.org", "bbc.com"]);
+const KIND_DOMAINS = Object.freeze({
+  news: NEWS_OUTLETS,
+  general: NEWS_OUTLETS,
+  scores: Object.freeze(["espn.com", "apnews.com"]),
+  weather: null,
+});
+
+// The web search tool for a lookup of this kind.
+function searchToolFor(kind) {
+  const domains = Object.hasOwn(KIND_DOMAINS, kind) ? KIND_DOMAINS[kind] : KIND_DOMAINS.general;
+  return { type: SEARCH_TOOL_TYPE, name: "web_search", max_uses: MAX_SEARCHES, ...(domains ? { allowed_domains: [...domains] } : {}) };
+}
+
 const TIMED_OUT = Symbol("lookup timed out");
 
 // "Wednesday, October 28, 2026": today's UTC date as the prompt says it.
@@ -145,7 +162,7 @@ function makeLive({ client, db, userId, turnId = null, now, timeoutMs = LOOKUP_T
             model: LIVE_MODEL,
             max_tokens: MAX_OUTPUT_TOKENS,
             thinking: { type: "disabled" },
-            tools: [{ type: SEARCH_TOOL_TYPE, name: "web_search", max_uses: MAX_SEARCHES }],
+            tools: [searchToolFor(kind)],
             messages: [{ role: "user", content: buildPrompt({ kind, query, place }, clock()) }],
           }, { signal: controller.signal }),
           timeout,

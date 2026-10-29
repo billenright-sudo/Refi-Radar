@@ -312,6 +312,28 @@ test("makeLive: the request is Haiku with the web search tool (3 uses), thinking
   assert.ok(options && options.signal && typeof options.signal.aborted === "boolean", "the request can be aborted");
 });
 
+test("makeLive (polish P1): news, scores and general lookups search only the named outlets; weather is unrestricted", async () => {
+  const NEWS = ["apnews.com", "reuters.com", "npr.org", "bbc.com"];
+  const CASES = [
+    ["news", NEWS],
+    ["general", NEWS],
+    ["scores", ["espn.com", "apnews.com"]],
+    ["weather", undefined],
+    ["nonsense", NEWS], // an unknown kind falls back to general, as KIND_WORDS does
+  ];
+  for (const [kind, domains] of CASES) {
+    const client = fakeClient([searched()]);
+    const args = kind === "weather" ? { kind, query: "rain this afternoon?", place: "Denver" } : { kind, query: "anything" };
+    await capturingInfo(() => makeLive({ client, db, userId: broker }).lookUp(args));
+    const [tool] = client.calls[0].params.tools;
+    assert.equal(client.calls[0].params.tools.length, 1, kind);
+    if (domains) assert.deepStrictEqual(tool.allowed_domains, domains, kind);
+    else assert.ok(!("allowed_domains" in tool), kind);
+    assert.equal(tool.type, "web_search_20250305", kind);
+    assert.equal(tool.max_uses, 3, kind);
+  }
+});
+
 test("makeLive: the answer is the text after the search, the as-of line apart; sources are the results' unique domains", async () => {
   const client = fakeClient([searched({
     results: [
