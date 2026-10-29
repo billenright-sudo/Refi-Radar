@@ -7702,10 +7702,11 @@ test("Residual S2: on a cited turn the judge is given the reply's tax or legal s
     await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { judge });
     assert.equal(judge.calls.length, 1);
     assert.equal(judge.calls[0].reply, "Yes, you can write those off.");
-    // 3. every sentence states a figure: no judge call, and the figure check covers it
-    judge = recordingJudge("ADVICE");
+    // 3. every sentence states a figure and none has a tax word: the WHOLE reply is judged (ruling F-8); FACT speaks it
+    judge = recordingJudge("FACT");
     let r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent.", { judge });
-    assert.equal(judge.calls.length, 0);
+    assert.equal(judge.calls.length, 1);
+    assert.equal(judge.calls[0].reply, "The thirty-year is 6.52 percent.");
     assert.equal(r.reply, "The thirty-year is 6.52 percent.");
     assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
     // 4. the verdict is handled as before: ADVICE on that sentence is the hand-off, FACT speaks the WHOLE reply
@@ -7717,5 +7718,31 @@ test("Residual S2: on a cited turn the judge is given the reply's tax or legal s
     // ... and the second reply too
     r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { judge: recordingJudge("ADVICE") });
     assert.equal(r.reply, ADVICE_HANDOFF);
+  });
+});
+
+// ── Ruling F-8: a reply whose every piece states a figure, with no tax word, is judged whole ────────────────────────────────────
+
+test("Ruling F-8: with no tax-word piece and no figure-free piece, the advice check judges the whole reply", async () => {
+  const said = "Yes, at 6.52 percent you can write those off.";
+  await capturingInfo(async () => {
+    // the judge receives the whole reply; ADVICE is the hand-off
+    let judge = recordingJudge("ADVICE");
+    let r = await r3Turn(R3_ASK, said, { judge });
+    assert.equal(judge.calls.length, 1);
+    assert.equal(judge.calls[0].reply, said);
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    assert.deepStrictEqual(r.sources, []);
+    // a judge that can't answer, and no judge at all, are the hand-off too
+    for (const failing of [() => { throw new Error("boom"); }, async () => ({ verdict: "SURE" }), undefined]) {
+      r = await r3Turn(R3_ASK, said, { judge: failing });
+      assert.equal(r.reply, ADVICE_HANDOFF, String(failing));
+    }
+    // FACT speaks it with its source
+    judge = recordingJudge("FACT");
+    r = await r3Turn(R3_ASK, said, { judge });
+    assert.equal(judge.calls.length, 1);
+    assert.equal(r.reply, said);
+    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
   });
 });
