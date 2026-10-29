@@ -5,7 +5,7 @@
 //
 // Each lookup that goes out is metered as an assistant_usage row of its own ('live', under the turn's turn_id), and the same
 // rows are the daily cap: DAILY_LOOKUPS per user per UTC day, after which no call is made. The logs say the kind, the outcome
-// and the time, never the query or the answer.
+// and the time, never the query or the answer (a search retried without blocked sites also logs which sites it dropped).
 //
 // `client` is anything with messages.create(params, { signal }) -> a Messages API response (the real SDK client, a fake in tests).
 const { recordUsage } = require("./metering");
@@ -30,13 +30,15 @@ const KIND_WORDS = Object.freeze({
 });
 
 // Where each kind of lookup may search, as the search tool's allowed_domains (Bill approved these outlets on 2026-10-29: the
-// first eval's headlines came from random sites, one a partisan blog). Weather is null: it is not restricted. An unknown kind
-// searches where general does, the way KIND_WORDS falls back.
-const NEWS_OUTLETS = Object.freeze(["apnews.com", "reuters.com", "npr.org", "bbc.com"]);
+// first eval's headlines came from random sites, one a partisan blog). The first list (AP, Reuters, NPR, BBC) was replaced the
+// same day because AP, Reuters and BBC block Anthropic's crawler, and the API rejects a whole request that names a blocked
+// domain, so every news and scores lookup failed. Weather is null: it is not restricted. An unknown kind searches where
+// general does, the way KIND_WORDS falls back.
+const NEWS_OUTLETS = Object.freeze(["npr.org", "pbs.org", "cbsnews.com", "abcnews.go.com", "nbcnews.com", "upi.com"]);
 const KIND_DOMAINS = Object.freeze({
   news: NEWS_OUTLETS,
   general: NEWS_OUTLETS,
-  scores: Object.freeze(["espn.com", "apnews.com"]),
+  scores: Object.freeze(["espn.com", "cbssports.com"]),
   weather: null,
 });
 
@@ -44,6 +46,25 @@ const KIND_DOMAINS = Object.freeze({
 function searchToolFor(kind) {
   const domains = Object.hasOwn(KIND_DOMAINS, kind) ? KIND_DOMAINS[kind] : KIND_DOMAINS.general;
   return { type: SEARCH_TOOL_TYPE, name: "web_search", max_uses: MAX_SEARCHES, ...(domains ? { allowed_domains: [...domains] } : {}) };
+}
+
+// What the API says when allowed_domains names sites that block its crawler (a 400 that lists them).
+const BLOCKED_SITES_PHRASE = "not accessible to our user agent";
+// A domain name as such a message writes it: dot-separated labels, taken whole ("cbsnews.com" is not "news.com").
+const DOMAIN_NAME = /(?<![\w-])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?![\w-])/gi;
+
+// The same search tool without the sites the API says block its crawler, and the sites dropped; null when `err` is not that 400,
+// when the tool has no allowed_domains, when the message names none of them, or when none would be left. A search is never
+// retried with no allowed_domains.
+function withoutBlockedSites(tool, err) {
+  if (!err || err.status !== 400 || !Array.isArray(tool.allowed_domains)) return null;
+  const apiMessage = err.error && err.error.error && err.error.error.message;
+  const message = typeof apiMessage === "string" ? apiMessage : typeof err.message === "string" ? err.message : "";
+  if (!message.includes(BLOCKED_SITES_PHRASE)) return null;
+  const named = new Set((message.match(DOMAIN_NAME) || []).map((d) => d.toLowerCase()));
+  const dropped = tool.allowed_domains.filter((d) => named.has(d));
+  const kept = tool.allowed_domains.filter((d) => !named.has(d));
+  return dropped.length > 0 && kept.length > 0 ? { tool: { ...tool, allowed_domains: kept }, dropped } : null;
 }
 
 const TIMED_OUT = Symbol("lookup timed out");
@@ -158,16 +179,26 @@ function makeLive({ client, db, userId, turnId = null, now, timeoutMs = LOOKUP_T
         const timeout = new Promise((resolve) => {
           timer = setTimeout(() => { controller.abort(); resolve(TIMED_OUT); }, timeoutMs);
         });
-        response = await Promise.race([
+        // One try, and when sites on the list block the search, one more without them (both under the one timer and signal).
+        const attempt = (tool) => Promise.race([
           client.messages.create({
             model: LIVE_MODEL,
             max_tokens: MAX_OUTPUT_TOKENS,
             thinking: { type: "disabled" },
-            tools: [searchToolFor(kind)],
+            tools: [tool],
             messages: [{ role: "user", content: buildPrompt({ kind, query, place }, clock()) }],
           }, { signal: controller.signal }),
           timeout,
         ]);
+        const tool = searchToolFor(kind);
+        try {
+          response = await attempt(tool);
+        } catch (err) {
+          const retry = withoutBlockedSites(tool, err);
+          if (!retry) throw err;
+          console.error("charlie live: search blocked by", retry.dropped.join(", "));
+          response = await attempt(retry.tool);
+        }
       } catch (_err) {
         response = null;
       } finally {

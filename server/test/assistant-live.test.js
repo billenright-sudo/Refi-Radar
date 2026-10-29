@@ -312,12 +312,13 @@ test("makeLive: the request is Haiku with the web search tool (3 uses), thinking
   assert.ok(options && options.signal && typeof options.signal.aborted === "boolean", "the request can be aborted");
 });
 
-test("makeLive (polish P1): news, scores and general lookups search only the named outlets; weather is unrestricted", async () => {
-  const NEWS = ["apnews.com", "reuters.com", "npr.org", "bbc.com"];
+test("makeLive (polish P1): news, scores and general lookups search only the outlets that let the search in; weather is unrestricted", async () => {
+  // Q1: AP, Reuters and BBC block Anthropic's crawler, and the API rejects a whole request that names a blocked domain.
+  const NEWS = ["npr.org", "pbs.org", "cbsnews.com", "abcnews.go.com", "nbcnews.com", "upi.com"];
   const CASES = [
     ["news", NEWS],
     ["general", NEWS],
-    ["scores", ["espn.com", "apnews.com"]],
+    ["scores", ["espn.com", "cbssports.com"]],
     ["weather", undefined],
     ["nonsense", NEWS], // an unknown kind falls back to general, as KIND_WORDS does
   ];
@@ -332,6 +333,170 @@ test("makeLive (polish P1): news, scores and general lookups search only the nam
     assert.equal(tool.type, "web_search_20250305", kind);
     assert.equal(tool.max_uses, 3, kind);
   }
+});
+
+// The error the SDK throws for a 400, shaped as it is: `status`, the parsed body at `error`, and "400 " + the body as the message.
+function apiError(status, message) {
+  const body = { type: "error", error: { type: "invalid_request_error", message } };
+  return Object.assign(new Error(`${status} ${JSON.stringify(body)}`), { status, error: body });
+}
+// The API's message for a request whose allowed_domains names sites that block the crawler (verbatim, domains filled in).
+const blockedMessage = (...names) => `The following domains are not accessible to our user agent: [${names.map((n) => `'${n}'`).join(", ")}]. ` +
+  "Read more: https://support.anthropic.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler";
+const blocked = (...names) => apiError(400, blockedMessage(...names));
+const NEWS_LIST = ["npr.org", "pbs.org", "cbsnews.com", "abcnews.go.com", "nbcnews.com", "upi.com"];
+const SCORES_LIST = ["espn.com", "cbssports.com"];
+
+// console.error silenced and captured for the duration of fn (a retry logs the sites it dropped); fn's result is returned
+async function capturingError(fn) {
+  const logged = [];
+  const saved = console.error;
+  console.error = (...args) => logged.push(args.join(" "));
+  try { return await fn(logged); } finally { console.error = saved; }
+}
+
+test("makeLive (Q1): a request that names blocked sites is sent once more without them, in order, and answers", async () => {
+  const client = fakeClient([blocked("npr.org", "upi.com"), searched()]);
+  const out = await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker, turnId: "retry-1" })
+    .lookUp({ kind: "news", query: "headlines" })));
+  assert.ok(out.answer, "the lookup answers");
+  assert.equal(out.code, undefined);
+  assert.equal(client.calls.length, 2);
+  assert.deepStrictEqual(client.calls[0].params.tools[0].allowed_domains, NEWS_LIST);
+  assert.deepStrictEqual(client.calls[1].params.tools[0].allowed_domains, ["pbs.org", "cbsnews.com", "abcnews.go.com", "nbcnews.com"]);
+  // the retry is the same request otherwise, under the same abort signal (the one time budget covers both)
+  const { allowed_domains: _a, ...first } = client.calls[0].params.tools[0];
+  const { allowed_domains: _b, ...second } = client.calls[1].params.tools[0];
+  assert.deepStrictEqual(second, first);
+  assert.deepStrictEqual({ ...client.calls[1].params, tools: null }, { ...client.calls[0].params, tools: null });
+  assert.equal(client.calls[1].options.signal, client.calls[0].options.signal);
+  // one usage row, with the tokens of the response that came back
+  assert.deepStrictEqual(liveRows(broker), [{ kind: "live", turn_id: "retry-1", input_tokens: 2400, output_tokens: 60 }]);
+  // the same for scores
+  const scores = fakeClient([blocked("cbssports.com"), searched()]);
+  await capturingError(() => capturingInfo(() => makeLive({ client: scores, db, userId: broker }).lookUp({ kind: "scores", query: "Cowboys" })));
+  assert.deepStrictEqual(scores.calls.map((c) => c.params.tools[0].allowed_domains), [SCORES_LIST, ["espn.com"]]);
+});
+
+test("makeLive (Q1): a site is dropped by its whole name only — news.com leaves cbsnews.com, go.com leaves abcnews.go.com, the link drops nothing", async () => {
+  for (const names of [["news.com"], ["go.com"], ["www.npr.org"], ["anthropic.com", "support.anthropic.com"]]) {
+    const client = fakeClient([blocked(...names), searched()]);
+    const out = await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker }).lookUp({ kind: "news", query: "headlines" })));
+    assert.deepStrictEqual(out, { code: "failed" }, names.join());
+    assert.equal(client.calls.length, 1, names.join());
+  }
+  // and a whole name next to look-alikes is the one dropped
+  const client = fakeClient([blocked("news.com", "abcnews.go.com", "go.com"), searched()]);
+  await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker }).lookUp({ kind: "news", query: "headlines" })));
+  assert.deepStrictEqual(client.calls[1].params.tools[0].allowed_domains, ["npr.org", "pbs.org", "cbsnews.com", "nbcnews.com", "upi.com"]);
+});
+
+test("makeLive (Q1): no retry when the message names none of ours, or all of them — never a request with no allowed_domains", async () => {
+  const CASES = [
+    ["news", NEWS_LIST, blocked(...NEWS_LIST)],
+    ["general", NEWS_LIST, blocked(...NEWS_LIST)],
+    ["scores", SCORES_LIST, blocked(...SCORES_LIST)],
+    ["news", NEWS_LIST, blocked("apnews.com")],
+    ["news", NEWS_LIST, blocked("apnews.com", "bbc.com")],
+    ["scores", SCORES_LIST, blocked("apnews.com")],
+    ["news", NEWS_LIST, blocked()],
+  ];
+  for (const [kind, list, err] of CASES) {
+    const client = fakeClient([err, searched()]);
+    const out = await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker, turnId: "no-retry" }).lookUp({ kind, query: "anything" })));
+    assert.deepStrictEqual(out, { code: "failed" }, err.error.error.message);
+    assert.equal(client.calls.length, 1, err.error.error.message);
+    assert.deepStrictEqual(client.calls[0].params.tools[0].allowed_domains, list);
+  }
+  // one usage row each, with no tokens
+  assert.deepStrictEqual(liveRows(broker), CASES.map(() => ({ kind: "live", turn_id: "no-retry", input_tokens: 0, output_tokens: 0 })));
+});
+
+test("makeLive (Q1): weather has no allowed_domains and never retries", async () => {
+  const client = fakeClient([blocked("npr.org"), searched()]);
+  const out = await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker }).lookUp({ kind: "weather", query: "rain?", place: "Denver" })));
+  assert.deepStrictEqual(out, { code: "failed" });
+  assert.equal(client.calls.length, 1);
+});
+
+test("makeLive (Q1): another 400, a 500, or any other error is not retried", async () => {
+  const CASES = {
+    otherBadRequest: apiError(400, "max_uses must be a positive integer"),
+    otherBadRequestMentioningSites: apiError(400, "allowed_domains: 'npr.org' is not a valid domain"),
+    serverError: apiError(500, blockedMessage("npr.org")),    // the right words on the wrong status
+    overloaded: apiError(529, "Overloaded"),
+    plain: new Error("overloaded"),
+    aborted: Object.assign(new Error("Request was aborted."), { name: "APIUserAbortError" }),
+  };
+  await capturingError(() => capturingInfo(async () => {
+    for (const [name, err] of Object.entries(CASES)) {
+      const client = fakeClient([err, searched()]);
+      const out = await makeLive({ client, db, userId: broker, turnId: name }).lookUp({ kind: "news", query: "headlines" });
+      assert.deepStrictEqual(out, { code: "failed" }, name);
+      assert.equal(client.calls.length, 1, name);
+    }
+  }));
+  assert.equal(liveRows(broker).length, Object.keys(CASES).length);
+});
+
+test("makeLive (Q1): the retry is the last try — a second blocked-site error fails after exactly two requests, with one usage row", async () => {
+  // the second error even names more of our sites: still no third request
+  const client = fakeClient([blocked("npr.org"), blocked("pbs.org", "upi.com"), searched()]);
+  const out = await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker, turnId: "twice" }).lookUp({ kind: "news", query: "headlines" })));
+  assert.deepStrictEqual(out, { code: "failed" });
+  assert.equal(client.calls.length, 2);
+  assert.deepStrictEqual(liveRows(broker), [{ kind: "live", turn_id: "twice", input_tokens: 0, output_tokens: 0 }]);
+  // a retry that comes back unfinished is failed the ordinary way, with its tokens metered
+  const cut = fakeClient([blocked("npr.org"), searched({ stop_reason: "max_tokens", usage: { input_tokens: 10, output_tokens: 5 } })]);
+  const out2 = await capturingError(() => capturingInfo(() => makeLive({ client: cut, db, userId: broker, turnId: "cut" }).lookUp({ kind: "news", query: "headlines" })));
+  assert.deepStrictEqual(out2, { code: "failed" });
+  assert.equal(cut.calls.length, 2);
+  assert.deepStrictEqual(liveRows(broker).slice(-1), [{ kind: "live", turn_id: "cut", input_tokens: 10, output_tokens: 5 }]);
+});
+
+test("makeLive (Q1): both requests run under the one time budget — a retry that hangs is aborted and failed", async () => {
+  let signal;
+  const calls = [];
+  const client = {
+    calls,
+    messages: {
+      create: (params, options) => {
+        calls.push(params);
+        if (calls.length === 1) return Promise.reject(blocked("npr.org"));
+        signal = options.signal;
+        return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      },
+    },
+  };
+  const started = Date.now();
+  const out = await capturingError(() => capturingInfo(() => makeLive({ client, db, userId: broker, turnId: "slow-retry", timeoutMs: 40 })
+    .lookUp({ kind: "news", query: "headlines" })));
+  assert.deepStrictEqual(out, { code: "failed" });
+  assert.equal(calls.length, 2);
+  assert.equal(signal.aborted, true);
+  assert.ok(Date.now() - started < 2000);
+  assert.deepStrictEqual(liveRows(broker), [{ kind: "live", turn_id: "slow-retry", input_tokens: 0, output_tokens: 0 }]);
+});
+
+test("makeLive (Q1): the retry logs the dropped sites — not the query, not an answer", async () => {
+  const client = fakeClient([blocked("npr.org", "upi.com"), searched({ text: ["Parsnips fell sharply in Tulsa.\n\nAs of: today"] })]);
+  let errors = [];
+  let infos = [];
+  await capturingError((loggedErrors) => capturingInfo(async (loggedInfo) => {
+    await makeLive({ client, db, userId: broker }).lookUp({ kind: "news", query: "zebra crossing incident" });
+    errors = [...loggedErrors];
+    infos = [...loggedInfo];
+  }));
+  assert.deepStrictEqual(errors, ["charlie live: search blocked by npr.org, upi.com"]);
+  assert.equal(infos.length, 1);
+  for (const line of [...errors, ...infos]) assert.ok(!/zebra|crossing|parsnips|tulsa/i.test(line), line);
+  // no retry, no line
+  const quiet = fakeClient([searched()]);
+  const none = await capturingError(async (logged) => {
+    await capturingInfo(() => makeLive({ client: quiet, db, userId: broker }).lookUp({ kind: "news", query: "headlines" }));
+    return logged;
+  });
+  assert.deepStrictEqual(none, []);
 });
 
 test("makeLive (polish P2): only the weather prompt asks for Fahrenheit, from a source that reports it", async () => {

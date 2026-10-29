@@ -1650,7 +1650,7 @@ test("turn: lookUpLive runs through app.set(\"liveLookup\") or a real lookup on 
     assert.equal(client.calls.length, 3);
     assert.equal(client.calls[1].model, "claude-haiku-5-5");
     assert.deepStrictEqual(client.calls[1].tools, [
-      { type: "web_search_20250305", name: "web_search", max_uses: 3, allowed_domains: ["espn.com", "apnews.com"] },
+      { type: "web_search_20250305", name: "web_search", max_uses: 3, allowed_domains: ["espn.com", "cbssports.com"] },
     ]);
     const rows = usageFor(r.data.turnId).map((row) => [row.kind, row.input_tokens, row.output_tokens]);
     assert.deepStrictEqual(rows, [["live", 2400, 60], ["turn", 207, 41]]);
