@@ -7481,3 +7481,33 @@ test("Final review M-2: runTurn says why a turn ended in an error — a refusal 
   r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([say("Hi!")]) });
   assert.equal("reason" in r, false);
 });
+
+// ── Final review M-3: the startup log names Charlie's model ─────────────────────────────────────────────────────────────────────
+
+// index.js started in a child process, in an empty working directory (so no .env is loaded) with only the env given, on a random
+// port; resolves with its stdout lines once the Charlie model line is out (or it exits), and stops it
+function startupLines(env) {
+  const { spawn } = require("child_process");
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "br-startup-"));
+  const base = { PATH: process.env.PATH, DATA_DIR: cwd, PORT: "0", JWT_SECRET: "test-secret", NODE_ENV: "test" };
+  if (process.env.SystemRoot) base.SystemRoot = process.env.SystemRoot;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(__dirname, "..", "index.js")], { cwd, env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`no startup log in time: ${out}`)); }, 15000);
+    const done = () => { clearTimeout(timer); child.kill(); resolve(out.split(/\r?\n/).filter(Boolean)); };
+    child.stdout.on("data", (chunk) => { out += chunk; if (/Charlie model/.test(out) || /^Model:/m.test(out)) setTimeout(done, 50); });
+    child.on("exit", () => { clearTimeout(timer); resolve(out.split(/\r?\n/).filter(Boolean)); });
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+  }).finally(() => { try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* */ } });
+}
+
+test("Final review M-3: the startup log names the rates model and Charlie's, each labelled with its setting", async () => {
+  let lines = await startupLines({});
+  assert.ok(lines.includes("Rates model (CLAUDE_MODEL): claude-sonnet-4-5"), lines.join("\n"));
+  assert.ok(lines.includes("Charlie model (CHARLI_MODEL): claude-sonnet-5-5"), lines.join("\n"));
+  assert.ok(!lines.some((l) => l.startsWith("Model:")), lines.join("\n"));
+  lines = await startupLines({ CLAUDE_MODEL: "claude-rates-test", CHARLI_MODEL: "claude-charlie-test" });
+  assert.ok(lines.includes("Rates model (CLAUDE_MODEL): claude-rates-test"), lines.join("\n"));
+  assert.ok(lines.includes("Charlie model (CHARLI_MODEL): claude-charlie-test"), lines.join("\n"));
+});

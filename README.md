@@ -152,6 +152,7 @@ Cloud Run handles SSL, zero-downtime rolling deploys, and auto-scale to zero.
 | `PORT` | Server port (Cloud Run sets automatically) | No (default: 8080) |
 | `DATA_DIR` | Directory for SQLite database file | No (default: `./data`) |
 | `CLAUDE_MODEL` | Override the Claude model used | No (default: `claude-sonnet-4-5`) |
+| `CHARLI_MODEL` | Charlie's model (the voice co-pilot) | No (default: `claude-sonnet-5-5`) |
 
 ---
 

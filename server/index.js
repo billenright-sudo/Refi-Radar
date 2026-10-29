@@ -19,6 +19,7 @@ const assistantRoutes = require("./routes/assistant");
 const voiceRoutes = require("./routes/voice");
 const googleRoutes = require("./routes/google");
 const profileRoutes = require("./routes/profile");
+const { charliModel } = require("./lib/assistant/orchestrator");
 
 const PORT         = process.env.PORT || 8080;
 const CLIENT_BUILD = path.join(__dirname, "client/build");
@@ -58,5 +59,7 @@ app.get("*", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`RefiRadar v2 running on port ${PORT}`);
-  console.log(`Model: ${process.env.CLAUDE_MODEL || "claude-sonnet-4-5"}`);
+  // the two model settings, each by its name: the rates fetch's (routes/rates.js) and Charlie's (orchestrator.js)
+  console.log(`Rates model (CLAUDE_MODEL): ${process.env.CLAUDE_MODEL || "claude-sonnet-4-5"}`);
+  console.log(`Charlie model (CHARLI_MODEL): ${charliModel()}`);
 });
