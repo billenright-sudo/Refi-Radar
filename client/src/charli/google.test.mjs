@@ -16,7 +16,7 @@ test("googleCard: a server without Google set up says so and offers nothing", ()
 test("googleCard: configured but not connected offers Connect", () => {
   assert.deepEqual(
     googleCard({ configured: true, connected: false, status: null, googleEmail: null }),
-    { label: "Connect Google Calendar so Charli can read and book your day", action: "connect" },
+    { label: "Connect Google Calendar so Charlie can read and book your day", action: "connect" },
   );
 });
 

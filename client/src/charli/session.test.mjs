@@ -128,16 +128,16 @@ test("B5: an ordinary yes to a read-back confirms it and never reaches /turn", a
 });
 
 test("B7: the text-only note says 'budget' when the voice answered 429 for the daily budget; 503 and other failures keep their notes", () => {
-  assert.equal(VOICE_BUDGET_NOTE, "Charli's voice budget for today is used up, so her answers are in text until tomorrow.");
-  assert.equal(voiceNoteFor(429, '{"error":"voice budget reached for today — Charli answers in text until tomorrow"}'), VOICE_BUDGET_NOTE);
-  assert.equal(voiceNoteFor(503), "Voice replies aren't set up on this server, so Charli answers in text.");
+  assert.equal(VOICE_BUDGET_NOTE, "Charlie's voice budget for today is used up, so her answers are in text until tomorrow.");
+  assert.equal(voiceNoteFor(429, '{"error":"voice budget reached for today — Charlie answers in text until tomorrow"}'), VOICE_BUDGET_NOTE);
+  assert.equal(voiceNoteFor(503), "Voice replies aren't set up on this server, so Charlie answers in text.");
   for (const status of [0, -1, 502, 504, 400]) {
-    assert.equal(voiceNoteFor(status), "Charli's voice isn't coming through right now, so her answers are in text.", String(status));
+    assert.equal(voiceNoteFor(status), "Charlie's voice isn't coming through right now, so her answers are in text.", String(status));
   }
 });
 
 test("a 429 that is the limiter (or has no readable body) is a short break, not the daily budget; the body never changes other statuses", () => {
-  assert.equal(VOICE_BREAK_NOTE, "Charli's voice is taking a short break — her answers are in text for a few minutes.");
+  assert.equal(VOICE_BREAK_NOTE, "Charlie's voice is taking a short break — her answers are in text for a few minutes.");
   for (const body of ['{"error":"Too many voice requests — please try again in a few minutes"}', "", undefined, null, "<html>slow down</html>"]) {
     assert.equal(voiceNoteFor(429, body), VOICE_BREAK_NOTE, String(body));
   }

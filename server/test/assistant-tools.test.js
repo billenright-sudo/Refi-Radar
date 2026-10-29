@@ -809,7 +809,7 @@ test("draftEmailTool: it never writes", () => {
 
 // ── TOOL_SCHEMA ─────────────────────────────────────────────────────────────
 
-test("TOOL_SCHEMA: draftEmailTool takes a clientId and a purpose, and says Charli never writes or sends the email", () => {
+test("TOOL_SCHEMA: draftEmailTool takes a clientId and a purpose, and says Charlie never writes or sends the email", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "draftEmailTool");
   assert.deepStrictEqual(t.input_schema.required, ["clientId", "purpose"]);
   assert.deepStrictEqual(Object.keys(t.input_schema.properties).sort(), ["clientId", "purpose"]);

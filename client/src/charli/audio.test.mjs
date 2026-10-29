@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createAudio, ttsFailureBody } from "./audio.js";
 import { voiceNoteFor, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE } from "./session.mjs";
 
-const BUDGET_BODY = '{"error":"voice budget reached for today — Charli answers in text until tomorrow"}';
+const BUDGET_BODY = '{"error":"voice budget reached for today — Charlie answers in text until tomorrow"}';
 const LIMITER_BODY = '{"error":"Too many voice requests — please try again in a few minutes"}';
 
 // A failed Response, as far as audio.js looks at one. `events` records the order in which the body was used.
@@ -68,7 +68,7 @@ test("a failed /tts response reaches onTtsError as (status, body), and the two 4
   assert.equal(voiceNoteFor(...limited[0]), VOICE_BREAK_NOTE);
 
   const off = await speakOnce(() => failedResponse(503, '{"error":"voice not configured"}'));
-  assert.equal(voiceNoteFor(...off[0]), "Voice replies aren't set up on this server, so Charli answers in text.");
+  assert.equal(voiceNoteFor(...off[0]), "Voice replies aren't set up on this server, so Charlie answers in text.");
 });
 
 test("a /tts response whose body cannot be read still reports its status (the 429 is then the short-break note)", async () => {

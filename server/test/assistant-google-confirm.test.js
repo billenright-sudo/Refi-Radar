@@ -39,7 +39,7 @@ const ACCESS_NEW = "ya29.confirm-new-" + Math.random().toString(16).slice(2);
 const REFRESH_NEW = "1//confirm-refresh-new-" + Math.random().toString(16).slice(2);
 
 const NOT_CONNECTED = "your Google calendar isn't connected";
-const RECONNECT = "your Google connection has expired — reconnect it in the Charli panel";
+const RECONNECT = "your Google connection has expired — reconnect it in the Charlie panel";
 const UNREACHABLE = "couldn't reach Google — try again";
 const CLOCKS = "that time doesn't exist that day — the clocks change";
 const PAST = "that time has already passed";

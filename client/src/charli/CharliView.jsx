@@ -12,8 +12,8 @@ import { createAudio, transcribe } from "./audio.js";
 // onNoticeShown() is called once it has been shown, so App can forget it).
 
 const MIC_NOTES = {
-  denied: "Microphone access is blocked. Allow it in your browser's site settings to talk to Charli. Typing works in the meantime.",
-  unavailable: "No microphone is available here, so Charli can't hear you. Typing works.",
+  denied: "Microphone access is blocked. Allow it in your browser's site settings to talk to Charlie. Typing works in the meantime.",
+  unavailable: "No microphone is available here, so Charlie can't hear you. Typing works.",
   error: "The microphone stopped working. Typing works in the meantime.",
 };
 
@@ -34,7 +34,7 @@ const Turn = ({ turn, ui }) => {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
       <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, letterSpacing: "0.4px", textTransform: "uppercase", margin: "0 6px 3px" }}>
-        {mine ? "You" : "Charli"}
+        {mine ? "You" : "Charlie"}
       </div>
       <div data-testid={mine ? "charli-user-turn" : failed ? "charli-error-turn" : "charli-turn"} style={{ ...bubble, borderRadius: 12, padding: "10px 14px", fontSize: 14, lineHeight: 1.5, maxWidth: "88%", whiteSpace: "pre-wrap" }}>
         {turn.content}
@@ -97,7 +97,7 @@ const StageCard = ({ current, disabled, onPick, ui: { C, card, Icon } }) => (
   <div style={{ ...card, padding: "1.1rem" }}>
     <div style={{ fontSize: 14, fontWeight: 600 }}>Coaching style</div>
     <div style={{ color: C.muted, fontSize: 12.5, margin: "4px 0 12px", lineHeight: 1.45 }}>
-      How long you&rsquo;ve been originating. Charli explains more or less to match; the numbers never change.
+      How long you&rsquo;ve been originating. Charlie explains more or less to match; the numbers never change.
     </div>
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {CAREER_STAGES.map(({ id, label }) => {
@@ -122,7 +122,7 @@ const StageCard = ({ current, disabled, onPick, ui: { C, card, Icon } }) => (
         );
       })}
     </div>
-    {!current && <div style={{ color: C.muted, fontSize: 12, marginTop: 10 }}>Not set yet. Charli will ask, or pick one.</div>}
+    {!current && <div style={{ color: C.muted, fontSize: 12, marginTop: 10 }}>Not set yet. Charlie will ask, or pick one.</div>}
   </div>
 );
 
@@ -142,7 +142,7 @@ async function callApi(method, url, body) {
 const errorOf = (res, fallback) => (res.data && typeof res.data.error === "string" && res.data.error.trim()) || fallback;
 
 const GOOGLE_BUTTONS = { connect: "Connect", reconnect: "Reconnect", disconnect: "Disconnect" };
-const DISCONNECT_CONFIRM = "Disconnect Google? Charli will stop reading and booking your calendar.";
+const DISCONNECT_CONFIRM = "Disconnect Google? Charlie will stop reading and booking your calendar.";
 
 const NmlsField = ({ label, value, saved, busy, testId, onChange, onSave, ui: { C } }) => {
   const id = useId();
@@ -319,7 +319,7 @@ const CalendarEmailCard = ({ ui, working }) => {
           )}
         </div>
       )}
-      {profile && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 8, lineHeight: 1.45 }}>Every email Charli sets up is signed with your NMLS ID. You review it and send it yourself.</div>}
+      {profile && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 8, lineHeight: 1.45 }}>Every email Charlie sets up is signed with your NMLS ID. You review it and send it yourself.</div>}
       {note && <div role="status" data-testid="charli-google-note" style={{ color: note.bad ? C.red : C.mutedHi, fontSize: 12.5, marginTop: 8 }}>{note.text}</div>}
     </div>
   );
@@ -475,7 +475,7 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: "1.25rem" }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, display: "flex", alignItems: "center", gap: 10 }}>
-            <Icon name="mic" size={20} color={C.amber} />Charli
+            <Icon name="mic" size={20} color={C.amber} />Charlie
           </h1>
           <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>
             Your voice co-pilot. Ask for a market update, run a sweep of your book, or log a contact. Say it or type it.
@@ -496,8 +496,8 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
 
       {needsStart && (
         <div style={{ ...card, borderColor: C.amber, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: "1rem", padding: "1rem 1.25rem" }}>
-          <div style={{ fontSize: 13.5, lineHeight: 1.45 }}>Your browser needs a tap before Charli can speak and listen.</div>
-          <button data-testid="charli-start" onClick={startCharli} style={primary}><Icon name="mic" size={15} color="#0f2040" />Start Charli</button>
+          <div style={{ fontSize: 13.5, lineHeight: 1.45 }}>Your browser needs a tap before Charlie can speak and listen.</div>
+          <button data-testid="charli-start" onClick={startCharli} style={primary}><Icon name="mic" size={15} color="#0f2040" />Start Charlie</button>
         </div>
       )}
 
@@ -513,7 +513,7 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
           <CalendarEmailCard ui={ui} working={snap.busy && !snap.opening} />
           <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", height: 380, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
             {snap.turns.length === 0 && (
-              <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charli is getting ready…" : "Waiting for today’s rates…"}</div>
+              <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
             )}
             {snap.turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} />)}
           </div>
@@ -567,7 +567,7 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
             ui={ui}
           />
           <div style={{ ...mono, color: C.muted, fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
-            Anything Charli changes is read back first and only saved when you confirm.
+            Anything Charlie changes is read back first and only saved when you confirm.
           </div>
         </div>
       </div>

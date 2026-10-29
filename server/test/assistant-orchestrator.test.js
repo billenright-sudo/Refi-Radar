@@ -3701,8 +3701,8 @@ test("Task 5: a calendar narration still gets every screen: a completion claim o
 
 test("Task 5: not connected, expired and unreachable Google each end the turn with their own code-authored line, before the model sees it", async () => {
   const lines = { not_connected: GOOGLE_NOT_CONNECTED, reconnect: GOOGLE_RECONNECT, unavailable: GOOGLE_UNAVAILABLE };
-  assert.equal(GOOGLE_NOT_CONNECTED, "Your Google calendar isn't connected yet — connect it in the Charli panel and I can read and book your calendar.");
-  assert.equal(GOOGLE_RECONNECT, "Your Google connection has expired — reconnect it in the Charli panel, then ask me again.");
+  assert.equal(GOOGLE_NOT_CONNECTED, "Your Google calendar isn't connected yet — connect it in the Charlie panel and I can read and book your calendar.");
+  assert.equal(GOOGLE_RECONNECT, "Your Google connection has expired — reconnect it in the Charlie panel, then ask me again.");
   assert.equal(GOOGLE_UNAVAILABLE, "I couldn't reach Google just now — try that again in a moment.");
   for (const [code, line] of Object.entries(lines)) {
     for (const [tool, input, says] of [
@@ -3731,7 +3731,7 @@ test("Task 5: not connected, expired and unreachable Google each end the turn wi
 });
 
 test("Task 5: no NMLS ID and no email on file end the turn with their own lines", async () => {
-  assert.equal(NMLS_NEEDED, "Before I write to clients, add your NMLS ID in the Charli panel — it goes in every email signature.");
+  assert.equal(NMLS_NEEDED, "Before I write to clients, add your NMLS ID in the Charlie panel — it goes in every email signature.");
   assert.equal(noEmailLine("Robert & Linda Chen"), "There's no email on file for Robert & Linda Chen — add one to their record and ask me again.");
   let client = fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose: "check_in" }), say("Here is the email.")]);
   let r = await runTurn({ messages: userSays("Draft the Chens a check-in"), ctx: { ...mikeCtx, user: user(mikeNoNmls, "broker", orgMike) }, client });

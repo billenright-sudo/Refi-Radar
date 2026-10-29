@@ -386,7 +386,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
   const nav = [
     { id: "dashboard", label: "Dashboard",      icon: "dashboard" },
     { id: "sweeps",    label: "Sweeps",         icon: "search" },
-    { id: "charli",    label: "Charli",         icon: "mic" },
+    { id: "charli",    label: "Charlie",         icon: "mic" },
     { id: "clients",   label: "All Clients",    icon: "users" },
     { id: "rates",     label: "Rate Watch",     icon: "trending" },
     { id: "add",       label: "Add Client",     icon: "plus" },

@@ -502,7 +502,7 @@ const TOOL_SCHEMA = [
   {
     name: "draftEmailTool",
     description:
-      "Set up a short email to one client for the user to send. Charli never writes or sends the email herself: the wording is fixed " +
+      "Set up a short email to one client for the user to send. Charlie never writes or sends the email herself: the wording is fixed " +
       "by the app (never by you), carries no rate and no dollar figure, and is signed with the user's NMLS ID; the user gets links " +
       "that open it ready to go in their own Gmail, Outlook or mail app and sends it from their own email, or doesn't. Nothing is " +
       "sent and nothing is saved. Purposes: check_in (a friendly check-in) and refi_review (offer a no-obligation review of their " +

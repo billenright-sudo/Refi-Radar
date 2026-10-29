@@ -197,7 +197,7 @@ const EVENT_MINUTES_MAX = 240;
 // What the broker is told when Google cannot book, by the { code } the adapter gives (lib/google).
 const GOOGLE_REASONS = {
   not_connected: "your Google calendar isn't connected",
-  reconnect: "your Google connection has expired — reconnect it in the Charli panel",
+  reconnect: "your Google connection has expired — reconnect it in the Charlie panel",
   unavailable: "couldn't reach Google — try again",
 };
 const GOOGLE_UNREACHABLE = GOOGLE_REASONS.unavailable;

@@ -16,7 +16,7 @@ export function googleCard(status) {
     const email = typeof s.googleEmail === "string" ? s.googleEmail.trim() : "";
     return { label: email ? `Calendar connected as ${email}` : "Calendar connected", action: "disconnect" };
   }
-  return { label: "Connect Google Calendar so Charli can read and book your day", action: "connect" };
+  return { label: "Connect Google Calendar so Charlie can read and book your day", action: "connect" };
 }
 
 // The line to show when Google sends the browser back, from the page's query string ("?google=denied"); null when

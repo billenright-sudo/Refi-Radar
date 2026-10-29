@@ -519,7 +519,7 @@ test("B7: each user has a daily speech budget: requests under it are spoken, the
     assert.equal(calls.length, 2);
     const over = await tts(kim, { text: "Hello." });
     assert.equal(over.status, 429);
-    assert.deepStrictEqual(over.data, { error: "voice budget reached for today — Charli answers in text until tomorrow" });
+    assert.deepStrictEqual(over.data, { error: "voice budget reached for today — Charlie answers in text until tomorrow" });
     assert.match(over.data.error, /budget/, "the client (voiceNoteFor) tells the daily budget from the limiter by this word");
     assert.equal(calls.length, 2, "the request over the budget was not sent upstream");
     assert.equal(usageRows(kim).filter((r) => r.kind === "tts").length, 2, "and not metered");

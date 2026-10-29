@@ -29,7 +29,7 @@ const NOT_CONFIGURED = "voice not configured";
 // Each user's daily speech budget, in characters sent to ElevenLabs (CHARLI_TTS_DAILY_CHARS; a missing, non-numeric or
 // non-positive value is the default). A client bug that loops /tts burns one user's day, not the account's quota.
 const DEFAULT_TTS_DAILY_CHARS = 60_000;
-const OVER_BUDGET = "voice budget reached for today — Charli answers in text until tomorrow";
+const OVER_BUDGET = "voice budget reached for today — Charlie answers in text until tomorrow";
 
 const fail = (res, status, error) => res.status(status).json({ error });
 
