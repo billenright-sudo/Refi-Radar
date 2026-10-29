@@ -362,8 +362,10 @@ function formatSummary(s, meta) {
 // ── The dry-run fakes (no network, no key) ────────────────────────────────────
 
 // Charlie's model, scripted: an outside-world question gets one lookUpLive call, the tool result gets a short answer (or the
-// no-live-data line when the tool refused), anything else gets one line of chat.
-function fakeClient() {
+// no-live-data line when the tool refused), a request to log a call with a seeded client gets one logContactTool call (the turn
+// ends on the change it packages, so a proposal's plumbing is checked too), anything else gets one line of chat.
+// clientIdOf(name) is a seeded client's row id.
+function fakeClient(clientIdOf) {
   return {
     messages: {
       async create(params) {
@@ -376,6 +378,13 @@ function fakeClient() {
           return { stop_reason: "end_turn", usage, content: [{ type: "text", text: failed ? prompt.NO_LIVE_DATA : "As of tonight, the home team won." }] };
         }
         const text = typeof last.content === "string" ? last.content : blocks.filter((b) => b && b.type === "text").map((b) => b.text).join(" ");
+        const [logged] = /\blog (?:a )?(?:call|contact)\b/i.test(text) ? namedClients(text, SEED_CLIENTS) : [];
+        if (logged && clientIdOf(logged)) {
+          return {
+            stop_reason: "tool_use", usage,
+            content: [{ type: "tool_use", id: "toolu_dry_2", name: "logContactTool", input: { clientId: clientIdOf(logged) } }],
+          };
+        }
         if (/\b(?:news|weather|win|score)\b/i.test(text)) {
           return {
             stop_reason: "tool_use", usage,
@@ -393,6 +402,55 @@ const fakeLive = () => ({
     return { answer: "The home team won.", asOf: "tonight", sources: [{ title: "Dry run", domain: "example.test" }] };
   },
 });
+
+// ── The transcript's records ──────────────────────────────────────────────────
+
+const RESULT_MAX = 2000;
+// A tool result as the transcript keeps it: the JSON the model was given (a tool_result block's content), cut to RESULT_MAX
+// characters with a "…" when it was longer. All of it is seeded fake data, so nothing private is written.
+const trimResult = (content) => {
+  const s = typeof content === "string" ? content : JSON.stringify(content === undefined ? null : content);
+  return s.length > RESULT_MAX ? `${s.slice(0, RESULT_MAX)}…` : s;
+};
+
+const NO_RESULT = "(no result went back to the model)";
+const CHANGE_TOOLS = new Set(["addClientTool", "logContactTool", "setCareerStageTool", "createEventTool"]);
+// A tool whose result never went back to the model (the turn ended on the change it packaged, or on a code line) has no result
+// block to keep: the change or the email the turn handed up stands in for it.
+function settleTools(tools, turn) {
+  for (const t of tools) {
+    if (typeof t.result === "string") continue;
+    if (turn && turn.sideEffect && CHANGE_TOOLS.has(t.name)) t.result = trimResult({ sideEffect: turn.sideEffect });
+    else if (turn && turn.compose && t.name === "draftEmailTool") t.result = trimResult({ compose: turn.compose });
+    else t.result = NO_RESULT;
+  }
+}
+
+// One case's record for the transcript: what was asked and answered, the whole change or email handed up (sideEffect, compose),
+// each tool call with its result, and the verdicts (outcome, lock breaks, whether it missed what the case expects).
+function caseResult(kase, turn, current, ms, thrown) {
+  settleTools(current.tools, turn);
+  const result = {
+    id: kase.id, expect: kase.expect, why: kase.why, ...(kase.live ? { live: true } : {}),
+    user: kase.messages[kase.messages.length - 1].content,
+    prior: kase.messages.slice(0, -1),
+    reply: turn ? turn.reply : null,
+    sources: turn ? turn.sources : [],
+    sideEffect: turn && turn.sideEffect ? turn.sideEffect : null,
+    compose: turn && turn.compose ? turn.compose : null,
+    ...(turn && turn.error ? { turnError: true } : {}),
+    ...(thrown ? { thrown } : {}),
+    ms,
+    usage: turn ? turn.usage : null,
+    tools: current.tools,
+    lookups: current.lookups,
+    logs: current.logs,
+  };
+  result.outcome = outcomeOf(result);
+  result.breaks = thrown ? [] : lockBreaks(kase, result);
+  result.missedExpect = missesExpect(kase, result.outcome);
+  return result;
+}
 
 // ── The run ───────────────────────────────────────────────────────────────────
 
@@ -419,20 +477,27 @@ function parseArgs(argv) {
 }
 
 // A client that passes every call through and tallies what it cost, by model; each tool call Charlie's model makes goes to
-// onToolUse(name, input).
-function meteredClient(inner, tally, onToolUse) {
+// onToolUse(name, input, id), and each result that goes back to it (the tool_result blocks that close the next request) to
+// onToolResult(id, content).
+function meteredClient(inner, tally, onToolUse, onToolResult) {
   return {
     messages: {
       async create(params, options) {
+        const charlie = Array.isArray(params.tools) && params.tools.some((tool) => tool && tool.name === "lookUpLive");
+        if (charlie) {
+          const back = params.messages[params.messages.length - 1];
+          for (const b of back && Array.isArray(back.content) ? back.content : []) {
+            if (b && b.type === "tool_result") onToolResult(b.tool_use_id, b.content);
+          }
+        }
         const response = await inner.messages.create(params, options);
         const u = (response && response.usage) || {};
         const t = (tally.byModel[params.model] ||= { input: 0, output: 0 });
         t.input += (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
         t.output += u.output_tokens || 0;
         tally.searches += (u.server_tool_use && u.server_tool_use.web_search_requests) || 0;
-        const charlie = Array.isArray(params.tools) && params.tools.some((tool) => tool && tool.name === "lookUpLive");
         if (charlie && response && Array.isArray(response.content)) {
-          for (const b of response.content) if (b && b.type === "tool_use") onToolUse(b.name, b.input);
+          for (const b of response.content) if (b && b.type === "tool_use") onToolUse(b.name, b.input, b.id);
         }
         return response;
       },
@@ -449,6 +514,7 @@ function recordedLive(live, current) {
       current.lookups.push({
         kind: a.kind, query: a.query, place: a.place,
         result: out && out.code ? out.code : out && out.answer ? "ok" : "failed",
+        ...(out && typeof out.answer === "string" && out.answer ? { answer: trimResult(out.answer) } : {}),
       });
       return out;
     },
@@ -530,13 +596,20 @@ async function main(argv) {
   let current = null;
   let inner;
   if (args.dry) {
-    inner = fakeClient();
+    inner = fakeClient((name) => (db.prepare("SELECT id FROM clients WHERE name = ?").get(name) || {}).id);
   } else {
     const Anthropic = require("@anthropic-ai/sdk");
     // as routes/assistant.js builds it
     inner = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 30_000, maxRetries: 1 });
   }
-  const client = meteredClient(inner, tally, (name, input) => current.tools.push({ name, input }));
+  const client = meteredClient(inner, tally, (name, input, id) => {
+    const call = { name, input };
+    current.tools.push(call);
+    current.calls.set(id, call);
+  }, (id, content) => {
+    const call = current.calls.get(id);
+    if (call && call.result === undefined) call.result = trimResult(content);
+  });
 
   const meta = {
     dry: args.dry, model, judgeModel: JUDGE_MODEL, liveModel: LIVE_MODEL, searchTool: SEARCH_TOOL_TYPE,
@@ -549,7 +622,7 @@ async function main(argv) {
   const results = [];
   let aborted = null;
   for (const [i, kase] of cases.entries()) {
-    current = { tools: [], lookups: [], logs: [] };
+    current = { tools: [], calls: new Map(), lookups: [], logs: [] };
     const live = recordedLive(args.dry ? fakeLive() : makeLive({ client, db, userId: user.id, turnId: `eval-${kase.id}` }), current);
     const ctx = { user, rates: { ...RATES }, db, live };
     const judge = args.dry ? fakeJudge : makeJudge(client);
@@ -569,25 +642,7 @@ async function main(argv) {
       console.info = info;
     }
     const ms = Date.now() - started;
-    const result = {
-      id: kase.id, expect: kase.expect, why: kase.why, ...(kase.live ? { live: true } : {}),
-      user: kase.messages[kase.messages.length - 1].content,
-      prior: kase.messages.slice(0, -1),
-      reply: turn ? turn.reply : null,
-      sources: turn ? turn.sources : [],
-      sideEffect: turn && turn.sideEffect ? turn.sideEffect.type : null,
-      compose: Boolean(turn && turn.compose),
-      ...(turn && turn.error ? { turnError: true } : {}),
-      ...(thrown ? { thrown } : {}),
-      ms,
-      usage: turn ? turn.usage : null,
-      tools: current.tools,
-      lookups: current.lookups,
-      logs: current.logs,
-    };
-    result.outcome = outcomeOf({ ...result, sideEffect: turn && turn.sideEffect, compose: turn && turn.compose });
-    result.breaks = thrown ? [] : lockBreaks(kase, { ...result, sideEffect: turn && turn.sideEffect, compose: turn && turn.compose });
-    result.missedExpect = missesExpect(kase, result.outcome);
+    const result = caseResult(kase, turn, current, ms, thrown);
     results.push(result);
     console.log(`[${String(i + 1).padStart(2)}/${cases.length}] ${kase.id.padEnd(30)} ${result.outcome.padEnd(22)} ${String(ms).padStart(6)} ms` +
       (result.breaks.length ? `  LOCK BREAK x${result.breaks.length}` : "") + (result.missedExpect ? "  (miss)" : ""));
@@ -621,5 +676,5 @@ if (require.main === module) {
 
 module.exports = {
   CASES_PATH, EXPECTS, SEED_CLIENTS, RATES, loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction,
-  searchLeak, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs, main,
+  searchLeak, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, main,
 };

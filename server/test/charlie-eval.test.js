@@ -1,11 +1,17 @@
 "use strict";
 // The eval's cases file and its lock-break detectors (server/scripts/charlie-eval.js). The eval itself spends real API money and
-// is never run here; requiring the script only loads its pure helpers (no database, no network, no .env).
+// is never run here; requiring the script only loads its pure helpers (no database, no network, no .env). The plumbing is checked
+// by a --dry run in a child process (its own throwaway database, a scripted fake client: no network, no key).
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync } = require("child_process");
 const test = require("node:test");
 const assert = require("node:assert");
 
 const {
   EXPECTS, SEED_CLIENTS, loadCases, caseProblems, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs,
+  trimResult, RESULT_MAX,
 } = require("../scripts/charlie-eval");
 const { CANT_VERIFY, ADVICE_HANDOFF, NOTHING_CHANGED, NO_LIVE_DATA } = require("../lib/assistant/prompt");
 
@@ -133,4 +139,48 @@ test("charlie eval: outcomes, expectation misses, percentiles and arguments", ()
     { dry: true, model: "claude-sonnet-4-6", out: null, only: ["a", "b"] });
   assert.throws(() => parseArgs(["--model"]), /needs a value/);
   assert.throws(() => parseArgs(["--bogus"]), /unknown option/);
+});
+
+// A dry run in a child process (its own throwaway database; no network, no key), read back from its transcript. Run once.
+const SCRIPT = path.join(__dirname, "..", "scripts", "charlie-eval.js");
+let dryTranscript = null;
+function dryRun() {
+  if (dryTranscript) return dryTranscript;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "charlie-eval-test-"));
+  try {
+    const out = path.join(dir, "dry.json");
+    execFileSync(process.execPath, [SCRIPT, "--dry", "--out", out], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    dryTranscript = JSON.parse(fs.readFileSync(out, "utf8"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  return dryTranscript;
+}
+
+test("charlie eval transcript (E2): every tool call keeps a trimmed result; a proposal keeps its whole sideEffect", () => {
+  const { cases } = dryRun();
+  const calls = cases.flatMap((c) => c.tools.map((t) => ({ id: c.id, ...t })));
+  assert.ok(calls.length > 0, "the dry run made no tool calls");
+  for (const t of calls) {
+    assert.strictEqual(typeof t.result, "string", `${t.id} ${t.name}: no result string`);
+    assert.ok(t.result.length > 0 && t.result.length <= RESULT_MAX + 1, `${t.id} ${t.name}: result is ${t.result.length} characters`);
+  }
+  // a lookup's result is what went back to the model: the answer is in it
+  assert.ok(calls.some((t) => t.name === "lookUpLive" && /home team won/.test(t.result)), "no lookUpLive result carries its answer");
+  // the tool that packaged a change: its turn ended there, so the transcript keeps the whole change, on the case and on the call
+  const proposal = cases.find((c) => c.id === "adv-log-and-say-done");
+  assert.deepStrictEqual(proposal.sideEffect, { type: "logContact", clientId: 4 });   // Tom & Ellie Brandt, the fourth seeded client
+  assert.strictEqual(proposal.outcome, "proposal:logContact");
+  assert.deepStrictEqual(proposal.tools.map((t) => t.name), ["logContactTool"]);
+  assert.match(proposal.tools[0].result, /"sideEffect":\{"type":"logContact","clientId":4\}/);
+});
+
+test("charlie eval transcript (E2): a result is cut to 2,000 characters with an ellipsis, a short one is kept whole", () => {
+  assert.strictEqual(RESULT_MAX, 2000);
+  assert.strictEqual(trimResult("x".repeat(2000)), "x".repeat(2000));
+  const cut = trimResult("y".repeat(2500));
+  assert.strictEqual(cut.length, 2001);
+  assert.ok(cut.endsWith("…") && cut.startsWith("y".repeat(2000)));
+  assert.strictEqual(trimResult({ a: 1 }), '{"a":1}');
+  assert.strictEqual(trimResult(undefined), "null");
 });
