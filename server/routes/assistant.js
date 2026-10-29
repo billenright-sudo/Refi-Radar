@@ -468,11 +468,14 @@ function createAssistantRouter({ limiter = {} } = {}) {
     }
     meter(req.user.id, turnId, out.usage || {});
     const payload = { reply: out.reply, sources: out.sources, turnId };
-    // a turn that ran out of time comes back like a failed one (200, error:true), with the usage of the calls that did finish;
-    // the warning (no content) is there to count how often it happens in production
+    // a turn that ran out of time, or that the model refused, comes back like a failed one (200, error:true), with the usage of the
+    // calls that did finish; the warning (no content) is there to count how often each happens in production (M-2: a refusal is
+    // logged as a refusal, not as a deadline)
     if (out.error) {
       payload.error = true;
-      console.warn("POST /api/assistant/turn: turn deadline reached");
+      console.warn(out.reason === "refusal"
+        ? "POST /api/assistant/turn: the model refused the turn"
+        : "POST /api/assistant/turn: turn deadline reached");
     }
     // Each proposed change gets its own id; /confirm uses it so a double tap cannot write twice. `details` are the rows the
     // pending card shows under the read-back (display only: /confirm never reads them).

@@ -2597,7 +2597,8 @@ const changeEventLine = (text, before) => {
   return !PAST_QUESTION_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
 };
 
-// runTurn({ messages, ctx, client, judge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
+// runTurn({ messages, ctx, client, judge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, reason?, usage }
+//   (reason, with error:true: why the turn ended in an error, "deadline" or "refusal"; final review M-2)
 //   messages:   Messages API history ending with the user's latest message (not mutated)
 //   ctx:        { user, rates, db, google?, live? }, handed to the tools (google = the per-user Google adapter; without one the
 //               calendar tools say Google is not connected; live = live.js makeLive, lookUpLive's search; without one it is unavailable)
@@ -2628,7 +2629,8 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
     if (compose) out.compose = compose;
     return out;
   };
-  const tookTooLong = () => ({ ...finish(TOOK_TOO_LONG), error: true });
+  // A turn that ends in an error says why (final review M-2), so the route can log a refusal as one: "deadline" or "refusal".
+  const tookTooLong = () => ({ ...finish(TOOK_TOO_LONG), error: true, reason: "deadline" });
   // The can't-verify line, or (Ruling 49) the Google line when the user's message is about the calendar or availability (in that
   // sense: asksAboutCalendar, Ruling 64) and Google is not usable for them: then the reason nothing could be checked is that one.
   const cantVerifyCalendar = () =>
@@ -2712,7 +2714,7 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
     usage.outputTokens += Number.isFinite(u.output_tokens) ? u.output_tokens : 0;
     // A decline is an HTTP 200 with stop_reason "refusal": whatever it carries is not an answer, so none of it is said and the turn
     // is the error line, like a failed call (error:true), with this call's tokens metered.
-    if (response.stop_reason === "refusal") return { ...finish(ERROR_TURN), error: true };
+    if (response.stop_reason === "refusal") return { ...finish(ERROR_TURN), error: true, reason: "refusal" };
 
     const content = response && Array.isArray(response.content) ? response.content : [];
     const toolUses = response && response.stop_reason === "tool_use"

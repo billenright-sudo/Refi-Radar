@@ -7461,3 +7461,23 @@ test("Final review M-1: the judge log line says why — ok, error, timeout, refu
     }
   });
 });
+
+// ── Final review M-2: a turn that ends in an error says why ─────────────────────────────────────────────────────────────────────
+
+test("Final review M-2: runTurn says why a turn ended in an error — a refusal is 'refusal', running out of time 'deadline'; the reply is unchanged", async () => {
+  let r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([resp([], "refusal")]) });
+  assert.deepStrictEqual([r.reply, r.error, r.reason], [ERROR_TURN, true, "refusal"]);
+  r = await runTurn({
+    messages: userSays("what are rates today?"), ctx: brokerCtx,
+    client: fakeClient([useTool("getMarketUpdate"), resp([{ type: "text", text: "The thirty-year is at 6.52 percent." }], "refusal")]),
+  });
+  assert.deepStrictEqual([r.reply, r.error, r.reason], [ERROR_TURN, true, "refusal"]);
+  // out of time before a model call, and in one
+  r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([say("Hi!")]), deadlineMs: 100, minCallMs: 500 });
+  assert.deepStrictEqual([r.reply, r.error, r.reason], [TOOK_TOO_LONG, true, "deadline"]);
+  r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([() => new Promise(() => {})]), deadlineMs: 200, minCallMs: 50 });
+  assert.deepStrictEqual([r.reply, r.error, r.reason], [TOOK_TOO_LONG, true, "deadline"]);
+  // a turn that did not end in an error has no reason
+  r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([say("Hi!")]) });
+  assert.equal("reason" in r, false);
+});

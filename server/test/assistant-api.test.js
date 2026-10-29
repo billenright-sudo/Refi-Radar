@@ -1704,3 +1704,30 @@ test("turn (final review M-6): a valid localDate on /turn reaches the lookup pro
     app.set("assistantJudge", null);
   }
 });
+
+// ── Final review M-2: refusals are logged as refusals ────────────────────────
+
+test("turn (final review M-2): a refusal is logged as a refusal, a deadline as a deadline; the reply and payload are as before", async () => {
+  const warned = [];
+  const savedWarn = console.warn;
+  console.warn = (...args) => warned.push(args.join(" "));
+  const saved = process.env.CHARLI_TURN_DEADLINE_MS;
+  try {
+    setClient(fakeClient([resp([], "refusal")]));
+    let r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("hello"), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.deepStrictEqual(Object.keys(r.data).sort(), ["error", "reply", "sources", "turnId"]);
+    assert.deepStrictEqual([r.data.reply, r.data.error], [ERROR_TURN, true]);
+    assert.deepStrictEqual(warned, ["POST /api/assistant/turn: the model refused the turn"]);
+    // a deadline (the model call never answers within the 2,000 ms floor) is still the deadline line
+    warned.length = 0;
+    process.env.CHARLI_TURN_DEADLINE_MS = "2000";
+    setClient(fakeClient([() => new Promise(() => {})]));
+    r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("hello"), rates: LIVE });
+    assert.deepStrictEqual([r.data.reply, r.data.error], [TOOK_TOO_LONG, true]);
+    assert.deepStrictEqual(warned, ["POST /api/assistant/turn: turn deadline reached"]);
+  } finally {
+    console.warn = savedWarn;
+    if (saved === undefined) delete process.env.CHARLI_TURN_DEADLINE_MS; else process.env.CHARLI_TURN_DEADLINE_MS = saved;
+  }
+});
