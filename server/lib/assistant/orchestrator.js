@@ -66,6 +66,13 @@ const BOOK_FACT_RE = wordRe([
   "savings?", "LTV", "equity", "refi\\w*", "cash[\\s-]?out",
   "call\\w*", "log\\w*", "contact\\w*", "loans?", "pipeline", "books?", "check[\\s-]?ins?", "follow[\\s-]?ups?",
 ]);
+// Ruling T5-1: what's-happening topics (a game, a score, the news, the weather). With no lookup cited, a reply on one of them may
+// state a live fact from memory, so it is a soft block: the judge's LIVE makes it the no-live-data line, CHAT lets it be said.
+// ("won" is not the "won" of "won't".)
+const LIVE_TOPIC_RE = wordRe([
+  "games?", "scores?", "scored", "won(?!['\\u2019]t)", "wins?", "winning", "beat", "lost", "losing", "playoffs?", "seasons?",
+  "news", "headlines?", "weather", "forecasts?", "temperatures?", "rain(?:s|y|ing)?", "snow(?:s|y|ing)?", "storms?", "stormy",
+]);
 
 // ── Openers, questions, completion claims ────────────────────────────────────
 
@@ -623,6 +630,8 @@ function isLoneClarifyingQuestion(reply, userText) {
 //      definition comes from explainTerm, never from the model's memory; on this path the judge's
 //      DEFINE keeps that law) (with no cited tool result, a statement about the book can't be
 //      sourced, even if the user only said "good morning");
+//   5a. (Ruling T5-1) the user's message OR the model's own text names a what's-happening topic (LIVE_TOPIC_RE: a game, a
+//      score, the news, the weather): a live fact from memory is the judge's LIVE, and so the no-live-data line;
 //   pass: 6. anything else (greetings, small talk, "how can I help").
 // (A lone question never has a digit, a spoken figure or no text, so testing 2 before 3 changes no answer.)
 // Safe ONLY after claimsCompletion(modelText, false) has run and returned false, as runTurn does:
@@ -638,6 +647,7 @@ function classifyUngrounded(userText, modelText) {
   if (isLoneClarifyingQuestion(text, user)) return { kind: "pass", line: null };
   if (isYesNoQuestion(user)) return { kind: "soft", line: null };
   if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text) || mentionsGlossaryTerm(user)) return { kind: "soft", line: null };
+  if (LIVE_TOPIC_RE.test(user) || LIVE_TOPIC_RE.test(text)) return { kind: "soft", line: null };
   return { kind: "pass", line: null };
 }
 

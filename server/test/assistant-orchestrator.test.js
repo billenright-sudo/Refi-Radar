@@ -6931,3 +6931,36 @@ test("Charlie T5: a lookup that names a client in the book never reaches ctx.liv
   });
   assert.deepStrictEqual(r.sources, []);
 });
+
+test("Charlie T5 (Ruling T5-1): a live topic with no lookup cited is a soft block — the judge's LIVE is the no-live-data line", async () => {
+  await capturingInfo(async () => {
+    const ask = (u, said, extra) => runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(said)]), ...extra });
+    // a game result stated from memory: LIVE is NO_LIVE_DATA, CHAT is said, no judge is can't-verify
+    let r = await ask("who won the game last night?", "The Cowboys won.", { judge: judgeSays("LIVE") });
+    assert.equal(r.reply, NO_LIVE_DATA);
+    r = await ask("who won the game last night?", "The Cowboys won.", { judge: judgeSays("CHAT") });
+    assert.equal(r.reply, "The Cowboys won.");
+    r = await ask("who won the game last night?", "The Cowboys won.", {});
+    assert.equal(r.reply, CANT_VERIFY);
+    // the broker's own win is chat
+    const judge = recordingJudge("CHAT");
+    r = await ask("we won the deal today", "Huge! That's the kind of day you remember. How'd you close it?", { judge });
+    assert.equal(r.reply, "Huge! That's the kind of day you remember. How'd you close it?");
+    assert.equal(judge.calls.length, 1);
+  });
+  // the topic words, in the user's message or the reply, whole words only
+  const SOFT_ = { kind: "soft", line: null };
+  for (const [u, said] of [
+    ["who won the game last night?", "The Cowboys won."],
+    ["any news?", "Nothing big."],
+    ["how's it looking outside?", "Looks like rain later."],
+    ["hey", "Stay dry, there's a storm coming."],
+    ["what's the forecast?", "Sunny all week."],
+    ["did you catch the playoffs?", "Couldn't miss them."],
+    ["I'm heading out", "Enjoy the weather!"],
+    ["we lost one today", "Ugh, sorry. Want to talk it through?"],
+  ]) assert.deepStrictEqual(classifyUngrounded(u, said), SOFT_, `${u} / ${said}`);
+  for (const [u, said] of [["thanks", "Anytime!"], ["I'm flying to Austin", "Safe travels!"], ["gamer here", "Nice!"], ["newsletter time", "Fun."], ["skip it", "Okay, I won’t."], ["skip it", "Okay, I won't."]]) {
+    assert.deepStrictEqual(classifyUngrounded(u, said), { kind: "pass", line: null }, `${u} / ${said}`);
+  }
+});

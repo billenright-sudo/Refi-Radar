@@ -34,6 +34,12 @@ addClientRow(orgA, broker, "Austin Smith");
 addClientRow(orgA, broker, "Okafor, Grace");
 addClientRow(orgA, broker, "Daniel Reyes Jr.");
 const other = addUser(orgA, "broker", "other@a.co");
+// Two loan officers in the same org (Ruling T5-2), and another org whose client is nobody's here.
+const lo1 = addUser(orgA, "lo", "lo1@a.co");
+const lo2 = addUser(orgA, "lo", "lo2@a.co");
+addClientRow(orgA, lo2, "Priya Natarajan");
+const orgB = addOrg("Bravo");
+addClientRow(orgB, addUser(orgB, "broker", "broker@b.co"), "Zed Quill");
 
 const ctxWith = (live) => ({ user: { id: broker, role: "broker", org_id: orgA }, rates: null, db, live });
 // a ctx.live that records every lookUp it is asked and answers `answer` (a value or a function of the args)
@@ -105,9 +111,20 @@ test("lookUpLive: the client-name screen is whole-word — the Browns and Austin
     assert.equal(r.source, "web — espn.com", JSON.stringify(args));
     assert.deepStrictEqual(live.calls, [{ kind: args.kind, query: args.query, place: args.place }], JSON.stringify(args));
   }
-  // and a name in somebody else's book is not this user's to screen (scopedClients)
+});
+
+test("lookUpLive (Ruling T5-2): the name screen is every client in the caller's org, not only the caller's own book", async () => {
+  const loCtx = (live) => ({ user: { id: lo1, role: "lo", org_id: orgA }, rates: null, db, live });
+  // a colleague's client (assigned to lo2), and the broker's clients, are refused for lo1, who sees none of them
+  for (const query of ["natarajan news", "Priya Natarajan linkedin", "robert brown"]) {
+    const live = recordingLive();
+    const r = await lookUpLive({ kind: "news", query }, loCtx(live));
+    assert.deepStrictEqual(r, { data: { error: NAMES_SOMEONE }, source: "(refused)" }, query);
+    assert.equal(live.calls.length, 0, query);
+  }
+  // a client of another org is nobody's here
   const live = recordingLive();
-  const r = await lookUpLive({ kind: "news", query: "robert brown" }, { user: { id: other, role: "lo", org_id: orgA }, db, live });
+  const r = await lookUpLive({ kind: "news", query: "quill news" }, loCtx(live));
   assert.equal(r.source, "web — espn.com");
   assert.equal(live.calls.length, 1);
 });

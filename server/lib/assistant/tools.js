@@ -405,16 +405,20 @@ function screenedNames(name) {
   if (surnameFirst.length > 0) terms.push(surnameFirst[surnameFirst.length - 1]);
   return terms;
 }
-// True when `text` names a client in the caller's book (scopedClients): a full name, or a surname as a whole word, in any case
-// ("Brown" is screened, "Browns" is not).
+// True when `text` names any client of the caller's organization (Ruling T5-2: every row with the caller's org_id, not only the
+// caller's own book, so a loan officer can't send a colleague's client out either): a full name, or a surname as a whole word,
+// in any case ("Brown" is screened, "Browns" is not).
 const namesClient = (text, ctx) => {
+  const { user, db } = ctx || {};
+  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
   const t = plainText(text);
-  return scopedClients(ctx).some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
+  return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id)
+    .some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
 };
 
 // One live lookup (design §6), for outside-world questions only: a score, the news, the weather, what's happening. Before
 // anything leaves the server, code refuses whatever the query or the place could carry out of it, and nothing is searched: a
-// client in the caller's book (full name or surname), an email address, a phone number or a dollar amount; a loan-guideline
+// client of the caller's org (full name or surname), an email address, a phone number or a dollar amount; a loan-guideline
 // question; mortgage rates or the rate market (getMarketUpdate's); and weather with no place (the model asks where). The search is
 // ctx.live's (lib/assistant/live.js makeLive, built by the route for each turn): its answer comes back as data, cited as
 // "web — " and the domains it came from. The daily cap and a failed search are tool errors.
