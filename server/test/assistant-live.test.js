@@ -303,7 +303,8 @@ test("lookUpLive (residual R4): a rate sentence with no rate word (a 30-year, bo
   const KEPT = "The Chiefs lost 20-3 at Seattle.";
   for (const dropped of [
     "The average 30-year hit 6.1 percent.", "Borrowing costs rose again.", "The APR climbed.", "The thirty-year eased this week.",
-    "A 15-year now averages 5.4 percent.", "Fifteen-year terms got cheaper.", "The average apr fell.", "Borrowing cost hit a high.",
+    // (residual round 2, S4: APR in capitals only, so "The average apr fell." became "The average APR fell.")
+    "A 15-year now averages 5.4 percent.", "Fifteen-year terms got cheaper.", "The average APR fell.", "Borrowing cost hit a high.",
   ]) {
     assert.equal((await look(`${KEPT} ${dropped}`)).data.answer, KEPT, dropped);
   }
@@ -311,6 +312,22 @@ test("lookUpLive (residual R4): a rate sentence with no rate word (a 30-year, bo
     data: { error: "the lookup didn't work just now" }, source: "(unavailable)",
   });
   assert.equal((await look(KEPT)).data.answer, KEPT);
+});
+
+test("lookUpLive (residual round 2, S4): '30 year', '30-yr' and 'thirty year' are dropped too; APR only in capitals, so the month Apr stays", async () => {
+  const look = (answer) =>
+    lookUpLive({ kind: "news", query: "top news today" }, ctxWith(recordingLive({ answer, sources: [{ title: "Headline", domain: "npr.org" }] })));
+  const KEPT = ["The game is Apr. 3 at noon.", "The Chiefs lost 20-3 at Seattle."];
+  for (const dropped of [
+    "The 30 year hit 6.1 percent.", "The 30-yr climbed.", "The thirty year fell.", "The APR climbed.", "A 15 year averaged 5.4 percent.",
+    "The Thirty Year eased.", "The 15-YR fell.",
+  ]) {
+    assert.equal((await look(`${KEPT[0]} ${dropped} ${KEPT[1]}`)).data.answer, KEPT.join(" "), dropped);
+  }
+  // the month, in any case, keeps its sentence
+  for (const kept of ["The game is Apr. 3 at noon.", "Apr 12 is the date.", "It opens apr 9."]) {
+    assert.equal((await look(`${kept} ${KEPT[1]}`)).data.answer, `${kept} ${KEPT[1]}`, kept);
+  }
 });
 
 test("TOOL_SCHEMA: lookUpLive takes kind, query and place, for the outside world only — never clients, rates or guidelines", () => {

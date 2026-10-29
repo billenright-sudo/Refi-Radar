@@ -538,15 +538,19 @@ function answerSentences(text) {
 }
 // Final review C-1 follow-up: lending terms, whole words in any case ("The FHA raised its loan limits." names no guideline word, and
 // is one). "VA" only as "VA loan(s)", so "Richmond, VA" stays. Residual R4: and a rate said with no rate word ("The average 30-year
-// hit 6.1 percent.", "Borrowing costs rose again.", "The APR climbed."); a score's "20-3" is no term.
+// hit 6.1 percent.", "Borrowing costs rose again.", "The APR climbed."); a score's "20-3" is no term. Residual round 2, S4: also
+// "30 year", "30-yr" and "thirty year"; and APR in capitals only (APR_RE), so the month ("The game is Apr. 3 at noon.") stays.
 const LENDING_TERMS_RE = Object.freeze(new RegExp("\\b(?:" + [
   "FHA", "VA\\s+loans?", "USDA", "Fannie\\s+Mae", "Freddie\\s+Mac", "HUD", "CFPB", "conforming", "jumbo", "loan\\s+limits?", "loans?",
   "lend\\w*", "underwrit\\w*", "DTI", "debt-to-income", "LTV", "loan-to-value", "PMI", "MIP", "down\\s+payments?", "closing\\s+costs?",
-  "credit\\s+scores?", "APR", "borrowing\\s+costs?", "\\d+-year", "(?:ten|fifteen|twenty|thirty)-year",
+  "credit\\s+scores?", "borrowing\\s+costs?", "\\d+-year", "(?:ten|fifteen|twenty|thirty)-year", "\\d+\\s+year", "\\d+-yr",
+  "(?:ten|fifteen|twenty|thirty)\\s+year",
 ].join("|") + ")\\b", "i"));
+const APR_RE = Object.freeze(/\bAPR\b/);
 // Final review C-1: a mortgage rate, the rate market, a loan guideline or a lending fact never comes from the web, so a sentence or a
 // result title about one is dropped from what a lookup hands back, whatever the query was ("top news today" may answer with the Fed).
-const aboutRatesOrGuidelines = (text) => RATE_QUERY_RE.test(text) || isGuidelineQuestion(text) || LENDING_TERMS_RE.test(text);
+const aboutRatesOrGuidelines = (text) =>
+  RATE_QUERY_RE.test(text) || isGuidelineQuestion(text) || LENDING_TERMS_RE.test(text) || APR_RE.test(text);
 
 // One live lookup (design §6), for outside-world questions only: a score, the news, the weather, what's happening. Before
 // anything leaves the server, code refuses whatever the query or the place could carry out of it, and nothing is searched: a
