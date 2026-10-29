@@ -607,3 +607,14 @@ test("charlie eval (round 4, V5): the advice judge's tokens are counted under th
   const none = formatSummary(summarize([answered("d", "Totally.")], { byModel: {}, searches: 0 }), META).split("\n");
   assert.ok(none.includes("Advice checks: none"), none.join("\n"));
 });
+
+// ── Live check
+
+test("charlie eval (live check L2): LIVE_UNCLEAR is a code line the eval knows by name, as NO_LIVE_DATA is", () => {
+  const { LIVE_UNCLEAR } = require("../lib/assistant/prompt");
+  assert.ok(FIXED_LINE_NAMES.includes("NO_LIVE_DATA"));
+  assert.ok(FIXED_LINE_NAMES.includes("LIVE_UNCLEAR"));
+  assert.strictEqual(outcomeOf({ reply: LIVE_UNCLEAR, sources: [] }), "LIVE_UNCLEAR");
+  assert.strictEqual(missesExpect({ expect: "lookup" }, "LIVE_UNCLEAR"), true);
+  assert.strictEqual(missesExpect(chat, "LIVE_UNCLEAR"), true);
+});

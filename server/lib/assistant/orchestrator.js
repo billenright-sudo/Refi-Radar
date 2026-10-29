@@ -23,7 +23,7 @@ const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, withTurnClientNa
 const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
-  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
+  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
@@ -2877,8 +2877,11 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       // there: the figures (and a calendar read's times and days) are checked against the other tools' results only, and a figure
       // only a lookup carried is can't-verify. A turn that cites only lookups (and the glossary) keeps the lookup's answer.
       const grounding = liveOnly ? [...payloads, ...livePayloads] : payloads;
-      // Grounded: every figure the model speaks must be one the tools returned this turn.
-      if (!text || ungroundedNumbers(text, grounding).length > 0) return finish(CANT_VERIFY);
+      // Grounded: every figure the model speaks must be one the tools returned this turn. (Live check L2: on a turn that cites only
+      // lookups, and the glossary, a figure the lookup did not return is LIVE_UNCLEAR: the lookup answered, but not cleanly enough
+      // to say. Every other turn's line is can't-verify, as before.)
+      if (!text) return finish(CANT_VERIFY);
+      if (ungroundedNumbers(text, grounding).length > 0) return finish(liveCited && liveOnly ? LIVE_UNCLEAR : CANT_VERIFY);
       // A calendar read also grounds the clock times, the weekday names and the relative days a reply names (Ruling 13).
       if (calendarReads.length > 0 && !calendarFactsHold(text, calendarReads, grounding, ctx)) return finish(CANT_VERIFY);
       return finish(text, sources);

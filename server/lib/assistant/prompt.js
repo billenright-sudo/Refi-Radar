@@ -20,6 +20,10 @@ const ADVICE_HANDOFF = "That's one for a CPA or an attorney, so I won't guess.";
 // no live lookup this turn returned (LIVE).
 const NO_LIVE_DATA = "I couldn't look that up just now, so I won't guess.";
 
+// Live check L2: what code says in place of a reply on a turn that cites only lookups (and the glossary) when a figure in it is not
+// one the lookup returned: the lookup did answer, so the plain reason is that its answer could not be read back cleanly.
+const LIVE_UNCLEAR = "I couldn't get a clean read on that one, so I won't guess.";
+
 // runTurn never performs an action, so any first-person "I logged / added / saved it" or a
 // bare "Done" from the model is false by construction; this replaces it. It speaks of "that change" only: it must stay
 // true after a change confirmed earlier in the same session.
@@ -205,5 +209,5 @@ const JOKE_TOPICS = Object.freeze([
 
 module.exports = {
   CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 };

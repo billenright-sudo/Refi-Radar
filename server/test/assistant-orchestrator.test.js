@@ -6976,11 +6976,12 @@ test("Charlie T5: a lookup-only turn the judge calls LIVE is spoken with its web
   });
 });
 
-test("Charlie T5: a figure the lookup did not return is can't-verify, even when the judge says LIVE", async () => {
+test("Charlie T5: a figure the lookup did not return is not said, even when the judge says LIVE", async () => {
   await capturingInfo(async () => {
     const judge = recordingJudge("LIVE");
     const r = await lookupTurn("The Cowboys won 27 to 21.", { judge });
-    assert.equal(r.reply, CANT_VERIFY);
+    // (live check L2: on a lookup-only turn the figure check's line is LIVE_UNCLEAR, not CANT_VERIFY)
+    assert.equal(r.reply, require("../lib/assistant/prompt").LIVE_UNCLEAR);
     assert.deepStrictEqual(r.sources, []);
     // the lookup ran and the judge passed it: the figure check is what held it
     assert.equal(r.lookups.length, 1);
@@ -7256,9 +7257,10 @@ test("Final review C-1: a mixed turn that states only the market's figure is spo
 
 const M7_LONG = { kind: "news", query: "x".repeat(201) };   // refused: "a query of at most 200 characters is required"
 
-test("Final review M-7: a failed tool's error text grounds nothing — its 200 or 70 is can't-verify", async () => {
+test("Final review M-7: a failed tool's error text grounds nothing — its 200 or 70 is never said", async () => {
   await capturingInfo(async () => {
     // a lookup-only turn: one lookup answers, one fails with "at most 200 characters"; the judge passes it as LIVE
+    // (live check L2: a lookup-only turn's figure-check line is LIVE_UNCLEAR, where it was can't-verify)
     const { ctx } = liveCtx();
     let r = await runTurn({
       messages: userSays("how did the Cowboys do last night?"), ctx, judge: judgeSays("LIVE"),
@@ -7270,7 +7272,8 @@ test("Final review M-7: a failed tool's error text grounds nothing — its 200 o
         say("The Cowboys won 27 to 20, and a search can be 200 characters."),
       ]),
     });
-    assert.equal(r.reply, CANT_VERIFY);
+    assert.equal(r.reply, require("../lib/assistant/prompt").LIVE_UNCLEAR);
+    assert.deepStrictEqual(r.sources, []);
     // beside the market: a career-stage call that failed ("from 0 to 70") grounds no 70
     r = await runTurn({
       messages: userSays("what's the thirty-year today?"), ctx: brokerCtx,
@@ -8059,5 +8062,53 @@ test("Live check L1 (C-1 b): on a mixed turn a lookup's '$1.5 billion' still gro
       assert.deepStrictEqual(r.sources, [], said);
       assert.equal(judge.calls.length, 0, said);
     }
+  });
+});
+
+// ── Live check L2: a lookup answer that fails the figure check says so plainly ─────────────────────────────────────────────────
+
+test("Live check L2: LIVE_UNCLEAR is the briefed line", () => {
+  const { LIVE_UNCLEAR } = require("../lib/assistant/prompt");
+  assert.equal(LIVE_UNCLEAR, "I couldn't get a clean read on that one, so I won't guess.");
+});
+
+test("Live check L2: a lookup-only turn whose reply states a figure the lookup lacks is LIVE_UNCLEAR; every other can't-verify stays", async () => {
+  const { LIVE_UNCLEAR } = require("../lib/assistant/prompt");
+  await capturingInfo(async () => {
+    // lookup-only, the judge passes it (LIVE, or CHAT), the figure is not the lookup's: LIVE_UNCLEAR, nothing cited
+    for (const verdict of ["LIVE", "CHAT"]) {
+      const r = await lookupTurn("The Cowboys won 27 to 21.", { judge: judgeSays(verdict) });
+      assert.equal(r.reply, LIVE_UNCLEAR, verdict);
+      assert.deepStrictEqual(r.sources, [], verdict);
+    }
+    // ... and beside the glossary too (a turn that cites only lookups and the glossary)
+    const { ctx } = liveCtx();
+    let r = await runTurn({
+      messages: userSays("what's LTV, and did the Cowboys win?"), ctx, judge: judgeSays("LIVE"),
+      client: fakeClient([
+        resp([
+          { type: "tool_use", id: "toolu_1", name: "explainTerm", input: { term: "LTV" } },
+          { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: LOOKUP },
+        ], "tool_use"),
+        say("The Cowboys won 31 to 20."),
+      ]),
+    });
+    assert.equal(r.reply, LIVE_UNCLEAR);
+    // the same turn with a FACT or DEFINE verdict, or no judge: still can't-verify
+    for (const extra of [{ judge: judgeSays("FACT") }, { judge: judgeSays("DEFINE") }, {}]) {
+      r = await lookupTurn("The Cowboys won 27 to 21.", extra);
+      assert.equal(r.reply, CANT_VERIFY, JSON.stringify(Object.keys(extra)));
+    }
+    // a mixed turn with a figure only the web carried: still can't-verify (C-1 b)
+    r = await c1Mixed("Inflation rose 3.1 percent in September, and your thirty-year is 6.52 percent.", C1_INFLATION, judgeSays("LIVE"));
+    assert.equal(r.reply, CANT_VERIFY);
+    // a book turn with an ungrounded figure, and an ungrounded turn with a figure: still can't-verify
+    r = await runTurn({ messages: userSays("rates?"), ctx: brokerCtx, client: fakeClient([useTool("getMarketUpdate"), say("The thirty-year is 6.1 percent.")]) });
+    assert.equal(r.reply, CANT_VERIFY);
+    r = await runTurn({ messages: userSays("how was your weekend?"), ctx: brokerCtx, client: fakeClient([say("Great, I read 20 pages.")]), judge: judgeSays("CHAT") });
+    assert.equal(r.reply, CANT_VERIFY);
+    // a lookup-only reply whose figures are the lookup's is still spoken
+    r = await lookupTurn("The Cowboys won 27 to 20.", { judge: judgeSays("LIVE") });
+    assert.equal(r.reply, "The Cowboys won 27 to 20.");
   });
 });
