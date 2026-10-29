@@ -6986,19 +6986,24 @@ test("Charlie T5: a lookup beside the glossary still gets the judge; beside a bo
     });
     assert.equal(r.reply, CANT_VERIFY);
     assert.equal(judge.calls.length, 1);
-    // rates + lookup: the rates ground it, so the judge is not asked and the figures meet the usual check
-    judge = recordingJudge("FACT");
-    r = await runTurn({
+    // rates + lookup: the rates ground it, so the judge is not asked and the figures meet the usual check, against the rates only
+    // (final review C-1: the lookup's 27 and 20 ground nothing beside a book or market source)
+    const ratesAndLookup = (said) => runTurn({
       messages: userSays("rates today, and did the Cowboys win?"), ctx, judge,
       client: fakeClient([
         resp([
           { type: "tool_use", id: "toolu_1", name: "getMarketUpdate", input: {} },
           { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: LOOKUP },
         ], "tool_use"),
-        say("The thirty-year is at 6.52 percent, and the Cowboys won 27 to 20."),
+        say(said),
       ]),
     });
-    assert.equal(r.reply, "The thirty-year is at 6.52 percent, and the Cowboys won 27 to 20.");
+    judge = recordingJudge("FACT");
+    r = await ratesAndLookup("The thirty-year is at 6.52 percent, and the Cowboys won 27 to 20.");
+    assert.equal(r.reply, CANT_VERIFY);
+    assert.equal(judge.calls.length, 0);
+    r = await ratesAndLookup("The thirty-year is at 6.52 percent, and the Cowboys won.");
+    assert.equal(r.reply, "The thirty-year is at 6.52 percent, and the Cowboys won.");
     assert.deepStrictEqual(r.sources, ["live rates 2026-10-21", "web — espn.com"]);
     assert.equal(judge.calls.length, 0);
   });
@@ -7110,5 +7115,94 @@ test("Charlie T7 F1 (Ruling T7-2, fix round 3): outside the form a sentence is s
     for (const said of ["Something is booked at noon?", "Something got booked Friday?"]) {
       for (const [u, script] of T7_F1_TURNS) assert.equal(await t7F1Reply(u, script, said), NOTHING_CHANGED, `${u}: ${said}`);
     }
+  });
+});
+
+// ── Final review C-1: on a mixed turn the web grounds no figure; a lookup carries no rate or guideline ──────────────────────────
+
+const C1_ASK = "What's in the news, and what's the thirty-year today?";
+const C1_NEWS = { kind: "news", query: "top news today" };
+// the review's repro answer, and a headline with a figure that is no rate (so the lookup itself is not dropped by C-1 a)
+const C1_RATE_NEWS = {
+  answer: "Mortgage rates fell to 6.1 percent this week, Freddie Mac said, and the FHA raised its loan limits.",
+  sources: [{ title: "x", domain: "npr.org" }],
+};
+const C1_INFLATION = { answer: "Inflation rose 3.1 percent in September, the Labor Department said.", sources: [{ title: "x", domain: "npr.org" }] };
+// a turn that calls getMarketUpdate and lookUpLive at once (market at 6.52), then says `said`
+const c1Mixed = (said, answer, judge) => {
+  const { ctx } = liveCtx(answer);
+  return runTurn({
+    messages: userSays(C1_ASK), ctx, judge,
+    client: fakeClient([
+      resp([
+        { type: "tool_use", id: "toolu_1", name: "getMarketUpdate", input: {} },
+        { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: C1_NEWS },
+      ], "tool_use"),
+      say(said),
+    ]),
+  });
+};
+
+test("Final review C-1: the review's repros — a web rate on a turn that also cites the market is can't-verify, with no judge asked", async () => {
+  await capturingInfo(async () => {
+    for (const said of [
+      "Your thirty-year is 6.1 percent today.",
+      "In the news, mortgage rates fell to 6.1 percent this week. Your live thirty-year is 6.52 percent.",
+    ]) {
+      const judge = recordingJudge("CHAT");
+      const r = await c1Mixed(said, C1_RATE_NEWS, judge);
+      assert.equal(r.reply, CANT_VERIFY, said);
+      assert.deepStrictEqual(r.sources, [], said);
+      assert.equal(judge.calls.length, 0, said);
+    }
+  });
+});
+
+test("Final review C-1 (b): on a turn that also cites a book or market source, a figure only the web carried is can't-verify", async () => {
+  await capturingInfo(async () => {
+    // the lookup comes back (inflation is no rate), and its 3.1 still grounds nothing beside the market
+    for (const said of ["Your thirty-year is 3.1 percent today.", "Inflation rose 3.1 percent in September, and your thirty-year is 6.52 percent."]) {
+      const r = await c1Mixed(said, C1_INFLATION, recordingJudge("CHAT"));
+      assert.equal(r.reply, CANT_VERIFY, said);
+    }
+    // the model was still handed the lookup's answer
+    const { ctx } = liveCtx(C1_INFLATION);
+    const client = fakeClient([
+      resp([
+        { type: "tool_use", id: "toolu_1", name: "getMarketUpdate", input: {} },
+        { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: C1_NEWS },
+      ], "tool_use"),
+      say("Your thirty-year is 3.1 percent today."),
+    ]);
+    await runTurn({ messages: userSays(C1_ASK), ctx, client });
+    assert.deepStrictEqual(toolResultPayload(client.calls[1], 1), { source: "web — npr.org", data: C1_INFLATION });
+  });
+});
+
+test("Final review C-1: a mixed turn that states only the market's figure is spoken, and a lookup-only figure still passes after LIVE", async () => {
+  await capturingInfo(async () => {
+    // the lookup answered (cited beside the market), and the lookup that only carried a rate failed (not cited)
+    for (const [answer, sources] of [
+      [C1_INFLATION, ["live rates 2026-10-21", "web — npr.org"]],
+      [C1_RATE_NEWS, ["live rates 2026-10-21"]],
+    ]) {
+      for (const said of ["Your live thirty-year is 6.52 percent.", "Inflation is up, and your live thirty-year is 6.52 percent."]) {
+        const judge = recordingJudge("FACT");
+        const r = await c1Mixed(said, answer, judge);
+        assert.equal(r.reply, said, `${answer.answer}: ${said}`);
+        assert.deepStrictEqual(r.sources, sources, `${answer.answer}: ${said}`);
+        assert.equal(judge.calls.length, 0);
+      }
+    }
+    // lookup-only: the judge first, then the figures against the lookup, as before
+    const { ctx } = liveCtx(C1_INFLATION);
+    const judge = recordingJudge("LIVE");
+    const r = await runTurn({
+      messages: userSays("What's in the news?"), ctx, judge,
+      client: fakeClient([useTool("lookUpLive", C1_NEWS), say("Inflation rose 3.1 percent in September.")]),
+    });
+    assert.equal(r.reply, "Inflation rose 3.1 percent in September.");
+    assert.deepStrictEqual(r.sources, ["web — npr.org"]);
+    assert.equal(judge.calls.length, 1);
   });
 });

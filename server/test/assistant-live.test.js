@@ -225,6 +225,52 @@ test("lookUpLive: success is the answer with a web citation of its unique domain
   }
 });
 
+test("lookUpLive (final review C-1 a): every answer sentence and result title about rates or guidelines is dropped; an answer of nothing else fails", async () => {
+  // the review's repro sentence: a mortgage rate, Freddie Mac and the FHA's loan limits, in one sentence
+  const RATE_SENTENCE = "Mortgage rates fell to 6.1 percent this week, Freddie Mac said, and the FHA raised its loan limits.";
+  const UNAVAILABLE = { data: { error: "the lookup didn't work just now" }, source: "(unavailable)" };
+  const look = (answer, args = { kind: "news", query: "top news today" }) => lookUpLive(args, ctxWith(recordingLive(answer)));
+  // beside a plain headline: only the headline comes back, a rate or guideline title is blanked (its domain is still cited),
+  // and the as-of line is kept
+  let r = await look({
+    answer: `${RATE_SENTENCE} The Senate passed the budget bill on Tuesday. Fannie Mae updated its selling guide for condos.`,
+    asOf: "October 28",
+    sources: [
+      { title: "Mortgage rates drop to 6.1%", domain: "npr.org" }, { title: "Senate passes budget", domain: "pbs.org" },
+      { title: "New FHA underwriting guidelines", domain: "cbsnews.com" },
+    ],
+  });
+  assert.deepStrictEqual(r, {
+    data: {
+      answer: "The Senate passed the budget bill on Tuesday.", asOf: "October 28",
+      sources: [{ title: "", domain: "npr.org" }, { title: "Senate passes budget", domain: "pbs.org" }, { title: "", domain: "cbsnews.com" }],
+    },
+    source: "web — npr.org, pbs.org, cbsnews.com",
+  });
+  // an initial or a title's period is no sentence break, so a rate sentence is never cut in two with its figure left behind
+  r = await look({
+    answer: "Fed Chair Jerome H. Powell said rates hold at 5.25 percent. U.S. stocks closed higher! Did the Fed move? No.",
+    sources: [{ title: "x", domain: "npr.org" }],
+  });
+  assert.deepStrictEqual(r.data.answer, "U.S. stocks closed higher! No.");
+  // an answer whose every sentence is about rates or guidelines is a failed lookup, as an unavailable one is
+  for (const answer of [
+    RATE_SENTENCE, "The Fed held rates steady. Mortgage rates rose to 6.6 percent.", "Treasury yields climbed; the 10-year note hit 4.5 percent.",
+    "FHA eligibility rules changed. New underwriting guidelines start Monday.",
+  ]) {
+    assert.deepStrictEqual(await look({ answer, sources: [{ title: "x", domain: "npr.org" }] }), UNAVAILABLE, answer);
+  }
+  // weather, scores and plain headlines still come through whole
+  for (const [args, answer] of [
+    [{ kind: "weather", query: "right now", place: "Austin" }, "Sunny and 72 in Austin. Rain is likely after 6 PM."],
+    [{ kind: "scores", query: "Cowboys last night" }, "The Cowboys beat the Giants 27 to 20 last night. Dak threw for 310 yards."],
+    [{ kind: "news", query: "top news today" }, "The Senate passed the budget bill. A storm hit the Gulf Coast."],
+  ]) {
+    r = await look({ answer, sources: [{ title: "Headline", domain: "npr.org" }] }, args);
+    assert.deepStrictEqual(r.data, { answer, sources: [{ title: "Headline", domain: "npr.org" }] }, answer);
+  }
+});
+
 test("TOOL_SCHEMA: lookUpLive takes kind, query and place, for the outside world only — never clients, rates or guidelines", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "lookUpLive");
   assert.ok(t, "lookUpLive is described");

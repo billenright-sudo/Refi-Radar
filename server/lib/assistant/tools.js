@@ -420,12 +420,31 @@ const namesClient = (text, ctx) => {
     .some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
 };
 
+// The sentences of a lookup's answer: a break is . ! or ? (and any closing quote or bracket) before a space, except after an
+// initial or a short title ("Jerome H. Powell", "U.S. stocks", "Dr. Lee"), where the pieces stay one sentence. A wrong join only
+// makes a sentence longer, so more of it is dropped with a rate in it (C-1), never less.
+const SENTENCE_BREAK_RE = /(?<=[.!?]["'”’)\]]*)\s+/;
+const ABBREVIATION_END_RE = /\b(?:[A-Z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|Gov|Sen|Rep|Gen|Lt|Col|Capt|Sgt|Mt|Ft|Ave|Inc|Corp|Co|Ltd|vs|etc)\.$/;
+function answerSentences(text) {
+  const out = [];
+  for (const piece of String(text).split(SENTENCE_BREAK_RE)) {
+    if (!piece) continue;
+    if (out.length > 0 && ABBREVIATION_END_RE.test(out[out.length - 1])) out[out.length - 1] += ` ${piece}`;
+    else out.push(piece);
+  }
+  return out;
+}
+// Final review C-1: a mortgage rate, the rate market or a loan guideline never comes from the web, so a sentence or a result title
+// about one is dropped from what a lookup hands back, whatever the query was ("top news today" may answer with the Fed).
+const aboutRatesOrGuidelines = (text) => RATE_QUERY_RE.test(text) || isGuidelineQuestion(text);
+
 // One live lookup (design §6), for outside-world questions only: a score, the news, the weather, what's happening. Before
 // anything leaves the server, code refuses whatever the query or the place could carry out of it, and nothing is searched: a
 // client of the caller's org (full name or surname), an email address, a phone number or a dollar amount; a loan-guideline
 // question; mortgage rates or the rate market (getMarketUpdate's); and weather with no place (the model asks where). The search is
 // ctx.live's (lib/assistant/live.js makeLive, built by the route for each turn): its answer comes back as data, cited as
-// "web — " and the domains it came from. The daily cap and a failed search are tool errors.
+// "web — " and the domains it came from, with every sentence and result title about rates or guidelines dropped (C-1). The daily
+// cap, a failed search and an answer with nothing else in it are tool errors.
 async function lookUpLive(args, ctx) {
   const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
   if (!LIVE_KINDS.includes(a.kind)) return fail("(invalid input)", `kind must be one of: ${LIVE_KINDS.join(", ")}`);
@@ -449,10 +468,12 @@ async function lookUpLive(args, ctx) {
   if (!live || typeof live.lookUp !== "function") return fail("(unavailable)", "live lookups aren't available right now");
   const out = await live.lookUp({ kind: a.kind, query, place: place || undefined });
   if (out && out.code === "cap") return fail("(unavailable)", "daily lookup limit reached");
-  const answer = out && typeof out.answer === "string" ? out.answer.trim() : "";
+  const answer = answerSentences(out && typeof out.answer === "string" ? out.answer.trim() : "")
+    .filter((sentence) => !aboutRatesOrGuidelines(sentence))
+    .join(" ");
   const sources = (out && Array.isArray(out.sources) ? out.sources : [])
     .filter((s) => s && typeof s.domain === "string" && s.domain.trim())
-    .map((s) => ({ title: typeof s.title === "string" ? s.title : "", domain: s.domain.trim() }));
+    .map((s) => ({ title: typeof s.title === "string" && !aboutRatesOrGuidelines(s.title) ? s.title : "", domain: s.domain.trim() }));
   if (!answer || sources.length === 0) return fail("(unavailable)", "the lookup didn't work just now");
   const asOf = typeof out.asOf === "string" && out.asOf.trim() ? out.asOf.trim() : null;
   return {

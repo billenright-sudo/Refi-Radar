@@ -2616,6 +2616,7 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
   const afterOffer = offerReplyOf(messages[messages.length - 2], last);
   const sources = [];   // citing sources of the read tools run this turn
   const payloads = [];  // the tool_result contents of the book/market tools this turn: the figures a reply may use (never explainTerm's)
+  const livePayloads = [];   // lookUpLive's tool_result contents, apart: they ground a figure only on a turn that cites nothing else (C-1)
   const calendarReads = [];   // { date, timeZone } of each calendar day read this turn
   const calendarEvents = [];  // { title, date, timeZone } of each event those reads returned (the title as the model saw it)
   const clientNames = new Set();   // the client names this turn's cited tool results carry (Ruling 70 a)
@@ -2779,17 +2780,22 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
       // Design §6: a live lookup grounds the live fact it returned and nothing about the book, and neither does the glossary (I3). A
       // turn that cites only those gets the judge as an ungrounded turn does, with one difference: LIVE passes, because the lookup
       // grounds it. FACT and DEFINE are can't-verify and ADVICE its hand-off; no judge, no time or a text it would cut is
-      // can't-verify. What passes still meets the figure check below, with the lookup's answer in `payloads`.
+      // can't-verify. What passes still meets the figure check below, with the lookup's answer among what grounds it.
       const liveCited = sources.some((src) => src.startsWith(LIVE_SOURCE_PREFIX));
-      if (text && liveCited && sources.every((src) => src.startsWith(LIVE_SOURCE_PREFIX) || src === GLOSSARY_SOURCE)) {
+      const liveOnly = sources.every((src) => src.startsWith(LIVE_SOURCE_PREFIX) || src === GLOSSARY_SOURCE);
+      if (text && liveCited && liveOnly) {
         const verdict = await judged(text);
         const line = verdict === "LIVE" ? null : verdictLine(verdict, CANT_VERIFY);
         if (line) return finish(line === CANT_VERIFY ? cantVerifyCalendar() : line);
       }
+      // Final review C-1: on a turn that also cites a book, market or calendar source no judge is asked, so the web grounds nothing
+      // there: the figures (and a calendar read's times and days) are checked against the other tools' results only, and a figure
+      // only a lookup carried is can't-verify. A turn that cites only lookups (and the glossary) keeps the lookup's answer.
+      const grounding = liveOnly ? [...payloads, ...livePayloads] : payloads;
       // Grounded: every figure the model speaks must be one the tools returned this turn.
-      if (!text || ungroundedNumbers(text, payloads).length > 0) return finish(CANT_VERIFY);
+      if (!text || ungroundedNumbers(text, grounding).length > 0) return finish(CANT_VERIFY);
       // A calendar read also grounds the clock times, the weekday names and the relative days a reply names (Ruling 13).
-      if (calendarReads.length > 0 && !calendarFactsHold(text, calendarReads, payloads, ctx)) return finish(CANT_VERIFY);
+      if (calendarReads.length > 0 && !calendarFactsHold(text, calendarReads, grounding, ctx)) return finish(CANT_VERIFY);
       return finish(text, sources);
     }
 
@@ -2844,7 +2850,7 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
       if (change.sideEffect.type === "createEvent") {
         // (not the booking's own result: its preview repeats the title, which would ground itself)
         const reads = outs.filter((o, i) => !o.sideEffect && !o.compose && runBlocks[i].name !== "explainTerm");
-        const seen = [...payloads, ...reads.map((o) => o.toolResult.content), userText];
+        const seen = [...payloads, ...livePayloads, ...reads.map((o) => o.toolResult.content), userText];
         if (ungroundedNumbers(String((change.sideEffect.event || {}).title), seen).length > 0) return finish(CANT_VERIFY);
       }
       return finish(readBack(change), cited, change.sideEffect, changeDetails(change));
@@ -2868,8 +2874,10 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
           }
         }
       }
-      // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote
-      if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);
+      // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote;
+      // a lookup's are kept apart (C-1)
+      if (runBlocks[i].name === "lookUpLive") livePayloads.push(o.toolResult.content);
+      else if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);
     }
     convo.push({ role: "user", content: outs.map((o) => o.toolResult) });
   }
