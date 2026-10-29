@@ -8112,3 +8112,22 @@ test("Live check L2: a lookup-only turn whose reply states a figure the lookup l
     assert.equal(r.reply, "The Cowboys won 27 to 20.");
   });
 });
+
+// ── Live check L3: Charlie states opinions as opinions ─────────────────────────────────────────────────────────────────────────
+
+test("Live check L3: CHARLI_SYSTEM carries the opinion paragraph exactly, right after the no-numbers-in-chat sentence", () => {
+  const OPINIONS =
+    "When you give an opinion, say it's yours: \"My take…\", \"If it were me…\", \"I think…\". Opinions are welcome on how to " +
+    "approach a client, sales, coaching, sports and everyday talk. Never let an opinion stand in for a fact: no guessing about a " +
+    "client's details, no take on where rates are heading, and no \"I'd guess it's deductible.\"";
+  assert.equal(CHARLI_SYSTEM.split(OPINIONS).length, 2, "the paragraph appears once, exactly");
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const at = paragraphs.indexOf(OPINIONS);
+  assert.ok(at > 0, "it is a paragraph of its own");
+  assert.ok(paragraphs[at - 1].endsWith(
+    "Chat, coaching, jokes and small talk carry no numbers at all, in digits or in words: say a couple of hours, a few calls or a " +
+    "short walk, never 2 hours, ten minutes or twenty calls.",
+  ), "right after the sentence that begins 'Chat, coaching, jokes and small talk carry no numbers at all'");
+  // and so in every user's system prompt
+  assert.ok(buildCharliSystem({ career_stage: "veteran" }).includes(`\n\n${OPINIONS}\n\n`));
+});

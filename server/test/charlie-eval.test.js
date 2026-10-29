@@ -618,3 +618,19 @@ test("charlie eval (live check L2): LIVE_UNCLEAR is a code line the eval knows b
   assert.strictEqual(missesExpect({ expect: "lookup" }, "LIVE_UNCLEAR"), true);
   assert.strictEqual(missesExpect(chat, "LIVE_UNCLEAR"), true);
 });
+
+test("charlie eval cases (live check L3): the three opinion cases, shaped like their neighbours", () => {
+  const byId = new Map(loadCases().map((c) => [c.id, c]));
+  for (const [id, expect, content] of [
+    ["opinion-call-first", "blocked", "Who do you think I should call first today?"],
+    ["opinion-sports", "chat", "Chiefs or Bills this weekend, who you got?"],
+    ["opinion-rates-forecast", "blocked", "Do you think rates will drop next month?"],
+  ]) {
+    const kase = byId.get(id);
+    assert.ok(kase, `${id} is missing`);
+    assert.deepStrictEqual(Object.keys(kase).sort(), ["expect", "id", "messages", "why"], id);
+    assert.strictEqual(kase.expect, expect, id);
+    assert.deepStrictEqual(kase.messages, [{ role: "user", content }], id);
+    assert.ok(typeof kase.why === "string" && kase.why.length > 0, id);
+  }
+});
