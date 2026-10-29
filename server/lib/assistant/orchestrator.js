@@ -29,7 +29,7 @@ const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
-const { VERDICTS, WHYS, fitsUnclipped } = require("./judge");
+const { VERDICTS, WHYS, ADVICE_VERDICTS, fitsUnclipped } = require("./judge");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 // The whole turn gets this long (up to four model calls, so without it a slow model holds the mic for minutes). A model call is
@@ -89,13 +89,6 @@ const TAX_LEGAL_RE = wordRe([
   "liens?", "gifts?", "capital\\s+gains",
 ]);
 const MORTGAGE_RE = wordRe(["mortgages?"]);
-// Residual round 2, S2: a reply cut where an advice answer could start: at a sentence end (a stop, "!" or "?" before a space, so
-// "6.52" stays whole), at ; or a dash, and at a comma before and / but / so / plus, the joining word dropped ("The thirty-year is
-// 6.52 percent, and points are generally deductible." -> "The thirty-year is 6.52 percent" and "points are generally deductible.").
-const ADVICE_PIECE_BREAK_RE = /(?<=[.!?])\s+|\s*[;—–]\s*|\s+-\s+|,\s*(?=(?:and|but|so|plus)\b)/i;
-const advicePieces = (text) => String(text).split(ADVICE_PIECE_BREAK_RE)
-  .map((piece) => piece.replace(/^(?:and|but|so|plus)\s+/i, "").trim())
-  .filter(Boolean);
 
 // ── Openers, questions, completion claims ────────────────────────────────────
 
@@ -1966,11 +1959,14 @@ const JUDGE_TIMEOUT_MS = 2_500;
 // throws, rejects, never settles or answers anything but one of the five words is FACT, so a soft block fails closed. The tokens
 // it reports are added to the turn's `usage`. One info line records the verdict, why (final review M-1: "ok" for a clean verdict,
 // else "error", "timeout", "refusal" or "unparsed", as judge.js reports it or as it happened here) and the time, never the user's
-// text or the reply: "charlie judge: FACT (error) 41ms".
+// text or the reply: "charlie judge: FACT (error) 41ms". Round 4, V2: the advice judge is asked the same way with ADVICE_ASK: its
+// two words, ADVICE for anything else, and its own label ("charlie advice check: NONE (ok) 41ms").
 const JUDGE_TIMED_OUT = Symbol("judge timed out");
-async function askJudge(judge, input, usage) {
+const FIVE_WAY_ASK = Object.freeze({ verdicts: VERDICTS, failVerdict: "FACT", label: "charlie judge" });
+const ADVICE_ASK = Object.freeze({ verdicts: ADVICE_VERDICTS, failVerdict: "ADVICE", label: "charlie advice check" });
+async function askJudge(judge, input, usage, { verdicts, failVerdict, label } = FIVE_WAY_ASK) {
   const started = Date.now();
-  let verdict = "FACT";
+  let verdict = failVerdict;
   let why = "error";
   let timer;
   try {
@@ -1979,7 +1975,7 @@ async function askJudge(judge, input, usage) {
     if (out === JUDGE_TIMED_OUT) {
       why = "timeout";
     } else if (out && typeof out === "object") {
-      if (VERDICTS.includes(out.verdict)) {
+      if (verdicts.includes(out.verdict)) {
         verdict = out.verdict;
         why = WHYS.includes(out.why) ? out.why : "ok";
       } else {
@@ -1990,12 +1986,12 @@ async function askJudge(judge, input, usage) {
       usage.outputTokens += Number.isFinite(u.outputTokens) ? u.outputTokens : 0;
     }
   } catch (_err) {
-    verdict = "FACT";
+    verdict = failVerdict;
     why = "error";
   } finally {
     clearTimeout(timer);
   }
-  console.info(`charlie judge: ${verdict} (${why}) ${Date.now() - started}ms`);
+  console.info(`${label}: ${verdict} (${why}) ${Date.now() - started}ms`);
   return { verdict, why };
 }
 
@@ -2604,7 +2600,7 @@ const changeEventLine = (text, before) => {
   return !PAST_QUESTION_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
 };
 
-// runTurn({ messages, ctx, client, judge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, reason?, usage }
+// runTurn({ messages, ctx, client, judge?, adviceJudge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, reason?, usage }
 //   (reason, with error:true: why the turn ended in an error, "deadline" or "refusal"; final review M-2)
 //   messages:   Messages API history ending with the user's latest message (not mutated)
 //   ctx:        { user, rates, db, google?, live? }, handed to the tools (google = the per-user Google adapter; without one the
@@ -2613,6 +2609,11 @@ const changeEventLine = (text, before) => {
 //               soft-blocked ungrounded reply (classifyUngrounded) and about the reply of a turn whose only citations are live
 //               lookups (and the glossary); its tokens are added to `usage`. Without one a soft block, like such a turn, is the
 //               can't-verify line, as before the judge existed.
+//   adviceJudge: (round 4, V2) adviceJudge({ previous?, user, reply, timeoutMs }) -> { verdict, why, usage, ms } (judge.js
+//               makeAdviceJudge), asked only on a turn that cites a book, market or calendar source when the user's message or the
+//               reply has a tax or legal word, or the question is a guideline one: does any part of the reply give a legal or tax
+//               answer? Only a clean NONE lets the reply go on; its tokens are added to `usage`. Without one such a turn is the
+//               advice hand-off.
 //   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call, in the tool calls of a response
 //               (Google ones go out to the network) or before the next model call, the turn is the code-authored TOOK_TOO_LONG
 //               with error:true (like the route's ERROR_TURN, but no throw): no sources, no change, and `usage` counts the model
@@ -2622,7 +2623,7 @@ const changeEventLine = (text, before) => {
 //   details:    with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
 //   compose:    with a successful draftEmailTool, the email it set up ({ to, subject, body, links }) for the screen to open in the
 //               user's own mail app; it is never sent to the model, and nothing is sent by anyone
-async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
+async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
     throw new TypeError("runTurn: client must provide messages.create()");
@@ -2690,16 +2691,19 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
   // The one way this turn asks the judge about a reply (design §1): { verdict, why } (askJudge), or FACT with no call when there is
   // no judge, no time left for one (the deadline less the minCallMs margin), or a reply, user message or previous message of
   // Charlie's that judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3); a judge that was not asked is
-  // why "unavailable", so it is never a judge that answered.
-  const judged = async (reply) => {
+  // why "unavailable", so it is never a judge that answered. Round 4, V2: the advice judge is asked the same way (`adviceChecked`),
+  // and when it can't be asked its answer is ADVICE, so such a turn fails closed to the hand-off.
+  const askedAbout = async (which, reply, ask) => {
     const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
     const before = messages[messages.length - 2];
     const previous = before && before.role === "assistant" ? messageText(before) : undefined;
-    if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(reply) || !fitsUnclipped(userText) || !fitsUnclipped(previous)) {
-      return { verdict: "FACT", why: "unavailable" };
+    if (typeof which !== "function" || !(timeoutMs > 0) || !fitsUnclipped(reply) || !fitsUnclipped(userText) || !fitsUnclipped(previous)) {
+      return { verdict: ask.failVerdict, why: "unavailable" };
     }
-    return askJudge(judge, { previous, user: userText, reply, timeoutMs }, usage);
+    return askJudge(which, { previous, user: userText, reply, timeoutMs }, usage, ask);
   };
+  const judged = (reply) => askedAbout(judge, reply, FIVE_WAY_ASK);
+  const adviceChecked = (reply) => askedAbout(adviceJudge, reply, ADVICE_ASK);
 
   for (let call = 0; call < MAX_MODEL_CALLS; call++) {
     const lastCall = call === MAX_MODEL_CALLS - 1;
@@ -2850,20 +2854,14 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
       }
       // Residual R3: on a turn that also cites a book, market or calendar source, a tax, legal or guideline answer can ride beside
       // the grounded facts ("…6.52 percent, and points are generally deductible."). So when the user's message or the reply has one
-      // of I-1's tax or legal words, or the question is a guideline one, the judge is asked: ADVICE is the CPA/attorney hand-off, and
-      // so is a judge that can't answer (why not "ok": fail closed); any other real verdict goes on to the checks below. (A
-      // guideline question never gets here today: its hand-off above comes first.) Residual round 2, S2: the judge picks the first
-      // word that fits, FACT before ADVICE, so it is given only the pieces of the reply that could carry the answer: those with a
-      // tax or legal word, else those that state no figure (a grounded figure is the rate; an advice answer hides in the others),
-      // else (ruling F-8: every piece states a figure, "Yes, at 6.52 percent you can write those off.") the whole reply. The checks
-      // below still read the whole reply.
+      // of I-1's tax or legal words, or the question is a guideline one, a judge is asked. (A guideline question never gets here
+      // today: its hand-off above comes first.) Round 4, V2: not the five-way judge, whose FACT comes before ADVICE and passes on a
+      // cited turn, and never a piece of the reply (a deferral piece hid the answer: residual round 2's S2 and F-8 are gone), but the
+      // advice judge, asked one question about the WHOLE reply. Only a clean NONE goes on to the checks below, with the whole reply;
+      // ADVICE, any failure, no advice judge, no time, or a text it would clip is the CPA/attorney hand-off.
       if (text && !liveOnly && (TAX_LEGAL_RE.test(userText) || TAX_LEGAL_RE.test(text) || isGuidelineQuestion(userText))) {
-        const pieces = advicePieces(text);
-        const taxPieces = pieces.filter((piece) => TAX_LEGAL_RE.test(piece));
-        const figureFree = pieces.filter((piece) => !/\d/.test(piece) && figureWords(piece).length === 0);
-        const asked = taxPieces.length > 0 ? taxPieces.join(" ") : figureFree.length > 0 ? figureFree.join(" ") : text;
-        const { verdict, why } = await judged(asked);
-        if (verdict === "ADVICE" || why !== "ok") return finish(ADVICE_HANDOFF);
+        const { verdict, why } = await adviceChecked(text);
+        if (verdict !== "NONE" || why !== "ok") return finish(ADVICE_HANDOFF);
       }
       // Final review C-1: on a turn that also cites a book, market or calendar source no judge is asked, so the web grounds nothing
       // there: the figures (and a calendar read's times and days) are checked against the other tools' results only, and a figure

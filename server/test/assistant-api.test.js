@@ -1609,6 +1609,63 @@ test("turn: a soft block goes to the judge (app.set(\"assistantJudge\") or the H
   }
 });
 
+test("turn (round 4, V2): a cited turn's advice check goes to app.set(\"assistantAdviceJudge\") or the Haiku advice judge on the same client; its tokens are metered", async () => {
+  const { ADVICE_JUDGE_SYSTEM } = require("../lib/assistant/judge");
+  const { ADVICE_HANDOFF } = require("../lib/assistant/prompt");
+  const ASK = "What's the thirty-year today, and can my client deduct the points?";
+  const SAID = "The thirty-year fixed is at 6.52 percent, and the points question is one for your CPA.";
+  const logged = [];
+  const savedInfo = console.info;
+  console.info = (...args) => logged.push(args.join(" "));
+  try {
+    // the five-way judge's seam is not what is asked here
+    const fiveWay = [];
+    app.set("assistantJudge", async (input) => { fiveWay.push(input); return { verdict: "ADVICE", usage: { inputTokens: 0, outputTokens: 0 }, ms: 0 }; });
+    // the test seam: the injected advice judge rules on the whole reply
+    const asked = [];
+    app.set("assistantAdviceJudge", async (input) => {
+      asked.push(input);
+      return { verdict: "NONE", why: "ok", usage: { inputTokens: 6, outputTokens: 1 }, ms: 1 };
+    });
+    let client = fakeClient([useTool("getMarketUpdate"), say(SAID, { input_tokens: 100, output_tokens: 20 })]);
+    setClient(client);
+    let r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(ASK), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, SAID);
+    assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual([asked.length, fiveWay.length], [1, 0]);
+    assert.equal(asked[0].reply, SAID);
+    assert.equal(asked[0].user, ASK);
+    assert.equal(client.calls.length, 2);
+    let rows = usageFor(r.data.turnId);
+    assert.deepStrictEqual([rows.length, rows[0].input_tokens, rows[0].output_tokens], [1, 206, 41]);
+
+    // without it, the route builds the real advice judge (makeAdviceJudge) over the same client: a third, Haiku call
+    app.set("assistantAdviceJudge", null);
+    client = fakeClient([
+      useTool("getMarketUpdate"), say(SAID, { input_tokens: 100, output_tokens: 20 }), say("ADVICE", { input_tokens: 9, output_tokens: 1 }),
+    ]);
+    setClient(client);
+    r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(ASK), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, ADVICE_HANDOFF);
+    assert.deepStrictEqual(r.data.sources, []);
+    assert.equal(client.calls.length, 3);
+    assert.equal(client.calls[2].model, "claude-haiku-5-5");
+    assert.equal(client.calls[2].system, ADVICE_JUDGE_SYSTEM);
+    rows = usageFor(r.data.turnId);
+    assert.deepStrictEqual([rows.length, rows[0].input_tokens, rows[0].output_tokens], [1, 209, 41]);
+    assert.equal(fiveWay.length, 0);
+    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), [
+      "charlie advice check: NONE (ok) Nms", "charlie advice check: ADVICE (ok) Nms",
+    ]);
+  } finally {
+    console.info = savedInfo;
+    app.set("assistantJudge", null);
+    app.set("assistantAdviceJudge", null);
+  }
+});
+
 // ── Charlie personality, Task 5: live lookups on /turn ───────────────────────
 
 test("turn: lookUpLive runs through app.set(\"liveLookup\") or a real lookup on the same client, metered as its own 'live' row", async () => {

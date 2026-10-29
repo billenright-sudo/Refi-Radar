@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 // Charlie's eval (design "How we know it worked", Task 7): every case in charlie-eval-cases.json goes through runTurn with the
-// real Anthropic client, the real judge (makeJudge) and the real live lookup (makeLive), against a THROWAWAY database seeded
+// real Anthropic client, the real judges (makeJudge, makeAdviceJudge) and the real live lookup (makeLive), against a THROWAWAY database seeded
 // with fake clients. It spends real API money, so it runs only with the owner's go. --dry runs the same loop on a scripted
 // fake client, judge and lookup (no network, no key) to check the plumbing; its numbers mean nothing.
 //
@@ -497,6 +497,15 @@ function fakeClient(clientIdOf) {
   };
 }
 const fakeJudge = async () => ({ verdict: "CHAT", usage: { inputTokens: 0, outputTokens: 0 }, ms: 0 });
+// (round 4, V2) the advice judge's most permissive answer, as fakeJudge's CHAT is the five-way judge's
+const fakeAdviceJudge = async () => ({ verdict: "NONE", why: "ok", usage: { inputTokens: 0, outputTokens: 0 }, ms: 0 });
+// The two judges a case's turn is given (round 4, V2): the fakes on a dry run, else the real five-way judge and the real advice
+// judge (both Haiku, judge.js JUDGE_MODEL), on `client`.
+function judgesFor(dry, client) {
+  if (dry) return { judge: fakeJudge, adviceJudge: fakeAdviceJudge };
+  const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
+  return { judge: makeJudge(client), adviceJudge: makeAdviceJudge(client) };
+}
 const fakeLive = () => ({
   async lookUp() {
     return { answer: "The home team won.", asOf: "tonight", sources: [{ title: "Dry run", domain: "example.test" }] };
@@ -702,7 +711,7 @@ async function evaluate(args, cases, open) {
   const db = require("../db");
   open.db = db;
   const { runTurn, charliModel, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
-  const { makeJudge, JUDGE_MODEL } = require("../lib/assistant/judge");
+  const { JUDGE_MODEL } = require("../lib/assistant/judge");
   const { makeLive, LIVE_MODEL, SEARCH_TOOL_TYPE } = require("../lib/assistant/live");
 
   const model = charliModel();
@@ -760,8 +769,9 @@ async function evaluate(args, cases, open) {
     current = { tools: [], calls: new Map(), full: [], lookups: [], logs: [] };
     const live = recordedLive(args.dry ? fakeLive() : makeLive({ client, db, userId: user.id, turnId: `eval-${kase.id}` }), current);
     const ctx = { user, rates: { ...RATES }, db, live };
-    const judge = args.dry ? fakeJudge : makeJudge(client);
-    // The judge's and the lookup's info lines (verdict, kind, outcome, ms: never any text) go into the transcript, not the console.
+    // (on the metered client, so the advice judge's tokens are counted with the five-way judge's under their model)
+    const { judge, adviceJudge } = judgesFor(args.dry, client);
+    // The judges' and the lookup's info lines (verdict, kind, outcome, ms: never any text) go into the transcript, not the console.
     const info = console.info;
     const logs = current.logs;
     console.info = (...parts) => { logs.push(parts.map(String).join(" ")); };
@@ -769,7 +779,7 @@ async function evaluate(args, cases, open) {
     let turn = null;
     let thrown = null;
     try {
-      turn = await runTurn({ messages: kase.messages.map((m) => ({ ...m })), ctx, client, judge, deadlineMs: DEFAULT_TURN_DEADLINE_MS });
+      turn = await runTurn({ messages: kase.messages.map((m) => ({ ...m })), ctx, client, judge, adviceJudge, deadlineMs: DEFAULT_TURN_DEADLINE_MS });
     } catch (err) {
       thrown = errText(err);
       if (err && err.status === 401) aborted = "the API refused the key (401)";
@@ -806,5 +816,5 @@ if (require.main === module) {
 module.exports = {
   CASES_PATH, EXPECTS, SEED_CLIENTS, RATES, FIXED_LINE_NAMES, WEB_PREFIX, GLOSSARY_SOURCE, CLIENT_RECORD_SOURCE, SWEEP_SOURCE,
   LIVE_RATES_SOURCE, ESTIMATED_RATES_SOURCE, saveTranscript, loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction, searchLeak, lockBreaks, outcomeOf, missesExpect,
-  percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main,
+  percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main, judgesFor,
 };

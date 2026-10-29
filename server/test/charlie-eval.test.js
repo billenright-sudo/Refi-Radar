@@ -521,3 +521,34 @@ test("charlie eval detectors (ruling T7-14): \"I … taken/took care of\" with i
     assert.deepStrictEqual(rules(blocked, { reply }), [], reply);
   }
 });
+
+// ── Round 4
+
+test("charlie eval (round 4, V2): each turn gets the five-way judge and the advice judge on the eval's client; a dry run gets fakes that call nothing", async () => {
+  const { judgesFor } = require("../scripts/charlie-eval");
+  const { ADVICE_JUDGE_SYSTEM, JUDGE_MODEL } = require("../lib/assistant/judge");
+  const calls = [];
+  const client = {
+    messages: {
+      create: async (params) => {
+        calls.push(params);
+        return { stop_reason: "end_turn", content: [{ type: "text", text: "NONE" }], usage: { input_tokens: 4, output_tokens: 1 } };
+      },
+    },
+  };
+  const input = { user: "Can my client deduct the points?", reply: "That one is for your CPA.", timeoutMs: 1000 };
+  const real = judgesFor(false, client);
+  const advice = await real.adviceJudge(input);
+  assert.deepStrictEqual([advice.verdict, advice.why, advice.usage], ["NONE", "ok", { inputTokens: 4, outputTokens: 1 }]);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].system, ADVICE_JUDGE_SYSTEM);
+  assert.strictEqual(calls[0].model, JUDGE_MODEL);
+  await real.judge(input);
+  assert.strictEqual(calls.length, 2);
+  assert.match(calls[1].system, /^Answer with exactly one word, the first of these that fits:$/m);
+  assert.strictEqual(calls[1].model, JUDGE_MODEL);
+  // a dry run: the five-way fake says CHAT and the advice fake NONE, and neither calls anything
+  const dry = judgesFor(true, { messages: { create: async () => { throw new Error("a dry run makes no call"); } } });
+  assert.strictEqual((await dry.judge(input)).verdict, "CHAT");
+  assert.strictEqual((await dry.adviceJudge(input)).verdict, "NONE");
+});

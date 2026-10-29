@@ -19,7 +19,7 @@ const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
-const { makeJudge } = require("../lib/assistant/judge");
+const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
 const { makeLive, userLocalDate } = require("../lib/assistant/live");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
@@ -455,12 +455,15 @@ function createAssistantRouter({ limiter = {} } = {}) {
       // The second check on a reply only a topic rule blocked: `app.set("assistantJudge", fake)` is the test seam, otherwise the
       // Haiku judge on the same client. Its tokens come back in out.usage.
       const judge = req.app.get("assistantJudge") || makeJudge(client);
+      // Round 4, V2: the advice check on a cited turn with a tax or legal word: `app.set("assistantAdviceJudge", fake)` is the test
+      // seam, otherwise the Haiku advice judge on the same client. Its tokens come back in out.usage too.
+      const adviceJudge = req.app.get("assistantAdviceJudge") || makeAdviceJudge(client);
       // lookUpLive's web search: `app.set("liveLookup", fake)` is the test seam, otherwise a search on the same client, each one
       // metered as a 'live' row of its own under this turn's id (and counted toward the user's daily cap). Its "today" is the
       // user's own date when the browser sent a valid one (M-6: a real date within a day of the UTC date), else the UTC date.
       const localDate = userLocalDate(body.localDate) || undefined;
       ctx.live = req.app.get("liveLookup") || makeLive({ client, db, userId: req.user.id, turnId, localDate });
-      out = await runTurn({ messages, ctx, client, judge, deadlineMs: turnDeadlineMs() });
+      out = await runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs: turnDeadlineMs() });
     } catch (err) {
       console.error("POST /api/assistant/turn:", errText(err));
       meter(req.user.id, turnId, {});

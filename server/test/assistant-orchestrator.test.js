@@ -6027,14 +6027,16 @@ test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on
     ["who should I call today?", sweep, "Your week looks light on refis — the Chens are the only strong one."],
   ];
   for (const [u, script, said] of PASSES) {
-    // (residual R3: "tax season" is a tax word on a cited turn, so that line goes to the judge, which calls a client fact FACT, and
-    // it is said; asked once. Every other line asks none.)
+    // (residual R3: "tax season" is a tax word on a cited turn, so that line goes to the judge, and it is said; asked once. Every other
+    // line asks none. Round 4, V2: that judge is the advice judge, whose NONE says it gives no tax answer; the five-way one is not asked.)
     const judge = recordingJudge("FACT");
+    const adviceJudge = recordingAdviceJudge("NONE");
     const got = await capturingInfo(async () => (await runTurn({
-      messages: userSays(u), ctx: mikeCtx, client: fakeClient([...[].concat(script()), say(said)]), judge,
+      messages: userSays(u), ctx: mikeCtx, client: fakeClient([...[].concat(script()), say(said)]), judge, adviceJudge,
     })).reply);
     assert.equal(got, said, `${u} -> ${said}`);
-    assert.equal(judge.calls.length, /\btax\b/i.test(said) ? 1 : 0, `${u} -> ${said}: judge calls`);
+    assert.equal(adviceJudge.calls.length, /\btax\b/i.test(said) ? 1 : 0, `${u} -> ${said}: advice judge calls`);
+    assert.equal(judge.calls.length, 0, `${u} -> ${said}: judge calls`);
   }
   // other words of the list beside a day stay held, as at f55c228 (fail closed): a meeting the clients book, a scheduling verb, a past
   // meeting, "your schedule" and "I'm free" said with no tool
@@ -7619,54 +7621,72 @@ const R3_SAID = "The thirty-year is 6.52 percent, and points are generally deduc
 const r3Turn = (u, said, extra = {}) => runTurn({
   messages: userSays(u), ctx: brokerCtx, client: fakeClient([useTool("getMarketUpdate"), say(said)]), ...extra,
 });
+// Round 4, V2: an advice judge (runTurn's adviceJudge seam) that answers `v` and records what it was asked
+function recordingAdviceJudge(v) {
+  const calls = [];
+  const adviceJudge = async (input) => { calls.push(input); return { verdict: v, why: "ok", usage: { inputTokens: 5, outputTokens: 1 }, ms: 1 }; };
+  adviceJudge.calls = calls;
+  return adviceJudge;
+}
 
 test("Residual R3: a cited turn with a tax or legal word asks the judge: ADVICE, or a judge that can't answer, is the hand-off", async () => {
   await capturingInfo(async () => {
-    // ADVICE
-    let judge = recordingJudge("ADVICE");
-    let r = await r3Turn(R3_ASK, R3_SAID, { judge });
+    // ADVICE (round 4, V2: from the advice judge, shown the whole reply; the five-way judge is not asked)
+    let adviceJudge = recordingAdviceJudge("ADVICE");
+    const judge = recordingJudge("CHAT");
+    let r = await r3Turn(R3_ASK, R3_SAID, { judge, adviceJudge });
     assert.equal(r.reply, ADVICE_HANDOFF);
     assert.deepStrictEqual(r.sources, []);
-    assert.equal(judge.calls.length, 1);
-    // (residual round 2, S2: the judge is given the tax clause only, so the grounded rate can't outrank it)
-    assert.equal(judge.calls[0].reply, "points are generally deductible.");
-    // a judge that throws, one that answers no verdict, one that hangs, and no judge at all: fail closed to the hand-off
+    assert.equal(adviceJudge.calls.length, 1);
+    assert.equal(adviceJudge.calls[0].reply, R3_SAID);
+    assert.equal(judge.calls.length, 0);
+    // an advice judge that throws, one that answers no verdict, one that hangs, and none at all: fail closed to the hand-off, with a
+    // five-way judge that would say CHAT beside it
     for (const failing of [() => { throw new Error("boom"); }, async () => ({ verdict: "SURE" }), () => new Promise(() => {}), undefined]) {
-      r = await r3Turn(R3_ASK, R3_SAID, { judge: failing, deadlineMs: 6000 });
+      r = await r3Turn(R3_ASK, R3_SAID, { judge: judgeSays("CHAT"), adviceJudge: failing, deadlineMs: 6000 });
       assert.equal(r.reply, ADVICE_HANDOFF, String(failing));
     }
     // the tax word in the reply alone is enough
-    judge = recordingJudge("ADVICE");
-    r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent, and the points are tax deductible.", { judge });
+    adviceJudge = recordingAdviceJudge("ADVICE");
+    r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent, and the points are tax deductible.", { adviceJudge });
     assert.equal(r.reply, ADVICE_HANDOFF);
-    assert.equal(judge.calls.length, 1);
+    assert.equal(adviceJudge.calls.length, 1);
   });
 });
 
 test("Residual R3: any other real verdict goes on to today's checks; a cited turn with no such word asks no judge", async () => {
   await capturingInfo(async () => {
-    // FACT (or CHAT) on a grounded reply: spoken, with its source
+    // (round 4, V2) the advice judge's clean NONE on a grounded reply: spoken, with its source
+    let adviceJudge = recordingAdviceJudge("NONE");
+    let r = await r3Turn(R3_ASK, R3_SAID, { judge: recordingJudge("FACT"), adviceJudge });
+    assert.equal(r.reply, R3_SAID);
+    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.equal(adviceJudge.calls.length, 1);
+    // a five-way word is no verdict of the advice judge's, so it is the hand-off (these were spoken before V2)
     for (const verdict of ["FACT", "CHAT", "DEFINE", "LIVE"]) {
-      const judge = recordingJudge(verdict);
-      const r = await r3Turn(R3_ASK, R3_SAID, { judge });
-      assert.equal(r.reply, R3_SAID, verdict);
-      assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"], verdict);
-      assert.equal(judge.calls.length, 1, verdict);
+      adviceJudge = recordingAdviceJudge(verdict);
+      r = await r3Turn(R3_ASK, R3_SAID, { judge: judgeSays("CHAT"), adviceJudge });
+      assert.equal(r.reply, ADVICE_HANDOFF, verdict);
+      assert.deepStrictEqual(r.sources, [], verdict);
+      assert.equal(adviceJudge.calls.length, 1, verdict);
     }
-    // ... and the figure check still holds after it
-    let judge = recordingJudge("FACT");
-    let r = await r3Turn(R3_ASK, "The thirty-year is 6.1 percent, and points are generally deductible.", { judge });
+    // ... and the figure check still holds after NONE
+    r = await r3Turn(R3_ASK, "The thirty-year is 6.1 percent, and points are generally deductible.", { adviceJudge: recordingAdviceJudge("NONE") });
     assert.equal(r.reply, CANT_VERIFY);
-    // no tax, legal or guideline word: no judge, as today
-    judge = recordingJudge("ADVICE");
-    r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent.", { judge });
+    // no tax, legal or guideline word: no judge of either kind, as today
+    let judge = recordingJudge("ADVICE");
+    adviceJudge = recordingAdviceJudge("ADVICE");
+    r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent.", { judge, adviceJudge });
     assert.equal(r.reply, "The thirty-year is 6.52 percent.");
     assert.equal(judge.calls.length, 0);
+    assert.equal(adviceJudge.calls.length, 0);
     // a guideline question on a cited turn never gets that far: the guideline hand-off comes first, with no judge
     judge = recordingJudge("CHAT");
-    r = await r3Turn("What's the thirty-year today, and what's the max DTI on an FHA loan?", "The thirty-year is 6.52 percent.", { judge });
+    adviceJudge = recordingAdviceJudge("NONE");
+    r = await r3Turn("What's the thirty-year today, and what's the max DTI on an FHA loan?", "The thirty-year is 6.52 percent.", { judge, adviceJudge });
     assert.equal(r.reply, GUIDELINE_HANDOFF);
     assert.equal(judge.calls.length, 0);
+    assert.equal(adviceJudge.calls.length, 0);
   });
 });
 
@@ -7689,60 +7709,215 @@ test("Residual S1: a 3,999-character chain in the user's message, or in Charlie'
 
 // ── Residual round 2, S2: the advice check judges the sentences that could carry the answer ─────────────────────────────────────
 
-test("Residual S2: on a cited turn the judge is given the reply's tax or legal sentence, never the grounded rate beside it", async () => {
+test("Residual S2 (round 4, V2): on a cited turn the advice judge is given the whole reply, the grounded rate with it", async () => {
   await capturingInfo(async () => {
-    // 1. the tax clause alone, not the 6.52 one
-    let judge = recordingJudge("FACT");
-    await r3Turn(R3_ASK, R3_SAID, { judge });
-    assert.equal(judge.calls.length, 1);
-    assert.equal(judge.calls[0].reply, "points are generally deductible.");
-    assert.equal(judge.calls[0].user, R3_ASK);
-    // 2. no tax word in the reply (the user's text has it): the sentence that states no figure
-    judge = recordingJudge("FACT");
-    await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { judge });
-    assert.equal(judge.calls.length, 1);
-    assert.equal(judge.calls[0].reply, "Yes, you can write those off.");
-    // 3. every sentence states a figure and none has a tax word: the WHOLE reply is judged (ruling F-8); FACT speaks it
-    judge = recordingJudge("FACT");
-    let r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent.", { judge });
-    assert.equal(judge.calls.length, 1);
-    assert.equal(judge.calls[0].reply, "The thirty-year is 6.52 percent.");
+    // 1. the whole reply, the 6.52 clause and the tax clause together (S2 gave the tax clause alone)
+    let adviceJudge = recordingAdviceJudge("NONE");
+    await r3Turn(R3_ASK, R3_SAID, { adviceJudge });
+    assert.equal(adviceJudge.calls.length, 1);
+    assert.equal(adviceJudge.calls[0].reply, R3_SAID);
+    assert.equal(adviceJudge.calls[0].user, R3_ASK);
+    // 2. no tax word in the reply (the user's text has it): still the whole reply (S2 gave the figure-free sentence alone)
+    adviceJudge = recordingAdviceJudge("NONE");
+    await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { adviceJudge });
+    assert.equal(adviceJudge.calls.length, 1);
+    assert.equal(adviceJudge.calls[0].reply, "The thirty-year is 6.52 percent. Yes, you can write those off.");
+    // 3. every sentence states a figure and none has a tax word: the whole reply; NONE speaks it
+    adviceJudge = recordingAdviceJudge("NONE");
+    let r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent.", { adviceJudge });
+    assert.equal(adviceJudge.calls.length, 1);
+    assert.equal(adviceJudge.calls[0].reply, "The thirty-year is 6.52 percent.");
     assert.equal(r.reply, "The thirty-year is 6.52 percent.");
     assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
-    // 4. the verdict is handled as before: ADVICE on that sentence is the hand-off, FACT speaks the WHOLE reply
-    r = await r3Turn(R3_ASK, R3_SAID, { judge: recordingJudge("ADVICE") });
+    // 4. ADVICE is the hand-off, NONE speaks the whole reply
+    r = await r3Turn(R3_ASK, R3_SAID, { adviceJudge: recordingAdviceJudge("ADVICE") });
     assert.equal(r.reply, ADVICE_HANDOFF);
-    r = await r3Turn(R3_ASK, R3_SAID, { judge: recordingJudge("FACT") });
+    r = await r3Turn(R3_ASK, R3_SAID, { adviceJudge: recordingAdviceJudge("NONE") });
     assert.equal(r.reply, R3_SAID);
     assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
     // ... and the second reply too
-    r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { judge: recordingJudge("ADVICE") });
+    r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { adviceJudge: recordingAdviceJudge("ADVICE") });
     assert.equal(r.reply, ADVICE_HANDOFF);
   });
 });
 
 // ── Ruling F-8: a reply whose every piece states a figure, with no tax word, is judged whole ────────────────────────────────────
 
-test("Ruling F-8: with no tax-word piece and no figure-free piece, the advice check judges the whole reply", async () => {
+test("Ruling F-8 (round 4, V2): a reply whose every piece states a figure, with no tax word, is judged whole by the advice judge", async () => {
   const said = "Yes, at 6.52 percent you can write those off.";
   await capturingInfo(async () => {
-    // the judge receives the whole reply; ADVICE is the hand-off
-    let judge = recordingJudge("ADVICE");
-    let r = await r3Turn(R3_ASK, said, { judge });
-    assert.equal(judge.calls.length, 1);
-    assert.equal(judge.calls[0].reply, said);
+    // the advice judge receives the whole reply; ADVICE is the hand-off
+    let adviceJudge = recordingAdviceJudge("ADVICE");
+    let r = await r3Turn(R3_ASK, said, { adviceJudge });
+    assert.equal(adviceJudge.calls.length, 1);
+    assert.equal(adviceJudge.calls[0].reply, said);
     assert.equal(r.reply, ADVICE_HANDOFF);
     assert.deepStrictEqual(r.sources, []);
-    // a judge that can't answer, and no judge at all, are the hand-off too
+    // an advice judge that can't answer, and none at all, are the hand-off too
     for (const failing of [() => { throw new Error("boom"); }, async () => ({ verdict: "SURE" }), undefined]) {
-      r = await r3Turn(R3_ASK, said, { judge: failing });
+      r = await r3Turn(R3_ASK, said, { judge: judgeSays("FACT"), adviceJudge: failing });
       assert.equal(r.reply, ADVICE_HANDOFF, String(failing));
     }
-    // FACT speaks it with its source
-    judge = recordingJudge("FACT");
-    r = await r3Turn(R3_ASK, said, { judge });
-    assert.equal(judge.calls.length, 1);
+    // NONE speaks it with its source (a five-way FACT from it is no verdict, so it is the hand-off)
+    adviceJudge = recordingAdviceJudge("NONE");
+    r = await r3Turn(R3_ASK, said, { adviceJudge });
+    assert.equal(adviceJudge.calls.length, 1);
     assert.equal(r.reply, said);
     assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    r = await r3Turn(R3_ASK, said, { adviceJudge: recordingAdviceJudge("FACT") });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+  });
+});
+
+// ── Round 4, V2: a cited turn asks the advice-only judge about the whole reply ───────────────────────────────────────────────────
+
+const V2_REPLIES = [
+  "Points are deductible.",
+  "Yes, you can write those off.",
+  "Yes, at 6.52 percent you can write those off.",
+  "Yes, at 6.52 percent you can write those off. Anything else?",
+  "Taxes are really a CPA question, but generally points are amortized over the life of the loan.",
+  "That's a tax question. Generally they're amortized over the life of the loan.",
+  "The thirty-year is 6.52 percent; deduct them over the loan's life.",
+  "Sure.",
+];
+
+test("Round 4 V2: on a cited turn the advice judge receives the whole reply exactly; ADVICE and a failing judge are the hand-off, NONE speaks it", async () => {
+  await capturingInfo(async () => {
+    for (const said of V2_REPLIES) {
+      // ADVICE: the hand-off; the five-way judge is not asked
+      let adviceJudge = recordingAdviceJudge("ADVICE");
+      const judge = recordingJudge("CHAT");
+      let r = await r3Turn(R3_ASK, said, { judge, adviceJudge });
+      assert.equal(adviceJudge.calls.length, 1, said);
+      assert.equal(adviceJudge.calls[0].reply, said, said);
+      assert.equal(adviceJudge.calls[0].user, R3_ASK, said);
+      assert.equal(r.reply, ADVICE_HANDOFF, said);
+      assert.deepStrictEqual(r.sources, [], said);
+      assert.equal(judge.calls.length, 0, said);
+      // a failing advice judge: a throw, no verdict, a five-way word, a NONE that is not clean, nothing, a hang, none at all
+      for (const failing of [
+        () => { throw new Error("boom"); }, async () => ({ verdict: "SURE" }), async () => ({ verdict: "CHAT" }),
+        async () => ({ verdict: "NONE", why: "unparsed" }), async () => null, () => new Promise(() => {}), undefined,
+      ]) {
+        r = await r3Turn(R3_ASK, said, { judge: judgeSays("CHAT"), adviceJudge: failing, deadlineMs: 300, minCallMs: 10 });
+        assert.equal(r.reply, ADVICE_HANDOFF, `${said} / ${String(failing)}`);
+        assert.deepStrictEqual(r.sources, [], `${said} / ${String(failing)}`);
+      }
+      // NONE: spoken with its source (its figures are grounded), even beside a five-way judge that would say ADVICE
+      adviceJudge = recordingAdviceJudge("NONE");
+      r = await r3Turn(R3_ASK, said, { judge: recordingJudge("ADVICE"), adviceJudge });
+      assert.equal(adviceJudge.calls.length, 1, said);
+      assert.equal(adviceJudge.calls[0].reply, said, said);
+      assert.equal(r.reply, said, said);
+      assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"], said);
+    }
+  });
+});
+
+test("Round 4 V2: a cited rates turn with no tax, legal or guideline word asks neither judge", async () => {
+  await capturingInfo(async (logged) => {
+    const judge = recordingJudge("ADVICE");
+    const adviceJudge = recordingAdviceJudge("ADVICE");
+    const r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent.", { judge, adviceJudge });
+    assert.equal(r.reply, "The thirty-year is 6.52 percent.");
+    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual([adviceJudge.calls.length, judge.calls.length], [0, 0]);
+    assert.deepStrictEqual(logged, []);
+  });
+});
+
+test("Round 4 V2: the advice check logs its verdict, why and time, never any text, and its tokens are the turn's", async () => {
+  await capturingInfo(async (logged) => {
+    const said = "The thirty-year is 6.52 percent, and the points question is one for your CPA.";
+    let r = await r3Turn(R3_ASK, said, { adviceJudge: recordingAdviceJudge("NONE") });
+    assert.equal(r.reply, said);
+    // two model calls (100 in, 20 out each) and the advice judge's 5 and 1
+    assert.deepStrictEqual(r.usage, { inputTokens: 205, outputTokens: 41 });
+    r = await r3Turn(R3_ASK, R3_SAID, { adviceJudge: recordingAdviceJudge("ADVICE") });
+    assert.deepStrictEqual(r.usage, { inputTokens: 205, outputTokens: 41 });
+    await r3Turn(R3_ASK, R3_SAID, { adviceJudge: () => { throw new Error("boom"); } });
+    await r3Turn(R3_ASK, R3_SAID, { adviceJudge: () => new Promise(() => {}), deadlineMs: 300, minCallMs: 10 });
+    await r3Turn(R3_ASK, R3_SAID, { adviceJudge: async () => ({ verdict: "CHAT", usage: { inputTokens: 3, outputTokens: 1 } }) });
+    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), [
+      "charlie advice check: NONE (ok) Nms", "charlie advice check: ADVICE (ok) Nms", "charlie advice check: ADVICE (error) Nms",
+      "charlie advice check: ADVICE (timeout) Nms", "charlie advice check: ADVICE (unparsed) Nms",
+    ]);
+    assert.ok(logged.every((l) => !/6\.52|deduct|CPA|thirty/i.test(l)), logged.join("\n"));
+  });
+});
+
+test("Round 4 V2: no advice judge, no time for one, or a reply, user message or previous message it would clip is the hand-off, with no call", async () => {
+  await capturingInfo(async (logged) => {
+    // none configured (with a five-way judge that would say CHAT)
+    for (const extra of [{}, { adviceJudge: null }, { adviceJudge: "NONE" }]) {
+      const r = await r3Turn(R3_ASK, R3_SAID, { judge: judgeSays("CHAT"), ...extra });
+      assert.equal(r.reply, ADVICE_HANDOFF, JSON.stringify(extra));
+    }
+    // texts the judge would see only the head of
+    const longReply = `The thirty-year is 6.52 percent. ${"That one is for your CPA. ".repeat(80)}`.trim();
+    const longAsk = `${R3_ASK} ${"Thanks so much. ".repeat(130)}`.trim();
+    const longPrevious = `Morning! ${"Happy to help with anything. ".repeat(80)}`.trim();
+    assert.ok(longReply.length > 2000 && longAsk.length > 2000 && longPrevious.length > 2000);
+    let adviceJudge = recordingAdviceJudge("NONE");
+    for (const [messages, said] of [
+      [userSays(R3_ASK), longReply], [userSays(longAsk), R3_SAID], [history("hi", longPrevious, R3_ASK), R3_SAID],
+    ]) {
+      const r = await runTurn({
+        messages, ctx: brokerCtx, client: fakeClient([useTool("getMarketUpdate"), say(said)]), judge: judgeSays("CHAT"), adviceJudge,
+      });
+      assert.equal(r.reply, ADVICE_HANDOFF, said.slice(0, 40));
+    }
+    assert.equal(adviceJudge.calls.length, 0);
+    // no time left for the check: the second model call ends past the deadline less the margin
+    adviceJudge = recordingAdviceJudge("NONE");
+    const slow = async () => { await new Promise((resolve) => setTimeout(resolve, 150)); return say(R3_SAID); };
+    const r = await runTurn({
+      messages: userSays(R3_ASK), ctx: brokerCtx, client: fakeClient([useTool("getMarketUpdate"), slow]), adviceJudge,
+      deadlineMs: 300, minCallMs: 200,
+    });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    assert.equal(adviceJudge.calls.length, 0);
+    // a check that was never asked logs nothing
+    assert.deepStrictEqual(logged, []);
+  });
+});
+
+test("Round 4 V2: on an ungrounded turn and a lookup-only turn the five-way judge is still the one asked, with today's prompt", async () => {
+  const { makeJudge, makeAdviceJudge, ADVICE_JUDGE_SYSTEM } = require("../lib/assistant/judge");
+  // a Messages client that answers `word` and records each request
+  const haiku = (word) => {
+    const calls = [];
+    return { calls, messages: { create: async (params) => { calls.push(params); return say(word, { input_tokens: 9, output_tokens: 1 }); } } };
+  };
+  await capturingInfo(async () => {
+    // ungrounded: a soft block by a book word, and one by a tax word
+    for (const [u, said] of [SOFT[0], ["How are points taxed?", "Good question."]]) {
+      const five = haiku("CHAT");
+      const advice = haiku("NONE");
+      const r = await softTurn(u, said, { judge: makeJudge(five), adviceJudge: makeAdviceJudge(advice) });
+      assert.equal(r.reply, said, u);
+      assert.deepStrictEqual([five.calls.length, advice.calls.length], [1, 0], u);
+      assert.match(five.calls[0].system, /^Answer with exactly one word, the first of these that fits:$/m);
+      assert.notStrictEqual(five.calls[0].system, ADVICE_JUDGE_SYSTEM);
+      assert.equal(five.calls[0].model, "claude-haiku-5-5");
+    }
+    // ... where its ADVICE is still the hand-off, whatever the advice judge would say
+    let five = haiku("ADVICE");
+    let advice = haiku("NONE");
+    let r = await softTurn("How are points taxed?", "Good question.", { judge: makeJudge(five), adviceJudge: makeAdviceJudge(advice) });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    assert.deepStrictEqual([five.calls.length, advice.calls.length], [1, 0]);
+    // lookup-only: LIVE is spoken, a tax answer beside the lookup is the five-way ADVICE hand-off; the advice judge is not asked
+    five = haiku("LIVE");
+    advice = haiku("ADVICE");
+    r = await lookupTurn("The Cowboys won 27 to 20.", { judge: makeJudge(five), adviceJudge: makeAdviceJudge(advice) });
+    assert.equal(r.reply, "The Cowboys won 27 to 20.");
+    assert.deepStrictEqual([five.calls.length, advice.calls.length], [1, 0]);
+    five = haiku("ADVICE");
+    advice = haiku("NONE");
+    r = await lookupTurn("The Cowboys won 27 to 20, and those tickets are tax deductible.", { judge: makeJudge(five), adviceJudge: makeAdviceJudge(advice) });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    assert.deepStrictEqual([five.calls.length, advice.calls.length], [1, 0]);
   });
 });
