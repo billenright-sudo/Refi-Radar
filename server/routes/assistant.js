@@ -19,6 +19,7 @@ const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
+const { makeJudge } = require("../lib/assistant/judge");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
 const { stageById, spokenStageLabel, CAREER_QUESTION } = require("../lib/assistant/coaching");
@@ -388,7 +389,11 @@ function createAssistantRouter({ limiter = {} } = {}) {
 
     let out;
     try {
-      out = await runTurn({ messages, ctx, client: getClient(req), deadlineMs: turnDeadlineMs() });
+      const client = getClient(req);
+      // The second check on a reply only a topic rule blocked: `app.set("assistantJudge", fake)` is the test seam, otherwise the
+      // Haiku judge on the same client. Its tokens come back in out.usage.
+      const judge = req.app.get("assistantJudge") || makeJudge(client);
+      out = await runTurn({ messages, ctx, client, judge, deadlineMs: turnDeadlineMs() });
     } catch (err) {
       console.error("POST /api/assistant/turn:", errText(err));
       meter(req.user.id, turnId, {});

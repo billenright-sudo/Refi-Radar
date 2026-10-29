@@ -7,7 +7,8 @@
 //     on an action request ("log a call with Chen") with no change handed up only a question may
 //     be spoken (isActionRequest / isQuestionShaped), "done / I logged it" claims are replaced
 //     (nothing is ever performed here), every figure must appear in this turn's tool results, and
-//     text with no cited tool result behind it can't carry any fact (screenUngroundedText);
+//     text with no cited tool result behind it can't carry any fact (classifyUngrounded; a reply only its topic
+//     blocked goes to the injected judge, which fails closed);
 //   * a side-effect tool call is NOT acted on: it is returned as `sideEffect`, with a
 //     code-authored read-back, for the confirmation step;
 //   * a client email is never written or sent here: a successful draftEmailTool ends the turn at once with a code-authored line
@@ -20,13 +21,14 @@
 const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
-  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
+  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
+const { VERDICTS } = require("./judge");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 // The whole turn gets this long (up to four model calls, so without it a slow model holds the mic for minutes). A model call is
@@ -612,35 +614,59 @@ function isLoneClarifyingQuestion(reply, userText) {
 }
 
 // What may be said when the model answered in text and no tool result this turn carried a
-// citation (it called no tool, or every tool it called failed).
+// citation (it called no tool, or every tool it called failed), as { kind, line }:
+//   hard (code alone decides; `line` is said instead of the reply):
 //   1. guideline-domain question  -> the fixed hand-off line;
-//   2. the user asked a yes/no question (isYesNoQuestion, R5-1): the ONLY acceptable reply is a lone
-//      clarifying question with no opener stripped ("Which Chen do you mean?"); anything else
-//      ("He sure is.", "You did, on Monday.", "Absolutely — want the numbers?") -> the fixed
-//      can't-verify line (R5-2; it subsumes the round-6b first-word yes/no check);
-//   3. a lone clarifying question (isLoneClarifyingQuestion) -> unchanged: it asserts no fact,
-//      and "what's their name?" must reach the user;
-//   4. the model's text has a digit or a spoken figure, or the user's message OR the model's
-//      own text names a book/market noun (rates, clients, pipeline, ...), or the user's message
-//      names a glossary term (DTI, break-even, LLPA, ...: a definition comes from explainTerm, never
-//      from the model's memory), or the model said
-//      nothing                      -> the fixed can't-verify line (with no cited tool result, a
-//      statement about the book can't be sourced, even if the user only said "good morning");
-//   5. anything else (greetings, small talk, "how can I help") -> the model's text, unchanged.
+//   2. the model said nothing, or its text has a digit or a spoken figure -> the fixed can't-verify
+//      line (no meaning can make an unsourced figure safe);
+//   pass (`line` null: the model's text, unchanged):
+//   3. a lone clarifying question (isLoneClarifyingQuestion; with no opener stripped when the user
+//      asked a yes/no question: "Which Chen do you mean?"): it asserts no fact, and "what's their
+//      name?" must reach the user;
+//   soft (`line` null: blocked only by its topic, so runTurn may ask the judge; without one it is
+//   the fixed can't-verify line, as before the split):
+//   4. the user asked a yes/no question (isYesNoQuestion, R5-1) and the reply is not that lone
+//      question ("He sure is.", "You did, on Monday.", "Absolutely — want the numbers?"; R5-2);
+//   5. the user's message OR the model's own text names a book/market noun (rates, clients,
+//      pipeline, ...), or the user's message names a glossary term (DTI, break-even, LLPA, ...: a
+//      definition comes from explainTerm, never from the model's memory; on this path the judge's
+//      DEFINE keeps that law) (with no cited tool result, a statement about the book can't be
+//      sourced, even if the user only said "good morning");
+//   pass: 6. anything else (greetings, small talk, "how can I help").
+// (A lone question never has a digit, a spoken figure or no text, so testing 2 before 3 changes no answer.)
 // Safe ONLY after claimsCompletion(modelText, false) has run and returned false, as runTurn does:
 // this function does not test for completion claims itself, so a lone question or a small-talk
 // statement that claims an action ("Should I log it? Done.", "All set!") would pass through here.
 // Pure: no I/O, no state.
-function screenUngroundedText(userText, modelText) {
+function classifyUngrounded(userText, modelText) {
   const user = String(userText == null ? "" : userText);
   const text = String(modelText == null ? "" : modelText);
-  if (isGuidelineQuestion(user)) return GUIDELINE_HANDOFF;
+  if (isGuidelineQuestion(user)) return { kind: "hard", line: GUIDELINE_HANDOFF };
+  if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0) return { kind: "hard", line: CANT_VERIFY };
   // isLoneClarifyingQuestion does not strip an opener when the user asked a yes/no question
-  if (isYesNoQuestion(user)) return isLoneClarifyingQuestion(text, user) ? text : CANT_VERIFY;
-  if (isLoneClarifyingQuestion(text, user)) return text;
-  if (!text.trim() || /\d/.test(text) || figureWords(text).length > 0) return CANT_VERIFY;
-  if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text) || mentionsGlossaryTerm(user)) return CANT_VERIFY;
-  return text;
+  if (isLoneClarifyingQuestion(text, user)) return { kind: "pass", line: null };
+  if (isYesNoQuestion(user)) return { kind: "soft", line: null };
+  if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text) || mentionsGlossaryTerm(user)) return { kind: "soft", line: null };
+  return { kind: "pass", line: null };
+}
+
+// The screen with no judge, exactly as it was before the hard/soft split: the model's text when it
+// passes, a hard block's line, and the can't-verify line for a soft block. Same contract as
+// classifyUngrounded (safe only after claimsCompletion). Pure.
+function screenUngroundedText(userText, modelText) {
+  const { kind, line } = classifyUngrounded(userText, modelText);
+  if (kind === "pass") return String(modelText == null ? "" : modelText);
+  return kind === "hard" ? line : CANT_VERIFY;
+}
+
+// The line a judge's verdict puts in place of a soft-blocked reply (design §1): null for CHAT (the reply is said), ADVICE_HANDOFF
+// for ADVICE, NO_LIVE_DATA for LIVE, and `cantVerifyLine` for FACT, DEFINE and anything else (a verdict that is not one of the
+// five words fails closed). Pure.
+function verdictLine(verdict, cantVerifyLine) {
+  if (verdict === "CHAT") return null;
+  if (verdict === "ADVICE") return ADVICE_HANDOFF;
+  if (verdict === "LIVE") return NO_LIVE_DATA;
+  return cantVerifyLine;
 }
 
 // ── Number grounding ─────────────────────────────────────────────────────────
@@ -1903,6 +1929,38 @@ async function withinTurn(promise, ms) {
   }
 }
 
+// The judge on a soft block (design §1) gets at most JUDGE_TIMEOUT_MS, less when the turn's deadline is nearer. It reads at most
+// JUDGE_MAX_CHARS of the reply, counted after it escapes & < > (judge.js cuts each input there), so a longer reply is not sent to
+// it at all: it would be judged by its head alone (ruling T1-1). `judgedLength` is that count.
+const JUDGE_TIMEOUT_MS = 2_500;
+const JUDGE_MAX_CHARS = 2_000;
+const judgedLength = (s) => s.length + 4 * (s.match(/&/g) || []).length + 3 * (s.match(/[<>]/g) || []).length;
+
+// The injected judge's verdict on one soft-blocked reply, held to `input.timeoutMs` here as well as inside the judge: a judge that
+// throws, rejects, never settles or answers anything but one of the five words is FACT, so a soft block fails closed. The tokens
+// it reports are added to the turn's `usage`. One info line records the verdict and the time, never the user's text or the reply.
+async function askJudge(judge, input, usage) {
+  const started = Date.now();
+  let verdict = "FACT";
+  let timer;
+  try {
+    const clock = new Promise((resolve) => { timer = setTimeout(resolve, input.timeoutMs, null); });
+    const out = await Promise.race([judge(input), clock]);
+    if (out && typeof out === "object") {
+      if (VERDICTS.includes(out.verdict)) verdict = out.verdict;
+      const u = out.usage || {};
+      usage.inputTokens += Number.isFinite(u.inputTokens) ? u.inputTokens : 0;
+      usage.outputTokens += Number.isFinite(u.outputTokens) ? u.outputTokens : 0;
+    }
+  } catch (_err) {
+    verdict = "FACT";
+  } finally {
+    clearTimeout(timer);
+  }
+  console.info(`charlie judge: ${verdict} ${Date.now() - started}ms`);
+  return verdict;
+}
+
 // ── What a calendar read grounds beyond its figures ──────────────────────────────────────────────────────────────────────────
 //
 // On a turn that read the calendar, the figure check lets any number through that appears in the payload, so "10:00 PM" for a 10:00 AM
@@ -2498,10 +2556,13 @@ const changeEventLine = (text, before) => {
   return !PAST_QUESTION_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
 };
 
-// runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
+// runTurn({ messages, ctx, client, judge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
 //   messages:   Messages API history ending with the user's latest message (not mutated)
 //   ctx:        { user, rates, db, google? }, handed to the tools (google = the per-user Google adapter; without one the calendar
 //               tools say Google is not connected)
+//   judge:      judge({ previous?, user, reply, timeoutMs }) -> { verdict, usage, ms } (judge.js makeJudge), asked only about a
+//               soft-blocked ungrounded reply (classifyUngrounded); its tokens are added to `usage`. Without one a soft block is the
+//               can't-verify line, as before the judge existed.
 //   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call, in the tool calls of a response
 //               (Google ones go out to the network) or before the next model call, the turn is the code-authored TOOK_TOO_LONG
 //               with error:true (like the route's ERROR_TURN, but no throw): no sources, no change, and `usage` counts the model
@@ -2511,7 +2572,7 @@ const changeEventLine = (text, before) => {
 //   details:    with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
 //   compose:    with a successful draftEmailTool, the email it set up ({ to, subject, body, links }) for the screen to open in the
 //               user's own mail app; it is never sent to the model, and nothing is sent by anyone
-async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
+async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
     throw new TypeError("runTurn: client must provide messages.create()");
@@ -2670,14 +2731,29 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // Rulings 49, 64 and 65: a calendar or availability fact on a turn that read no calendar is can't-verify, or, when the user asked
       // about the calendar and Google is not usable, the Google line that says why (ungroundedCalendarFact)
       if (!calendarCited && ungroundedCalendarFact(text, sources.length > 0, [...clientNames])) return finish(cantVerifyCalendar());
-      // No cited tool result behind the text: it may only be conversation (screenUngroundedText
+      // No cited tool result behind the text: it may only be conversation (classifyUngrounded
       // is stricter than the figure check: it refuses any digit).
       if (sources.length === 0) {
         // explainTerm came back empty-handed ("(not found)", invalid, failed): nothing may define the term instead
         // of it, whatever words the definition is made of. Only a question back to the user is allowed through.
         if (glossaryMiss && !isLoneClarifyingQuestion(text, userText)) return finish(CANT_VERIFY);
-        const screened = screenUngroundedText(userText, text);
-        return finish(screened === CANT_VERIFY ? cantVerifyCalendar() : screened);
+        // (the can't-verify line is the Google line when the user asked about the calendar and Google is not usable, Ruling 49)
+        const speak = (line) => finish(line === CANT_VERIFY ? cantVerifyCalendar() : line);
+        const screen = classifyUngrounded(userText, text);
+        if (screen.kind === "pass") return speak(text);
+        if (screen.kind === "hard") return speak(screen.line);
+        // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its
+        // line. It only ever rules here, after every screen above, so it cannot let through what any of them or a hard rule
+        // blocks. With no judge, no time left for one (the deadline less the minCallMs margin) or a reply too long for it to
+        // read whole, the soft block stays the can't-verify line.
+        const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
+        if (typeof judge !== "function" || !(timeoutMs > 0) || judgedLength(text) > JUDGE_MAX_CHARS) return speak(CANT_VERIFY);
+        const before = messages[messages.length - 2];
+        const verdict = await askJudge(judge, {
+          previous: before && before.role === "assistant" ? messageText(before) : undefined,
+          user: userText, reply: text, timeoutMs,
+        }, usage);
+        return speak(verdictLine(verdict, CANT_VERIFY) ?? text);
       }
       // Grounded: every figure the model speaks must be one the tools returned this turn.
       if (!text || ungroundedNumbers(text, payloads).length > 0) return finish(CANT_VERIFY);
@@ -2774,4 +2850,5 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
+  classifyUngrounded, verdictLine,
 };

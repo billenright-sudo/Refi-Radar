@@ -1465,3 +1465,47 @@ test("Step 0: a history of more than 100 messages is 400 with no model call; exa
   assert.equal(r.status, 200);
   assert.equal(client.calls.length, 2);
 });
+
+// ── Charlie personality, Task 2: the judge on /turn ──────────────────────────
+
+test("turn: a soft block goes to the judge (app.set(\"assistantJudge\") or the Haiku judge on the same client); its tokens are metered", async () => {
+  const VENT = "I had a rough call this morning";
+  const SAID = "Ugh, those stick with you. Want to talk it through, or shake it off?";
+  const logged = [];
+  const savedInfo = console.info;
+  console.info = (...args) => logged.push(args.join(" "));
+  try {
+    // the test seam: the injected judge rules, and the client is called once
+    const asked = [];
+    app.set("assistantJudge", async (input) => {
+      asked.push(input);
+      return { verdict: "CHAT", usage: { inputTokens: 7, outputTokens: 1 }, ms: 1 };
+    });
+    let client = fakeClient([say(SAID, { input_tokens: 100, output_tokens: 20 })]);
+    setClient(client);
+    let r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(VENT), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, SAID);
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].user, VENT);
+    assert.equal(client.calls.length, 1);
+    let rows = usageFor(r.data.turnId);
+    assert.deepStrictEqual([rows.length, rows[0].input_tokens, rows[0].output_tokens], [1, 107, 21]);
+
+    // without it, the route builds the real judge (makeJudge) over the same client: a second, Haiku call
+    app.set("assistantJudge", null);
+    client = fakeClient([say(SAID, { input_tokens: 100, output_tokens: 20 }), say("CHAT", { input_tokens: 9, output_tokens: 1 })]);
+    setClient(client);
+    r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(VENT), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, SAID);
+    assert.equal(client.calls.length, 2);
+    assert.equal(client.calls[1].model, "claude-haiku-5-5");
+    rows = usageFor(r.data.turnId);
+    assert.deepStrictEqual([rows.length, rows[0].input_tokens, rows[0].output_tokens], [1, 109, 21]);
+    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), ["charlie judge: CHAT Nms", "charlie judge: CHAT Nms"]);
+  } finally {
+    console.info = savedInfo;
+    app.set("assistantJudge", null);
+  }
+});

@@ -6481,3 +6481,209 @@ test("Task 9 fix 4 (Ruling 73): a product's lead words never swallow a calendar 
     assert.equal(await reply(u, script, "Streamline refinancing is available."), "Streamline refinancing is available.", u);
   }
 });
+
+// ── Charlie personality, Task 2: soft blocks go to the judge ─────────────────────────────────────────────────────────────────────
+
+const { ADVICE_HANDOFF, NO_LIVE_DATA } = require("../lib/assistant/prompt");
+const { classifyUngrounded, verdictLine } = require("../lib/assistant/orchestrator");
+
+// a judge that answers `v`, and one that also records what it was asked (runTurn's judge seam)
+const judgeSays = (v) => async () => ({ verdict: v, usage: { inputTokens: 7, outputTokens: 1 }, ms: 1 });
+function recordingJudge(v) {
+  const calls = [];
+  const judge = async (input) => { calls.push(input); return { verdict: v, usage: { inputTokens: 7, outputTokens: 1 }, ms: 1 }; };
+  judge.calls = calls;
+  return judge;
+}
+// console.info silenced and captured for the duration of fn (runTurn logs one line per judge call); fn's result is returned
+async function capturingInfo(fn) {
+  const logged = [];
+  const saved = console.info;
+  console.info = (...args) => logged.push(args.join(" "));
+  try { return await fn(logged); } finally { console.info = saved; }
+}
+// replies that only a topic rule blocks today: a book word in the user's message or the reply, a yes/no question, a glossary term
+const SOFT = [
+  ["I had a rough call this morning", "Ugh, those stick with you. Want to talk it through, or shake it off?"],
+  ["Do you like your job?", "Beating everyone else to a refi? Honestly, my favorite thing."],
+  ["How do I pitch an ARM to a nervous client?", "Lead with the fixed period and what happens after it, in plain words."],
+];
+const softTurn = (u, said, extra = {}) =>
+  runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient([say(said)]), ...extra });
+
+test("Charlie T2: classifyUngrounded splits the screen into hard and soft blocks; screenUngroundedText is that split, unchanged", () => {
+  const PASS_ = { kind: "pass", line: null };
+  const SOFT_ = { kind: "soft", line: null };
+  const HARD = (line) => ({ kind: "hard", line });
+  const CASES = [
+    ...SOFT.map(([u, said]) => [u, said, SOFT_]),
+    // soft: a yes/no question answered by anything but a lone clarifying question, a book word, a glossary term
+    ["Is Chen my best?", "He sure is.", SOFT_],
+    ["Is Chen my best?", "Absolutely — want the numbers?", SOFT_],
+    ["good morning", "Rates ticked down today.", SOFT_],
+    ["what's a break-even?", "It's how many months until the up-front costs are earned back.", SOFT_],
+    // hard: the guideline hand-off; an empty reply, a digit or a spoken figure (on a yes/no question too)
+    ["what's the max DTI for FHA?", "Not sure.", HARD(GUIDELINE_HANDOFF)],
+    ["anything on guidelines", "", HARD(GUIDELINE_HANDOFF)],
+    ["hello", "", HARD(CANT_VERIFY)],
+    ["hello", "   ", HARD(CANT_VERIFY)],
+    ["tell me something", "You have 3 calls to make.", HARD(CANT_VERIFY)],
+    ["how was your weekend?", "Great, I read twenty pages.", HARD(CANT_VERIFY)],
+    ["Is Chen my best?", "Yes, by 2 points.", HARD(CANT_VERIFY)],
+    ["Is Chen my best?", "He's at seven and a half.", HARD(CANT_VERIFY)],
+    // pass: a lone clarifying question (as the yes/no rule reads it), and small talk with no book word
+    ["Is Chen my best?", "Which Chen do you mean?", PASS_],
+    ["add a client", "Sure, what's their name?", PASS_],
+    ["good morning", "Want me to run a sweep?", PASS_],
+    ["thanks", "Anytime!", PASS_],
+    ["I'm flying to Austin", "Safe travels!", PASS_],
+  ];
+  for (const [u, said, want] of CASES) {
+    const got = classifyUngrounded(u, said);
+    assert.deepStrictEqual(got, want, `${u} / ${said}`);
+    const mapped = got.kind === "pass" ? said : got.kind === "hard" ? got.line : CANT_VERIFY;
+    assert.equal(screenUngroundedText(u, said), mapped, `${u} / ${said}`);
+  }
+});
+
+test("Charlie T2: soft blocks reach the judge; CHAT is spoken, with the judge's tokens in the turn's usage", async () => {
+  await capturingInfo(async (logged) => {
+    for (const [u, said] of SOFT) {
+      const r = await softTurn(u, said, { judge: judgeSays("CHAT") });
+      assert.equal(r.reply, said, u);
+      assert.deepStrictEqual(r.sources, [], u);
+      assert.deepStrictEqual(r.usage, { inputTokens: 107, outputTokens: 21 }, u);
+    }
+    // one info line per judge call: the verdict and the time, never the user's words or the reply
+    assert.equal(logged.length, SOFT.length);
+    for (const line of logged) assert.match(line, /^charlie judge: CHAT \d+ms$/);
+  });
+});
+
+test("Charlie T2: the verdict picks the line — FACT and DEFINE can't-verify, ADVICE and LIVE their own hand-offs", async () => {
+  await capturingInfo(async (logged) => {
+    for (const [verdict, line] of [["FACT", CANT_VERIFY], ["DEFINE", CANT_VERIFY], ["ADVICE", ADVICE_HANDOFF], ["LIVE", NO_LIVE_DATA]]) {
+      for (const [u, said] of SOFT) {
+        const r = await softTurn(u, said, { judge: judgeSays(verdict) });
+        assert.equal(r.reply, line, `${verdict}: ${u}`);
+        assert.deepStrictEqual(r.sources, [], `${verdict}: ${u}`);
+        assert.deepStrictEqual(r.usage, { inputTokens: 107, outputTokens: 21 }, `${verdict}: ${u}`);
+      }
+    }
+    assert.ok(logged.every((l) => /^charlie judge: (?:FACT|DEFINE|ADVICE|LIVE) \d+ms$/.test(l)), logged.join("\n"));
+  });
+  // verdictLine is the one mapping: anything that is not one of the five words is FACT
+  assert.equal(verdictLine("CHAT", "the line"), null);
+  for (const v of ["FACT", "DEFINE"]) assert.equal(verdictLine(v, "the line"), "the line");
+  assert.equal(verdictLine("ADVICE", "the line"), ADVICE_HANDOFF);
+  assert.equal(verdictLine("LIVE", "the line"), NO_LIVE_DATA);
+  for (const v of ["chat", "MAYBE", "", null, undefined, 5, {}]) assert.equal(verdictLine(v, "the line"), "the line", String(v));
+});
+
+test("Charlie T2: with no judge (every caller before this task) a soft block is the can't-verify line, as today", async () => {
+  for (const extra of [{}, { judge: undefined }, { judge: null }]) {
+    for (const [u, said] of SOFT) {
+      const r = await softTurn(u, said, extra);
+      assert.equal(r.reply, CANT_VERIFY, u);
+      assert.deepStrictEqual(r.usage, { inputTokens: 100, outputTokens: 20 }, u);
+    }
+  }
+  // and with no time left for it (the turn's deadline less the minCallMs margin) the judge is not asked
+  const judge = recordingJudge("CHAT");
+  const slow = { messages: { create: async () => { await new Promise((r) => setTimeout(r, 200)); return say(SOFT[0][1]); } } };
+  const r = await runTurn({ messages: userSays(SOFT[0][0]), ctx: brokerCtx, client: slow, judge, deadlineMs: 1000, minCallMs: 850 });
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.equal(judge.calls.length, 0);
+});
+
+test("Charlie T2: the judge never runs on hard blocks, grounded turns or a turn an earlier screen caught; those replies are today's", async () => {
+  const judge = recordingJudge("CHAT");
+  const CASES = [
+    // a digit or a spoken figure in a reply to a soft-looking message
+    ["I had a rough call this morning", () => [say("Ugh, those land like 2 left hooks.")], CANT_VERIFY],
+    ["I had a rough call this morning", () => [say("Ugh, twenty of those would wreck anyone.")], CANT_VERIFY],
+    // a guideline question
+    ["what's the max DTI for FHA?", () => [say("Probably the usual.")], GUIDELINE_HANDOFF],
+    // an empty reply
+    ["Do you like your job?", () => [say("")], CANT_VERIFY],
+    // explainTerm came back empty-handed (glossaryMiss)
+    ["what's a buydown?", () => [useTool("explainTerm", { term: "buydown" }), say("A buydown lowers the rate for a while.")], CANT_VERIFY],
+    // a grounded turn
+    ["what are rates today?", () => [useTool("getMarketUpdate"), say("The thirty-year is at 6.52 percent.")], "The thirty-year is at 6.52 percent."],
+    // caught earlier by claimsCompletion
+    ["how's your day going?", () => [say("Great, I logged it for you.")], NOTHING_CHANGED],
+  ];
+  for (const [u, script, want] of CASES) {
+    const withJudge = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient(script()), judge });
+    const today = await runTurn({ messages: userSays(u), ctx: brokerCtx, client: fakeClient(script()) });
+    assert.equal(withJudge.reply, want, u);
+    assert.deepStrictEqual(withJudge, today, u);
+  }
+  assert.equal(judge.calls.length, 0);
+});
+
+test("Charlie T2: a judge that throws, rejects, never resolves or answers garbage is FACT, inside the turn's deadline", async () => {
+  const [u, said] = SOFT[0];
+  const judges = {
+    throws: () => { throw new Error("boom"); },
+    rejects: async () => { throw new Error("boom"); },
+    lowercase: async () => ({ verdict: "chat", usage: { inputTokens: 7, outputTokens: 1 } }),
+    unknown: async () => ({ verdict: "SURE" }),
+    nothing: async () => undefined,
+    never: () => new Promise(() => {}),
+  };
+  await capturingInfo(async (logged) => {
+    for (const [name, judge] of Object.entries(judges)) {
+      const started = Date.now();
+      const r = await softTurn(u, said, { judge, deadlineMs: 3000 });
+      assert.equal(r.reply, CANT_VERIFY, name);
+      assert.ok(Date.now() - started < 3000, `${name}: the turn resolved before its deadline`);
+      assert.notEqual(r.error, true, name);
+    }
+    assert.equal(logged.length, Object.keys(judges).length);
+    for (const line of logged) assert.match(line, /^charlie judge: FACT \d+ms$/);
+  });
+});
+
+test("Charlie T2: the judge is shown Charlie's previous message, the user's message and the reply, with a bounded timeout", async () => {
+  const judge = recordingJudge("FACT");
+  const messages = [
+    { role: "user", content: "who's my best opportunity?" },
+    { role: "assistant", content: "Robert Chen." },
+    { role: "user", content: "Is he still a good one?" },
+  ];
+  const r = await capturingInfo(() => runTurn({ messages, ctx: brokerCtx, client: fakeClient([say("Definitely.")]), judge }));
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.equal(judge.calls.length, 1);
+  const [asked] = judge.calls;
+  assert.equal(asked.previous, "Robert Chen.");
+  assert.equal(asked.user, "Is he still a good one?");
+  assert.equal(asked.reply, "Definitely.");
+  assert.ok(asked.timeoutMs > 0 && asked.timeoutMs <= 2500, String(asked.timeoutMs));
+  // with no assistant message right before the user's, there is no previous message
+  const first = recordingJudge("FACT");
+  await capturingInfo(() => softTurn(...SOFT[0], { judge: first }));
+  assert.equal(first.calls.length, 1);
+  assert.equal(first.calls[0].previous, undefined);
+});
+
+test("Charlie T2 (ruling T1-1): a reply longer than the judge reads whole is FACT, with no judge call", async () => {
+  const [u] = SOFT[0];
+  const turn = async (said) => {
+    const judge = recordingJudge("CHAT");
+    const r = await capturingInfo(() => softTurn(u, said, { judge }));
+    return { reply: r.reply, calls: judge.calls.length };
+  };
+  const words = "Ugh, those stick with you. ".repeat(80);
+  assert.deepStrictEqual(await turn(words.slice(0, 2000)), { reply: words.slice(0, 2000), calls: 1 });
+  assert.deepStrictEqual(await turn(words.slice(0, 2001)), { reply: CANT_VERIFY, calls: 0 });
+  // counted as the judge counts it, after & < > are escaped: 1,950 characters that escape to 2,470
+  const escaped = "Rough & tough. ".repeat(130).trim();
+  assert.ok(escaped.length <= 2000);
+  assert.deepStrictEqual(await turn(escaped), { reply: CANT_VERIFY, calls: 0 });
+});
+
+test("Charlie T2: ADVICE_HANDOFF and NO_LIVE_DATA are the design's lines, word for word", () => {
+  assert.equal(ADVICE_HANDOFF, "That's one for a CPA or an attorney, so I won't guess.");
+  assert.equal(NO_LIVE_DATA, "I couldn't look that up just now, so I won't guess.");
+});

@@ -12,6 +12,13 @@ const CANT_VERIFY = "I can't verify that from what I have, so I won't guess.";
 const GUIDELINE_HANDOFF =
   "That's a loan-guideline question, and I can't verify guidelines yet, so I won't guess.";
 
+// What code says in place of a reply the judge read as a legal or tax answer, or medical or personal-investment advice (ADVICE).
+const ADVICE_HANDOFF = "That's one for a CPA or an attorney, so I won't guess.";
+
+// What code says in place of a reply the judge read as a current real-world fact (a score, news, weather, an event, a price) that
+// no live lookup this turn returned (LIVE).
+const NO_LIVE_DATA = "I couldn't look that up just now, so I won't guess.";
+
 // runTurn never performs an action, so any first-person "I logged / added / saved it" or a
 // bare "Done" from the model is false by construction; this replaces it. It speaks of "that change" only: it must stay
 // true after a change confirmed earlier in the same session.
@@ -145,6 +152,6 @@ const buildCharliSystem = (user) =>
   CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
+  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 };
