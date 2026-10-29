@@ -20,7 +20,7 @@
 const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
-  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
+  buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
@@ -2481,6 +2481,23 @@ const sendLine = (text, before) => {
   return asks ? NO_SEND : null;
 };
 
+// Live check 2026-10-28: Charli can read the calendar and book on it, but cannot cancel, move or edit an event already on it. Asked
+// to ("Cancel my call with David Nave", "move my 3 PM to 4"), code says so and where to do it, whatever the model said. A change
+// verb with an event (or "my 3 PM") at most four words after it, in the same sentence; not a question about the past ("Did Dave
+// cancel the meeting?"), and not while a booking read-back is in view ("move the call to Friday" then amends the booking not yet made).
+const CHANGE_EVENT_RE = new RegExp(
+  "\\b(?:cancel|delete|remove|clear|reschedule|move|push|bump|shift|change|edit|update)(?:\\s+[\\w'\\u2019&.-]+){0,4}?\\s+" +
+    "(?:(?:calls?|meetings?|appointments?|appts?|events?|zoom|showings?|closings?|lunch|block|calendar)\\b" +
+    "|\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\b\\.?|p\\.?m\\b\\.?)|\\d{1,2}:\\d{2}\\b)",
+  "i"
+);
+const PAST_QUESTION_RE = /^(?:did|has|had|was|were)\b/i;
+const changeEventLine = (text, before) => {
+  if (before && before.role === "assistant" && messageText(before).includes("Nobody gets an invite.")) return null;
+  const t = afterFiller(text);
+  return !PAST_QUESTION_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
+};
+
 // runTurn({ messages, ctx, client, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
 //   messages:   Messages API history ending with the user's latest message (not mutated)
 //   ctx:        { user, rates, db, google? }, handed to the tools (google = the per-user Google adapter; without one the calendar
@@ -2593,6 +2610,8 @@ async function runTurn({ messages, ctx, client, deadlineMs = DEFAULT_TURN_DEADLI
       // Rulings 52 and 67: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
       const noSend = sendLine(userText, messages[messages.length - 2]);
       if (noSend) return finish(noSend);
+      const noChange = changeEventLine(userText, messages[messages.length - 2]);
+      if (noChange) return finish(noChange);
       // Ruling 70 (d): a calendar read this turn came back with a Google code (not connected, expired, unreachable) and was handed back
       // to the model (Ruling 55: the user did not ask about the calendar). Whatever the question, a sentence of the reply that names a
       // day or a time is the Google line that says why: nothing read the calendar, and the failed read is why ("Call the Chens first."

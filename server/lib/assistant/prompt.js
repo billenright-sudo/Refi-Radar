@@ -22,6 +22,9 @@ const NOTHING_CHANGED =
 // or a statement before the ask): what a booking needs, in code's words. It claims nothing either.
 const BOOKING_ASK = "Tell me who it's with, the day and the time, and I'll read it back before anything goes on your calendar.";
 
+// Charli can read the calendar and book on it, but cannot cancel, move or edit an event already on it: what code says when asked to.
+const EVENT_CHANGE_UNSUPPORTED = "I can't change events already on your calendar yet — open Google Calendar to cancel or move it.";
+
 // One response asked for more than one change at once; confirmations happen one at a time.
 const ONE_AT_A_TIME = "Let's do those one at a time — which first?";
 
@@ -142,6 +145,6 @@ const buildCharliSystem = (user) =>
   CHARLI_SYSTEM + "\n\n" + coachingStyle(user && typeof user === "object" ? user.career_stage : null);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
+  CHARLI_SYSTEM, buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 };
