@@ -911,6 +911,64 @@ test("Residual R1: namesClient and mentionsClient answer exactly as the regex re
   assert.ok(compared >= 1200, `${compared} texts compared`);
   // both answers came up for both functions, so the comparison is not one-sided
   assert.deepStrictEqual([seen.names.size, seen.mentions.size], [2, 2]);
+
+  // (round 4, V3) books of long hyphen and apostrophe names, up to 100 pieces a surname, against chains of the same pieces up to 200
+  // pieces long, each with a slice of one surname (cut at piece boundaries, its own ' and - kept) somewhere inside it
+  // (mostly apostrophes in a name, so its hyphen parts are long and a random chain seldom holds one whole)
+  const PIECES = ["ab", "Ab", "AB", "cd", "é", "e", "Okafor", "okafor", "x1", "Σς", "σσ"];
+  const sepOf = () => (rand() < 0.9 ? "'" : "-");
+  const chainOf = (n) => {
+    const parts = [];
+    for (let j = 0; j < n; j++) parts.push(pick(PIECES), sepOf());
+    parts.pop();
+    return parts;
+  };
+  const longSeen = { names: new Set(), mentions: new Set() };
+  let longCompared = 0;
+  for (let b = 0; b < 4; b++) {
+    const orgId = addOrg(`V3 long book ${b}`);
+    const userId = addUser(orgId, "broker", `v3-long-${b}@x.co`);
+    const surnames = [];
+    for (let k = 0; k < 4; k++) {
+      const surname = chainOf(20 + Math.floor(rand() * 81));
+      surnames.push(surname);
+      addClientRow(orgId, userId, `${pick(["Pat", "Lee", "Ana"])} ${surname.join("")}`);
+    }
+    // and the plain chains "q-q-…" and "w'w'…", 20 to 100 pieces
+    const plain = [];
+    for (const [letter, sep] of [["q", "-"], ["w", "'"]]) {
+      const n = 20 + Math.floor(rand() * 81);
+      plain.push([letter, sep, n]);
+      addClientRow(orgId, userId, `${letter.concat(sep).repeat(n - 1)}${letter}`);
+    }
+    const ctx = { user: { id: userId, role: "broker", org_id: orgId }, db };
+    const texts = [];
+    for (let i = 0; i < 60; i++) {
+      const surname = pick(surnames);
+      const from = 2 * Math.floor(rand() * (surname.length / 2));
+      const to = from + 2 * Math.floor(rand() * ((surname.length - from) / 2));
+      const before = chainOf(Math.floor(rand() * 50));
+      const after = chainOf(Math.floor(rand() * 50));
+      texts.push([...before, ...(before.length ? [sepOf()] : []), ...surname.slice(from, to + 1), ...(after.length ? [sepOf()] : []), ...after].join(""));
+      texts.push(chainOf(1 + Math.floor(rand() * 200)).join(""));
+    }
+    for (const [letter, sep, n] of plain) {
+      for (const m of [n - 1, n, n + 1, 2 * n]) {
+        for (const s of ["-", "'"]) texts.push(`Call ${letter.concat(s).repeat(m - 1)}${letter} today.`);
+      }
+      texts.push(`${letter.concat(sep).repeat(n - 1)}${letter}`.toUpperCase());
+    }
+    for (const text of texts) {
+      const want = { names: REF.namesClient(text, ctx), mentions: REF.mentionsClient(text, ctx) };
+      assert.strictEqual(namesClient(text, ctx), want.names, `namesClient, long book ${b}: ${JSON.stringify(text)}`);
+      assert.strictEqual(mentionsClient(text, ctx), want.mentions, `mentionsClient, long book ${b}: ${JSON.stringify(text)}`);
+      longSeen.names.add(want.names);
+      longSeen.mentions.add(want.mentions);
+      longCompared += 1;
+    }
+  }
+  assert.ok(longCompared >= 500, `${longCompared} long texts compared`);
+  assert.deepStrictEqual([longSeen.names.size, longSeen.mentions.size], [2, 2]);
 });
 
 test("Residual R1: with a 2,000-client org, 20 calls of each matcher take under 300 ms in total", async () => {
@@ -974,5 +1032,75 @@ test("Residual S1: a 3,999-character a-a-a… or a'a'a… chain is checked for n
   ]) {
     assert.equal(tools.namesClient(text, ctx), want, text.slice(1790, 1830));
     assert.equal(tools.mentionsClient(text, ctx), want, text.slice(1790, 1830));
+  }
+});
+
+// ── Round 4, V3: a hostile client name costs no more than a normal one ──────────────────────────────────────────────────────────
+
+// A "poisoned book": one org of 2,000 normal clients plus client names of 403, 803 and 1,603 characters, all hyphens ("a-a-…") in
+// one org and all apostrophes ("a'a'…") in the other. Nothing limits a client's name, so any member of an org can add these.
+const POISON_LENGTHS = [403, 803, 1603];
+function poisonedBook(label, sep) {
+  const orgId = addOrg(`V3 poisoned book ${label}`);
+  const userId = addUser(orgId, "broker", `v3-poison-${label}@x.co`);
+  const SYL = ["ka", "lo", "mi", "ne", "ru", "sa", "ti", "vo", "ze", "pa", "do", "fe", "gu", "hi", "ja", "be"];
+  const word = (n, len) => {
+    let w = "";
+    for (let i = 0; i < len; i++) { w += SYL[n % SYL.length]; n = Math.floor(n / SYL.length); }
+    return w[0].toUpperCase() + w.slice(1);
+  };
+  db.transaction(() => {
+    for (let i = 0; i < 2000; i++) addClientRow(orgId, userId, `${word(i * 7 + 3, 3)} ${word(i, 4)}`);
+    for (const length of POISON_LENGTHS) {
+      const name = `${"a".concat(sep).repeat((length - 1) / 2)}a`;
+      assert.equal(name.length, length);
+      addClientRow(orgId, userId, name);
+    }
+  })();
+  return { orgId, userId };
+}
+
+test("Round 4 V3: with a poisoned book, each name check of a 3,999-character chain takes under 300 ms, and finds exactly the names it holds", async () => {
+  const tools = require("../lib/assistant/tools");
+  // the chains: the poison's own pieces with either mark, and pieces no name has (every run is walked and none is a name)
+  const chains = [];
+  for (const piece of ["a", "b"]) {
+    for (const sep of ["-", "'"]) {
+      const chain = `${piece.concat(sep).repeat(1999)}${piece}`;
+      assert.equal(chain.length, 3999);
+      chains.push(chain);
+    }
+  }
+  for (const [label, sep] of [["hyphens", "-"], ["apostrophes", "'"]]) {
+    const { orgId, userId } = poisonedBook(label, sep);
+    const user = { id: userId, role: "broker", org_id: orgId };
+    // (the answers: a hyphenated name's parts are screened, so its "a" is found in any chain of a's; the apostrophe names are found
+    // only in the apostrophe chain of a's, which holds them whole; no chain of b's names anyone)
+    for (const chain of chains) {
+      const want = chain[0] === "a" && (sep === "-" || chain[1] === "'");
+      // one turn's ctx (the names read once, then each check alone is timed), and a plain ctx (the names read on each call)
+      const turn = tools.withTurnClientNames({ user, db });
+      tools.namesClient("warm up", turn);
+      for (const check of [tools.namesClient, tools.mentionsClient]) {
+        for (const ctx of [turn, { user, db }]) {
+          const started = Date.now();
+          assert.equal(check(chain, ctx), want, `${check.name}, ${label} book, "${chain.slice(0, 4)}…"`);
+          const took = Date.now() - started;
+          assert.ok(took < 300, `${check.name}, ${label} book, "${chain.slice(0, 4)}…", ${ctx === turn ? "turn" : "plain"} ctx: ${took} ms`);
+        }
+      }
+    }
+  }
+  // the walk's own worst case: a name the chain holds every prefix of but never the whole ("a'a'…'a'b"), so from every start the walk
+  // goes as deep as the name before it stops
+  const orgId = addOrg("V3 prefix book");
+  const userId = addUser(orgId, "broker", "v3-prefix@x.co");
+  addClientRow(orgId, userId, `Pat ${"a'".repeat(801)}b`);
+  const ctx = tools.withTurnClientNames({ user: { id: userId, role: "broker", org_id: orgId }, db });
+  for (const check of [tools.namesClient, tools.mentionsClient]) {
+    const started = Date.now();
+    assert.equal(check(`${"a'".repeat(1999)}a`, ctx), false);
+    assert.ok(Date.now() - started < 300, `${check.name}, prefix book: ${Date.now() - started} ms`);
+    assert.equal(check(`${"a'".repeat(1999)}a'b`, ctx), true);
   }
 });

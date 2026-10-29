@@ -7707,6 +7707,45 @@ test("Residual S1: a 3,999-character chain in the user's message, or in Charlie'
   });
 });
 
+// ── Round 4, V3: a poisoned book through runTurn ─────────────────────────────────────────────────────────────────────────────────
+
+test("Round 4 V3: with a 2,000-client book plus 403, 803 and 1,603-character names, a 3,999-character chain takes runTurn under 300 ms", async () => {
+  const SYL = ["ka", "lo", "mi", "ne", "ru", "sa", "ti", "vo", "ze", "pa", "do", "fe", "gu", "hi", "ja", "be"];
+  const word = (n, len) => {
+    let w = "";
+    for (let i = 0; i < len; i++) { w += SYL[n % SYL.length]; n = Math.floor(n / SYL.length); }
+    return w[0].toUpperCase() + w.slice(1);
+  };
+  const row = (name) => ({ name, loanType: "30yr_fixed", currentRate: 7.1, loanBalance: 300000, propertyValue: 450000, creditScore: 740 });
+  await capturingInfo(async () => {
+    for (const sep of ["-", "'"]) {
+      const orgId = addOrg(`V3 poisoned ${sep}`);
+      const brokerId = addUser(orgId, "broker", `v3-poisoned-${sep === "-" ? "hyphen" : "apostrophe"}@x.co`);
+      db.transaction(() => {
+        for (let i = 0; i < 2000; i++) addClientRow(orgId, brokerId, row(`${word(i * 7 + 3, 3)} ${word(i, 4)}`));
+        for (const length of [403, 803, 1603]) addClientRow(orgId, brokerId, row(`${"a".concat(sep).repeat((length - 1) / 2)}a`));
+      })();
+      const ctx = { user: user(brokerId, "broker", orgId), rates: LIVE, db };
+      for (const piece of ["a", "b"]) {
+        for (const mark of ["-", "'"]) {
+          const chain = `${piece.concat(mark).repeat(1999)}${piece}`;
+          // a chain that names a client (a hyphenated name's "a" part, or an apostrophe name held whole) sends the reply to the judge,
+          // which can't read a 3,999-character message whole: can't-verify; one that names nobody is spoken
+          const named = piece === "a" && (sep === "-" || mark === "'");
+          for (const messages of [userSays(chain), history("hi", chain, "thanks")]) {
+            const started = Date.now();
+            const r = await runTurn({ messages, ctx, client: fakeClient([say("Sorry, I did not catch that.")]), judge: judgeSays("CHAT") });
+            const took = Date.now() - started;
+            assert.equal(r.reply, named ? CANT_VERIFY : "Sorry, I did not catch that.");
+            const where = messages.length === 1 ? "user's" : "previous";
+            assert.ok(took < 300, `book of "a${sep}a…" names, "${piece}${mark}${piece}${mark}…" as the ${where} message: ${took} ms`);
+          }
+        }
+      }
+    }
+  });
+});
+
 // ── Residual round 2, S2: the advice check judges the sentences that could carry the answer ─────────────────────────────────────
 
 test("Residual S2 (round 4, V2): on a cited turn the advice judge is given the whole reply, the grounded rate with it", async () => {

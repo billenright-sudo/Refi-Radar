@@ -433,34 +433,50 @@ const fold = (s) => {
 // What a whole-word match of a name word could find inside one word of a text: the word itself and every run of its pieces between
 // ' and - ("O'Brien-Smith": O, Brien, Smith, O'Brien, Brien-Smith, O'Brien-Smith). A name word occurs in a text with no letter or
 // digit on either side exactly when it is one of these runs of some word of the text ("Grace's" holds "Grace", "Wu-Okonkwo" holds
-// "Okonkwo", "Don't" holds "Don"). Residual S1: only runs of at most `maxPieces` pieces, the most any indexed name word has, since a
-// name word can only equal a run of as many pieces as it has; so a 4,000-character "a-a-a-…" costs a few thousand short runs, not
-// millions (every run of every length was quadratic in the chain).
-function wordRuns(word, maxPieces) {
-  const parts = word.split(/(['-])/);   // pieces at the even places, the ' or - between them at the odd ones
-  const runs = [];
+// "Okonkwo", "Don't" holds "Don"). Round 4, V3: the name words are a trie of their folded pieces, one level a piece, keyed by the
+// piece with the ' or - before it (none for a word's first piece); a run is found by walking a text word's pieces from each start,
+// one Map lookup a piece, until the walk reaches a whole name word or a piece no name word has next. No run is built or folded
+// whole, so the work never grows with the square of the longest name (residual S1 capped the runs at the longest name word's
+// pieces, and one long hyphenated client name made a 4,000-character "a-a-a-…" cost seconds again).
+const NAME_END = Symbol("a whole name word ends here");
+function addNameWord(trie, term) {
+  const parts = term.split(/(['-])/);   // pieces at the even places, the ' or - between them at the odd ones
+  let node = trie;
   for (let i = 0; i < parts.length; i += 2) {
-    let run = parts[i];
-    runs.push(run);
-    for (let j = i + 2; j < parts.length && (j - i) / 2 < maxPieces; j += 2) {
-      run += parts[j - 1] + parts[j];
-      runs.push(run);
+    const key = i === 0 ? parts[i] : parts[i - 1] + parts[i];
+    if (!node.has(key)) node.set(key, new Map());
+    node = node.get(key);
+  }
+  node.set(NAME_END, true);
+}
+// True when some run of the pieces of `word` (as the text has it, not yet folded) is a whole name word of `trie`.
+function wordHoldsName(word, trie) {
+  const parts = word.split(/(['-])/);
+  const pieces = [];   // the folded pieces
+  const joined = [];   // each folded piece with the ' or - before it (the key of a piece that is not a walk's first)
+  for (let i = 0; i < parts.length; i += 2) {
+    pieces.push(fold(parts[i]));
+    joined.push(i === 0 ? "" : parts[i - 1] + pieces[pieces.length - 1]);
+  }
+  for (let start = 0; start < pieces.length; start++) {
+    let node = trie.get(pieces[start]);
+    for (let k = start + 1; node; k++) {
+      if (node.has(NAME_END)) return true;
+      if (k === pieces.length) break;
+      node = node.get(joined[k]);
     }
   }
-  return runs;
+  return false;
 }
-// How many pieces between ' and - a name word has ("O'Neil-Ward": 3).
-const pieceCount = (term) => term.split(/['-]/).length;
 const NAME_JOINERS = new Set(["and", "or", "the", "of"]);
 // One org's client names, from one query: `screened` holds the folded name words namesClient screens (the surnames and their
-// hyphen parts), `mentioned` those plus every other word of a name mentionsClient adds. A full name needs no entry of its own: a
-// full name found whole in a text has its last word found whole too, and that word is a surname. A name with no word at all
-// ("&&") keeps a whole-word regex of its own, made here once.
+// hyphen parts), `mentioned` those plus every other word of a name mentionsClient adds, each a trie (addNameWord). A full name needs
+// no entry of its own: a full name found whole in a text has its last word found whole too, and that word is a surname. A name with
+// no word at all ("&&") keeps a whole-word regex of its own, made here once.
 function buildClientNameIndex(user, db) {
-  const screened = new Set();
-  const mentioned = new Set();
+  const screened = new Map();
+  const mentioned = new Map();
   const wordless = [];
-  let maxPieces = 0;   // the most pieces any word in `mentioned` (which holds every word of `screened`) has
   for (const row of db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id)) {
     const name = row.name || "";
     const terms = screenedNames(name);
@@ -471,19 +487,15 @@ function buildClientNameIndex(user, db) {
       continue;
     }
     for (const term of terms.slice(1)) {
-      screened.add(fold(term));
-      mentioned.add(fold(term));
-      maxPieces = Math.max(maxPieces, pieceCount(term));
+      addNameWord(screened, fold(term));
+      addNameWord(mentioned, fold(term));
     }
     for (const w of words) {
       const lower = w.toLowerCase();
-      if (w.length > 1 && /\p{L}/u.test(w) && !NAME_SUFFIXES.has(lower) && !NAME_JOINERS.has(lower)) {
-        mentioned.add(fold(w));
-        maxPieces = Math.max(maxPieces, pieceCount(w));
-      }
+      if (w.length > 1 && /\p{L}/u.test(w) && !NAME_SUFFIXES.has(lower) && !NAME_JOINERS.has(lower)) addNameWord(mentioned, fold(w));
     }
   }
-  return { screened, mentioned, wordless, maxPieces };
+  return { screened, mentioned, wordless };
 }
 // A turn's ctx (runTurn makes one with withTurnClientNames) reads the org's names at most once, on first use, and the names never
 // outlive the turn; any other ctx reads them on each call.
@@ -497,11 +509,9 @@ function clientNameIndex(ctx) {
   if (!slot.index) slot.index = buildClientNameIndex(user, db);
   return slot.index;
 }
-function textHasName(text, terms, wordless, maxPieces) {
+function textHasName(text, trie, wordless) {
   const t = plainText(text);
-  for (const word of t.match(NAME_WORD_RE) || []) {
-    for (const run of wordRuns(word, maxPieces)) if (terms.has(fold(run))) return true;
-  }
+  for (const word of t.match(NAME_WORD_RE) || []) if (wordHoldsName(word, trie)) return true;
   return wordless.some((re) => re.test(t));
 }
 
@@ -509,8 +519,8 @@ function textHasName(text, terms, wordless, maxPieces) {
 // caller's own book, so a loan officer can't send a colleague's client out either): a full name, or a surname as a whole word,
 // in any case ("Brown" is screened, "Browns" is not).
 const namesClient = (text, ctx) => {
-  const { screened, wordless, maxPieces } = clientNameIndex(ctx);
-  return textHasName(text, screened, wordless, maxPieces);
+  const { screened, wordless } = clientNameIndex(ctx);
+  return textHasName(text, screened, wordless);
 };
 // Final review I-1: true when `text` mentions a client of the caller's org (every row with the caller's org_id, as namesClient):
 // whatever namesClient screens, and also any other word of the name, a first name too ("How's Grace doing?"). Here a match only
@@ -518,8 +528,8 @@ const namesClient = (text, ctx) => {
 // is a city). A word of one letter, with no letter in it ("Client 01"), a suffix or a joining word ("Tom and Ellie") is not
 // matched alone. It returns a boolean and logs nothing, so no name leaves it.
 const mentionsClient = (text, ctx) => {
-  const { mentioned, wordless, maxPieces } = clientNameIndex(ctx);
-  return textHasName(text, mentioned, wordless, maxPieces);
+  const { mentioned, wordless } = clientNameIndex(ctx);
+  return textHasName(text, mentioned, wordless);
 };
 
 // The sentences of a lookup's answer: a break is . ! or ? (and any closing quote or bracket) before a space, except after an
