@@ -2808,11 +2808,15 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         // Final review I-1: a client of the caller's org named in the user's message or the reply (a book that can't be read
         // counts as named, so the reply goes to the judge); only the yes or no is passed on, and no name is logged. Residual R1:
         // the names are looked up only for a reply that would otherwise pass, since a hard or soft block stands whatever they say.
+        // Residual R2: and in Charlie's previous message, the one the judge is shown ("Grace Okafor is a good one to call today."
+        // then "How's she doing?").
         let screen = classifyUngrounded(userText, text);
         if (screen.kind === "pass") {
+          const before = messages[messages.length - 2];
+          const previous = before && before.role === "assistant" ? messageText(before) : "";
           let clientNamed;
           try {
-            clientNamed = mentionsClient(userText, ctx) || mentionsClient(text, ctx);
+            clientNamed = mentionsClient(userText, ctx) || mentionsClient(text, ctx) || (previous !== "" && mentionsClient(previous, ctx));
           } catch (_err) {
             clientNamed = true;
           }

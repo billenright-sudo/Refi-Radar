@@ -1830,13 +1830,16 @@ const onBoth = (user, reply, expected) => [[user, null, reply, expected], [user,
 const claimRows = (user, replies) => replies.flatMap((t) => onBoth(user, t, NOTHING_CHANGED));
 
 // A row's `user` is the user's message, or (a multi-turn row) the whole Messages API history ending in the
-// user's latest message. An optional fifth item overrides the tool input (`input`) and the ctx (`ctx`).
+// user's latest message. An optional fifth item overrides the tool input (`input`) and the ctx (`ctx`), and (residual R2) may give
+// the turn a recording judge answering `judge`, which must be asked exactly `judgeCalls` times (1 when not given).
 async function checkTable(rows) {
   for (const [i, [user, tool, reply, expected, opts = {}]] of rows.entries()) {
     const script = tool ? [useTool(tool, opts.input || TOOL_INPUT[tool]), say(reply)] : [say(reply)];
     const messages = Array.isArray(user) ? user : userSays(user);
-    const r = await runTurn({ messages, ctx: opts.ctx || brokerCtx, client: fakeClient(script) });
+    const judge = opts.judge ? recordingJudge(opts.judge) : undefined;
+    const r = await capturingInfo(() => runTurn({ messages, ctx: opts.ctx || brokerCtx, client: fakeClient(script), judge }));
     const label = `#${i} [${tool || "ungrounded"}] user=${JSON.stringify(user)} reply=${JSON.stringify(reply)}`;
+    if (judge) assert.equal(judge.calls.length, opts.judgeCalls ?? 1, `${label}: judge calls`);
     if (expected === PASS) {
       assert.equal(r.reply, reply, label);
       assert.deepStrictEqual(r.sources, tool ? [TOOL_SOURCE[tool]] : [], label);
@@ -3097,7 +3100,8 @@ const FINAL_C1_TABLE = [
   [history("log a call with the Chens", CANCELLED, "run a sweep"), "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
   [history("log a call with the Chens", CANCELLED, "give me a market update"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
   // a confirmed read-back is not a question
-  [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome! Anything else?", PASS],
+  // (residual R2: the read-back names the Chens, so the chat line goes to the judge, which calls it CHAT)
+  [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome! Anything else?", PASS, { judge: "CHAT" }],
   [history("log a call with the Chens", CONFIRMED, "great"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
   // narration and the dated was-form
   ["Tell me about Chen", "findClient", "Your last contact was logged on 2026-01-01.", PASS],
@@ -3427,12 +3431,13 @@ const ACKS = [
 
 test("R2-7: R2_ACK_TABLE - an acknowledgement after a cancelled read-back is a normal turn; an answer behind one is still held", async () => {
   await checkTable([
-    // the brief's rows
-    [AFTER_CANCEL("thanks"), null, "You're welcome — anything else?", PASS],
+    // the brief's rows (residual R2: each read-back names the Chens, so a chat line after it goes to the judge, which calls it
+    // CHAT, asked once)
+    [AFTER_CANCEL("thanks"), null, "You're welcome — anything else?", PASS, { judge: "CHAT" }],
     [AFTER_CANCEL("never mind, what are rates"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
     ...onBoth(AFTER_CANCEL("thanks"), "All recorded — anything else?", NOTHING_CHANGED),
     // every acknowledgement, and the new requests after one
-    ...ACKS.map((a) => [AFTER_CANCEL(a), null, "You're welcome — anything else?", PASS]),
+    ...ACKS.map((a) => [AFTER_CANCEL(a), null, "You're welcome — anything else?", PASS, { judge: "CHAT" }]),
     [AFTER_CANCEL("thanks, run a sweep"), "runSweepTool", SWEEP_NARRATION, PASS, { ctx: sweepCtx }],
     [AFTER_CANCEL("okay, pull up the Chens"), "findClient", "Robert and Linda Chen are at 7.85 percent.", PASS],
     [AFTER_CANCEL("no worries — how are rates?"), "getMarketUpdate", "The thirty-year fixed is at 6.52 percent today.", PASS],
@@ -3442,7 +3447,7 @@ test("R2-7: R2_ACK_TABLE - an acknowledgement after a cancelled read-back is a n
     ...["okay, send it", "alright, absolutely", "ok, do it", "cool, go ahead", "thanks, log it", "Patel", "absolutely"]
       .flatMap((a) => onBoth(AFTER_CANCEL(a), CURRENT_NOW, NOTHING_CHANGED)),
     // a confirmed read-back was never a question
-    [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome — anything else?", PASS],
+    [history("log a call with the Chens", CONFIRMED, "thanks"), null, "You're welcome — anything else?", PASS, { judge: "CHAT" }],
   ]);
 });
 
@@ -4135,7 +4140,7 @@ test("Task 5 fix: a yes to an offer that changes nothing, a no, and a new questi
   assert.equal(r.reply, SWEEP_NARRATION);
   // no / no thanks to an offer to act: nothing was asked for
   for (const no of ["no", "No thanks", "not now", "never mind"]) {
-    r = await runTurn({ messages: history(CAL_ASK, OFFERS[0], no), ctx: mikeCtx, client: fakeClient([say("No problem.")]) });
+    r = await chatJudged((x) => runTurn({ messages: history(CAL_ASK, OFFERS[0], no), ctx: mikeCtx, client: fakeClient([say("No problem.")]), ...x }));
     assert.equal(r.reply, "No problem.", no);
   }
   // a new question after the offer
@@ -4779,7 +4784,7 @@ test("Task 5 fix 5: a yes to an offer to act (the AFFIRMS rows) makes an action 
 test("Task 5 fix 5: a decline to an offer, a question back, and a reply to an offer that changes nothing are normal turns", async () => {
   for (const no of DECLINES) {
     for (const offer of [OFFERS[0], OFFERS[1]]) {
-      assert.equal((await offerReply(no, "No problem.", offer)).reply, "No problem.", `${offer} -> ${no}`);
+      assert.equal((await chatJudged((x) => offerReply(no, "No problem.", offer, x))).reply, "No problem.", `${offer} -> ${no}`);
     }
   }
   // a question back after the offer is answered as before
@@ -4862,8 +4867,16 @@ const MORE_DECLINES = [
   "no, not really", "pass", "leave it", "leave it for now", "I'll handle it", "thanks I'm good", "please, don't worry about it",
   "Not today, thanks.", "No thanks, I'm all set.",
 ];
-const answerOffer = (reply, script, said, ctx = googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), offer = OFFERS[1]) =>
-  runTurn({ messages: history(CAL_ASK, offer, reply), ctx, client: fakeClient([...script, say(said)]) });
+const answerOffer = (reply, script, said, ctx = googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), offer = OFFERS[1], extra = {}) =>
+  runTurn({ messages: history(CAL_ASK, offer, reply), ctx, client: fakeClient([...script, say(said)]), ...extra });
+// Residual R2: every offer above opens with CAL_LINE, which names Robert & Linda Chen, so a chat line after one goes to the judge.
+// chatJudged(run, calls) runs one turn (`run(extra)`) with a CHAT judge and checks it was asked exactly `calls` times.
+async function chatJudged(run, calls = 1) {
+  const judge = recordingJudge("CHAT");
+  const r = await capturingInfo(() => run({ judge }));
+  assert.equal(judge.calls.length, calls, `judge calls for ${JSON.stringify(r.reply)}`);
+  return r;
+}
 
 test("Task 5b: a yes or a correction after an offer to act is an action turn: the false calendar claim and any statement are held", async () => {
   for (const yes of [...OFFER_YESES, ...MORE_YESES]) {
@@ -4909,7 +4922,7 @@ test("Task 5b: a decline after an offer is a plain turn: its acknowledgement pas
   for (const no of [...OFFER_DECLINES, ...MORE_DECLINES]) {
     for (const offer of [OFFERS[0], OFFERS[1]]) {
       for (const said of ["No problem.", NEUTRAL]) {
-        assert.equal((await offerReply(no, said, offer)).reply, said, `${offer} -> ${no} -> ${said}`);
+        assert.equal((await chatJudged((x) => offerReply(no, said, offer, x))).reply, said, `${offer} -> ${no} -> ${said}`);
       }
     }
   }
@@ -4917,7 +4930,7 @@ test("Task 5b: a decline after an offer is a plain turn: its acknowledgement pas
   for (const said of [
     "Okay, I won't put it on your calendar.", "Got it — I won't send anything.", "No problem, I'll leave your calendar alone.",
   ]) {
-    assert.equal((await offerReply("no thanks", said)).reply, said, said);
+    assert.equal((await chatJudged((x) => offerReply("no thanks", said, OFFERS[1], x))).reply, said, said);
   }
   // (final fix, Ruling 49: what is on the calendar is a calendar fact, and this turn read no calendar; the read before the offer
   // even had the Chens' follow-up on it)
@@ -4945,7 +4958,7 @@ test("Task 5b: anything else after an offer is answered as a plain turn: a new r
   r = await answerOffer("tomorrow", [useTool("getCalendarTool", { date: "tomorrow" })], "Tomorrow your calendar is clear.", googleCtx(fakeGoogle()));
   assert.equal(r.reply, "Tomorrow your calendar is clear.");
   assert.deepStrictEqual(r.sources, ["google calendar 2026-10-28"]);
-  r = await answerOffer("thanks", [], "You're welcome!");
+  r = await chatJudged((x) => answerOffer("thanks", [], "You're welcome!", undefined, undefined, x));
   assert.equal(r.reply, "You're welcome!");
   // the chain: offer -> "the Chens' rate" -> "Which Chen ...?" -> "Robert and Linda" answers the lookup
   r = await runTurn({
@@ -4965,7 +4978,9 @@ test("Task 5b: anything else after an offer is answered as a plain turn: a new r
     // a contracted wh-word opens a question too
     "ok, who's next", "sure, what's on Friday", "yeah, how's Friday looking",
   ]) {
-    for (const offer of [OFFERS[0], OFFERS[1]]) assert.equal((await offerReply(reply, NEUTRAL, offer)).reply, NEUTRAL, `${offer} -> ${reply}`);
+    for (const offer of [OFFERS[0], OFFERS[1]]) {
+      assert.equal((await chatJudged((x) => offerReply(reply, NEUTRAL, offer, x))).reply, NEUTRAL, `${offer} -> ${reply}`);
+    }
   }
   // Ruling 29 (superseding Ruling 27): an OTHER reply that only answers (a choice) is walked through, so the action request before
   // the offer holds the turn: nothing but one question passes
@@ -4981,7 +4996,7 @@ test("Task 5b (Rulings 26, 27, 29): thanks after an acknowledgement and a new re
   const findChen = () => [useTool("findClient", { query: "chen" })];
   // Ruling 26: answered as a plain turn
   for (const reply of ["ok thanks", "okay, thanks", "great, thanks", "perfect, thank you"]) {
-    assert.equal((await answerOffer(reply, [], "You're welcome!")).reply, "You're welcome!", reply);
+    assert.equal((await chatJudged((x) => answerOffer(reply, [], "You're welcome!", undefined, undefined, x))).reply, "You're welcome!", reply);
   }
   let r = await answerOffer("ok, pull up the Chens", findChen(), chens);
   assert.equal(r.reply, chens);
@@ -5080,8 +5095,9 @@ test("Task 5b: after an offer, a reply that is no yes is answered under a claim 
   }
   // the word screen reads statements only: an offer or a question about the act passes (fix round 3, Ruling 41: "Want it booked for
   // Friday?" is no longer pinned anywhere as a pass; "Should I schedule it for Friday?" stands in for it here)
-  for (const said of ["Should I put it on your calendar for Friday?", "Should I schedule it for Friday?", "What time should I put it on your calendar?"]) {
-    assert.equal((await offerReply("thanks", said)).reply, said, said);
+  // (residual R2: the offer names the Chens, so the two with a weekday go to the judge; the lone question needs none)
+  for (const [said, calls] of [["Should I put it on your calendar for Friday?", 1], ["Should I schedule it for Friday?", 1], ["What time should I put it on your calendar?", 0]]) {
+    assert.equal((await chatJudged((x) => offerReply("thanks", said, OFFERS[1], x), calls)).reply, said, said);
   }
   // with a calendar source cited the read's grounding applies: a fact from the read passes, "it's on your calendar" does not
   const tomorrow = { ...CHEN_EVENT };
@@ -6210,7 +6226,10 @@ test("Task 9 (R5): NO_SEND is for sending what already exists or asking whether 
     [userSays("I'll send the email myself later"), "Sounds good.", "Sounds good."],
     [userSays("don't send the email yet"), "Got it.", "Got it."],
   ]) {
-    const r = await runTurn({ messages, ctx: mikeCtx, client: fakeClient([say(said)]) });
+    // (residual R2: DRAFTED names the Chens, so a line answered after it goes to the judge, which calls it CHAT; the rest ask none)
+    const named = messages.length > 1 && outcome === said;
+    const run = (x = {}) => runTurn({ messages, ctx: mikeCtx, client: fakeClient([say(said)]), ...x });
+    const r = named ? await chatJudged(run) : await run();
     assert.equal(r.reply, outcome, messages[messages.length - 1].content);
   }
   // an email that is no compose card is nothing to send: "great, send it" after a client answer is answered, as at 6be3093
@@ -6371,7 +6390,8 @@ test("Task 9 fix 1 (Ruling 67): asking her to send the email in view is NO_SEND 
     ["don't send it yet", "Okay."], ["never send it without my okay", "Got it."], ["I'll send it after lunch", "Sounds good."],
     ["I'll just send it myself", "Sounds good."], ["should I send it today or tomorrow?", "Today is better."], ["when should I send it?", "Mid-morning."],
   ]) {
-    const r = await runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([say(said)]) });
+    // (residual R2: DRAFTED names the Chens, so the answer goes to the judge, which calls it CHAT)
+    const r = await chatJudged((x) => runTurn({ messages: after(u), ctx: mikeCtx, client: fakeClient([say(said)]), ...x }));
     assert.equal(r.reply, said, u);
   }
   // with no compose card in view, "did you email / send <them> ...?" asks about a past send: the code line says where it came from
@@ -7544,5 +7564,33 @@ test("Residual R1: a turn whose reply its own words block reads no client names;
       client: fakeClient([useTool("lookUpLive", { kind: "news", query: "top stories" }), say("Sorry, I couldn't look that up just now.")]),
     }));
     assert.equal(reads, 1);
+  });
+});
+
+// ── Residual R2: a pronoun follow-up about a client Charlie just named is judged ────────────────────────────────────────────────
+
+test("Residual R2: after Charlie names a client, a follow-up about 'she' or 'her' reaches the judge; FACT is can't-verify", async () => {
+  const NAMED = "Grace Okafor is a good one to call today.";
+  await capturingInfo(async () => {
+    for (const [u, said] of [
+      ["How's she doing?", "She's doing great, really eager to move forward."],
+      ["What's going on with her?", "She's just waiting on her appraisal."],
+    ]) {
+      const judge = recordingJudge("FACT");
+      const r = await runTurn({ messages: history("who should I call today?", NAMED, u), ctx: golfCtx, client: fakeClient([say(said)]), judge });
+      assert.equal(r.reply, CANT_VERIFY, u);
+      assert.equal(judge.calls.length, 1, u);
+      assert.equal(judge.calls[0].previous, NAMED, u);
+      // with no judge it is the can't-verify line too
+      const none = await runTurn({ messages: history("who should I call today?", NAMED, u), ctx: golfCtx, client: fakeClient([say(said)]) });
+      assert.equal(none.reply, CANT_VERIFY, u);
+    }
+    // a chat line after a message that names no client still passes with no judge call
+    const judge = recordingJudge("FACT");
+    const r = await runTurn({
+      messages: history("hey", "Hope your day's going well.", "Long day."), ctx: golfCtx, client: fakeClient([say("Grab a coffee and reset.")]), judge,
+    });
+    assert.equal(r.reply, "Grab a coffee and reset.");
+    assert.equal(judge.calls.length, 0);
   });
 });

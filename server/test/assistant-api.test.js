@@ -1154,11 +1154,14 @@ test("I2: with the confirm's reply appended after the read-back, the next turn i
     { role: "assistant", content: DONE_REPLY },   // the browser appends /confirm's reply as the assistant turn
   ];
 
-  // a conversational reply
-  let client = fakeClient([say("Anytime!")]);
+  // a conversational reply (residual R2: the read-back names the client, so the route's judge, on the same client, is asked once
+  // and answers CHAT)
+  let client = fakeClient([say("Anytime!"), say("CHAT")]);
   setClient(client);
   let r = await as(ann)("POST", "/api/assistant/turn", { messages: [...withReply, { role: "user", content: "Thanks" }], rates: LIVE });
   assert.equal(r.data.reply, "Anytime!");
+  assert.equal(client.calls.length, 2);
+  assert.equal(client.calls[1].model, "claude-haiku-5-5");
   assert.deepStrictEqual(client.calls[0].messages, [
     { role: "user", content: "log a call with Chen" },
     { role: "assistant", content: READ_BACK + "\n" + DONE_REPLY },

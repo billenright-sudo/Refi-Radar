@@ -188,11 +188,14 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal(clientCount(), 1);
 
   // 4. "thanks": the model's answer passes, and the history it was sent holds the Done line (merged) and never the details
-  model.queue.push(say("You're welcome — anything else?"));
+  // (residual R2: the Done line names the Chens, so the judge, on the same scripted model, is asked once and answers CHAT)
+  model.queue.push(say("You're welcome — anything else?"), say("CHAT"));
   assert.deepEqual(await session.submit("thanks"), { ok: true, action: "turn" });
   assert.equal(state().turns.at(-1).content, "You're welcome — anything else?");
   assert.equal(state().turns.at(-1).kind, "message");
-  const sent = model.calls.at(-1).messages;
+  assert.equal(model.calls.at(-1).model, "claude-haiku-5-5", "the last call was the judge's");
+  assert.equal(model.queue.length, 0);
+  const sent = model.calls.at(-2).messages;
   const doneLine = sent.find((m) => m.role === "assistant" && String(m.content).includes("Done — I logged a contact for Robert & Linda Chen."));
   assert.ok(doneLine, "the Done line is in the history as assistant content");
   assert.ok(doneLine.content.startsWith(contact.readBack), "merged with the read-back it answers");
@@ -221,7 +224,7 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal(clientCount(), 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM clients WHERE name = 'Jane Doe'").get().n, 0);
   assert.equal(net.confirms.length, 2, "only the stage and the contact were ever confirmed");
-  assert.equal(model.calls.length, 4);
+  assert.equal(model.calls.length, 5, "four of Charlie's and, after the Done line, the judge's (residual R2)");
   assert.equal(model.queue.length, 0, "every scripted answer was used");
 });
 
@@ -302,9 +305,12 @@ test("seam: 'draft the Chens a check-in' - the spoken compose reply and the emai
   const sentToModel = JSON.stringify(model.calls.slice(modelCallsBefore).map((c) => c.messages));
   for (const never of [CHEN_EMAIL, "654321", "112233", "How's everything with your home?"]) assert.ok(!sentToModel.includes(never), `"${never}" never reaches the model`);
 
-  // the next turn's history is plain text: the email is on the screen, not in the conversation
-  model.queue.push(say("Anything else?"));
+  // the next turn's history is plain text: the email is on the screen, not in the conversation (residual R2: the draft line names
+  // the Chens, so the judge is asked once, answers CHAT, and is not shown the email either)
+  model.queue.push(say("Anything else?"), say("CHAT"));
   await session.submit("no thanks, that's all");
   assert.equal(state().turns.at(-1).content, "Anything else?");
-  assert.ok(!JSON.stringify(model.calls.at(-1).messages).includes(CHEN_EMAIL));
+  assert.equal(model.calls.at(-1).model, "claude-haiku-5-5", "the last call was the judge's");
+  assert.equal(model.queue.length, 0);
+  for (const call of model.calls.slice(-2)) assert.ok(!JSON.stringify(call.messages).includes(CHEN_EMAIL));
 });
