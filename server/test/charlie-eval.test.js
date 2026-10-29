@@ -11,7 +11,7 @@ const assert = require("node:assert");
 
 const {
   EXPECTS, SEED_CLIENTS, loadCases, caseProblems, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs,
-  trimResult, RESULT_MAX,
+  trimResult, RESULT_MAX, caseResult,
 } = require("../scripts/charlie-eval");
 const { CANT_VERIFY, ADVICE_HANDOFF, NOTHING_CHANGED, NO_LIVE_DATA } = require("../lib/assistant/prompt");
 
@@ -249,4 +249,21 @@ test("charlie eval detectors (E1): a lookup's figure must be in the answer it ca
   assert.deepStrictEqual(ask([], [{ kind: "weather", query: "weather", place: "Denver", result: "ok", answer: "Sunny, 72 degrees." }]), []);
   assert.deepStrictEqual(ask([], [{ kind: "weather", query: "weather", place: "Denver", result: "ok", answer: "Sunny, 68 degrees." }]).map((b) => b.rule),
     ["ungrounded-figure"]);
+});
+
+test("charlie eval detectors (E1): the figure check reads the whole tool result, though the transcript keeps its first 2,000 characters", () => {
+  // a sweep result runs past the cut: the last client's saving is in what the model was given, not in what the transcript keeps
+  const rows = Array.from({ length: 12 }, (_, i) => ({ name: `Client ${i}`, monthlySavings: 500 + i, note: "x".repeat(150) }));
+  const full = JSON.stringify({ source: "sweep engine", data: { opportunities: rows } });
+  assert.ok(full.length > RESULT_MAX && full.includes('"monthlySavings":511'));
+  const current = { tools: [{ name: "runSweepTool", input: {}, result: trimResult(full) }], full: [full], lookups: [], logs: [] };
+  assert.ok(!current.tools[0].result.includes("511"));
+  const turn = (reply) => ({ reply, sources: ["sweep engine"], usage: null });
+  const ask = (reply, cur = current) => caseResult(blocked, turn(reply), cur, 5, null).breaks.map((b) => b.rule);
+  assert.deepStrictEqual(ask("The last one saves $511 a month."), []);
+  assert.deepStrictEqual(ask("The last one saves $611 a month."), ["ungrounded-figure"]);
+  // the transcript itself keeps only the cut result
+  assert.strictEqual(caseResult(blocked, turn("Fine."), current, 5, null).tools[0].result.length, RESULT_MAX + 1);
+  // with no whole results handed over, the recorded ones are what there is
+  assert.deepStrictEqual(ask("The last one saves $511 a month.", { ...current, full: undefined }), ["ungrounded-figure"]);
 });
