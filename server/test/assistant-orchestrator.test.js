@@ -6018,7 +6018,16 @@ test("Task 9 (R1, Ruling 65): the calendar word list, needing a day or a time on
     ["who should I call today?", sweep, "Today's packed with refi opportunities: the Chens lead."],
     ["who should I call today?", sweep, "Your week looks light on refis — the Chens are the only strong one."],
   ];
-  for (const [u, script, said] of PASSES) assert.equal(await reply(u, script, said), said, `${u} -> ${said}`);
+  for (const [u, script, said] of PASSES) {
+    // (residual R3: "tax season" is a tax word on a cited turn, so that line goes to the judge, which calls a client fact FACT, and
+    // it is said; asked once. Every other line asks none.)
+    const judge = recordingJudge("FACT");
+    const got = await capturingInfo(async () => (await runTurn({
+      messages: userSays(u), ctx: mikeCtx, client: fakeClient([...[].concat(script()), say(said)]), judge,
+    })).reply);
+    assert.equal(got, said, `${u} -> ${said}`);
+    assert.equal(judge.calls.length, /\btax\b/i.test(said) ? 1 : 0, `${u} -> ${said}: judge calls`);
+  }
   // other words of the list beside a day stay held, as at f55c228 (fail closed): a meeting the clients book, a scheduling verb, a past
   // meeting, "your schedule" and "I'm free" said with no tool
   for (const [u, script, said] of [
@@ -7591,6 +7600,63 @@ test("Residual R2: after Charlie names a client, a follow-up about 'she' or 'her
       messages: history("hey", "Hope your day's going well.", "Long day."), ctx: golfCtx, client: fakeClient([say("Grab a coffee and reset.")]), judge,
     });
     assert.equal(r.reply, "Grab a coffee and reset.");
+    assert.equal(judge.calls.length, 0);
+  });
+});
+
+// ── Residual R3: a turn with a cited tool still gets the advice check ───────────────────────────────────────────────────────────
+
+const R3_ASK = "What's the thirty-year today, and can my client deduct the points?";
+const R3_SAID = "The thirty-year is 6.52 percent, and points are generally deductible.";
+const r3Turn = (u, said, extra = {}) => runTurn({
+  messages: userSays(u), ctx: brokerCtx, client: fakeClient([useTool("getMarketUpdate"), say(said)]), ...extra,
+});
+
+test("Residual R3: a cited turn with a tax or legal word asks the judge: ADVICE, or a judge that can't answer, is the hand-off", async () => {
+  await capturingInfo(async () => {
+    // ADVICE
+    let judge = recordingJudge("ADVICE");
+    let r = await r3Turn(R3_ASK, R3_SAID, { judge });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    assert.deepStrictEqual(r.sources, []);
+    assert.equal(judge.calls.length, 1);
+    assert.equal(judge.calls[0].reply, R3_SAID);
+    // a judge that throws, one that answers no verdict, one that hangs, and no judge at all: fail closed to the hand-off
+    for (const failing of [() => { throw new Error("boom"); }, async () => ({ verdict: "SURE" }), () => new Promise(() => {}), undefined]) {
+      r = await r3Turn(R3_ASK, R3_SAID, { judge: failing, deadlineMs: 6000 });
+      assert.equal(r.reply, ADVICE_HANDOFF, String(failing));
+    }
+    // the tax word in the reply alone is enough
+    judge = recordingJudge("ADVICE");
+    r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent, and the points are tax deductible.", { judge });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    assert.equal(judge.calls.length, 1);
+  });
+});
+
+test("Residual R3: any other real verdict goes on to today's checks; a cited turn with no such word asks no judge", async () => {
+  await capturingInfo(async () => {
+    // FACT (or CHAT) on a grounded reply: spoken, with its source
+    for (const verdict of ["FACT", "CHAT", "DEFINE", "LIVE"]) {
+      const judge = recordingJudge(verdict);
+      const r = await r3Turn(R3_ASK, R3_SAID, { judge });
+      assert.equal(r.reply, R3_SAID, verdict);
+      assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"], verdict);
+      assert.equal(judge.calls.length, 1, verdict);
+    }
+    // ... and the figure check still holds after it
+    let judge = recordingJudge("FACT");
+    let r = await r3Turn(R3_ASK, "The thirty-year is 6.1 percent, and points are generally deductible.", { judge });
+    assert.equal(r.reply, CANT_VERIFY);
+    // no tax, legal or guideline word: no judge, as today
+    judge = recordingJudge("ADVICE");
+    r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent.", { judge });
+    assert.equal(r.reply, "The thirty-year is 6.52 percent.");
+    assert.equal(judge.calls.length, 0);
+    // a guideline question on a cited turn never gets that far: the guideline hand-off comes first, with no judge
+    judge = recordingJudge("CHAT");
+    r = await r3Turn("What's the thirty-year today, and what's the max DTI on an FHA loan?", "The thirty-year is 6.52 percent.", { judge });
+    assert.equal(r.reply, GUIDELINE_HANDOFF);
     assert.equal(judge.calls.length, 0);
   });
 });

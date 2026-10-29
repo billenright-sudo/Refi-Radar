@@ -1989,7 +1989,7 @@ async function askJudge(judge, input, usage) {
     clearTimeout(timer);
   }
   console.info(`charlie judge: ${verdict} (${why}) ${Date.now() - started}ms`);
-  return verdict;
+  return { verdict, why };
 }
 
 // ── What a calendar read grounds beyond its figures ──────────────────────────────────────────────────────────────────────────
@@ -2680,15 +2680,16 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
   }
   const careerAnswerTurn = careerAnswer && givesDuration(userText);
 
-  // The one way this turn asks the judge about a reply (design §1): its verdict, or FACT with no call when there is no judge, no
-  // time left for one (the deadline less the minCallMs margin), or a reply, user message or previous message of Charlie's that
-  // judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3).
+  // The one way this turn asks the judge about a reply (design §1): { verdict, why } (askJudge), or FACT with no call when there is
+  // no judge, no time left for one (the deadline less the minCallMs margin), or a reply, user message or previous message of
+  // Charlie's that judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3); a judge that was not asked is
+  // why "unavailable", so it is never a judge that answered.
   const judged = async (reply) => {
     const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
     const before = messages[messages.length - 2];
     const previous = before && before.role === "assistant" ? messageText(before) : undefined;
     if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(reply) || !fitsUnclipped(userText) || !fitsUnclipped(previous)) {
-      return "FACT";
+      return { verdict: "FACT", why: "unavailable" };
     }
     return askJudge(judge, { previous, user: userText, reply, timeoutMs }, usage);
   };
@@ -2827,7 +2828,7 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its
         // line. It only ever rules here, after every screen above, so it cannot let through what any of them or a hard rule
         // blocks. When it can't be asked (`judged`), the soft block stays the can't-verify line.
-        return speak(verdictLine(await judged(text), CANT_VERIFY) ?? text);
+        return speak(verdictLine((await judged(text)).verdict, CANT_VERIFY) ?? text);
       }
       // Design §6: a live lookup grounds the live fact it returned and nothing about the book, and neither does the glossary (I3). A
       // turn that cites only those gets the judge as an ungrounded turn does, with one difference: LIVE passes, because the lookup
@@ -2836,9 +2837,18 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
       const liveCited = sources.some((src) => src.startsWith(LIVE_SOURCE_PREFIX));
       const liveOnly = sources.every((src) => src.startsWith(LIVE_SOURCE_PREFIX) || src === GLOSSARY_SOURCE);
       if (text && liveCited && liveOnly) {
-        const verdict = await judged(text);
+        const { verdict } = await judged(text);
         const line = verdict === "LIVE" ? null : verdictLine(verdict, CANT_VERIFY);
         if (line) return finish(line === CANT_VERIFY ? cantVerifyCalendar() : line);
+      }
+      // Residual R3: on a turn that also cites a book, market or calendar source, a tax, legal or guideline answer can ride beside
+      // the grounded facts ("…6.52 percent, and points are generally deductible."). So when the user's message or the reply has one
+      // of I-1's tax or legal words, or the question is a guideline one, the judge is asked: ADVICE is the CPA/attorney hand-off, and
+      // so is a judge that can't answer (why not "ok": fail closed); any other real verdict goes on to the checks below. (A
+      // guideline question never gets here today: its hand-off above comes first.)
+      if (text && !liveOnly && (TAX_LEGAL_RE.test(userText) || TAX_LEGAL_RE.test(text) || isGuidelineQuestion(userText))) {
+        const { verdict, why } = await judged(text);
+        if (verdict === "ADVICE" || why !== "ok") return finish(ADVICE_HANDOFF);
       }
       // Final review C-1: on a turn that also cites a book, market or calendar source no judge is asked, so the web grounds nothing
       // there: the figures (and a calendar read's times and days) are checked against the other tools' results only, and a figure
