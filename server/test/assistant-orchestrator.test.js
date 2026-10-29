@@ -7628,7 +7628,8 @@ test("Residual R3: a cited turn with a tax or legal word asks the judge: ADVICE,
     assert.equal(r.reply, ADVICE_HANDOFF);
     assert.deepStrictEqual(r.sources, []);
     assert.equal(judge.calls.length, 1);
-    assert.equal(judge.calls[0].reply, R3_SAID);
+    // (residual round 2, S2: the judge is given the tax clause only, so the grounded rate can't outrank it)
+    assert.equal(judge.calls[0].reply, "points are generally deductible.");
     // a judge that throws, one that answers no verdict, one that hangs, and no judge at all: fail closed to the hand-off
     for (const failing of [() => { throw new Error("boom"); }, async () => ({ verdict: "SURE" }), () => new Promise(() => {}), undefined]) {
       r = await r3Turn(R3_ASK, R3_SAID, { judge: failing, deadlineMs: 6000 });
@@ -7683,5 +7684,38 @@ test("Residual S1: a 3,999-character chain in the user's message, or in Charlie'
         assert.ok(took < 200, `"a${sep}a${sep}…" as the ${messages.length === 1 ? "user's" : "previous"} message: ${took} ms`);
       }
     }
+  });
+});
+
+// ── Residual round 2, S2: the advice check judges the sentences that could carry the answer ─────────────────────────────────────
+
+test("Residual S2: on a cited turn the judge is given the reply's tax or legal sentence, never the grounded rate beside it", async () => {
+  await capturingInfo(async () => {
+    // 1. the tax clause alone, not the 6.52 one
+    let judge = recordingJudge("FACT");
+    await r3Turn(R3_ASK, R3_SAID, { judge });
+    assert.equal(judge.calls.length, 1);
+    assert.equal(judge.calls[0].reply, "points are generally deductible.");
+    assert.equal(judge.calls[0].user, R3_ASK);
+    // 2. no tax word in the reply (the user's text has it): the sentence that states no figure
+    judge = recordingJudge("FACT");
+    await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { judge });
+    assert.equal(judge.calls.length, 1);
+    assert.equal(judge.calls[0].reply, "Yes, you can write those off.");
+    // 3. every sentence states a figure: no judge call, and the figure check covers it
+    judge = recordingJudge("ADVICE");
+    let r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent.", { judge });
+    assert.equal(judge.calls.length, 0);
+    assert.equal(r.reply, "The thirty-year is 6.52 percent.");
+    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    // 4. the verdict is handled as before: ADVICE on that sentence is the hand-off, FACT speaks the WHOLE reply
+    r = await r3Turn(R3_ASK, R3_SAID, { judge: recordingJudge("ADVICE") });
+    assert.equal(r.reply, ADVICE_HANDOFF);
+    r = await r3Turn(R3_ASK, R3_SAID, { judge: recordingJudge("FACT") });
+    assert.equal(r.reply, R3_SAID);
+    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    // ... and the second reply too
+    r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { judge: recordingJudge("ADVICE") });
+    assert.equal(r.reply, ADVICE_HANDOFF);
   });
 });

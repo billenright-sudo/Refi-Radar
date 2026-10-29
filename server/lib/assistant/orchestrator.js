@@ -89,6 +89,13 @@ const TAX_LEGAL_RE = wordRe([
   "liens?", "gifts?", "capital\\s+gains",
 ]);
 const MORTGAGE_RE = wordRe(["mortgages?"]);
+// Residual round 2, S2: a reply cut where an advice answer could start: at a sentence end (a stop, "!" or "?" before a space, so
+// "6.52" stays whole), at ; or a dash, and at a comma before and / but / so / plus, the joining word dropped ("The thirty-year is
+// 6.52 percent, and points are generally deductible." -> "The thirty-year is 6.52 percent" and "points are generally deductible.").
+const ADVICE_PIECE_BREAK_RE = /(?<=[.!?])\s+|\s*[;—–]\s*|\s+-\s+|,\s*(?=(?:and|but|so|plus)\b)/i;
+const advicePieces = (text) => String(text).split(ADVICE_PIECE_BREAK_RE)
+  .map((piece) => piece.replace(/^(?:and|but|so|plus)\s+/i, "").trim())
+  .filter(Boolean);
 
 // ── Openers, questions, completion claims ────────────────────────────────────
 
@@ -2845,10 +2852,19 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
       // the grounded facts ("…6.52 percent, and points are generally deductible."). So when the user's message or the reply has one
       // of I-1's tax or legal words, or the question is a guideline one, the judge is asked: ADVICE is the CPA/attorney hand-off, and
       // so is a judge that can't answer (why not "ok": fail closed); any other real verdict goes on to the checks below. (A
-      // guideline question never gets here today: its hand-off above comes first.)
+      // guideline question never gets here today: its hand-off above comes first.) Residual round 2, S2: the judge picks the first
+      // word that fits, FACT before ADVICE, so it is given only the pieces of the reply that could carry the answer: those with a
+      // tax or legal word, else those that state no figure (a grounded figure is the rate; an advice answer hides in the others),
+      // else none, and no judge is asked (every piece states a figure, and the figure check below covers those). The checks below
+      // still read the whole reply.
       if (text && !liveOnly && (TAX_LEGAL_RE.test(userText) || TAX_LEGAL_RE.test(text) || isGuidelineQuestion(userText))) {
-        const { verdict, why } = await judged(text);
-        if (verdict === "ADVICE" || why !== "ok") return finish(ADVICE_HANDOFF);
+        const pieces = advicePieces(text);
+        const taxPieces = pieces.filter((piece) => TAX_LEGAL_RE.test(piece));
+        const asked = taxPieces.length > 0 ? taxPieces : pieces.filter((piece) => !/\d/.test(piece) && figureWords(piece).length === 0);
+        if (asked.length > 0) {
+          const { verdict, why } = await judged(asked.join(" "));
+          if (verdict === "ADVICE" || why !== "ok") return finish(ADVICE_HANDOFF);
+        }
       }
       // Final review C-1: on a turn that also cites a book, market or calendar source no judge is asked, so the web grounds nothing
       // there: the figures (and a calendar read's times and days) are checked against the other tools' results only, and a figure
