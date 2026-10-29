@@ -40,6 +40,9 @@ const MIN_CALL_MS = 1_500;
 const MAX_TOKENS = 2000;
 // Adaptive thinking is on by default on Sonnet 5.5 and adds time before the first word; low effort keeps it short for voice.
 const OUTPUT_CONFIG = Object.freeze({ effort: "low" });
+// Final review M-5: lookUpLive calls a turn may run; every later one in the turn is a tool error, with no search and no usage row.
+const MAX_LOOKUPS_PER_TURN = 3;
+const LOOKUP_LIMIT = "the lookup limit for this turn is reached: at most 3 lookups a turn";
 const SWEEP_TOP_OPPORTUNITIES = 10;
 const SWEEP_TOP_CHECKINS = 10;
 const FIND_CLIENT_MAX_MATCHES = 5;
@@ -2638,6 +2641,7 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
   const clientNames = new Set();   // the client names this turn's cited tool results carry (Ruling 70 a)
   let calendarCode = null;    // the Google code a calendar read this turn came back with, handed back to the model (Ruling 70 d)
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
+  let lookupsRun = 0;         // lookUpLive calls asked for this turn (M-5: past MAX_LOOKUPS_PER_TURN each is the limit's error)
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
   // The user's stored stage (null = not set; anything that is not a stage id reads as not set): what a reply may truthfully claim.
   const storedStage = (ctx && ctx.user && stageById(ctx.user.career_stage) && stageById(ctx.user.career_stage).id) || null;
@@ -2832,9 +2836,14 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
     // On the last allowed call no narration can follow, so only a change to confirm (or an email to set up) matters.
     const runBlocks = lastCall ? toolUses.filter((b) => LAST_CALL_TOOLS.has(b.name)) : toolUses;
     // The tools get what is left of the turn, like the model calls do: a Google call that hangs cannot hold the mic past the deadline.
+    // (M-5: past the turn's third lookUpLive call, in this round or an earlier one, a lookup is not run at all: it is the limit's error.)
     let outs;
     try {
-      outs = await withinTurn(Promise.all(runBlocks.map((block) => runTool(block, ctx))), deadline - Date.now());
+      outs = await withinTurn(Promise.all(runBlocks.map((block) => {
+        if (block.name !== "lookUpLive" || ++lookupsRun <= MAX_LOOKUPS_PER_TURN) return runTool(block, ctx);
+        const error = { error: LOOKUP_LIMIT };
+        return { source: "(unavailable)", data: error, toolResult: toolResultBlock(block.id, "(unavailable)", error) };
+      })), deadline - Date.now());
     } catch (err) {
       if (err instanceof TurnDeadline) return tookTooLong();
       throw err;

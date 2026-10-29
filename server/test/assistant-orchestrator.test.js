@@ -7359,3 +7359,69 @@ test("Final review I-1: classifyUngrounded's new soft triggers — tax/legal wor
   // plain chat still passes
   assert.deepStrictEqual(classifyUngrounded(...I1_CHAT), PASS_);
 });
+
+// ── Final review M-5: at most three lookups a turn ──────────────────────────────────────────────────────────────────────────────
+
+const { makeLive } = require("../lib/assistant/live");
+const M5_LIMIT = { error: "the lookup limit for this turn is reached: at most 3 lookups a turn" };
+// a search client for makeLive that answers every request with one sourced headline, counting the requests
+function m5SearchClient() {
+  const calls = [];
+  return {
+    calls,
+    messages: {
+      create: async (params) => {
+        calls.push(params);
+        return {
+          stop_reason: "end_turn", usage: { input_tokens: 50, output_tokens: 10 },
+          content: [
+            { type: "web_search_tool_result", tool_use_id: "srv", content: [{ type: "web_search_result", url: "https://www.npr.org/x", title: "Headline" }] },
+            { type: "text", text: "The Senate passed the budget bill." },
+          ],
+        };
+      },
+    },
+  };
+}
+const m5Lookup = (i) => ({ type: "tool_use", id: `toolu_${i}`, name: "lookUpLive", input: { kind: "news", query: `headline number ${i}` } });
+const liveRowsOf = (userId) => db.prepare("SELECT COUNT(*) AS n FROM assistant_usage WHERE user_id = ? AND kind = 'live'").get(userId).n;
+// a fresh broker (so the usage rows counted are this test's), with a real makeLive on the counting search client
+function m5Ctx() {
+  const userId = addUser(orgA, "broker", `m5-${Math.random().toString(16).slice(2)}@a.co`);
+  const search = m5SearchClient();
+  return { search, userId, ctx: { ...brokerCtx, user: user(userId, "broker", orgA), live: makeLive({ client: search, db, userId, turnId: "m5" }) } };
+}
+
+test("Final review M-5: a model that asks for five lookups at once gets three searched and two tool errors; no request, no usage row for those", async () => {
+  await capturingInfo(async () => {
+    const { search, userId, ctx } = m5Ctx();
+    const client = fakeClient([resp([1, 2, 3, 4, 5].map(m5Lookup), "tool_use"), say("The Senate passed the budget bill.")]);
+    const r = await runTurn({ messages: userSays("what's in the news?"), ctx, client, judge: judgeSays("LIVE") });
+    assert.equal(search.calls.length, 3);
+    assert.equal(liveRowsOf(userId), 3);
+    const fed = [0, 1, 2, 3, 4].map((i) => toolResultPayload(client.calls[1], i));
+    for (const i of [0, 1, 2]) assert.equal(fed[i].source, "web — npr.org", `lookup ${i + 1}`);
+    for (const i of [3, 4]) assert.deepStrictEqual(fed[i], { source: "(unavailable)", data: M5_LIMIT }, `lookup ${i + 1}`);
+    assert.equal(r.reply, "The Senate passed the budget bill.");
+  });
+});
+
+test("Final review M-5: two lookups and then two more in the next round: the fourth is the tool error, and three searches go out", async () => {
+  await capturingInfo(async () => {
+    const { search, userId, ctx } = m5Ctx();
+    const client = fakeClient([
+      resp([m5Lookup(1), m5Lookup(2)], "tool_use"),
+      resp([m5Lookup(3), m5Lookup(4)], "tool_use"),
+      say("The Senate passed the budget bill."),
+    ]);
+    await runTurn({ messages: userSays("what's in the news?"), ctx, client, judge: judgeSays("LIVE") });
+    assert.equal(search.calls.length, 3);
+    assert.equal(liveRowsOf(userId), 3);
+    assert.equal(toolResultPayload(client.calls[2], 0).source, "web — npr.org");
+    assert.deepStrictEqual(toolResultPayload(client.calls[2], 1), { source: "(unavailable)", data: M5_LIMIT });
+    // a new turn starts its own count
+    const again = fakeClient([resp([m5Lookup(5)], "tool_use"), say("The Senate passed the budget bill.")]);
+    await runTurn({ messages: userSays("anything else in the news?"), ctx, client: again, judge: judgeSays("LIVE") });
+    assert.equal(toolResultPayload(again.calls[1], 0).source, "web — npr.org");
+  });
+});
