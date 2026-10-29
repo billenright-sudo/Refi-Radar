@@ -22,13 +22,18 @@ const db = require("../db");
 const { signToken } = require("../middleware/auth");
 const assistantTools = require("../lib/assistant/tools");
 const { tools, TOOL_SCHEMA, setCareerStageTool } = assistantTools;
-const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, STAGE_REASK, buildCharliSystem } = require("../lib/assistant/prompt");
+const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, STAGE_REASK, buildCharliSystem, JOKE_TOPICS } = require("../lib/assistant/prompt");
 const { CAREER_STAGES, coachingStyle, stageById, stageForYears } = require("../lib/assistant/coaching");
 const { runTurn, claimsCompletion, claimsStage, stageClaims } = require("../lib/assistant/orchestrator");
-// runTurn closes the system prompt with a random joke topic's sentence (polish P3): what is left is buildCharliSystem(user) as it was
+// runTurn closes the system prompt with a random joke topic's sentence (polish P3): what is left is buildCharliSystem(user) as it was.
+// It strips the ending only when it is exactly that sentence for one of JOKE_TOPICS; any other ending (a malformed or missing joke
+// line) is left on, so the equality assertions that use this fail.
 const withoutJoke = (system) => {
-  const at = system.lastIndexOf("\n\nIf you tell a joke this turn,");
-  return at < 0 ? system : system.slice(0, at);
+  for (const t of JOKE_TOPICS) {
+    const line = `\n\nIf you tell a joke this turn, build it around ${t}, still with no numbers.`;
+    if (system.endsWith(line)) return system.slice(0, -line.length);
+  }
+  return system;
 };
 const { SESSION_STARTED } = require("../lib/assistant/history");
 const authRoutes = require("../routes/auth");
@@ -418,7 +423,8 @@ test("runTurn as a New user and as a Veteran user: identical tool calls, args, s
   }
   assert.equal(runs.new.calls.length, 2);
   // and only `system` differs: five different prompts for five different users
-  const systems = Object.values(runs).map(({ calls }) => calls[0].system);
+  // (compared without the joke line: with a random topic each, the raw systems differ whatever the stage)
+  const systems = Object.values(runs).map(({ calls }) => withoutJoke(calls[0].system));
   assert.equal(new Set(systems).size, 5);
   assert.equal(withoutJoke(runs.new.calls[0].system), buildCharliSystem({ career_stage: "new" }));
   assert.equal(withoutJoke(runs.veteran.calls[0].system), buildCharliSystem({ career_stage: "veteran" }));
@@ -836,7 +842,8 @@ test("turn: requireAuth hands the stage to the prompt for each user (a different
     seen[String(stage)] = client.calls[0].system;
     assert.equal(withoutJoke(client.calls[0].system), buildCharliSystem({ career_stage: stage }), String(stage));
   }
-  assert.equal(new Set(Object.values(seen)).size, 5);
+  // (compared without the joke line: with a random topic each, the raw systems differ whatever the stage)
+  assert.equal(new Set(Object.values(seen).map((system) => withoutJoke(system))).size, 5);
 });
 
 // ── the greeting's one question ──────────────────────────────────────────────
