@@ -7668,3 +7668,20 @@ test("Residual R3: any other real verdict goes on to today's checks; a cited tur
     assert.equal(judge.calls.length, 0);
   });
 });
+
+// ── Residual round 2, S1: a long hyphen or apostrophe chain through runTurn ─────────────────────────────────────────────────────
+
+test("Residual S1: a 3,999-character chain in the user's message, or in Charlie's previous message, takes runTurn under 200 ms", async () => {
+  await capturingInfo(async () => {
+    for (const sep of ["-", "'"]) {
+      const chain = `${"a".concat(sep).repeat(1999)}a`;
+      for (const messages of [userSays(chain), history("hi", chain, "thanks")]) {
+        const started = Date.now();
+        const r = await runTurn({ messages, ctx: golfCtx, client: fakeClient([say("Sorry, I did not catch that.")]), judge: judgeSays("CHAT") });
+        const took = Date.now() - started;
+        assert.equal(r.reply, "Sorry, I did not catch that.");
+        assert.ok(took < 200, `"a${sep}a${sep}…" as the ${messages.length === 1 ? "user's" : "previous"} message: ${took} ms`);
+      }
+    }
+  });
+});

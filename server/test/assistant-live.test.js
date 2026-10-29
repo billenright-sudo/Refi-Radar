@@ -880,6 +880,16 @@ test("Residual R1: namesClient and mentionsClient answer exactly as the regex re
         assert.strictEqual(mentionsClient(text, ctx), REF.mentionsClient(text, ctx), `mentionsClient, book ${b}: ${JSON.stringify(text)}`);
       }
     }
+    // (residual S1) words chained by ' and - far longer than any name, so the runs the matcher stops at are past every name's length
+    for (let i = 0; i < 100; i++) {
+      let text = "";
+      const n = 5 + Math.floor(rand() * 40);
+      for (let j = 0; j < n; j++) text += (j ? (rand() < 0.5 ? "-" : "'") : "") + pick(vocabulary).replace(/[\s,.!?()&—]+/g, "");
+      assert.strictEqual(namesClient(text, ctx), REF.namesClient(text, ctx), `namesClient chain, book ${b}: ${JSON.stringify(text)}`);
+      assert.strictEqual(mentionsClient(text, ctx), REF.mentionsClient(text, ctx), `mentionsClient chain, book ${b}: ${JSON.stringify(text)}`);
+      seen.names.add(REF.namesClient(text, ctx));
+      compared += 1;
+    }
   }
   assert.ok(compared >= 1200, `${compared} texts compared`);
   // both answers came up for both functions, so the comparison is not one-sided
@@ -921,4 +931,31 @@ test("Residual R1: with a 2,000-client org, 20 calls of each matcher take under 
   assert.equal(tools.mentionsClient(texts[2], ctx), true);
   assert.equal(tools.namesClient(texts[2], ctx), true);
   assert.equal(tools.mentionsClient(texts[0], ctx), false);
+});
+
+// ── Residual round 2, S1: a long hyphen or apostrophe chain costs milliseconds ──────────────────────────────────────────────────
+
+test("Residual S1: a 3,999-character a-a-a… or a'a'a… chain is checked for names in under 200 ms, and a name inside one is still found", async () => {
+  const tools = require("../lib/assistant/tools");
+  const orgId = addOrg("S1 book");
+  const userId = addUser(orgId, "broker", "s1@x.co");
+  for (const name of ["Lin Wu-Okonkwo", "Jean-Luc O'Neil-Ward", "Grace Okafor"]) addClientRow(orgId, userId, name);
+  const ctx = tools.withTurnClientNames({ user: { id: userId, role: "broker", org_id: orgId }, db });
+  for (const sep of ["-", "'"]) {
+    const chain = `${"a".concat(sep).repeat(1999)}a`;
+    assert.equal(chain.length, 3999);
+    for (const check of [tools.namesClient, tools.mentionsClient]) {
+      const started = Date.now();
+      assert.equal(check(chain, ctx), false);
+      assert.ok(Date.now() - started < 200, `${check.name} on "a${sep}a${sep}…": ${Date.now() - started} ms`);
+    }
+  }
+  // a name inside a long chain is still found, whatever comes before and after it
+  const pad = "a-".repeat(900);
+  for (const [text, want] of [
+    [`${pad}Wu-Okonkwo-${pad}a`, true], [`${pad}O'Neil-Ward-${pad}a`, true], [`${pad}Okafor's-${pad}a`, true], [`${pad}Okonkwoo-${pad}a`, false],
+  ]) {
+    assert.equal(tools.namesClient(text, ctx), want, text.slice(1790, 1830));
+    assert.equal(tools.mentionsClient(text, ctx), want, text.slice(1790, 1830));
+  }
 });
