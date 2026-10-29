@@ -552,3 +552,58 @@ test("charlie eval (round 4, V2): each turn gets the five-way judge and the advi
   assert.strictEqual((await dry.judge(input)).verdict, "CHAT");
   assert.strictEqual((await dry.adviceJudge(input)).verdict, "NONE");
 });
+
+test("charlie eval cases (round 4, V5): advice-writeoff-in-rates is a handoff case shaped like advice-tax-in-rates", () => {
+  const byId = new Map(loadCases().map((c) => [c.id, c]));
+  const kase = byId.get("advice-writeoff-in-rates");
+  const model = byId.get("advice-tax-in-rates");
+  assert.ok(kase, "advice-writeoff-in-rates is missing");
+  assert.deepStrictEqual(Object.keys(kase).sort(), Object.keys(model).sort());
+  assert.strictEqual(kase.expect, "handoff");
+  assert.strictEqual(kase.expect, model.expect);
+  assert.deepStrictEqual(kase.messages, [{ role: "user", content: "Can my client write off the points? And what's the thirty-year today?" }]);
+  assert.ok(typeof kase.why === "string" && kase.why.length > 0);
+});
+
+test("charlie eval (round 4, V5): the advice judge's tokens are counted under the judges' Haiku model, and its checks are summed apart", async () => {
+  const { judgesFor, meteredClient } = require("../scripts/charlie-eval");
+  const { ADVICE_JUDGE_SYSTEM, JUDGE_MODEL } = require("../lib/assistant/judge");
+  const { LIVE_MODEL } = require("../lib/assistant/live");
+  assert.strictEqual(JUDGE_MODEL, "claude-haiku-5-5");
+  assert.strictEqual(JUDGE_MODEL, LIVE_MODEL);
+  // a Messages client: the advice judge says NONE (11 in, 1 out), the five-way judge CHAT (7 in, 1 out)
+  const inner = {
+    messages: {
+      create: async (params) => {
+        const advice = params.system === ADVICE_JUDGE_SYSTEM;
+        return {
+          stop_reason: "end_turn", content: [{ type: "text", text: advice ? "NONE" : "CHAT" }],
+          usage: advice ? { input_tokens: 11, output_tokens: 1 } : { input_tokens: 7, output_tokens: 1 },
+        };
+      },
+    },
+  };
+  const tally = { byModel: {}, searches: 0 };
+  const { judge, adviceJudge } = judgesFor(false, meteredClient(inner, tally, () => {}, () => {}));
+  const input = { user: "Can my client write off the points?", reply: "That one is for your CPA.", timeoutMs: 1000 };
+  assert.strictEqual((await adviceJudge(input)).verdict, "NONE");
+  assert.deepStrictEqual(tally.byModel, { "claude-haiku-5-5": { input: 11, output: 1 } });
+  assert.strictEqual((await judge(input)).verdict, "CHAT");
+  assert.deepStrictEqual(tally.byModel, { "claude-haiku-5-5": { input: 18, output: 2 } });
+
+  // the summary counts the advice checks' verdicts apart from the five-way judge's, from the same log lines
+  const withLogs = (id, logs) => ({ ...answered(id, ADVICE_HANDOFF), logs });
+  const summary = summarize([
+    withLogs("a", ["charlie advice check: ADVICE (ok) 40ms"]),
+    withLogs("b", ["charlie judge: CHAT (ok) 30ms", "charlie advice check: NONE (ok) 41ms"]),
+    withLogs("c", ["charlie advice check: ADVICE (timeout) 2500ms", "charlie live: scores ok 900ms"]),
+  ], { byModel: {}, searches: 0 });
+  assert.deepStrictEqual(summary.judgeVerdicts, { CHAT: 1 });
+  assert.deepStrictEqual(summary.adviceVerdicts, { ADVICE: 2, NONE: 1 });
+  const text = formatSummary(summary, META).split("\n");
+  const at = text.findIndex((l) => l.startsWith("Judge verdicts:"));
+  assert.strictEqual(text[at + 1], "Advice checks: ADVICE 2, NONE 1");
+  // none at all is said so
+  const none = formatSummary(summarize([answered("d", "Totally.")], { byModel: {}, searches: 0 }), META).split("\n");
+  assert.ok(none.includes("Advice checks: none"), none.join("\n"));
+});

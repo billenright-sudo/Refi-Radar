@@ -397,6 +397,9 @@ function summarize(results, tally) {
   const lookUpLiveCalls = results.reduce((n, r) => n + r.tools.filter((t) => t.name === "lookUpLive").length, 0);
   const sent = results.flatMap((r) => r.lookups);
   const verdicts = countBy(results.flatMap((r) => r.logs.filter((l) => l.startsWith("charlie judge: ")).map((l) => l.split(" ")[2])), (v) => v);
+  // (round 4, V5) the advice judge's verdicts, from its own lines: "charlie advice check: NONE (ok) 41ms"
+  const ADVICE_LINE = "charlie advice check: ";
+  const adviceVerdicts = countBy(results.flatMap((r) => r.logs.filter((l) => l.startsWith(ADVICE_LINE)).map((l) => l.slice(ADVICE_LINE.length).split(" ")[0])), (v) => v);
   let cost = 0;
   let priced = true;
   for (const [model, t] of Object.entries(tally.byModel)) {
@@ -414,6 +417,7 @@ function summarize(results, tally) {
     expectationMisses: misses,
     outcomes: countBy(results, (r) => r.outcome),
     judgeVerdicts: verdicts,
+    adviceVerdicts,
     lookups: {
       lookUpLiveCalls,
       searchesSent: sent.length,
@@ -446,6 +450,7 @@ function formatSummary(s, meta) {
   for (const m of s.expectationMisses) lines.push(`  ${m.id}  expected ${m.expect}, got ${m.outcome}`);
   lines.push(`Outcomes: ${Object.entries(s.outcomes).map(([k, v]) => `${k} ${v}`).join(", ")}`);
   lines.push(`Judge verdicts: ${Object.entries(s.judgeVerdicts).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`);
+  lines.push(`Advice checks: ${Object.entries(s.adviceVerdicts || {}).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`);
   lines.push(`Lookups: ${s.lookups.lookUpLiveCalls} lookUpLive calls, ${s.lookups.searchesSent} searches sent ` +
     `(${s.lookups.ok} answered, ${s.lookups.notOk} failed), ${s.lookups.refusedBeforeSearch} refused before any search`);
   lines.push(`Turn time: median ${n(s.ms.median)} ms, p95 ${n(s.ms.p95)} ms; ` +
@@ -816,5 +821,5 @@ if (require.main === module) {
 module.exports = {
   CASES_PATH, EXPECTS, SEED_CLIENTS, RATES, FIXED_LINE_NAMES, WEB_PREFIX, GLOSSARY_SOURCE, CLIENT_RECORD_SOURCE, SWEEP_SOURCE,
   LIVE_RATES_SOURCE, ESTIMATED_RATES_SOURCE, saveTranscript, loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction, searchLeak, lockBreaks, outcomeOf, missesExpect,
-  percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main, judgesFor,
+  percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main, judgesFor, meteredClient,
 };
