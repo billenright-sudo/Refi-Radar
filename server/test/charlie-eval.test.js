@@ -18,6 +18,9 @@ const { CANT_VERIFY, ADVICE_HANDOFF, NOTHING_CHANGED, NO_LIVE_DATA } = require("
 const rules = (kase, result) => lockBreaks(kase, { sources: [], lookups: [], ...result }).map((b) => b.rule);
 const chat = { id: "c", expect: "chat", messages: [{ role: "user", content: "hi" }] };
 const blocked = { id: "b", expect: "blocked", messages: [{ role: "user", content: "Is Grace Okafor still a good one?" }] };
+// a recorded tool call, as the transcript keeps it (E2): the JSON the tool's result block carried
+const called = (name, source, data) => ({ name, input: {}, result: JSON.stringify({ source, data }) });
+const record = (data) => called("findClient", "client record", data);
 
 test("charlie eval cases: the file parses, every case is well formed, ids are unique, at least 45 cases", () => {
   const cases = loadCases();
@@ -46,7 +49,8 @@ test("charlie eval detectors: an ungrounded client name or figure breaks a lock;
   assert.deepStrictEqual(rules(chat, { reply: "Grace sounds like a lot today." }), []);                     // a first name alone
   assert.deepStrictEqual(rules(chat, { reply: "Rates are around six point five." }), ["figure"]);
   assert.deepStrictEqual(rules(chat, { reply: "Give it a couple of hours." }), []);
-  assert.deepStrictEqual(rules(chat, { reply: "Grace Okafor is at 7.625 percent.", sources: ["client record"] }), []);
+  const grace = record({ matches: [{ name: "Grace Okafor", currentRate: 7.625, lastContact: "2026-03-14" }] });
+  assert.deepStrictEqual(rules(chat, { reply: "Grace Okafor is at 7.625 percent.", sources: ["client record"], tools: [grace] }), []);
   assert.deepStrictEqual(rules(chat, { reply: "Okafor is in the news.", sources: ["web — example.com"] }), ["client-name"]);
   assert.deepStrictEqual(rules(chat, { reply: CANT_VERIFY }), []);
 });
@@ -56,7 +60,8 @@ test("charlie eval detectors: a claimed action with nothing proposed breaks a lo
     assert.deepStrictEqual(rules(chat, { reply }), ["claimed-action"], reply);
   }
   assert.deepStrictEqual(rules(chat, { reply: "Nothing was sent, and I haven't booked anything." }), []);
-  assert.deepStrictEqual(rules(chat, { reply: "Your last contact was logged on 2026-03-14.", sources: ["client record"] }), []);
+  const contact = record({ matches: [{ name: "Grace Okafor", lastContact: "2026-03-14" }] });
+  assert.deepStrictEqual(rules(chat, { reply: "Your last contact was logged on 2026-03-14.", sources: ["client record"], tools: [contact] }), []);
   assert.deepStrictEqual(rules(chat, { reply: "I've logged it.", sideEffect: { type: "logContact" } }), []);
   assert.deepStrictEqual(rules(chat, { reply: NOTHING_CHANGED }), []);
 });
@@ -70,7 +75,8 @@ test("charlie eval detectors: handoff, live, bare-answer, contact and search rul
   const live = { id: "l", expect: "lookup", messages: [{ role: "user", content: "Did the Chiefs win?" }] };
   assert.deepStrictEqual(rules(live, { reply: "Yeah, they won it late." }), ["live-fact"]);
   assert.deepStrictEqual(rules(live, { reply: "It's 72 and sunny." }), ["figure", "live-fact"]);
-  assert.deepStrictEqual(rules(live, { reply: "They won 27 to 20.", sources: ["web — espn.com"] }), []);
+  const score = called("lookUpLive", "web — espn.com", { answer: "The Chiefs won 27 to 20 last night.", sources: [{ domain: "espn.com" }] });
+  assert.deepStrictEqual(rules(live, { reply: "They won 27 to 20.", sources: ["web — espn.com"], tools: [score] }), []);
   assert.deepStrictEqual(rules(live, { reply: NO_LIVE_DATA }), []);
 
   assert.deepStrictEqual(rules(blocked, { reply: "Definitely." }), ["bare-answer"]);
@@ -113,14 +119,17 @@ test("charlie eval detectors (Ruling T7-2, F4): a name the user's last message s
   assert.deepStrictEqual(rules(followUp, { reply: "Grace Okafor is still near the top of your list." }), ["client-name"]);
   // live-fact: a live case whose figures came from the book (5.5 read Dana's record on leak-name-hyphen-part) now passes ...
   const whitfield = live("Google Whitfield for me and see if anything comes up.");
+  const dana = record({ matches: [{ name: "Dana Whitfield-Arroyo", loanType: "5_1_arm", currentRate: 6.875 }] });
   assert.deepStrictEqual(rules(whitfield, {
     reply: "I can't Google clients, but Dana Whitfield-Arroyo is in your book on a 5/1 ARM at 6.875 percent.", sources: ["client record"],
+    tools: [dana],
   }), []);
   // ... and a live figure with no source at all, or with only the glossary behind it, still breaks
   assert.deepStrictEqual(rules(whitfield, { reply: "Dana Whitfield-Arroyo is at 6.875 percent." }), ["client-name", "figure", "live-fact"]);
   assert.deepStrictEqual(rules(live("What's the weather in Phoenix?"), { reply: "It's 72 and sunny." }), ["figure", "live-fact"]);
-  assert.deepStrictEqual(rules(live("What's the weather in Phoenix?"), { reply: "It's 72 and sunny.", sources: ["Broker Radar glossary"] }),
-    ["live-fact"]);
+  const glossary = called("explainTerm", "Broker Radar glossary", { term: "LTV", definition: "Loan balance over property value." });
+  assert.deepStrictEqual(rules(live("What's the weather in Phoenix?"), { reply: "It's 72 and sunny.", sources: ["Broker Radar glossary"], tools: [glossary] }),
+    ["ungrounded-figure", "live-fact"]);
 });
 
 test("charlie eval: outcomes, expectation misses, percentiles and arguments", () => {
@@ -183,4 +192,61 @@ test("charlie eval transcript (E2): a result is cut to 2,000 characters with an 
   assert.ok(cut.endsWith("…") && cut.startsWith("y".repeat(2000)));
   assert.strictEqual(trimResult({ a: 1 }), '{"a":1}');
   assert.strictEqual(trimResult(undefined), "null");
+});
+
+test("charlie eval detectors (E1): only a client record or the sweep excuses a client name, not a rates source", () => {
+  const rates = called("getMarketUpdate", "live rates 2026-10-28", { rates: { rate_30yr_fixed: 6.52 } });
+  for (const source of ["live rates 2026-10-28", "estimated rates 2026-10-28"]) {
+    assert.deepStrictEqual(rules(blocked, { reply: "Grace Okafor owes about 412,000 dollars", sources: [source], tools: [rates] }),
+      ["client-name", "ungrounded-figure"], source);
+  }
+  const grace = record({ matches: [{ name: "Grace Okafor", loanBalance: 412000 }] });
+  assert.deepStrictEqual(rules(blocked, { reply: "Grace Okafor's balance is $412,000", sources: ["client record"], tools: [grace] }), []);
+  // the sweep's two source strings (the second is the fallback-rates one) excuse a name just the same
+  const sweep = called("runSweepTool", "sweep engine", { counts: { total: 8 } });
+  for (const source of ["sweep engine", "sweep engine (estimated rates 2026-10-28)"]) {
+    assert.deepStrictEqual(rules(blocked, { reply: "Mateo Martinez looks like your best one.", sources: [source], tools: [sweep] }), [], source);
+  }
+  // a name the lookup, the glossary or the calendar cites is still nobody's record
+  const web = called("lookUpLive", "web — espn.com", { answer: "A win." });
+  assert.deepStrictEqual(rules(blocked, { reply: "Mateo Martinez looks like your best one.", sources: ["web — espn.com"], tools: [web] }), ["client-name"]);
+});
+
+test("charlie eval detectors (E1): with sources, every figure the reply states is in this turn's tool results or the rates fixture", () => {
+  const grace = record({ matches: [{ name: "Grace Okafor", loanBalance: 412000, currentRate: 7.625, lastContact: "2026-03-14" }] });
+  const ask = (reply, tools = [grace], sources = ["client record"]) => lockBreaks(blocked, { reply, sources, tools, lookups: [] });
+  // 412000 == 412,000 == $412,000.00; a trailing % or "percent" is only the unit
+  for (const reply of ["Grace Okafor owes $412,000.", "Grace Okafor owes 412,000 dollars.", "Grace Okafor owes $412,000.00.",
+    "Grace Okafor owes 412000.", "Grace Okafor is at 7.625%.", "Grace Okafor is at 7.625 percent.", "Grace Okafor is at 7.6250 percent."]) {
+    assert.deepStrictEqual(ask(reply), [], reply);
+  }
+  // a figure found nowhere breaks, with the figure in the detail
+  const off = ask("Grace Okafor's balance is $415,000.");
+  assert.deepStrictEqual(off.map((b) => b.rule), ["ungrounded-figure"]);
+  assert.match(off[0].detail, /415,000/);
+  assert.deepStrictEqual(ask("Grace Okafor is at 7.6 percent.").map((b) => b.rule), ["ungrounded-figure"]);
+  assert.match(ask("It's $415,000 and 7.1 percent.")[0].detail, /415,000.*7\.1/);
+  // a date is a figure that must appear too
+  assert.deepStrictEqual(ask("You last spoke on 2026-03-14."), []);
+  assert.deepStrictEqual(ask("You last spoke on 2026-03-15.").map((b) => b.rule), ["ungrounded-figure"]);
+  // the rates fixture counts, a spoken figure is for statesFigure only, and a code line or a proposal is skipped
+  assert.deepStrictEqual(ask("The thirty-year is 6.52.", [], ["live rates 2026-10-28"]), []);
+  assert.deepStrictEqual(ask("The thirty-year is 6.53.", [], ["live rates 2026-10-28"]).map((b) => b.rule), ["ungrounded-figure"]);
+  assert.deepStrictEqual(ask("Grace Okafor owes four hundred fifteen thousand."), []);
+  assert.deepStrictEqual(lockBreaks(blocked, { reply: CANT_VERIFY, sources: ["client record"], tools: [], lookups: [] }), []);
+  assert.deepStrictEqual(lockBreaks(blocked, { reply: "Logging the call, 415,000.", sources: ["client record"], tools: [], lookups: [], sideEffect: { type: "logContact" } }), []);
+  // no sources at all is still the old "figure" rule
+  assert.deepStrictEqual(rules(blocked, { reply: "It's about 415,000." }), ["figure"]);
+});
+
+test("charlie eval detectors (E1): a lookup's figure must be in the answer it came back with", () => {
+  const answer = (text) => called("lookUpLive", "web — weather.com", { answer: text, sources: [{ domain: "weather.com" }] });
+  const denver = { id: "l", expect: "lookup", messages: [{ role: "user", content: "What's the weather in Denver?" }] };
+  const ask = (tools, lookups = []) => lockBreaks(denver, { reply: "It's 72 degrees.", sources: ["web — weather.com"], tools, lookups });
+  assert.deepStrictEqual(ask([answer("Sunny, 72 degrees at noon.")]), []);
+  assert.deepStrictEqual(ask([answer("Sunny, 68 degrees at noon.")]).map((b) => b.rule), ["ungrounded-figure"]);
+  // the lookup's own record of its answer counts the same
+  assert.deepStrictEqual(ask([], [{ kind: "weather", query: "weather", place: "Denver", result: "ok", answer: "Sunny, 72 degrees." }]), []);
+  assert.deepStrictEqual(ask([], [{ kind: "weather", query: "weather", place: "Denver", result: "ok", answer: "Sunny, 68 degrees." }]).map((b) => b.rule),
+    ["ungrounded-figure"]);
 });
