@@ -1518,3 +1518,40 @@ test("B4 over HTTP: a plain answer is read back with no model call and a zero-to
   assert.equal(again.data.reply, STAGE_REASK);
   assert.equal(stageOf(who), null);
 });
+
+// ── Live check 2026-10-28: "10 plus years", said twice, was never saved ──────────────────────────────────────────────────
+
+test("live check: 'N plus years' and 'N+ years' are plain durations of N years, like 'over N years'", async () => {
+  for (const [answer, years] of [
+    ["10 plus years", 10], ["10+ years", 10], ["10 + years", 10], ["ten plus years", 10], ["ten-plus years", 10], ["10-plus years", 10],
+    ["15+ yrs", 15], ["20 plus years now", 20], ["I've been originating for 10 plus years", 10], ["10 years plus", 10],
+  ]) {
+    const client = fakeClient([]);
+    const r = await runTurn({ messages: answering(answer), ctx: ctxFor(ann, "broker", orgA, null), client });
+    assert.equal(client.calls.length, 0, answer);
+    assert.deepStrictEqual(r.sideEffect, setCareerStageTool({ years }).sideEffect, answer);
+    assert.equal(r.reply, (await modelReadBack(years)).reply, answer);
+  }
+  // "plus" is read only as part of the amount
+  for (const answer of ["plus 10 years", "10 plus", "10 plus a few years"]) {
+    const client = fakeClient([say("How many years would you say, roughly?")]);
+    await runTurn({ messages: answering(answer), ctx: ctxFor(ann, "broker", orgA, null), client });
+    assert.equal(client.calls.length, 1, answer);
+  }
+});
+
+test("live check: the answer to STAGE_REASK is read like the answer to the career question", async () => {
+  const ctx = ctxFor(ann, "broker", orgA, null);
+  const reasked = (answer) => [...answering("a while"), { role: "assistant", content: STAGE_REASK }, { role: "user", content: answer }];
+  // Tier 1: a plain duration is packaged by code, with no model call
+  const client = fakeClient([]);
+  const r = await runTurn({ messages: reasked("10 plus years"), ctx, client });
+  assert.equal(client.calls.length, 0);
+  assert.deepStrictEqual(r.sideEffect, setCareerStageTool({ years: 10 }).sideEffect);
+  // Tier 2: an unreadable answer still gets only a question, the change, or the re-ask
+  assert.equal((await runTurn({ messages: reasked("forever"), ctx, client: fakeClient([say("Nice, that's a long run.")]) })).reply, STAGE_REASK);
+  assert.equal((await runTurn({ messages: reasked("forever"), ctx, client: fakeClient([say("How many years would you say, roughly?")]) })).reply, "How many years would you say, roughly?");
+  // a stored stage: an ordinary turn
+  const staged = await runTurn({ messages: reasked("about 20 years"), ctx: ctxFor(ann, "broker", orgA, "veteran"), client: fakeClient([say("Nice, that's a long run.")]) });
+  assert.equal(staged.reply, "Nice, that's a long run.");
+});

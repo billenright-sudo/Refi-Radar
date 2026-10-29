@@ -1556,15 +1556,19 @@ function falseSetClaim(sentence, storedStage) {
 // latest one ends with CAREER_QUESTION. On that turn a reply could claim a stage in endless ways ("Twenty years — Veteran, then.",
 // "Congratulations veteran!"), so it is screened by what the turn did, not by how the reply is phrased:
 //   Tier 1: the user's message is a plain duration code can read (plainYears: "about 20 years", "6 months", "eighteen months",
-//     "a year", "half a year", "two and a half years", "since 2006"): the setCareerStage change is packaged right away by
+//     "a year", "half a year", "two and a half years", "since 2006", "10 plus years" / "10+ years", read like "over 10 years"):
+//     the setCareerStage change is packaged right away by
 //     setCareerStageTool({ years }) (which alone maps years to a stage) with its code-authored read-back, and no model is called;
 //   Tier 2: any other answer that gives a duration (givesDuration: "a while", "forever", "since the crash", "almost ten years",
 //     "a couple of years", "Twenty."), with no read tool cited this turn: the model's reply must be question-shaped or come with
 //     the setCareerStage change; anything else is replaced by STAGE_REASK.
-// An answer that gives no duration ("what are rates today?") is an ordinary turn.
+// An answer that gives no duration ("what are rates today?") is an ordinary turn. STAGE_REASK asks the same question again, so
+// the answer to it is read the same way.
 const answersCareerQuestion = (messages, storedStage) => {
   const asked = messages[messages.length - 2];
-  return storedStage === null && !!asked && asked.role === "assistant" && messageText(asked).trim().endsWith(CAREER_QUESTION);
+  if (storedStage !== null || !asked || asked.role !== "assistant") return false;
+  const said = messageText(asked).trim();
+  return said.endsWith(CAREER_QUESTION) || said.endsWith(STAGE_REASK);
 };
 
 const NUMBER_WORD_VALUES = {
@@ -1590,7 +1594,8 @@ const DURATION_TRAIL =
   "|of\\s+originating|total|already|i\\s+think|i\\s+guess))*";
 const PLAIN_DURATION_RE = new RegExp(
   "^(?:" + DURATION_LEAD + "[\\s,]+)*" +
-  "(?:(\\d+(?:\\.\\d+)?|" + COUNT_WORDS + "|an?|half\\s+an?)(\\s+and\\s+a\\s+half)?\\s*(years?|yrs?|months?)(\\s+and\\s+a\\s+half)?" +
+  "(?:(\\d+(?:\\.\\d+)?|" + COUNT_WORDS + "|an?|half\\s+an?)(\\s+and\\s+a\\s+half)?(?:\\s*\\+|[\\s-]+plus)?\\s*(years?|yrs?|months?)" +
+  "(\\s+and\\s+a\\s+half)?(?:\\s+plus)?" +
   "|since\\s+((?:19|20)\\d{2}))" + DURATION_TRAIL + "[\\s.!]*$",
   "i"
 );
