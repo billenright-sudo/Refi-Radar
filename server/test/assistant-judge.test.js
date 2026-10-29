@@ -39,14 +39,26 @@ test("the five verdicts and the model are exactly as designed", () => {
   assert.strictEqual(JUDGE_MODEL, "claude-haiku-5-5");
 });
 
-test("parseVerdict reads the first word, case-insensitively, and anything else is FACT", () => {
+test("parseVerdict (final review M-8) reads only a whole answer of one verdict word, case-insensitively, with at most a period; anything else is FACT", () => {
   assert.strictEqual(parseVerdict("CHAT"), "CHAT");
   assert.strictEqual(parseVerdict("chat."), "CHAT");
-  assert.strictEqual(parseVerdict(" Live — scores"), "LIVE");
+  assert.strictEqual(parseVerdict("  Live  "), "LIVE");
   assert.strictEqual(parseVerdict("define\n"), "DEFINE");
   assert.strictEqual(parseVerdict("Advice"), "ADVICE");
-  for (const bad of ["", "   ", "MAYBE", "I think CHAT", "CHATTY", "CHAT_FACT", "**CHAT**", "perhaps", null, undefined, 7, {}]) {
+  assert.strictEqual(parseVerdict("fact."), "FACT");
+  for (const bad of [
+    "", "   ", "MAYBE", "I think CHAT", "CHATTY", "CHAT_FACT", "**CHAT**", "perhaps", null, undefined, 7, {},
+    // M-8: a verdict word followed by anything but one period is not one word
+    " Live — scores", "CHAT/FACT", "CHAT, but FACT", "chat because it is small talk", "CHAT FACT", "CHAT!", "CHAT..", "CHAT .",
+    "CHAT\nFACT", ".CHAT", "LIVE: scores",
+  ]) {
     assert.strictEqual(parseVerdict(bad), "FACT", `${JSON.stringify(bad)} must fail closed`);
+  }
+});
+
+test("makeJudge (final review M-8): an answer that is more than one verdict word is FACT", async () => {
+  for (const text of ["CHAT/FACT", "CHAT, but FACT", "chat because it is small talk", "Live — scores"]) {
+    assert.strictEqual((await makeJudge(saying(text))(INPUT)).verdict, "FACT", text);
   }
 });
 

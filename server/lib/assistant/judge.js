@@ -73,12 +73,12 @@ function buildJudgeContent({ previous, user, reply }) {
   return parts.join("\n\n");
 }
 
-// The verdict in a model's text: its first word, case-insensitively, if that word is one of the five. A "word" is a run of
-// letters that is not glued to more word characters, so "chat." is CHAT but "CHATTY", "CHAT_FACT" and "**CHAT**" are not.
-// Anything else (empty, another word, prose that merely mentions a verdict, not a string) is FACT.
+// The verdict in a model's text (final review M-8): the whole text, trimmed, must be exactly one of the five words, in any case,
+// with at most one period after it, so "chat." is CHAT but "CHAT/FACT", "CHAT, but FACT", "chat because…", "CHATTY" and
+// "**CHAT**" are not. Anything else (empty, another word, more than the one word, not a string) is FACT.
 function parseVerdict(text) {
   if (typeof text !== "string") return "FACT";
-  const m = /^\s*([A-Za-z]+)(?![\w'’-])/.exec(text);
+  const m = /^([A-Za-z]+)\.?$/.exec(text.trim());
   const word = m ? m[1].toUpperCase() : "";
   return VERDICTS.includes(word) ? word : "FACT";
 }
