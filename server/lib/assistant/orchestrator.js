@@ -2358,12 +2358,16 @@ const calendarWordIn = (s, exempt, names = [], user = false) => {
 };
 const formIn = (s, forms) => forms.some((form) => (!form.needsDay || DAY_OR_TIME_RE.test(s)) &&
   [...s.matchAll(form.re)].some((m) => !exemptInClause(s, m, form.event)));
+// (Ruling T7-2: an elliptical question asks too, "Anything fun on the calendar?", "Any calls to make?", "Something to prep?", so here it
+// is screened as a question is, what it presupposes included; not "Anything's ..." or "Something's ...", which state. Local to this
+// screen: QUESTION_START_RE is left as it is for the others)
+const ELLIPTICAL_QUESTION_RE = /^(?:anything|any|something)(?![\w'’-])/i;
 // `cited`: some tool result this turn was cited (then a fact needs a day or a time in its sentence); `names`: the client names this
 // turn's tool results carry (clientNamesOf), whose availability is no calendar fact. Pure.
 function ungroundedCalendarFact(text, cited, names = []) {
   return factSentencesOf(withoutScripts(String(text).replace(AM_PM_RE, "$1m"))).some((sentence) => {
     const s = stripOpener(sentence).trim();
-    const question = /\?\s*$/.test(s) && QUESTION_START_RE.test(s);
+    const question = /\?\s*$/.test(s) && (QUESTION_START_RE.test(s) || ELLIPTICAL_QUESTION_RE.test(s));
     let screened = s;
     if (question) {
       const end = FIRST_CLAUSE_END_RE.exec(s.slice(1));

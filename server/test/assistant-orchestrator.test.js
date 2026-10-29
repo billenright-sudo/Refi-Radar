@@ -6964,3 +6964,38 @@ test("Charlie T5 (Ruling T5-1): a live topic with no lookup cited is a soft bloc
     assert.deepStrictEqual(classifyUngrounded(u, said), { kind: "pass", line: null }, `${u} / ${said}`);
   }
 });
+
+// ── Charlie T7 fix wave (Ruling T7-2): what the paid eval found ──────────────────────────────────────────────────────────────────
+
+test("Charlie T7 F1 (Ruling T7-2): an elliptical question ('Anything fun on the calendar?') asks, so it is screened as a question; one that presupposes the broker's time, or a fact beside it, is still held", async () => {
+  const sweep = () => useTool("runSweepTool", {});
+  // [user, the tool call the model makes first (or none)]: a chat turn (the eval's chat-weekend-plans) and a sweep turn
+  const CONTEXTS = [["Got any big plans for the weekend?", () => []], ["who should I call today?", sweep]];
+  const reply = async (u, script, said) => (await runTurn({
+    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...[].concat(script()), say(said)]),
+    judge: judgeSays("CHAT"),
+  })).reply;
+  await capturingInfo(async () => {
+    // (eval chat-weekend-plans, 5.5) it asks the user and states nothing about the calendar: said; and what passed before still passes
+    for (const said of [
+      "How about you? Anything fun on the calendar, or are you praying nobody's file blows up on Friday afternoon?",
+      "Anything fun on the calendar?",
+      "Got anything fun lined up for the weekend?", "Want me to look at your calendar and find a gap for a break?",
+      "I hope your Friday is quiet.", "Enjoy your weekend!",
+    ]) {
+      for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), said, `${u}: ${said}`);
+    }
+    // the same openers on a question that presupposes the broker's free time or an event (PRESUPPOSED_FORMS), or with a fact said
+    // after it: held
+    for (const said of [
+      "Anything else before your noon call with the Chens?",
+      "Anything I can do with your free Friday afternoon?",
+      "Anything to prep since you're free all Friday afternoon?",
+      "Something to fill your free hour this afternoon?",
+      "Any calls you want to make in your open slot this afternoon?",
+      "Anything fun on the calendar? You're free all afternoon.",
+    ]) {
+      for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+    }
+  });
+});
