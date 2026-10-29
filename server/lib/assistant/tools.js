@@ -390,8 +390,6 @@ const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv"]);
 const plainText = (s) =>
   String(s).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const wholeWordIn = (text, term) =>
-  new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(term)}(?![\\p{L}\\p{M}\\p{N}])`, "iu").test(text);
 
 // What of a client's name may not be searched (folded by plainText, as the query is): the full name, and the surname: the last
 // word (a suffix such as "Jr." or "III" aside) and, for a name filed surname-first ("Okafor, Grace"), the word before the comma;
@@ -409,34 +407,110 @@ function screenedNames(name) {
   if (surnameFirst.length > 0) surnames.push(surnameFirst[surnameFirst.length - 1]);
   return [full, ...surnames.flatMap((s) => (s.includes("-") ? [s, ...s.split("-")] : [s]))];
 }
+// ── Client names as the screens compare them (residual R1: an index, not a regex per term per client per call) ────────────────
+//
+// Case is compared exactly as the /…/iu whole-word regexes these replaced compared it (Unicode simple case folding): each
+// character is folded to one member of its case class, picked once per character and checked against the regex engine itself, so
+// "Σ", "σ" and "ς" are one, "ẞ" and "ß" are one, and "ı" stays apart from "i" as /ı/iu never matched "i".
+const FOLDED = new Map();
+const FOLDED_MAX = 4096;   // the memo stops growing past this many characters (a character past it is folded again each time)
+function foldChar(ch) {
+  let folded = FOLDED.get(ch);
+  if (folded !== undefined) return folded;
+  folded = ch;
+  const same = new RegExp(`^${escapeRe(ch)}$`, "iu");
+  for (const candidate of [ch.toUpperCase().toLowerCase(), ch.toLowerCase(), ch.toUpperCase()]) {
+    if ([...candidate].length === 1 && same.test(candidate)) { folded = candidate; break; }
+  }
+  if (FOLDED.size < FOLDED_MAX) FOLDED.set(ch, folded);
+  return folded;
+}
+const fold = (s) => {
+  let out = "";
+  for (const ch of s) out += foldChar(ch);
+  return out;
+};
+// What a whole-word match of a name word could find inside one word of a text: the word itself and every run of its pieces between
+// ' and - ("O'Brien-Smith": O, Brien, Smith, O'Brien, Brien-Smith, O'Brien-Smith). A name word occurs in a text with no letter or
+// digit on either side exactly when it is one of these runs of some word of the text ("Grace's" holds "Grace", "Wu-Okonkwo" holds
+// "Okonkwo", "Don't" holds "Don").
+function wordRuns(word) {
+  const parts = word.split(/(['-])/);   // pieces at the even places, the ' or - between them at the odd ones
+  const runs = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    let run = parts[i];
+    runs.push(run);
+    for (let j = i + 2; j < parts.length; j += 2) {
+      run += parts[j - 1] + parts[j];
+      runs.push(run);
+    }
+  }
+  return runs;
+}
+const NAME_JOINERS = new Set(["and", "or", "the", "of"]);
+// One org's client names, from one query: `screened` holds the folded name words namesClient screens (the surnames and their
+// hyphen parts), `mentioned` those plus every other word of a name mentionsClient adds. A full name needs no entry of its own: a
+// full name found whole in a text has its last word found whole too, and that word is a surname. A name with no word at all
+// ("&&") keeps a whole-word regex of its own, made here once.
+function buildClientNameIndex(user, db) {
+  const screened = new Set();
+  const mentioned = new Set();
+  const wordless = [];
+  for (const row of db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id)) {
+    const name = row.name || "";
+    const terms = screenedNames(name);
+    if (terms.length === 0) continue;
+    const words = plainText(name).match(NAME_WORD_RE) || [];
+    if (words.length === 0) {
+      wordless.push(new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(terms[0])}(?![\\p{L}\\p{M}\\p{N}])`, "iu"));
+      continue;
+    }
+    for (const term of terms.slice(1)) {
+      screened.add(fold(term));
+      mentioned.add(fold(term));
+    }
+    for (const w of words) {
+      const lower = w.toLowerCase();
+      if (w.length > 1 && /\p{L}/u.test(w) && !NAME_SUFFIXES.has(lower) && !NAME_JOINERS.has(lower)) mentioned.add(fold(w));
+    }
+  }
+  return { screened, mentioned, wordless };
+}
+// A turn's ctx (runTurn makes one with withTurnClientNames) reads the org's names at most once, on first use, and the names never
+// outlive the turn; any other ctx reads them on each call.
+const TURN_CLIENT_NAMES = Symbol("this turn's client names");
+const withTurnClientNames = (ctx) => ({ ...ctx, [TURN_CLIENT_NAMES]: { index: null } });
+function clientNameIndex(ctx) {
+  const { user, db } = ctx || {};
+  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
+  const slot = ctx[TURN_CLIENT_NAMES];
+  if (!slot) return buildClientNameIndex(user, db);
+  if (!slot.index) slot.index = buildClientNameIndex(user, db);
+  return slot.index;
+}
+function textHasName(text, terms, wordless) {
+  const t = plainText(text);
+  for (const word of t.match(NAME_WORD_RE) || []) {
+    for (const run of wordRuns(word)) if (terms.has(fold(run))) return true;
+  }
+  return wordless.some((re) => re.test(t));
+}
+
 // True when `text` names any client of the caller's organization (Ruling T5-2: every row with the caller's org_id, not only the
 // caller's own book, so a loan officer can't send a colleague's client out either): a full name, or a surname as a whole word,
 // in any case ("Brown" is screened, "Browns" is not).
 const namesClient = (text, ctx) => {
-  const { user, db } = ctx || {};
-  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
-  const t = plainText(text);
-  return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id)
-    .some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
+  const { screened, wordless } = clientNameIndex(ctx);
+  return textHasName(text, screened, wordless);
 };
 // Final review I-1: true when `text` mentions a client of the caller's org (every row with the caller's org_id, as namesClient):
 // whatever namesClient screens, and also any other word of the name, a first name too ("How's Grace doing?"). Here a match only
 // sends an unsourced reply to the judge, so it is wider than the lookup screen (where a first name alone may be searched: "Austin"
 // is a city). A word of one letter, with no letter in it ("Client 01"), a suffix or a joining word ("Tom and Ellie") is not
 // matched alone. It returns a boolean and logs nothing, so no name leaves it.
-const NAME_JOINERS = new Set(["and", "or", "the", "of"]);
 const mentionsClient = (text, ctx) => {
-  const { user, db } = ctx || {};
-  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
-  const t = plainText(text);
-  return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id).some((row) => {
-    const name = row.name || "";
-    const words = (plainText(name).match(NAME_WORD_RE) || []).filter((w) => {
-      const lower = w.toLowerCase();
-      return w.length > 1 && /\p{L}/u.test(w) && !NAME_SUFFIXES.has(lower) && !NAME_JOINERS.has(lower);
-    });
-    return [...screenedNames(name), ...words].some((term) => wholeWordIn(t, term));
-  });
+  const { mentioned, wordless } = clientNameIndex(ctx);
+  return textHasName(text, mentioned, wordless);
 };
 
 // The sentences of a lookup's answer: a break is . ! or ? (and any closing quote or bracket) before a space, except after an
@@ -696,5 +770,6 @@ const TOOL_SCHEMA = [
 
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-  getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient,
+  getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
+  withTurnClientNames,
 };

@@ -7511,3 +7511,38 @@ test("Final review M-3: the startup log names the rates model and Charlie's, eac
   assert.ok(lines.includes("Rates model (CLAUDE_MODEL): claude-rates-test"), lines.join("\n"));
   assert.ok(lines.includes("Charlie model (CHARLI_MODEL): claude-charlie-test"), lines.join("\n"));
 });
+
+// ── Residual R1: the client names are read only when a reply would pass, and at most once a turn ───────────────────────────────
+
+const R1_NAMES_QUERY = "SELECT name FROM clients WHERE org_id = ?";
+// how many times `fn` reads an org's client names from the database
+async function namesReads(fn) {
+  let reads = 0;
+  const prepare = db.prepare;
+  db.prepare = function (sql) {
+    if (sql === R1_NAMES_QUERY) reads += 1;
+    return prepare.call(this, sql);
+  };
+  try { await fn(); } finally { db.prepare = prepare; }
+  return reads;
+}
+
+test("Residual R1: a turn whose reply its own words block reads no client names; one that would pass reads them once", async () => {
+  await capturingInfo(async () => {
+    // hard (a digit), and soft by its own words (a book word, a tax word, a live word): the names are never read
+    for (const [u, said] of [
+      ["hey", "Ha, 3 of those."], ["hey", "Your pipeline looks strong."], ["How are points taxed?", "Good question."],
+      ["hey", "Big storm coming."],
+    ]) {
+      assert.equal(await namesReads(() => i1Turn(u, said, { judge: judgeSays("CHAT") })), 0, said);
+    }
+    // a reply that would pass: the user's text and the reply are both checked, from one read
+    assert.equal(await namesReads(() => i1Turn(...I1_CHAT)), 1);
+    // once a turn: a lookup's name screen and the ungrounded check share it
+    const reads = await namesReads(() => runTurn({
+      messages: userSays("Anything happening out there?"), ctx: golfCtx,
+      client: fakeClient([useTool("lookUpLive", { kind: "news", query: "top stories" }), say("Sorry, I couldn't look that up just now.")]),
+    }));
+    assert.equal(reads, 1);
+  });
+});

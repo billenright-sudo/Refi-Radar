@@ -745,3 +745,164 @@ test("makeLive: a refusal, a paused or cut-off answer, an error, no results or n
   // every call that went out is metered (the error with no tokens)
   assert.equal(liveRows(broker).length, Object.keys(CASES).length);
 });
+
+// ── Residual R1: client-name matching costs milliseconds, and answers exactly as before ────────────────────────────────────────
+
+// The matchers as they were at 72464ae, kept verbatim as the reference: a regex per term per client on every call.
+const REF = (() => {
+  const NAME_WORD_RE = /[\p{L}\p{M}\p{N}]+(?:['-][\p{L}\p{M}\p{N}]+)*/gu;
+  const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv"]);
+  const plainText = (s) =>
+    String(s).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const wholeWordIn = (text, term) =>
+    new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(term)}(?![\\p{L}\\p{M}\\p{N}])`, "iu").test(text);
+  function screenedNames(name) {
+    const full = plainText(name);
+    if (!full) return [];
+    const words = full.match(NAME_WORD_RE) || [];
+    while (words.length > 1 && NAME_SUFFIXES.has(words[words.length - 1].toLowerCase())) words.pop();
+    const surnames = [];
+    if (words.length > 0) surnames.push(words[words.length - 1]);
+    const comma = full.indexOf(",");
+    const surnameFirst = comma > 0 ? full.slice(0, comma).match(NAME_WORD_RE) || [] : [];
+    if (surnameFirst.length > 0) surnames.push(surnameFirst[surnameFirst.length - 1]);
+    return [full, ...surnames.flatMap((s) => (s.includes("-") ? [s, ...s.split("-")] : [s]))];
+  }
+  const namesClient = (text, ctx) => {
+    const { user, db } = ctx || {};
+    if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
+    const t = plainText(text);
+    return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id)
+      .some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
+  };
+  const NAME_JOINERS = new Set(["and", "or", "the", "of"]);
+  const mentionsClient = (text, ctx) => {
+    const { user, db } = ctx || {};
+    if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
+    const t = plainText(text);
+    return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id).some((row) => {
+      const name = row.name || "";
+      const words = (plainText(name).match(NAME_WORD_RE) || []).filter((w) => {
+        const lower = w.toLowerCase();
+        return w.length > 1 && /\p{L}/u.test(w) && !NAME_SUFFIXES.has(lower) && !NAME_JOINERS.has(lower);
+      });
+      return [...screenedNames(name), ...words].some((term) => wholeWordIn(t, term));
+    });
+  };
+  return { namesClient, mentionsClient };
+})();
+
+// A small seeded generator, so the generated texts are the same on every run.
+function seeded(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Names with the hard cases: accents composed and decomposed, curly and straight apostrophes, hyphens, surname-first filing,
+// suffixes, a number for a surname, a joining word, an ampersand, other scripts with their own case rules, and a name with no word.
+const R1_NAMES = [
+  "Grace Okafor", "Okafor, Grace", "Sofía Martínez".normalize("NFC"), "José Núñez".normalize("NFD"), "Lin Wu-Okonkwo",
+  "Daniel Reyes Jr.", "John Smith III", "Client 01", "Tom and Ellie Brandt", "Robert & Linda Chen", "Siobhán O’Brien",
+  "D'Angelo Price", "Mary-Kate Olsen", "An Nguyen", "Cher", "Don Day", "Işık Yılmaz", "Ægir Þórsson", "ΟΔΥΣΣΕΑΣ Παπαδόπουλος",
+  "Groß Straße", "李 小龙", "Jean-Luc O'Neil-Ward", "Q", "Ana-María de la Cruz", "&&", "Brown, Robert Sr.",
+];
+// The words texts are made of: each name word in several spellings, possessives, plurals, joins, contractions, other words.
+function r1Vocabulary() {
+  const words = new Set(["the", "call", "today", "and", "of", "deal", "great", "Don't", "won't", "can't", "an", "day", "client",
+    "1", "01", "Jr", "III", "&&", "&", "isik", "ISIK", "Işık", "strasse", "STRASSE", "groß", "GROSS", "οδυσσεας", "ΟΔΥΣΣΕΑΣ",
+    "Οδυσσέας", "obrien", "O'Brien", "O’Brien’s", "o'brien-smith", "wu", "OKONKWO", "Wu-Okonkwo-Lee", "okafor's", "Okafors",
+    "Mary-Kate's", "kate", "Jean-Luc", "luc-o'neil", "ward", "de", "la", "cruz", "Ana-Maria", "brandt's", "Chens", "chen's"]);
+  for (const name of R1_NAMES) {
+    for (const w of name.split(/[\s,]+/).filter(Boolean)) {
+      const bare = w.normalize("NFKD").replace(/\p{M}/gu, "");
+      for (const v of [w, w.toLowerCase(), w.toUpperCase(), bare, `${bare}'s`, `${w}’s`, `${w}s`, `${w}-${bare}`, w.normalize("NFD")]) {
+        words.add(v);
+      }
+    }
+  }
+  return [...words];
+}
+
+test("Residual R1: namesClient and mentionsClient answer exactly as the regex reference does, over generated names and texts", async () => {
+  const { namesClient, mentionsClient } = require("../lib/assistant/tools");
+  const rand = seeded(20261029);
+  const pick = (list) => list[Math.floor(rand() * list.length)];
+  const vocabulary = r1Vocabulary();
+  const glue = [" ", " ", " ", ", ", ". ", "! ", " — ", " (", ") ", "-", "'", " & ", "\n"];
+  // four books: every name, and three random handfuls
+  const books = [R1_NAMES];
+  for (let i = 0; i < 3; i++) books.push(R1_NAMES.filter(() => rand() < 0.35));
+  let compared = 0;
+  const seen = { names: new Set(), mentions: new Set() };
+  for (const [b, names] of books.entries()) {
+    const orgId = addOrg(`R1 book ${b}`);
+    const userId = addUser(orgId, "broker", `r1-${b}@x.co`);
+    for (const name of names) addClientRow(orgId, userId, name);
+    const ctx = { user: { id: userId, role: "broker", org_id: orgId }, db };
+    for (let i = 0; i < 300; i++) {
+      let text = "";
+      const n = 1 + Math.floor(rand() * 8);
+      for (let j = 0; j < n; j++) text += (j ? pick(glue) : "") + pick(vocabulary);
+      const want = { names: REF.namesClient(text, ctx), mentions: REF.mentionsClient(text, ctx) };
+      assert.strictEqual(namesClient(text, ctx), want.names, `namesClient, book ${b}: ${JSON.stringify(text)}`);
+      assert.strictEqual(mentionsClient(text, ctx), want.mentions, `mentionsClient, book ${b}: ${JSON.stringify(text)}`);
+      seen.names.add(want.names);
+      seen.mentions.add(want.mentions);
+      compared += 1;
+    }
+    // each name, as it is filed, against itself and against every other spelling of it
+    for (const name of R1_NAMES) {
+      for (const text of [name, name.toUpperCase(), name.normalize("NFD"), name.normalize("NFKD").replace(/\p{M}/gu, ""), `Call ${name} today.`]) {
+        assert.strictEqual(namesClient(text, ctx), REF.namesClient(text, ctx), `namesClient, book ${b}: ${JSON.stringify(text)}`);
+        assert.strictEqual(mentionsClient(text, ctx), REF.mentionsClient(text, ctx), `mentionsClient, book ${b}: ${JSON.stringify(text)}`);
+      }
+    }
+  }
+  assert.ok(compared >= 1200, `${compared} texts compared`);
+  // both answers came up for both functions, so the comparison is not one-sided
+  assert.deepStrictEqual([seen.names.size, seen.mentions.size], [2, 2]);
+});
+
+test("Residual R1: with a 2,000-client org, 20 calls of each matcher take under 300 ms in total", async () => {
+  const tools = require("../lib/assistant/tools");
+  const orgId = addOrg("R1 big book");
+  const userId = addUser(orgId, "broker", "r1-big@x.co");
+  // 2,000 distinct alphabetic names, made of syllables
+  const SYL = ["ka", "lo", "mi", "ne", "ru", "sa", "ti", "vo", "ze", "pa", "do", "fe", "gu", "hi", "ja", "be"];
+  const word = (n, len) => {
+    let w = "";
+    for (let i = 0; i < len; i++) { w += SYL[n % SYL.length]; n = Math.floor(n / SYL.length); }
+    return w[0].toUpperCase() + w.slice(1);
+  };
+  const insert = db.transaction(() => {
+    for (let i = 0; i < 2000; i++) addClientRow(orgId, userId, `${word(i * 7 + 3, 3)} ${word(i, 4)}`);
+  });
+  insert();
+  // one turn's ctx, as runTurn makes it: the names are read once, on the first call, and the forty calls share them
+  const ctx = tools.withTurnClientNames({ user: { id: userId, role: "broker", org_id: orgId }, db });
+  const texts = [
+    "Ugh, what a day. Long day, huh? Grab a coffee.", "How's Grace doing these days?", `Call ${word(1234, 4)} first thing tomorrow.`,
+    "I don't think the market cares much about my feelings today, honestly.",
+  ];
+  const started = Date.now();
+  const elapsed = () => Date.now() - started;
+  for (let i = 0; i < 20; i++) {
+    tools.mentionsClient(texts[i % texts.length], ctx);
+    assert.ok(elapsed() < 300, `mentionsClient call ${i + 1}: ${elapsed()} ms so far`);
+  }
+  for (let i = 0; i < 20; i++) {
+    tools.namesClient(texts[i % texts.length], ctx);
+    assert.ok(elapsed() < 300, `namesClient call ${i + 1}: ${elapsed()} ms so far`);
+  }
+  // and they still find a name in a book this size
+  assert.equal(tools.mentionsClient(texts[2], ctx), true);
+  assert.equal(tools.namesClient(texts[2], ctx), true);
+  assert.equal(tools.mentionsClient(texts[0], ctx), false);
+});

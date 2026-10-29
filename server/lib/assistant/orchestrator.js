@@ -19,7 +19,7 @@
 // `client` is anything with messages.create(params) -> a Messages API response (the real
 // @anthropic-ai/sdk client in production, a scripted fake in tests); this file never imports it.
 const refi = require("../refi");
-const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient } = require("./tools");
+const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, withTurnClientNames } = require("./tools");
 const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
@@ -2620,6 +2620,8 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
   if (!client || !client.messages || typeof client.messages.create !== "function") {
     throw new TypeError("runTurn: client must provide messages.create()");
   }
+  // Residual R1: this turn's own copy of ctx, in which the org's client names are read at most once (tools.js withTurnClientNames)
+  if (ctx && typeof ctx === "object") ctx = withTurnClientNames(ctx);
   const deadline = Date.now() + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : DEFAULT_TURN_DEADLINE_MS);
   const usage = { inputTokens: 0, outputTokens: 0 };
   const finish = (reply, cited, sideEffect, details, compose) => {
@@ -2804,14 +2806,18 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         // (the can't-verify line is the Google line when the user asked about the calendar and Google is not usable, Ruling 49)
         const speak = (line) => finish(line === CANT_VERIFY ? cantVerifyCalendar() : line);
         // Final review I-1: a client of the caller's org named in the user's message or the reply (a book that can't be read
-        // counts as named, so the reply goes to the judge); only the yes or no is passed on, and no name is logged
-        let clientNamed;
-        try {
-          clientNamed = mentionsClient(userText, ctx) || mentionsClient(text, ctx);
-        } catch (_err) {
-          clientNamed = true;
+        // counts as named, so the reply goes to the judge); only the yes or no is passed on, and no name is logged. Residual R1:
+        // the names are looked up only for a reply that would otherwise pass, since a hard or soft block stands whatever they say.
+        let screen = classifyUngrounded(userText, text);
+        if (screen.kind === "pass") {
+          let clientNamed;
+          try {
+            clientNamed = mentionsClient(userText, ctx) || mentionsClient(text, ctx);
+          } catch (_err) {
+            clientNamed = true;
+          }
+          if (clientNamed) screen = classifyUngrounded(userText, text, true);
         }
-        const screen = classifyUngrounded(userText, text, clientNamed);
         if (screen.kind === "pass") return speak(text);
         if (screen.kind === "hard") return speak(screen.line);
         // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its
