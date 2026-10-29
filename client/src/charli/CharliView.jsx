@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createSession, CAREER_STAGES, pendingRows, voiceNoteFor } from "./session.mjs";
 import { keptSession } from "./keep.mjs";
+import { createReplay, shouldClear } from "./replay.mjs";
 import { googleCard, validNmls, connectUrlOk, inputAfterReload, createCoalescer } from "./google.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
@@ -342,6 +343,7 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
 
   const pausedRef = useRef(false);
   pausedRef.current = paused;
+  const speakingRef = useRef(false);   // whether she is mid-line right now (Pause keeps only a line it cuts off)
 
   // The conversation outlives a visit to this screen (keep.mjs): coming back shows it again, with no second greeting. The audio
   // is built once per visit.
@@ -380,23 +382,32 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
 
     const audio = createAudio({
       onUtterance: handleUtterance,
-      onSpeakingChange: setSpeaking,
+      onSpeakingChange: (on) => { speakingRef.current = on; setSpeaking(on); },
       onHearing: setHearing,
       onMicChange: setMic,
       onAutoplayBlocked: () => setNeedsStart(true),
       onTtsOk: () => { setVoiceNote(""); setNeedsStart(false); },   // it played, so no tap is needed after all
       onTtsError: (status, body) => setVoiceNote(voiceNoteFor(status, body)),
     });
-    parts.current = { session, audio, voice };
+    parts.current = { session, audio, voice, replay: createReplay() };
   }
-  const { session, audio, voice } = parts.current;
+  const { session, audio, voice, replay } = parts.current;
 
   useEffect(() => {
-    voice.speak = (line) => { if (!pausedRef.current) audio.speak(line); };
+    // Pause keeps the line she had not finished (replay.mjs): a line that arrives while paused is kept, not dropped.
+    voice.speak = (line) => {
+      if (pausedRef.current) { replay.held(line); return; }
+      replay.said(line);
+      audio.speak(line);
+    };
+    // A new turn from the user, or the change she read back being confirmed or cancelled, makes a kept line stale. Watched on the
+    // session itself (it calls back inside set()), so it runs before the line spoken right after, never after it.
+    let last = session.getState();
+    const unwatch = session.subscribe((next) => { if (shouldClear(last, next)) replay.clear(); last = next; });
     audio.startMic();
     session.open();
     // leaving the screen: mic off, speech cut, a change waiting for a yes dropped; the conversation is kept for coming back
-    return () => { voice.speak = null; session.leave(); audio.dispose(); };
+    return () => { unwatch(); voice.speak = null; session.leave(); audio.dispose(); };
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { session.setRates(rates); }, [rates]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -425,12 +436,15 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
   const togglePause = () => {
     if (!paused) {
       setPaused(true);
+      if (speakingRef.current) replay.cut();   // mid-line: keep it for Resume (a line that already finished is not kept)
       audio.stopSpeaking();
       audio.stopMic();
     } else {
       setPaused(false);
       audio.unlock();
       audio.startMic();
+      const line = replay.take();   // the line Pause cut off, or one that arrived while paused: said again from the start
+      if (line) { replay.said(line); audio.speak(line); }
     }
   };
   const startCharli = () => {
