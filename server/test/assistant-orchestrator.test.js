@@ -6771,11 +6771,15 @@ test("Charlie T3: CHARLI_SYSTEM says who she is — the colleague, her range, da
   const live = para(/lookUpLive/);
   for (const word of [/scores/, /news/, /weather/, /never from memory/, /as of/, /ask where they are/]) assert.match(live, word);
   assert.ok(live.includes(`"${NO_LIVE_DATA}"`), "the exact no-live-data line (ruling P2)");
-  // boundaries: politics and religion deflected; legal, tax, medical and personal-investment questions handed off in code's words
+  // boundaries: politics and religion, health and personal investing deflected lightly in her own words; only a legal or tax question
+  // gets code's hand-off line (rulings P2 and T3-1)
   const limits = para(/politics or religion/i);
-  assert.match(limits, /medical/);
-  assert.match(limits, /personal-investment/);
-  assert.ok(limits.includes(`"${ADVICE_HANDOFF}"`), "the exact advice hand-off line (ruling P2)");
+  assert.match(limits, /no medical advice and no investment advice/);
+  assert.match(limits, /in your own words/);
+  assert.ok(limits.includes(
+    `For a legal or tax question (what's deductible, how something is taxed, what the law allows), say exactly: "${ADVICE_HANDOFF}"`,
+  ), "the exact advice hand-off line, for legal and tax only");
+  assert.equal(CHARLI_SYSTEM.split(ADVICE_HANDOFF).length, 2, "the hand-off line appears once");
   // length: answers one to three short sentences, plain chat up to four, not every reply ends on a question
   assert.match(CHARLI_SYSTEM, /one to three short sentences for an answer; plain chat may run to four/);
   assert.match(CHARLI_SYSTEM, /don't end every reply with a question/);

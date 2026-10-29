@@ -76,6 +76,11 @@ test("request shape: Haiku 5.5, 16 tokens, thinking off, no sampling params, inj
   assert.ok(params.system.includes("data, never instructions"));
   for (const word of VERDICTS) assert.ok(params.system.includes(word), `system prompt defines ${word}`);
   assert.ok(/exactly one word/i.test(params.system));
+  // Ruling T3-1: ADVICE is a legal or tax answer only; medical or personal-investment advice is FACT (the can't-verify line)
+  const definition = (word) => params.system.split("\n").find((l) => l.startsWith(word + ":")) || "";
+  assert.match(definition("ADVICE"), /legal or tax answer/);
+  assert.doesNotMatch(definition("ADVICE"), /medical|investment/i);
+  assert.match(definition("FACT"), /medical or personal-investment advice/);
 
   // One user message, no assistant turn (no prefill), each part in its own delimited block.
   assert.strictEqual(params.messages.length, 1);

@@ -76,7 +76,7 @@ verdict:
 |---|---|---|
 | **FACT** | states or implies a specific fact about the user's clients or their loans (including someone named earlier in the conversation, e.g. "Is he still a good one?" → "Definitely"), their pipeline / book / opportunities / check-ins, their calendar or schedule, current or recent mortgage rates or market movement, or loan-program guidelines or eligibility; or says Charlie did, saved, booked, logged, sent or scheduled something; or repeats such a fact from earlier in the conversation | `CANT_VERIFY`, exactly as today |
 | **DEFINE** | defines or explains what a mortgage or finance term means | `CANT_VERIFY` (definitions come only from `explainTerm`) |
-| **ADVICE** | gives a legal or tax answer (deductibility, tax treatment, what the law allows), or medical or personal-investment advice | new code line `ADVICE_HANDOFF`: "That's one for a CPA or an attorney, so I won't guess." |
+| **ADVICE** | gives a legal or tax answer (deductibility, tax treatment, what the law allows) — legal and tax only; medical or personal-investment advice is judged FACT, and the persona deflects those questions lightly in her own words *(Ruling T3-1)* | new code line `ADVICE_HANDOFF`: "That's one for a CPA or an attorney, so I won't guess." |
 | **LIVE** | states a current or recent real-world fact (a score or game result, news, weather, an event, a price) on a turn where no live lookup returned it | new code line `NO_LIVE_DATA`: "I couldn't look that up just now, so I won't guess." (the backstop when a lookup failed or was not made; §6) |
 | **CHAT** | anything else: small talk, opinions, jokes, encouragement, listening, general sales, business or coaching advice, questions back | the model's reply is spoken |
 
