@@ -81,6 +81,8 @@ test("request shape: Haiku 5.5, 16 tokens, thinking off, no sampling params, inj
   assert.match(definition("ADVICE"), /legal or tax answer/);
   assert.doesNotMatch(definition("ADVICE"), /medical|investment/i);
   assert.match(definition("FACT"), /medical or personal-investment advice/);
+  // Ruling T3-2: the persona's own deflection (their doctor, a financial advisor) gives no advice, so it is CHAT
+  assert.match(definition("CHAT"), /Pointing someone to their doctor or a financial advisor, without giving the advice, is CHAT too\./);
 
   // One user message, no assistant turn (no prefill), each part in its own delimited block.
   assert.strictEqual(params.messages.length, 1);

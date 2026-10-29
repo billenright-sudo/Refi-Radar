@@ -29,7 +29,7 @@ const JUDGE_SYSTEM = [
   "DEFINE: the reply defines or explains what a mortgage or finance term means.",
   "ADVICE: the reply gives a legal or tax answer (deductibility, tax treatment, what the law allows). Example: \"Generally points are deducted over the life of the loan.\"",
   "LIVE: the reply states a current or recent real-world fact: a score or game result, news, weather, an event, a price. Example: \"Yeah, the Cowboys pulled it off!\"",
-  "CHAT: anything else: small talk, opinions, jokes, encouragement, listening, general sales, business or coaching advice, and questions back to the broker. A reply that only declines or hands off (says it could not look something up, will not guess, or that a question is for a CPA or an attorney) states no fact, so it is CHAT.",
+  "CHAT: anything else: small talk, opinions, jokes, encouragement, listening, general sales, business or coaching advice, and questions back to the broker. A reply that only declines or hands off (says it could not look something up, will not guess, or that a question is for a CPA or an attorney) states no fact, so it is CHAT. Pointing someone to their doctor or a financial advisor, without giving the advice, is CHAT too.",
   "",
   "Judge what the reply itself states or implies, using the conversation to see who or what it is about. If the reply fits more than one word, or you are not sure, answer the earlier one in the list above.",
   "",

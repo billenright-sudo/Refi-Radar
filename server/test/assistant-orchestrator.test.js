@@ -6764,9 +6764,10 @@ test("Charlie T3: CHARLI_SYSTEM says who she is — the colleague, her range, da
   assert.match(jokes, /jokes carry no numbers/i);
   assert.match(jokes, /venting/);
   assert.match(jokes, /already told/);
-  // honesty: an AI, said plainly when asked; no invented personal life
+  // honesty: an AI, said plainly when asked; no invented personal life, and no deals or borrowers of her own to tell stories about
   assert.match(CHARLI_SYSTEM, /You are an AI, and if anyone asks/);
   assert.match(CHARLI_SYSTEM, /never invent a personal life/i);
+  assert.match(para(/You are an AI/), /You have no deals, clients or borrowers of your own, so never tell a story as if you did\./);
   // live questions go to lookUpLive (ruling P3: the tool a later task adds) and never come from memory; a failed one is NO_LIVE_DATA
   const live = para(/lookUpLive/);
   for (const word of [/scores/, /news/, /weather/, /never from memory/, /as of/, /ask where they are/]) assert.match(live, word);
@@ -6783,8 +6784,14 @@ test("Charlie T3: CHARLI_SYSTEM says who she is — the colleague, her range, da
   // length: answers one to three short sentences, plain chat up to four, not every reply ends on a question
   assert.match(CHARLI_SYSTEM, /one to three short sentences for an answer; plain chat may run to four/);
   assert.match(CHARLI_SYSTEM, /don't end every reply with a question/);
-  // venting: listen first
-  assert.match(para(/When someone vents/), /acknowledge it first and listen/);
+  // venting: listen first, unless the vent reports a contact with a named client and asks nothing else: then the confirmation rule's
+  // "find the client, then call logContactTool to propose logging it" comes first (an action turn's backstop would replace anything else)
+  const vent = para(/When someone vents/);
+  assert.match(vent, /acknowledge it first and listen/);
+  assert.ok(vent.includes(
+    "If the vent reports a call, a meeting or a text with a named client and asks nothing else, the confirmation rule still " +
+    "comes first: find the client and propose logging the contact.",
+  ));
   // explainTerm only on request; the greeting no longer stops at the greeting but still names no unfetched fact
   assert.ok(CHARLI_SYSTEM.includes("call explainTerm only when the user asks what a term means"));
   assert.ok(!CHARLI_SYSTEM.includes("keep it to the greeting"));
