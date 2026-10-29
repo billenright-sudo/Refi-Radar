@@ -699,23 +699,31 @@ function verdictLine(verdict, cantVerifyLine) {
 // An integer (with optional thousands commas) and optional decimals.
 const NUMBER_SRC = "(\\d{1,3}(?:,\\d{3})+|\\d+)(\\.\\d+)?";
 const MULTIPLIER = { hundred: 1e2, thousand: 1e3, k: 1e3, million: 1e6, m: 1e6, billion: 1e9 };
+// A multiplier after a number (the keys of MULTIPLIER, any case), as a reply's figure and a payload's string both read it.
+const MULTIPLIER_SRC = "(?:\\s*(hundred|thousand|million|billion|k|m)\\b)?";
 // A figure in a reply: $ prefix, number, then an optional K / hundred / thousand / M / million / billion multiplier
 // and an optional % / percent / dollars suffix.
 const FIGURE_RE = new RegExp(
-  "(\\$)?" + NUMBER_SRC + "(?:\\s*(hundred|thousand|million|billion|k|m)\\b)?(\\s*%|\\s+(?:percent|dollars?)\\b)?", "gi"
+  "(\\$)?" + NUMBER_SRC + MULTIPLIER_SRC + "(\\s*%|\\s+(?:percent|dollars?)\\b)?", "gi"
 );
 
 // Every number in the payloads' JSON VALUES: a number value, and every number inside a string value (a date like
 // "2026-01-01", a "since" label like "October 18", a loan type like "30yr_fixed"), unsigned so a reply of "down 0.10"
 // matches a delta of -0.1. Never the digits of a KEY: rate_30yr_fixed grounds no "30" ("about 30 basis points under where
 // the Chens are" is a figure no tool gave). A payload is a tool_result content string (parsed as JSON; one that does not
-// parse is a single string value) or an object.
+// parse is a single string value) or an object. Live check L1: a number in a string followed by a multiplier the reply side knows
+// ("$1.5 billion", "40M", "12k") is recorded at its scaled value as well as bare, so the reply's "$1.5 billion" (1.5e9) finds it; a
+// number value in the JSON is only itself.
 function payloadNumbers(payloads) {
   const out = [];
   const walk = (v) => {
     if (typeof v === "number") { if (Number.isFinite(v)) out.push(Math.abs(v)); }
     else if (typeof v === "string") {
-      for (const m of v.matchAll(new RegExp(NUMBER_SRC, "g"))) out.push(Number(m[1].replace(/,/g, "") + (m[2] || "")));
+      for (const m of v.matchAll(new RegExp(NUMBER_SRC + MULTIPLIER_SRC, "gi"))) {
+        const value = Number(m[1].replace(/,/g, "") + (m[2] || ""));
+        out.push(value);
+        if (m[3]) out.push(value * MULTIPLIER[m[3].toLowerCase()]);
+      }
     } else if (Array.isArray(v)) v.forEach(walk);
     else if (v && typeof v === "object") Object.values(v).forEach(walk);
   };

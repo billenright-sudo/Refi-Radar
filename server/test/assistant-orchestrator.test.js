@@ -7998,3 +7998,66 @@ test("Round 4 V4: 'write those off', 'amortize', 'expense' and 'depreciate' fire
   assert.deepStrictEqual(classifyUngrounded("how do I write those off?", "Good question."), { kind: "soft", line: null });
   assert.deepStrictEqual(classifyUngrounded("hey", "That's expensive."), { kind: "pass", line: null });
 });
+
+// ── Live check L1: a payload's "1.5 billion" grounds a reply's "$1.5 billion" ───────────────────────────────────────────────────
+
+// Bill's live check (2026-10-29): the news lookup's answer and the reply it was checked against
+const L1_ANSWER = {
+  answer: "Tether and Circle moved to freeze over $1.5 billion in funds after fears of a Binance hack, NBC News reports. " +
+    "Iran claims 4 tankers hit mines in the Strait of Hormuz, CBS News reports.",
+  sources: [{ title: "x", domain: "nbcnews.com" }, { title: "y", domain: "cbsnews.com" }],
+};
+const L1_SAID = "NBC News is leading with fears of a Binance hack, which has Tether and Circle freezing over $1.5 billion in funds. " +
+  "CBS reports Iran claims 4 tankers hit mines in the Strait of Hormuz.";
+// a payload as a lookup's tool_result carries it, with `answer` as its answer
+const l1Payload = (answer) => JSON.stringify({ source: "web — npr.org", data: { answer, sources: [{ title: "x", domain: "npr.org" }] } });
+
+test("Live check L1: the repro — a lookup's '$1.5 billion' grounds the reply's '$1.5 billion', alone and through a lookup-only turn", async () => {
+  assert.deepStrictEqual(ungroundedNumbers(L1_SAID, [JSON.stringify({ source: "web — nbcnews.com, cbsnews.com", data: L1_ANSWER })]), []);
+  await capturingInfo(async () => {
+    const { ctx } = liveCtx(L1_ANSWER);
+    const judge = recordingJudge("LIVE");
+    const r = await runTurn({
+      messages: userSays("What's in the news today?"), ctx, judge,
+      client: fakeClient([useTool("lookUpLive", C1_NEWS), say(L1_SAID)]),
+    });
+    assert.equal(r.reply, L1_SAID);
+    assert.deepStrictEqual(r.sources, ["web — nbcnews.com, cbsnews.com"]);
+    assert.equal(judge.calls.length, 1);
+  });
+});
+
+test("Live check L1: a number with a multiplier in a payload string grounds its scaled value too; a bare one and a JSON number do not", () => {
+  // grounded: the scaled value, in either spelling, and the bare value as before
+  for (const [payload, said] of [
+    ["The fund froze 1.5 billion in assets.", "They froze $1.5 billion."], ["The fund froze 1.5 billion in assets.", "They froze 1,500 million."],
+    ["$40 million changed hands.", "About $40 million changed hands."], ["A $12k bonus.", "A $12,000 bonus."], ["It sold for 2.1 Million.", "It sold for $2.1 million."],
+    ["It sold for 40M.", "It sold for $40 million."], ["It hit 1.5 billion.", "That's 1.5 on the dial."],
+  ]) {
+    assert.deepStrictEqual(ungroundedNumbers(said, [l1Payload(payload)]), [], `${payload} -> ${said}`);
+  }
+  // ungrounded: no multiplier in the payload, a different figure, a different scale
+  for (const [payload, said, bad] of [
+    ["It rose 1.5 points.", "They froze $1.5 billion.", ["$1.5 billion"]],
+    ["They froze $1.5 billion.", "They froze $2.5 billion.", ["$2.5 billion"]],
+    ["They froze $1.5 million.", "They froze $1.5 billion.", ["$1.5 billion"]],
+    ["They froze 1.5 billion.", "They froze $1.5 thousand.", ["$1.5 thousand"]],
+  ]) {
+    assert.deepStrictEqual(ungroundedNumbers(said, [l1Payload(payload)]), bad, `${payload} -> ${said}`);
+  }
+  // number values in JSON are unchanged: a 1.5 beside a "billion" key or value grounds only 1.5
+  assert.deepStrictEqual(ungroundedNumbers("They froze $1.5 billion.", [JSON.stringify({ amount: 1.5, unit: "billion" })]), ["$1.5 billion"]);
+  assert.deepStrictEqual(ungroundedNumbers("They froze $1.5 billion.", [{ amount: 1.5, unit: "billion" }]), ["$1.5 billion"]);
+});
+
+test("Live check L1 (C-1 b): on a mixed turn a lookup's '$1.5 billion' still grounds nothing", async () => {
+  await capturingInfo(async () => {
+    for (const said of ["Tether froze $1.5 billion, and your thirty-year is 6.52 percent.", "Your thirty-year is 6.52 percent; $1.5 billion was frozen."]) {
+      const judge = recordingJudge("CHAT");
+      const r = await c1Mixed(said, L1_ANSWER, judge);
+      assert.equal(r.reply, CANT_VERIFY, said);
+      assert.deepStrictEqual(r.sources, [], said);
+      assert.equal(judge.calls.length, 0, said);
+    }
+  });
+});
