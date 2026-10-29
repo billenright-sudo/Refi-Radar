@@ -4620,11 +4620,16 @@ test("Task 5 fix 4: on an action turn any 'now on your calendar' wording is held
   }
   // a question with no "now" form still passes on that turn, with no tool and with a calendar read; a negative "now" form does not
   // (round 5, Ruling 23: on an action turn the hold has no nothing / anything / none lookbehind, so "nothing ... now but X" is held too)
-  // (final review I-1: with no tool, a question that names clients goes to the judge, which calls a question back CHAT)
-  for (const said of ["Should I put it on your calendar?", "Which Chen — Robert and Linda, or Chen Wei?", "What time should I make it?"]) {
+  // (final review I-1: with no tool, a question that names clients goes to the judge, which calls a question back CHAT; residual R5:
+  // the judge is asked only for that one, with no tool, and never on the calendar-read turn, so a line that starts needing it fails)
+  for (const [said, judgedWithNoTool] of [
+    ["Should I put it on your calendar?", 0], ["Which Chen — Robert and Linda, or Chen Wei?", 1], ["What time should I make it?", 0],
+  ]) {
     for (const grounded of [false, true]) {
-      const r = await capturingInfo(() => affirmedBook(said, grounded, OFFERS[1], { judge: judgeSays("CHAT") }));
+      const judge = recordingJudge("CHAT");
+      const r = await capturingInfo(() => affirmedBook(said, grounded, OFFERS[1], { judge }));
       assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: ${said}`);
+      assert.equal(judge.calls.length, grounded ? 0 : judgedWithNoTool, `${grounded ? "calendar read" : "no tool"}: ${said}: judge calls`);
     }
   }
   const negative = "Should I book it for Friday, since nothing else is on your calendar now?";
@@ -4897,8 +4902,11 @@ test("Task 5b: a yes or a correction after an offer to act is an action turn: th
   }
   // on that turn a question still passes, and the booking is read back (final review I-1: a question that names clients goes to
   // the judge, which calls a question back CHAT)
-  for (const said of [WH_BOOKING_QUESTIONS[0], "Which Chen — Robert and Linda, or Chen Wei?"]) {
-    assert.equal((await capturingInfo(() => offerReply("sure, no problem", said, OFFERS[1], { judge: judgeSays("CHAT") }))).reply, said);
+  // (residual R5: the judge is asked once for the question that names clients and never for the lone question)
+  for (const [said, calls] of [[WH_BOOKING_QUESTIONS[0], 0], ["Which Chen — Robert and Linda, or Chen Wei?", 1]]) {
+    const judge = recordingJudge("CHAT");
+    assert.equal((await capturingInfo(() => offerReply("sure, no problem", said, OFFERS[1], { judge }))).reply, said);
+    assert.equal(judge.calls.length, calls, `${said}: judge calls`);
   }
   // the post-offer claim guard holds there too: a statement riding inside a reply shaped like a question
   for (const yes of ["yes", "sure, no problem"]) {
