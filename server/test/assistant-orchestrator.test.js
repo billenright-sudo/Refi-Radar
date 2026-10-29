@@ -6659,9 +6659,9 @@ test("Charlie T2: soft blocks reach the judge; CHAT is spoken, with the judge's 
       assert.deepStrictEqual(r.sources, [], u);
       assert.deepStrictEqual(r.usage, { inputTokens: 107, outputTokens: 21 }, u);
     }
-    // one info line per judge call: the verdict and the time, never the user's words or the reply
+    // one info line per judge call: the verdict, why (final review M-1) and the time, never the user's words or the reply
     assert.equal(logged.length, SOFT.length);
-    for (const line of logged) assert.match(line, /^charlie judge: CHAT \d+ms$/);
+    for (const line of logged) assert.match(line, /^charlie judge: CHAT \(ok\) \d+ms$/);
   });
 });
 
@@ -6675,7 +6675,7 @@ test("Charlie T2: the verdict picks the line — FACT and DEFINE can't-verify, A
         assert.deepStrictEqual(r.usage, { inputTokens: 107, outputTokens: 21 }, `${verdict}: ${u}`);
       }
     }
-    assert.ok(logged.every((l) => /^charlie judge: (?:FACT|DEFINE|ADVICE|LIVE) \d+ms$/.test(l)), logged.join("\n"));
+    assert.ok(logged.every((l) => /^charlie judge: (?:FACT|DEFINE|ADVICE|LIVE) \(ok\) \d+ms$/.test(l)), logged.join("\n"));
   });
   // verdictLine is the one mapping: anything that is not one of the five words is FACT
   assert.equal(verdictLine("CHAT", "the line"), null);
@@ -6746,7 +6746,9 @@ test("Charlie T2: a judge that throws, rejects, never resolves or answers garbag
       assert.notEqual(r.error, true, name);
     }
     assert.equal(logged.length, Object.keys(judges).length);
-    for (const line of logged) assert.match(line, /^charlie judge: FACT \d+ms$/);
+    // (final review M-1: each FACT says why it is one)
+    const whys = ["error", "error", "unparsed", "unparsed", "error", "timeout"];
+    logged.forEach((line, i) => assert.match(line, new RegExp(`^charlie judge: FACT \\(${whys[i]}\\) \\d+ms$`), line));
   });
 });
 
@@ -6931,7 +6933,7 @@ test("Charlie T5: a lookup-only turn the judge calls LIVE is spoken with its web
     const fed = r.client.calls[1].messages[r.client.calls[1].messages.length - 1].content[0];
     assert.equal(fed.type, "tool_result");
     assert.deepStrictEqual(JSON.parse(fed.content), { source: "web — espn.com", data: COWBOYS });
-    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), ["charlie judge: LIVE Nms"]);
+    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), ["charlie judge: LIVE (ok) Nms"]);
   });
 });
 
@@ -7423,5 +7425,39 @@ test("Final review M-5: two lookups and then two more in the next round: the fou
     const again = fakeClient([resp([m5Lookup(5)], "tool_use"), say("The Senate passed the budget bill.")]);
     await runTurn({ messages: userSays("anything else in the news?"), ctx, client: again, judge: judgeSays("LIVE") });
     assert.equal(toolResultPayload(again.calls[1], 0).source, "web — npr.org");
+  });
+});
+
+// ── Final review M-1: the judge log tells a real verdict from a failure ─────────────────────────────────────────────────────────
+
+test("Final review M-1: the judge log line says why — ok, error, timeout, refusal or unparsed — and never the texts", async () => {
+  const [u, said] = SOFT[0];
+  const judges = [
+    ["ok", "CHAT", async () => ({ verdict: "CHAT", why: "ok", usage: { inputTokens: 7, outputTokens: 1 }, ms: 1 })],
+    ["ok", "FACT", async () => ({ verdict: "FACT", why: "ok", usage: { inputTokens: 7, outputTokens: 1 }, ms: 1 })],
+    // what makeJudge reports for its own failures is said as it is
+    ["error", "FACT", async () => ({ verdict: "FACT", why: "error", usage: { inputTokens: 0, outputTokens: 0 }, ms: 41 })],
+    ["timeout", "FACT", async () => ({ verdict: "FACT", why: "timeout", usage: { inputTokens: 0, outputTokens: 0 }, ms: 2500 })],
+    ["refusal", "FACT", async () => ({ verdict: "FACT", why: "refusal", usage: { inputTokens: 80, outputTokens: 2 }, ms: 300 })],
+    ["unparsed", "FACT", async () => ({ verdict: "FACT", why: "unparsed", usage: { inputTokens: 9, outputTokens: 3 }, ms: 300 })],
+    // an injected judge's own failures: a throw or a rejection is error, an answer that is no verdict unparsed, a hang the
+    // orchestrator's own timeout; a clean verdict with no why is ok
+    ["error", "FACT", () => { throw new Error("boom"); }],
+    ["error", "FACT", async () => { throw new Error("boom"); }],
+    ["error", "FACT", async () => undefined],
+    ["unparsed", "FACT", async () => ({ verdict: "chat" })],
+    ["unparsed", "FACT", async () => ({ verdict: "SURE" })],
+    ["timeout", "FACT", () => new Promise(() => {})],
+    ["ok", "CHAT", async () => ({ verdict: "CHAT" })],
+  ];
+  await capturingInfo(async (logged) => {
+    for (const [why, verdict, judge] of judges) {
+      logged.length = 0;
+      const r = await softTurn(u, said, { judge, deadlineMs: 4000 });
+      assert.equal(r.reply, verdict === "CHAT" ? said : CANT_VERIFY, why);
+      assert.equal(logged.length, 1, why);
+      assert.match(logged[0], new RegExp(`^charlie judge: ${verdict} \\(${why}\\) \\d+ms$`), why);
+      assert.ok(!logged[0].includes(u) && !logged[0].includes(said));
+    }
   });
 });

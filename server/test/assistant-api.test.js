@@ -1598,7 +1598,8 @@ test("turn: a soft block goes to the judge (app.set(\"assistantJudge\") or the H
     assert.equal(client.calls[1].model, "claude-haiku-5-5");
     rows = usageFor(r.data.turnId);
     assert.deepStrictEqual([rows.length, rows[0].input_tokens, rows[0].output_tokens], [1, 109, 21]);
-    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), ["charlie judge: CHAT Nms", "charlie judge: CHAT Nms"]);
+    // (final review M-1: each line says why; both verdicts are clean)
+    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), ["charlie judge: CHAT (ok) Nms", "charlie judge: CHAT (ok) Nms"]);
   } finally {
     console.info = savedInfo;
     app.set("assistantJudge", null);

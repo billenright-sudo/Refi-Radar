@@ -227,3 +227,40 @@ test("usage is reported as inputTokens / outputTokens", async () => {
   const noUsage = fakeClient(async () => ({ stop_reason: "end_turn", content: [{ type: "text", text: "CHAT" }] }));
   assert.deepStrictEqual((await makeJudge(noUsage)(INPUT)).usage, { inputTokens: 0, outputTokens: 0 });
 });
+
+// ── Final review M-1: the judge says why its verdict is what it is ──────────────────────────────────────────────────────────────
+
+test("makeJudge (final review M-1): a clean verdict is why 'ok'; an error, a timeout, a refusal or an unparsed answer says which", async () => {
+  for (const v of VERDICTS) assert.strictEqual((await makeJudge(saying(v))(INPUT)).why, "ok", v);
+  const cases = {
+    error: [
+      fakeClient(() => { throw new Error("boom"); }),
+      fakeClient(async () => { throw Object.assign(new Error("529 overloaded"), { status: 529 }); }),
+      fakeClient(async () => undefined),
+      null,
+    ],
+    refusal: [fakeClient(async () => ({ stop_reason: "refusal", content: [{ type: "text", text: "CHAT" }], usage: {} }))],
+    unparsed: [
+      saying("perhaps"), saying("CHAT/FACT"), saying(""),
+      fakeClient(async () => ({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "CHAT" }], usage: {} })),
+      fakeClient(async () => ({ stop_reason: "end_turn", content: [], usage: {} })),
+    ],
+  };
+  for (const [why, clients] of Object.entries(cases)) {
+    for (const [i, client] of clients.entries()) {
+      const out = await makeJudge(client)(INPUT);
+      assert.deepStrictEqual([out.verdict, out.why], ["FACT", why], `${why} ${i}`);
+    }
+  }
+  // a create() that never resolves, one that rejects when it is aborted, and no time left at all are timeouts
+  const hangs = fakeClient(() => new Promise(() => {}));
+  let out = await makeJudge(hangs)({ ...INPUT, timeoutMs: 30 });
+  assert.deepStrictEqual([out.verdict, out.why], ["FACT", "timeout"]);
+  const abortable = fakeClient((_params, opts) => new Promise((_resolve, reject) => {
+    opts.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+  }));
+  out = await makeJudge(abortable)({ ...INPUT, timeoutMs: 30 });
+  assert.deepStrictEqual([out.verdict, out.why], ["FACT", "timeout"]);
+  out = await makeJudge(saying("CHAT"))({ ...INPUT, timeoutMs: 0 });
+  assert.deepStrictEqual([out.verdict, out.why], ["FACT", "timeout"]);
+});

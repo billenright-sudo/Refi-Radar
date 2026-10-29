@@ -29,7 +29,7 @@ const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
-const { VERDICTS, fitsUnclipped } = require("./judge");
+const { VERDICTS, WHYS, fitsUnclipped } = require("./judge");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 // The whole turn gets this long (up to four model calls, so without it a slow model holds the mic for minutes). A model call is
@@ -1957,26 +1957,38 @@ const JUDGE_TIMEOUT_MS = 2_500;
 
 // The injected judge's verdict on one soft-blocked reply, held to `input.timeoutMs` here as well as inside the judge: a judge that
 // throws, rejects, never settles or answers anything but one of the five words is FACT, so a soft block fails closed. The tokens
-// it reports are added to the turn's `usage`. One info line records the verdict and the time, never the user's text or the reply.
+// it reports are added to the turn's `usage`. One info line records the verdict, why (final review M-1: "ok" for a clean verdict,
+// else "error", "timeout", "refusal" or "unparsed", as judge.js reports it or as it happened here) and the time, never the user's
+// text or the reply: "charlie judge: FACT (error) 41ms".
+const JUDGE_TIMED_OUT = Symbol("judge timed out");
 async function askJudge(judge, input, usage) {
   const started = Date.now();
   let verdict = "FACT";
+  let why = "error";
   let timer;
   try {
-    const clock = new Promise((resolve) => { timer = setTimeout(resolve, input.timeoutMs, null); });
+    const clock = new Promise((resolve) => { timer = setTimeout(resolve, input.timeoutMs, JUDGE_TIMED_OUT); });
     const out = await Promise.race([judge(input), clock]);
-    if (out && typeof out === "object") {
-      if (VERDICTS.includes(out.verdict)) verdict = out.verdict;
+    if (out === JUDGE_TIMED_OUT) {
+      why = "timeout";
+    } else if (out && typeof out === "object") {
+      if (VERDICTS.includes(out.verdict)) {
+        verdict = out.verdict;
+        why = WHYS.includes(out.why) ? out.why : "ok";
+      } else {
+        why = "unparsed";
+      }
       const u = out.usage || {};
       usage.inputTokens += Number.isFinite(u.inputTokens) ? u.inputTokens : 0;
       usage.outputTokens += Number.isFinite(u.outputTokens) ? u.outputTokens : 0;
     }
   } catch (_err) {
     verdict = "FACT";
+    why = "error";
   } finally {
     clearTimeout(timer);
   }
-  console.info(`charlie judge: ${verdict} ${Date.now() - started}ms`);
+  console.info(`charlie judge: ${verdict} (${why}) ${Date.now() - started}ms`);
   return verdict;
 }
 

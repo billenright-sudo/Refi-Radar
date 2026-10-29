@@ -77,11 +77,18 @@ function buildJudgeContent({ previous, user, reply }) {
 // with at most one period after it, so "chat." is CHAT but "CHAT/FACT", "CHAT, but FACT", "chat because…", "CHATTY" and
 // "**CHAT**" are not. Anything else (empty, another word, more than the one word, not a string) is FACT.
 function parseVerdict(text) {
-  if (typeof text !== "string") return "FACT";
+  return verdictWord(text) || "FACT";
+}
+// The verdict word that text is exactly, or null when it is none (M-1: so a real FACT is told from an unparsed answer).
+function verdictWord(text) {
+  if (typeof text !== "string") return null;
   const m = /^([A-Za-z]+)\.?$/.exec(text.trim());
   const word = m ? m[1].toUpperCase() : "";
-  return VERDICTS.includes(word) ? word : "FACT";
+  return VERDICTS.includes(word) ? word : null;
 }
+
+// Final review M-1: why a verdict is what it is, for the log: a clean verdict, or which way the call failed (each failure is FACT).
+const WHYS = Object.freeze(["ok", "error", "timeout", "refusal", "unparsed"]);
 
 // A whole, non-negative token count; anything else (missing, NaN, negative, a string) is 0.
 const tokens = (n) => {
@@ -91,23 +98,28 @@ const tokens = (n) => {
 
 const TIMED_OUT = Symbol("judge timed out");
 
-// makeJudge(client) -> judge({ previous?, user, reply, timeoutMs }) -> Promise<{ verdict, usage: { inputTokens,
+// makeJudge(client) -> judge({ previous?, user, reply, timeoutMs }) -> Promise<{ verdict, why, usage: { inputTokens,
 // outputTokens }, ms }>. The call is cut off after `timeoutMs`: the request is aborted through its signal (the SDK honors
 // `signal` in its request options) AND raced against a timer, so a client that ignores the signal still cannot hold the
 // turn. With no time left (timeoutMs not a positive number) no call is made at all. Never throws, and the usage is whatever
-// the API reported (zero for a call that errored or timed out), so the caller can meter it either way.
+// the API reported (zero for a call that errored or timed out), so the caller can meter it either way. `why` (M-1) is "ok" for
+// a clean verdict; otherwise the verdict is FACT and `why` says what happened: "error" (a throw, a rejection, no response),
+// "timeout" (the time ran out, or there was none), "refusal" (stop_reason "refusal") or "unparsed" (no text, or a text that is
+// not exactly one verdict word).
 function makeJudge(client) {
   return async function judge(input) {
     const started = Date.now();
     let verdict = "FACT";
+    let why = "timeout";
     let usage = { inputTokens: 0, outputTokens: 0 };
     let timer;
+    let timedOut = false;
     try {
       const { previous, user, reply, timeoutMs } = input || {};
       if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
         const controller = new AbortController();
         const clock = new Promise((resolve) => {
-          timer = setTimeout(() => { controller.abort(); resolve(TIMED_OUT); }, timeoutMs);
+          timer = setTimeout(() => { timedOut = true; controller.abort(); resolve(TIMED_OUT); }, timeoutMs);
         });
         const response = await Promise.race([
           client.messages.create({
@@ -119,26 +131,36 @@ function makeJudge(client) {
           }, { signal: controller.signal }),
           clock,
         ]);
-        if (response && response !== TIMED_OUT) {
+        if (response === TIMED_OUT) {
+          why = "timeout";
+        } else if (!response || typeof response !== "object") {
+          why = "error";
+        } else {
           usage = {
             inputTokens: tokens(response.usage && response.usage.input_tokens),
             outputTokens: tokens(response.usage && response.usage.output_tokens),
           };
           // A decline is an HTTP 200 with stop_reason "refusal": whatever text it carries is not a verdict.
-          if (response.stop_reason !== "refusal") {
+          if (response.stop_reason === "refusal") {
+            why = "refusal";
+          } else {
             // The text is found by block type, not position: a response may lead with a non-text block.
             const block = Array.isArray(response.content) ? response.content.find((b) => b && b.type === "text") : null;
-            verdict = parseVerdict(block && block.text);
+            const word = verdictWord(block && block.text);
+            verdict = word || "FACT";
+            why = word ? "ok" : "unparsed";
           }
         }
       }
     } catch (_err) {
       verdict = "FACT";
+      // a request the timer aborted may reject rather than lose the race: that is still the time running out
+      why = timedOut ? "timeout" : "error";
     } finally {
       clearTimeout(timer);
     }
-    return { verdict, usage, ms: Date.now() - started };
+    return { verdict, why, usage, ms: Date.now() - started };
   };
 }
 
-module.exports = { VERDICTS, JUDGE_MODEL, parseVerdict, makeJudge, fitsUnclipped };
+module.exports = { VERDICTS, WHYS, JUDGE_MODEL, parseVerdict, makeJudge, fitsUnclipped };
