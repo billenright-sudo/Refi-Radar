@@ -28,7 +28,7 @@ const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
 const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
-const { VERDICTS } = require("./judge");
+const { VERDICTS, fitsUnclipped } = require("./judge");
 
 const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that narrates
 // The whole turn gets this long (up to four model calls, so without it a slow model holds the mic for minutes). A model call is
@@ -1929,12 +1929,8 @@ async function withinTurn(promise, ms) {
   }
 }
 
-// The judge on a soft block (design §1) gets at most JUDGE_TIMEOUT_MS, less when the turn's deadline is nearer. It reads at most
-// JUDGE_MAX_CHARS of the reply, counted after it escapes & < > (judge.js cuts each input there), so a longer reply is not sent to
-// it at all: it would be judged by its head alone (ruling T1-1). `judgedLength` is that count.
+// The judge on a soft block (design §1) gets at most JUDGE_TIMEOUT_MS, less when the turn's deadline is nearer.
 const JUDGE_TIMEOUT_MS = 2_500;
-const JUDGE_MAX_CHARS = 2_000;
-const judgedLength = (s) => s.length + 4 * (s.match(/&/g) || []).length + 3 * (s.match(/[<>]/g) || []).length;
 
 // The injected judge's verdict on one soft-blocked reply, held to `input.timeoutMs` here as well as inside the judge: a judge that
 // throws, rejects, never settles or answers anything but one of the five words is FACT, so a soft block fails closed. The tokens
@@ -2744,10 +2740,12 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         if (screen.kind === "hard") return speak(screen.line);
         // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its
         // line. It only ever rules here, after every screen above, so it cannot let through what any of them or a hard rule
-        // blocks. With no judge, no time left for one (the deadline less the minCallMs margin) or a reply too long for it to
-        // read whole, the soft block stays the can't-verify line.
+        // blocks. With no judge, no time left for one (the deadline less the minCallMs margin), or a reply or user message that
+        // judge.js would cut (it would judge the head alone: rulings T1-1 and T2-1), the soft block stays the can't-verify line.
         const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
-        if (typeof judge !== "function" || !(timeoutMs > 0) || judgedLength(text) > JUDGE_MAX_CHARS) return speak(CANT_VERIFY);
+        if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(text) || !fitsUnclipped(userText)) {
+          return speak(CANT_VERIFY);
+        }
         const before = messages[messages.length - 2];
         const verdict = await askJudge(judge, {
           previous: before && before.role === "assistant" ? messageText(before) : undefined,

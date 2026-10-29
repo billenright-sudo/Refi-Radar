@@ -52,6 +52,15 @@ function clip(value) {
   return out;
 }
 
+// True when clip(value) keeps all of `value`: its length counted as clip counts it (escapes included) is at most
+// MAX_INPUT_CHARS. The orchestrator asks this before calling the judge, so a text the judge would see only the head of is
+// never judged.
+function fitsUnclipped(value) {
+  let length = 0;
+  for (const ch of value == null ? "" : String(value)) length += (ESCAPES[ch] || ch).length;
+  return length <= MAX_INPUT_CHARS;
+}
+
 // The one user message: Charlie's previous message (omitted when there is none), the broker's message and the candidate
 // reply, each in a block of its own. The text inside a block is escaped, so none of it can close the block.
 function buildJudgeContent({ previous, user, reply }) {
@@ -132,4 +141,4 @@ function makeJudge(client) {
   };
 }
 
-module.exports = { VERDICTS, JUDGE_MODEL, parseVerdict, makeJudge };
+module.exports = { VERDICTS, JUDGE_MODEL, parseVerdict, makeJudge, fitsUnclipped };

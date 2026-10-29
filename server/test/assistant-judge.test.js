@@ -6,7 +6,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { VERDICTS, JUDGE_MODEL, parseVerdict, makeJudge } = require("../lib/assistant/judge");
+const { VERDICTS, JUDGE_MODEL, parseVerdict, makeJudge, fitsUnclipped } = require("../lib/assistant/judge");
 
 // A client whose create() records its arguments and answers with whatever `answer(params, opts)` gives back.
 function fakeClient(answer) {
@@ -177,6 +177,26 @@ test("delimiters are escaped and inputs truncated", async () => {
   const reply = blockOf(angles.calls[0].params.messages[0].content, "candidate_reply");
   assert.ok(reply.length <= 2000);
   assert.strictEqual(reply, "&lt;".repeat(500));
+});
+
+test("fitsUnclipped says whether an input is sent whole, counted as the clip counts it (escapes included)", async () => {
+  const CASES = [
+    ["", true], [null, true], [undefined, true],
+    ["a".repeat(2000), true], ["a".repeat(2001), false],
+    ["&".repeat(400), true], ["&".repeat(401), false],
+    ["<".repeat(500), true], [">".repeat(501), false],
+    ["x".repeat(1996) + "&", false], ["x".repeat(1995) + "&", true],
+    ["\u{1F600}".repeat(1000), true], ["\u{1F600}".repeat(1001), false],
+  ];
+  for (const [text, fits] of CASES) {
+    assert.strictEqual(fitsUnclipped(text), fits, `${String(text).slice(0, 12)}... (${String(text).length})`);
+    // it agrees with what the judge actually sends: the whole escaped text exactly when it fits
+    const client = saying("CHAT");
+    await makeJudge(client)({ user: "hi", reply: text, timeoutMs: 1000 });
+    const sent = blockOf(client.calls[0].params.messages[0].content, "candidate_reply");
+    const whole = (text == null ? "" : String(text)).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    assert.strictEqual(sent === whole, fits, `sent whole: ${String(text).length}`);
+  }
 });
 
 test("usage is reported as inputTokens / outputTokens", async () => {

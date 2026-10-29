@@ -6683,6 +6683,22 @@ test("Charlie T2 (ruling T1-1): a reply longer than the judge reads whole is FAC
   assert.deepStrictEqual(await turn(escaped), { reply: CANT_VERIFY, calls: 0 });
 });
 
+test("Charlie T2 (ruling T2-1): a user message longer than the judge reads whole is FACT, with no judge call", async () => {
+  const said = SOFT[0][1];
+  const turn = async (u) => {
+    const judge = recordingJudge("CHAT");
+    const r = await capturingInfo(() => softTurn(u, said, { judge }));
+    return { reply: r.reply, calls: judge.calls.length };
+  };
+  const vent = "I had a rough call this morning. ".repeat(70);
+  assert.deepStrictEqual(await turn(vent.slice(0, 2000)), { reply: said, calls: 1 });
+  assert.deepStrictEqual(await turn(vent.slice(0, 2001)), { reply: CANT_VERIFY, calls: 0 });
+  // counted as the judge counts it: 1,939 characters that escape to 2,327
+  const escaped = "Rough & tough call. ".repeat(97).trim();
+  assert.ok(escaped.length <= 2000);
+  assert.deepStrictEqual(await turn(escaped), { reply: CANT_VERIFY, calls: 0 });
+});
+
 test("Charlie T2: ADVICE_HANDOFF and NO_LIVE_DATA are the design's lines, word for word", () => {
   assert.equal(ADVICE_HANDOFF, "That's one for a CPA or an attorney, so I won't guess.");
   assert.equal(NO_LIVE_DATA, "I couldn't look that up just now, so I won't guess.");
