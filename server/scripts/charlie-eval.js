@@ -625,7 +625,36 @@ async function main(argv) {
   delete process.env.CHARLI_MODEL;
   if (args.model) process.env.CHARLI_MODEL = args.model;
 
+  // However the run ends (a throw included), the database is closed and its folder removed.
+  const open = { db: null };
+  try {
+    return await evaluate(args, cases, open);
+  } finally {
+    try {
+      if (open.db) open.db.close();
+    } catch (_err) {
+      // already closed
+    }
+    try {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    } catch (_err) {
+      // a temp dir left behind is harmless
+    }
+  }
+}
+
+// Writes the transcript: the same file each time, so what a run that dies leaves behind is the cases so far. A transcript with no
+// meta.finishedAt is a run still going, or one that died.
+function saveTranscript(out, doc) {
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, JSON.stringify(doc, null, 2) + "\n");
+}
+
+// The run: seeds the book, goes through the cases (saving the transcript after each) and prints the summary. Returns the exit code.
+// The database it opens is handed up in `open.db` for main() to close.
+async function evaluate(args, cases, open) {
   const db = require("../db");
+  open.db = db;
   const { runTurn, charliModel, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
   const { makeJudge, JUDGE_MODEL } = require("../lib/assistant/judge");
   const { makeLive, LIVE_MODEL, SEARCH_TOOL_TYPE } = require("../lib/assistant/live");
@@ -706,23 +735,17 @@ async function main(argv) {
     results.push(result);
     console.log(`[${String(i + 1).padStart(2)}/${cases.length}] ${kase.id.padEnd(30)} ${result.outcome.padEnd(22)} ${String(ms).padStart(6)} ms` +
       (result.breaks.length ? `  LOCK BREAK x${result.breaks.length}` : "") + (result.missedExpect ? "  (miss)" : ""));
+    saveTranscript(out, { meta, summary: summarize(results, tally), cases: results });
     if (aborted) break;
   }
 
   meta.finishedAt = new Date().toISOString();
   if (aborted) meta.aborted = aborted;
   const summary = summarize(results, tally);
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  fs.writeFileSync(out, JSON.stringify({ meta, summary, cases: results }, null, 2) + "\n");
+  saveTranscript(out, { meta, summary, cases: results });
   console.log(formatSummary(summary, meta));
   if (aborted) console.error(`Stopped early: ${aborted}.`);
 
-  try {
-    db.close();
-    fs.rmSync(dataDir, { recursive: true, force: true });
-  } catch (_err) {
-    // a temp dir left behind is harmless
-  }
   if (aborted) return 1;
   return !args.dry && summary.lockBreaks.length > 0 ? 2 : 0;
 }
@@ -735,6 +758,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  CASES_PATH, EXPECTS, SEED_CLIENTS, RATES, loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction,
-  searchLeak, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main,
+  CASES_PATH, EXPECTS, SEED_CLIENTS, RATES, FIXED_LINE_NAMES, WEB_PREFIX, GLOSSARY_SOURCE, CLIENT_RECORD_SOURCE, SWEEP_SOURCE,
+  loadCases, caseProblems, fixedLineName, namedClients, statesFigure, claimsAction, searchLeak, lockBreaks, outcomeOf, missesExpect,
+  percentile, median, parseArgs, trimResult, RESULT_MAX, caseResult, summarize, formatSummary, main,
 };

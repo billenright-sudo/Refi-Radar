@@ -11,7 +11,8 @@ const assert = require("node:assert");
 
 const {
   EXPECTS, SEED_CLIENTS, loadCases, caseProblems, lockBreaks, outcomeOf, missesExpect, percentile, median, parseArgs,
-  trimResult, RESULT_MAX, caseResult, summarize, formatSummary,
+  trimResult, RESULT_MAX, caseResult, summarize, formatSummary, FIXED_LINE_NAMES, WEB_PREFIX, GLOSSARY_SOURCE, CLIENT_RECORD_SOURCE,
+  SWEEP_SOURCE, RATES,
 } = require("../scripts/charlie-eval");
 const { CANT_VERIFY, ADVICE_HANDOFF, NOTHING_CHANGED, NO_LIVE_DATA } = require("../lib/assistant/prompt");
 
@@ -324,4 +325,93 @@ test("charlie eval detectors (E4): \"won't\" is no live fact, \"won\" is", () =>
   assert.deepStrictEqual(rules(chiefs, { reply: "I won’t search for him." }), []);
   assert.deepStrictEqual(rules(chiefs, { reply: "The Chiefs won." }), ["live-fact"]);
   assert.deepStrictEqual(rules(chiefs, { reply: "They won't say, but they won." }), ["live-fact"]);
+});
+
+test("charlie eval pins (E5): the copied constants equal what the server's prompt, tools and glossary use", (t) => {
+  // tools.js opens the database on load: point it at a throwaway one first, as the other tool tests do
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "charlie-eval-pins-"));
+  process.env.DATA_DIR = dataDir;
+  const prompt = require("../lib/assistant/prompt");
+  const tools = require("../lib/assistant/tools");
+  const glossary = require("../lib/assistant/glossary");
+  const db = require("../db");
+  t.after(() => {
+    db.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // every code line the eval knows by name is a string export of prompt.js, once
+  assert.ok(FIXED_LINE_NAMES.length > 0);
+  assert.strictEqual(new Set(FIXED_LINE_NAMES).size, FIXED_LINE_NAMES.length);
+  for (const name of FIXED_LINE_NAMES) assert.strictEqual(typeof prompt[name], "string", `${name} is not a string export of prompt.js`);
+
+  // the source strings: the exports where there are some, else what the tools actually cite
+  assert.strictEqual(WEB_PREFIX, tools.LIVE_SOURCE_PREFIX);
+  assert.strictEqual(GLOSSARY_SOURCE, glossary.GLOSSARY_SOURCE);
+  const ctx = { user: { id: 1, org_id: 1, role: "broker" }, db, rates: { ...RATES } };
+  assert.strictEqual(tools.tools.explainTerm({ term: glossary.GLOSSARY[0].term }, ctx).source, GLOSSARY_SOURCE);
+  assert.strictEqual(tools.tools.findClient({ query: "okafor" }, ctx).source, CLIENT_RECORD_SOURCE);
+  assert.strictEqual(tools.tools.runSweepTool({}, ctx).source, SWEEP_SOURCE);
+  const fallback = tools.tools.runSweepTool({}, { ...ctx, rates: { ...RATES, source: "Estimated — live fetch unavailable" } }).source;
+  assert.ok(fallback.startsWith(SWEEP_SOURCE) && fallback !== SWEEP_SOURCE, fallback);
+  // and the source text of tools.js still cites the book that way (a logged contact and a set-up email cite the client record too)
+  const text = fs.readFileSync(path.join(__dirname, "..", "lib", "assistant", "tools.js"), "utf8");
+  assert.strictEqual((text.match(new RegExp(`source: "${CLIENT_RECORD_SOURCE}"`, "g")) || []).length >= 3, true);
+  assert.ok(text.includes(`source: "${SWEEP_SOURCE}"`) && text.includes(`source: \`${SWEEP_SOURCE} (estimated rates`));
+});
+
+// main() in a child process with writes to --out watched: every write's case count and whether it was the finished transcript;
+// failAt = the write (1-based) that throws, as a full disk would. Reports what is left when main() ends.
+function watchedRun(failAt) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "charlie-eval-watch-"));
+  const out = path.resolve(dir, "watched.json");
+  const code = `
+    const fs = require("fs");
+    const script = require(${JSON.stringify(SCRIPT)});
+    const out = ${JSON.stringify(out)};
+    const writes = [];
+    let attempts = 0;
+    let dataDir = null;
+    const real = fs.writeFileSync;
+    fs.writeFileSync = function (file, ...rest) {
+      if (String(file) === out) {
+        dataDir = dataDir || process.env.DATA_DIR;
+        if (++attempts === ${Number(failAt) || 0}) throw new Error("disk full");
+        const doc = JSON.parse(rest[0]);
+        writes.push({ cases: doc.cases.length, finished: Boolean(doc.meta.finishedAt) });
+      }
+      return real.call(this, file, ...rest);
+    };
+    const report = (rejected) => {
+      fs.writeFileSync = real;
+      const left = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, "utf8")).cases.length : null;
+      const dbOpen = require(${JSON.stringify(path.join(__dirname, "..", "db"))}).open;
+      console.log("REPORT " + JSON.stringify({ rejected, writes, left, dbOpen, tempDirLeft: Boolean(dataDir && fs.existsSync(dataDir)) }));
+    };
+    script.main(["--dry", "--out", out]).then(() => report(null), (err) => report(err.message));
+  `;
+  try {
+    const stdout = execFileSync(process.execPath, ["-e", code], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return JSON.parse(stdout.split("\n").find((l) => l.startsWith("REPORT ")).slice("REPORT ".length));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("charlie eval run (E5): the transcript is rewritten after every case, so a run that dies keeps the cases so far", () => {
+  const total = loadCases().length;
+  const done = watchedRun(0);
+  assert.strictEqual(done.rejected, null);
+  // one write per case, with the results so far and no finishing time, then the finished transcript
+  assert.deepStrictEqual(done.writes.map((w) => w.cases), [...Array.from({ length: total }, (_, i) => i + 1), total]);
+  assert.deepStrictEqual(done.writes.map((w) => w.finished), [...Array(total).fill(false), true]);
+  assert.strictEqual(done.left, total);
+  // a write that fails at the third case: two cases are on disk, and the database is closed and its folder gone all the same
+  const died = watchedRun(3);
+  assert.strictEqual(died.rejected, "disk full");
+  assert.strictEqual(died.left, 2);
+  assert.strictEqual(died.dbOpen, false);
+  assert.strictEqual(died.tempDirLeft, false);
+  assert.strictEqual(done.dbOpen, false);
+  assert.strictEqual(done.tempDirLeft, false);
 });
