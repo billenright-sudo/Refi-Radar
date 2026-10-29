@@ -711,18 +711,27 @@ const FIGURE_RE = new RegExp(
 // "2026-01-01", a "since" label like "October 18", a loan type like "30yr_fixed"), unsigned so a reply of "down 0.10"
 // matches a delta of -0.1. Never the digits of a KEY: rate_30yr_fixed grounds no "30" ("about 30 basis points under where
 // the Chens are" is a figure no tool gave). A payload is a tool_result content string (parsed as JSON; one that does not
-// parse is a single string value) or an object. Live check L1: a number in a string followed by a multiplier the reply side knows
-// ("$1.5 billion", "40M", "12k") is recorded at its scaled value as well as bare, so the reply's "$1.5 billion" (1.5e9) finds it; a
-// number value in the JSON is only itself.
-function payloadNumbers(payloads) {
+// parse is a single string value) or an object.
+// Live check L1, narrowed by ruling F-14: with `scaled` (a LOOKUP's payloads only; book and other tool payloads never), a number in
+// a string is also recorded at its scaled value, so the reply's "$1.5 billion" (1.5e9) finds the lookup's "$1.5 billion": after a
+// word, hundred / thousand / million / billion / bn, with one optional hyphen before it ("$1.5-billion"); or after a single k, m or
+// b, any case, only when a $ comes before the number ("$40M", "$12k", "$1.5B"; not "a 5k run", "401k" or "5 m/s"). The bare value
+// is always recorded too, and a number value in the JSON is only itself.
+const LOOKUP_NUMBER_SRC = "(\\$)?" + NUMBER_SRC + "(?:(?:-|\\s*)(hundred|thousand|million|billion|bn)\\b|([kmb])\\b)?";
+const LOOKUP_MULTIPLIER = { ...MULTIPLIER, bn: 1e9, b: 1e9 };
+function payloadNumbers(payloads, { scaled = false } = {}) {
   const out = [];
   const walk = (v) => {
     if (typeof v === "number") { if (Number.isFinite(v)) out.push(Math.abs(v)); }
-    else if (typeof v === "string") {
-      for (const m of v.matchAll(new RegExp(NUMBER_SRC + MULTIPLIER_SRC, "gi"))) {
-        const value = Number(m[1].replace(/,/g, "") + (m[2] || ""));
+    else if (typeof v === "string" && !scaled) {
+      for (const m of v.matchAll(new RegExp(NUMBER_SRC, "g"))) out.push(Number(m[1].replace(/,/g, "") + (m[2] || "")));
+    } else if (typeof v === "string") {
+      for (const m of v.matchAll(new RegExp(LOOKUP_NUMBER_SRC, "gi"))) {
+        const [, dollar, int, frac, word, letter] = m;
+        const value = Number(int.replace(/,/g, "") + (frac || ""));
         out.push(value);
-        if (m[3]) out.push(value * MULTIPLIER[m[3].toLowerCase()]);
+        if (word) out.push(value * LOOKUP_MULTIPLIER[word.toLowerCase()]);
+        else if (letter && dollar) out.push(value * LOOKUP_MULTIPLIER[letter.toLowerCase()]);
       }
     } else if (Array.isArray(v)) v.forEach(walk);
     else if (v && typeof v === "object") Object.values(v).forEach(walk);
@@ -760,12 +769,15 @@ function payloadLabels(payloads) {
 //   * only JSON values ground a figure (payloadNumbers); a "30-year" / "15-year" label is not a figure when a payload
 //     names that product (payloadLabels);
 //   * a figure spoken in words (hundred, thousand, million, billion, percent, "point five", eleven to ninety-nine,
-//     "seven and a half") can't be matched to anything, so it is always returned.
+//     "seven and a half") can't be matched to anything, so it is always returned;
+//   * (ruling F-14) `livePayloads`, a lookup's tool_result contents, ground a figure as `payloads` do and also at their scaled
+//     values (payloadNumbers' `scaled`); runTurn passes them only on a turn that cites nothing but lookups (and the glossary).
 // Pure: no I/O, no state.
-function ungroundedNumbers(replyText, payloads) {
+function ungroundedNumbers(replyText, payloads, livePayloads) {
   const list = Array.isArray(payloads) ? payloads : [];
-  const known = payloadNumbers(list);
-  const labels = payloadLabels(list);
+  const live = Array.isArray(livePayloads) ? livePayloads : [];
+  const known = [...payloadNumbers(list), ...payloadNumbers(live, { scaled: true })];
+  const labels = payloadLabels([...list, ...live]);
   const text = String(replyText == null ? "" : replyText).replace(DIGIT_LABEL_RE, (label, n) => (labels.has(n) ? " " : label));
   const bad = [];
   for (const m of text.matchAll(FIGURE_RE)) {
@@ -2879,9 +2891,12 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       const grounding = liveOnly ? [...payloads, ...livePayloads] : payloads;
       // Grounded: every figure the model speaks must be one the tools returned this turn. (Live check L2: on a turn that cites only
       // lookups, and the glossary, a figure the lookup did not return is LIVE_UNCLEAR: the lookup answered, but not cleanly enough
-      // to say. Every other turn's line is can't-verify, as before.)
+      // to say. Every other turn's line is can't-verify, as before.) Ruling F-14: the lookup's payloads go in apart, the only ones
+      // whose "$1.5 billion" or "$40M" is read at its scaled value; the book's never are.
       if (!text) return finish(CANT_VERIFY);
-      if (ungroundedNumbers(text, grounding).length > 0) return finish(liveCited && liveOnly ? LIVE_UNCLEAR : CANT_VERIFY);
+      if (ungroundedNumbers(text, payloads, liveOnly ? livePayloads : []).length > 0) {
+        return finish(liveCited && liveOnly ? LIVE_UNCLEAR : CANT_VERIFY);
+      }
       // A calendar read also grounds the clock times, the weekday names and the relative days a reply names (Ruling 13).
       if (calendarReads.length > 0 && !calendarFactsHold(text, calendarReads, grounding, ctx)) return finish(CANT_VERIFY);
       return finish(text, sources);

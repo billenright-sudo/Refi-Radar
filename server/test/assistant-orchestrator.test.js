@@ -8016,7 +8016,10 @@ const L1_SAID = "NBC News is leading with fears of a Binance hack, which has Tet
 const l1Payload = (answer) => JSON.stringify({ source: "web — npr.org", data: { answer, sources: [{ title: "x", domain: "npr.org" }] } });
 
 test("Live check L1: the repro — a lookup's '$1.5 billion' grounds the reply's '$1.5 billion', alone and through a lookup-only turn", async () => {
-  assert.deepStrictEqual(ungroundedNumbers(L1_SAID, [JSON.stringify({ source: "web — nbcnews.com, cbsnews.com", data: L1_ANSWER })]), []);
+  const payload = JSON.stringify({ source: "web — nbcnews.com, cbsnews.com", data: L1_ANSWER });
+  // (ruling F-14: only a lookup's payload is scaled, ungroundedNumbers' third argument; as a book payload it is as at e62a21f)
+  assert.deepStrictEqual(ungroundedNumbers(L1_SAID, [], [payload]), []);
+  assert.deepStrictEqual(ungroundedNumbers(L1_SAID, [payload]), ["$1.5 billion"]);
   await capturingInfo(async () => {
     const { ctx } = liveCtx(L1_ANSWER);
     const judge = recordingJudge("LIVE");
@@ -8031,26 +8034,106 @@ test("Live check L1: the repro — a lookup's '$1.5 billion' grounds the reply's
 });
 
 test("Live check L1: a number with a multiplier in a payload string grounds its scaled value too; a bare one and a JSON number do not", () => {
+  // (ruling F-14: these are lookup payloads, ungroundedNumbers' third argument; a book payload is never scaled, below)
   // grounded: the scaled value, in either spelling, and the bare value as before
-  for (const [payload, said] of [
+  const GROUNDED = [
     ["The fund froze 1.5 billion in assets.", "They froze $1.5 billion."], ["The fund froze 1.5 billion in assets.", "They froze 1,500 million."],
     ["$40 million changed hands.", "About $40 million changed hands."], ["A $12k bonus.", "A $12,000 bonus."], ["It sold for 2.1 Million.", "It sold for $2.1 million."],
-    ["It sold for 40M.", "It sold for $40 million."], ["It hit 1.5 billion.", "That's 1.5 on the dial."],
-  ]) {
-    assert.deepStrictEqual(ungroundedNumbers(said, [l1Payload(payload)]), [], `${payload} -> ${said}`);
+    ["It sold for $40M.", "It sold for $40 million."], ["It hit 1.5 billion.", "That's 1.5 on the dial."],
+  ];
+  for (const [payload, said] of GROUNDED) {
+    assert.deepStrictEqual(ungroundedNumbers(said, [], [l1Payload(payload)]), [], `${payload} -> ${said}`);
   }
-  // ungrounded: no multiplier in the payload, a different figure, a different scale
+  // ungrounded: no multiplier in the payload, a different figure, a different scale, and (F-14) a bare letter with no $
   for (const [payload, said, bad] of [
     ["It rose 1.5 points.", "They froze $1.5 billion.", ["$1.5 billion"]],
     ["They froze $1.5 billion.", "They froze $2.5 billion.", ["$2.5 billion"]],
     ["They froze $1.5 million.", "They froze $1.5 billion.", ["$1.5 billion"]],
     ["They froze 1.5 billion.", "They froze $1.5 thousand.", ["$1.5 thousand"]],
+    ["It sold for 40M.", "It sold for $40 million.", ["$40 million"]],
   ]) {
-    assert.deepStrictEqual(ungroundedNumbers(said, [l1Payload(payload)]), bad, `${payload} -> ${said}`);
+    assert.deepStrictEqual(ungroundedNumbers(said, [], [l1Payload(payload)]), bad, `${payload} -> ${said}`);
   }
   // number values in JSON are unchanged: a 1.5 beside a "billion" key or value grounds only 1.5
-  assert.deepStrictEqual(ungroundedNumbers("They froze $1.5 billion.", [JSON.stringify({ amount: 1.5, unit: "billion" })]), ["$1.5 billion"]);
-  assert.deepStrictEqual(ungroundedNumbers("They froze $1.5 billion.", [{ amount: 1.5, unit: "billion" }]), ["$1.5 billion"]);
+  assert.deepStrictEqual(ungroundedNumbers("They froze $1.5 billion.", [], [JSON.stringify({ amount: 1.5, unit: "billion" })]), ["$1.5 billion"]);
+  assert.deepStrictEqual(ungroundedNumbers("They froze $1.5 billion.", [], [{ amount: 1.5, unit: "billion" }]), ["$1.5 billion"]);
+  // (F-14) the same strings in a book payload ground no scaled figure, as at e62a21f
+  for (const [payload, said] of GROUNDED.filter(([, s]) => !s.includes("dial"))) {
+    assert.notDeepStrictEqual(ungroundedNumbers(said, [l1Payload(payload)]), [], `book: ${payload} -> ${said}`);
+  }
+});
+
+// ── Ruling F-14: only a lookup's payload is scaled, and a single letter only after a $ ──────────────────────────────────────────
+
+test("Ruling F-14: in a lookup payload the words scale (with one optional hyphen, and 'bn'); k, m and b only after a $", () => {
+  for (const [payload, said] of [
+    ["A $40M deal closed.", "A $40 million deal closed."], ["A $12k bonus.", "A $12,000 bonus."], ["A $1.5B fund froze.", "A $1.5 billion fund froze."],
+    ["A $1.5b fund froze.", "A $1.5 billion fund froze."], ["A 1.5bn fund froze.", "A $1.5 billion fund froze."], ["A 1.5 BN fund froze.", "A $1.5 billion fund froze."],
+    ["A $1.5-billion freeze.", "A $1.5 billion freeze."], ["A 2-million-dollar home.", "A $2 million home."], ["Three 2 Hundred pound bags.", "200 pounds."],
+    ["Some 3 thousand fans.", "3,000 fans."], ["A $2.1M stake.", "A $2.1 million stake."],
+  ]) {
+    assert.deepStrictEqual(ungroundedNumbers(said, [], [l1Payload(payload)]), [], `${payload} -> ${said}`);
+  }
+  for (const [payload, said] of [
+    ["Hundreds joined a 5k run downtown.", "There's a $5,000 prize."], ["Savers with a 401k got a boost.", "Savers got a $401,000 boost."],
+    ["Winds near 5 m/s are expected.", "Storm damage hit $5 million."], ["The show drew 40M viewers.", "It drew 40 million viewers."],
+    ["She has 12k followers.", "She has 12,000 followers."], ["New 4K TVs are out.", "They cost $4,000."], ["The game ended 30m ago.", "30 million watched."],
+    ["He struck out 10 K.", "10,000 fans cheered."], ["A $5 m/s gust.", "A $5 million gust."], ["A 1.5 - billion fund.", "A $1.5 billion fund."],
+  ]) {
+    assert.equal(ungroundedNumbers(said, [], [l1Payload(payload)]).length, 1, `${payload} -> ${said}`);
+  }
+});
+
+test("Ruling F-14: a book payload is never scaled — a client named '1700 K Street LLC' or '3M Properties LLC' grounds no balance", async () => {
+  const orgF14 = addOrg("F-14 entities");
+  const brokerF14 = addUser(orgF14, "broker", "broker@f14.co");
+  for (const name of ["1700 K Street LLC", "3M Properties LLC"]) {
+    addClientRow(orgF14, brokerF14, {
+      name, loanType: "30yr_fixed", currentRate: 7.85, loanBalance: 485000, propertyValue: 650000, creditScore: 760,
+    });
+  }
+  const ctx = { user: user(brokerF14, "broker", orgF14), rates: LIVE, db };
+  const turn = (query, said) => runTurn({ messages: userSays(`What's the balance on ${query}?`), ctx, client: fakeClient([useTool("findClient", { query }), say(said)]) });
+  await capturingInfo(async () => {
+    for (const [query, said] of [["1700 K Street", "Their balance is $1.7 million."], ["3M Properties", "Their balance is $3 million."]]) {
+      const r = await turn(query, said);
+      assert.equal(r.reply, CANT_VERIFY, said);
+      assert.deepStrictEqual(r.sources, [], said);
+      // the record's own balance is still said, cited
+      const ok = await turn(query, "Their balance is $485,000.");
+      assert.equal(ok.reply, "Their balance is $485,000.", query);
+      assert.deepStrictEqual(ok.sources, ["client record"], query);
+    }
+  });
+});
+
+test("Ruling F-14: on a lookup-only turn a 5k run, a 401k or 5 m/s grounds no dollar figure — LIVE_UNCLEAR; '$40M', '$12k', '$1.5B', '1.5bn' and '$1.5-billion' do", async () => {
+  const { LIVE_UNCLEAR } = require("../lib/assistant/prompt");
+  const lookupSays = async (answer, said) => {
+    const { ctx } = liveCtx({ answer, sources: [{ title: "x", domain: "npr.org" }] });
+    return runTurn({ messages: userSays("What's in the news today?"), ctx, judge: judgeSays("LIVE"), client: fakeClient([useTool("lookUpLive", C1_NEWS), say(said)]) });
+  };
+  await capturingInfo(async () => {
+    for (const [answer, said] of [
+      ["Hundreds joined a 5k run downtown.", "Hundreds joined a 5k run downtown, with a $5,000 prize."],
+      ["Hundreds joined a 5k run downtown.", "Hundreds ran downtown, with a $5,000 prize."],
+      ["Savers with a 401k got a boost this year.", "Savers got a $401,000 boost this year."],
+      ["Winds near 5 m/s are expected tonight.", "Winds are expected tonight, with $5 million in damage."],
+    ]) {
+      const r = await lookupSays(answer, said);
+      assert.equal(r.reply, LIVE_UNCLEAR, said);
+      assert.deepStrictEqual(r.sources, [], said);
+    }
+    for (const [answer, said] of [
+      ["A $40M deal closed today.", "A $40 million deal closed today."], ["Staff got a $12k bonus.", "Staff got a $12,000 bonus."],
+      ["A $1.5B fund froze.", "A $1.5 billion fund froze."], ["A 1.5bn fund froze.", "A $1.5 billion fund froze."],
+      ["A $1.5-billion freeze hit Tether.", "A $1.5 billion freeze hit Tether."],
+    ]) {
+      const r = await lookupSays(answer, said);
+      assert.equal(r.reply, said, answer);
+      assert.deepStrictEqual(r.sources, ["web — npr.org"], answer);
+    }
+  });
 });
 
 test("Live check L1 (C-1 b): on a mixed turn a lookup's '$1.5 billion' still grounds nothing", async () => {
