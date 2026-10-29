@@ -1,7 +1,8 @@
 # Charlie: personality and conversational range — design
 
 Date: 2026-10-28. Status: approved in chat by Bill ("approved with your recs"); this document records it.
-Repo: `refi-radar`, branch `feature/accurate-refi-scoring` (live as Cloud Run rev `refi-radar-00037-wwc` + three undeployed commits).
+Repo: `refi-radar`, branch `feature/accurate-refi-scoring` (live as Cloud Run rev `refi-radar-00039-hwk`, code 2963af7).
+Bill added live scores, news and weather the same day ("add it", §6).
 
 ## Why
 
@@ -26,6 +27,7 @@ ever gives way.
 2. Conversational range: chat and general advice reach the user instead of the can't-verify line.
 3. Every existing safety guarantee holds (the four locks).
 4. Sonnet 5.5 as her model (more natural conversation), tuned for voice latency.
+5. Live scores, news and weather, looked up on the web, with a source shown (§6).
 
 ## The four locks (unchanged, and anti-goals if broken)
 
@@ -36,8 +38,9 @@ ever gives way.
 3. **No loan-guideline, legal or tax answers** (`GUIDELINE_HANDOFF`; the prompt adds legal/tax).
 4. **No client details read out** beyond what the tools return under the existing privacy rule.
 
-Anti-goals: a reply that states a client/rate/calendar fact from memory; a fake "done"; a confident live sports score,
-news item or weather report (she has no live data and must say so lightly); hot takes on politics or religion; pretending
+Anti-goals: a reply that states a client/rate/calendar fact from memory; a fake "done"; a live sports score, news item or
+weather report that no lookup this turn returned; a mortgage rate or loan guideline taken from the web; a client's name or
+details sent out in a web search; hot takes on politics or religion; pretending
 to be human when asked; ending every single reply with a question; long monologues in a voice product.
 
 ## Decisions (Bill's, via "approved with your recs")
@@ -74,7 +77,7 @@ verdict:
 | **FACT** | states or implies a specific fact about the user's clients or their loans (including someone named earlier in the conversation, e.g. "Is he still a good one?" → "Definitely"), their pipeline / book / opportunities / check-ins, their calendar or schedule, current or recent mortgage rates or market movement, or loan-program guidelines or eligibility; or says Charlie did, saved, booked, logged, sent or scheduled something; or repeats such a fact from earlier in the conversation | `CANT_VERIFY`, exactly as today |
 | **DEFINE** | defines or explains what a mortgage or finance term means | `CANT_VERIFY` (definitions come only from `explainTerm`) |
 | **ADVICE** | gives a legal or tax answer (deductibility, tax treatment, what the law allows), or medical or personal-investment advice | new code line `ADVICE_HANDOFF`: "That's one for a CPA or an attorney, so I won't guess." |
-| **LIVE** | states a current or recent real-world fact she cannot know: a score or game result, news, weather, an event, a price | new code line `NO_LIVE_DATA`: "I don't get live scores or news, so I can't tell you that one." |
+| **LIVE** | states a current or recent real-world fact (a score or game result, news, weather, an event, a price) on a turn where no live lookup returned it | new code line `NO_LIVE_DATA`: "I couldn't look that up just now, so I won't guess." (the backstop when a lookup failed or was not made; §6) |
 | **CHAT** | anything else: small talk, opinions, jokes, encouragement, listening, general sales, business or coaching advice, questions back | the model's reply is spoken |
 
 *(The table is my call after the builder check: FACT alone would let "Can my client deduct points?" → "Generally they're
@@ -115,8 +118,9 @@ unless a change is listed here:
   experience as a colleague would — framed as her take, never as a fact about this user's book. Questions about the book
   still go to the tools.
 - Honesty: she is an AI and says so plainly if asked, with a light touch; no invented personal life presented as real.
-- No live data: she has no news, scores, weather or anything after the conversation's tools; she says so lightly and turns
-  it back to the person ("who were you rooting for?").
+- Live questions: for scores, news, weather and other "what's happening" questions she calls the live lookup (§6) and
+  answers from it in a sentence or two, saying "as of" when it matters; never from memory. News is headlines, neutral, no
+  opinions. Weather needs a place: if the user hasn't said one in this conversation, she asks where they are.
 - Boundaries: no politics or religion opinions (a light deflection), no legal or tax advice (hand-off), no medical or
   personal-finance advice.
 - Length: answers stay one to three short spoken sentences; plain chat may run to four; never a monologue; she does not
@@ -163,12 +167,43 @@ finished saying — cut off by Pause, or arrived while paused — is kept, and o
 listens. If nothing was unfinished, Resume just listens, as today. Only the latest unfinished line is replayed; a new turn
 clears it. An utterance that was being transcribed when Pause was pressed is still dropped (unchanged).
 
+### 6. Live lookup: scores, news, weather
+
+Bill, 2026-10-28: "can we give her live scores, news and weather" → "add it". A new read tool, **`lookUpLive`**, that the
+model calls for outside-world questions. It is a client tool (our code runs it), not the web-search server tool given to
+the main model directly, so code can check every query *before* anything leaves the server.
+
+- **Input:** `{ kind: "scores" | "news" | "weather" | "general", query, place? }`.
+- **Refused before searching (code, never sent to the web):**
+  - the query names a client in the caller's book (full name or surname, as `scopedClients(ctx)` returns them), or holds an
+    email address, a phone number or a dollar amount → a tool error telling the model it can't search that;
+  - the query is about mortgage rates or the rate market → a tool error pointing to `getMarketUpdate`;
+  - the query is a loan-guideline question (`isGuidelineQuestion`) → `GUIDELINE_HANDOFF`, as today;
+  - `kind: "weather"` with no place → a tool error telling the model to ask where.
+- **The search:** a separate Claude request, the way `routes/rates.js` already does it: Haiku 5.5 with the web search
+  server tool (the newest version that model accepts; Sonnet 5.5 if Haiku cannot), at most 3 searches, a 10-second limit
+  inside the turn's deadline, instructed to answer in at most two short sentences, neutral, with the as-of time, and to
+  answer only from what it found. Returns `{ answer, asOf?, sources: [{ title, domain }] }`.
+- **Grounding:** the result is a cited source for that turn, shown as a chip such as `source: web — espn.com`. The usual
+  grounded-turn number check applies, with the lookup's `answer` in the payloads, so every score or temperature Charlie
+  says must appear in what the lookup returned.
+- **A lookup does not ground book facts:** a turn whose only citations are live lookups also gets the judge (§1) on its
+  reply: FACT, DEFINE and ADVICE get their lines as on an ungrounded turn; LIVE passes, because the lookup grounds it.
+- **Failure** (no result, timeout, refusal, error): the tool returns an error, and if the model states a live fact anyway
+  the LIVE verdict gives `NO_LIVE_DATA`.
+- **Limits and cost:** at most 50 lookups per user per day (then the tool returns an error and she says she's done looking
+  things up for today); lookup tokens and searches are added to the turn's metered usage. Roughly one to two cents a
+  lookup; 3–6 seconds for those answers only.
+- **Privacy and logs:** only the screened query goes out; logs record kind, success and milliseconds, never the query.
+
 ## How we know it worked
 
 - **All existing tests stay green** (server 676, client 98 at de0d5f3/2963af7), with the judge absent = fail closed.
 - **New unit tests**: the hard/soft split; CHAT lets a soft-blocked reply through; FACT, refusal, error, timeout, garbage
   all fail closed; the judge never runs on hard blocks or grounded turns; usage includes judge tokens; greeting openers;
-  Pause/Resume replays the cut-off or unheard line once and nothing else (client).
+  Pause/Resume replays the cut-off or unheard line once and nothing else (client); `lookUpLive` refuses client names,
+  emails, phones, dollar amounts, rate and guideline queries and placeless weather before any search; its answer grounds
+  numbers; a lookup-only turn still gets the judge; the daily cap; failures.
 - **Eval set** (~50 lines, a script run against the real models, not in `npm test`): chat, venting, jokes, coaching,
   objection handling, "are you real?", off-limits topics, and adversarial probes that try to get her to state a client,
   rate or calendar fact or claim an action. Pass bar: zero lock breaks (any reply with a book/rate/calendar fact or a
@@ -188,7 +223,8 @@ the eval script lives, and test structure. Settled by the builder check, as the 
 - Tests that pin values this design deliberately changes (the model default, `max_tokens` 600, prompt-wording regexes) are
   updated; no guard is loosened by those updates.
 - The eval set includes the builder-check probes: follow-ups about a client named a turn earlier, tax/legal questions,
-  live scores/news, and coaching that names a glossary term.
+  live scores/news/weather (answered from a lookup, with a source), a search that tries to carry a client's name, a rate
+  question phrased as news, and coaching that names a glossary term.
 
 ## Out of scope
 
