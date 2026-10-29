@@ -41,7 +41,7 @@
 - Test: `server/test/assistant-judge.test.js`
 
 **Interfaces:**
-- Produces: `VERDICTS = ["FACT","DEFINE","ADVICE","LIVE","CHAT"]`; `JUDGE_MODEL = "claude-haiku-5-5"`; `parseVerdict(text: string) -> Verdict` (first word, case-insensitive; anything else `"FACT"`); `makeJudge(client) -> judge`, where `judge({ previous?: string, user: string, reply: string, timeoutMs: number }) -> Promise<{ verdict: Verdict, usage: { inputTokens, outputTokens }, ms }>`. Never throws: errors, refusals (`stop_reason: "refusal"`), timeouts and unknown words resolve to `verdict: "FACT"` with whatever usage was reported.
+- Produces: `VERDICTS = ["FACT","DEFINE","ADVICE","LIVE","CHAT"]`; `JUDGE_MODEL = "claude-haiku-5-5"`; `parseVerdict(text: string) -> Verdict` (the whole trimmed text is one verdict word, case-insensitive, optionally followed by a period; anything else `"FACT"`); `makeJudge(client) -> judge`, where `judge({ previous?: string, user: string, reply: string, timeoutMs: number }) -> Promise<{ verdict: Verdict, usage: { inputTokens, outputTokens }, ms }>`. Never throws: errors, refusals (`stop_reason: "refusal"`), timeouts and unknown words resolve to `verdict: "FACT"` with whatever usage was reported.
 
 - [ ] **Step 1: Write the failing tests** in `server/test/assistant-judge.test.js` with a fake client recording `messages.create(params, opts)`:
   - `parseVerdict`: `"CHAT"`, `"chat."`, `" Live — scores"` → CHAT, CHAT, LIVE; `""`, `"MAYBE"`, `"I think CHAT"` → FACT.
