@@ -229,4 +229,5 @@ the eval script lives, and test structure. Settled by the builder check, as the 
 ## Out of scope
 
 Memory across days; push-to-talk or any change to how the microphone listens; cancel/reschedule calendar events
-(separate next feature); the calculators; voice (ElevenLabs) settings; any change to the confirm flow or the tools.
+(separate next feature); the calculators; voice (ElevenLabs) settings; any change to the confirm flow or to the existing
+tools (the only new tool is `lookUpLive`).
