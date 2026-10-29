@@ -2848,8 +2848,8 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
       // The event title is the model's own words and is spoken and written as it is: a figure in it must be one the tools
       // returned this turn (this round's results included) or one the user just said ("Chens refi — 5.99%, saves $400" is neither).
       if (change.sideEffect.type === "createEvent") {
-        // (not the booking's own result: its preview repeats the title, which would ground itself)
-        const reads = outs.filter((o, i) => !o.sideEffect && !o.compose && runBlocks[i].name !== "explainTerm");
+        // (not the booking's own result: its preview repeats the title, which would ground itself; and only a cited result, M-7)
+        const reads = outs.filter((o, i) => !o.sideEffect && !o.compose && runBlocks[i].name !== "explainTerm" && isCitation(o.source));
         const seen = [...payloads, ...livePayloads, ...reads.map((o) => o.toolResult.content), userText];
         if (ungroundedNumbers(String((change.sideEffect.event || {}).title), seen).length > 0) return finish(CANT_VERIFY);
       }
@@ -2875,7 +2875,9 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         }
       }
       // a definition's own numbers (80 percent, 36 months) are product facts about the glossary, not figures the model may quote;
-      // a lookup's are kept apart (C-1)
+      // a lookup's are kept apart (C-1); and only a cited result grounds anything (M-7: an error text's "at most 200 characters" is
+      // no figure a reply may say)
+      if (!isCitation(o.source)) continue;
       if (runBlocks[i].name === "lookUpLive") livePayloads.push(o.toolResult.content);
       else if (runBlocks[i].name !== "explainTerm") payloads.push(o.toolResult.content);
     }

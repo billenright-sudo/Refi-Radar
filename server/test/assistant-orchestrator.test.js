@@ -7206,3 +7206,63 @@ test("Final review C-1: a mixed turn that states only the market's figure is spo
     assert.equal(judge.calls.length, 1);
   });
 });
+
+// ── Final review M-7: only a cited tool result grounds a figure ─────────────────────────────────────────────────────────────────
+
+const M7_LONG = { kind: "news", query: "x".repeat(201) };   // refused: "a query of at most 200 characters is required"
+
+test("Final review M-7: a failed tool's error text grounds nothing — its 200 or 70 is can't-verify", async () => {
+  await capturingInfo(async () => {
+    // a lookup-only turn: one lookup answers, one fails with "at most 200 characters"; the judge passes it as LIVE
+    const { ctx } = liveCtx();
+    let r = await runTurn({
+      messages: userSays("how did the Cowboys do last night?"), ctx, judge: judgeSays("LIVE"),
+      client: fakeClient([
+        resp([
+          { type: "tool_use", id: "toolu_1", name: "lookUpLive", input: LOOKUP },
+          { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: M7_LONG },
+        ], "tool_use"),
+        say("The Cowboys won 27 to 20, and a search can be 200 characters."),
+      ]),
+    });
+    assert.equal(r.reply, CANT_VERIFY);
+    // beside the market: a career-stage call that failed ("from 0 to 70") grounds no 70
+    r = await runTurn({
+      messages: userSays("what's the thirty-year today?"), ctx: brokerCtx,
+      client: fakeClient([
+        resp([
+          { type: "tool_use", id: "toolu_1", name: "getMarketUpdate", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "setCareerStageTool", input: {} },
+        ], "tool_use"),
+        say("The thirty-year is at 6.52 percent, and the cutoff is 70 years."),
+      ]),
+    });
+    assert.equal(r.reply, CANT_VERIFY);
+    // ... while the market's own figure still is said
+    r = await runTurn({
+      messages: userSays("what's the thirty-year today?"), ctx: brokerCtx,
+      client: fakeClient([
+        resp([
+          { type: "tool_use", id: "toolu_1", name: "getMarketUpdate", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "setCareerStageTool", input: {} },
+        ], "tool_use"),
+        say("The thirty-year is at 6.52 percent."),
+      ]),
+    });
+    assert.equal(r.reply, "The thirty-year is at 6.52 percent.");
+  });
+});
+
+test("Final review M-7: a booking title's figure is not grounded by a failed tool in the same round", async () => {
+  const r = await runTurn({
+    messages: userSays("book time Friday at noon to read the files"), ctx: googleCtx(fakeGoogle()),
+    client: fakeClient([
+      resp([
+        { type: "tool_use", id: "toolu_1", name: "lookUpLive", input: M7_LONG },
+        { type: "tool_use", id: "toolu_2", name: "createEventTool", input: { date: "friday", time: "12:00", title: "Read 200 pages" } },
+      ], "tool_use"),
+    ]),
+  });
+  assert.equal(r.reply, CANT_VERIFY);
+  assert.equal(r.sideEffect, undefined);
+});
