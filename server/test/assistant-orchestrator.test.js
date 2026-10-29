@@ -6992,45 +6992,51 @@ test("Charlie T5 (Ruling T5-1): a live topic with no lookup cited is a soft bloc
 
 // ── Charlie T7 fix wave (Ruling T7-2): what the paid eval found ──────────────────────────────────────────────────────────────────
 
-test("Charlie T7 F1 (Ruling T7-2): an elliptical question ('Anything fun on the calendar?') asks, so it is screened as a question; one that presupposes the broker's time, or a fact beside it, is still held", async () => {
-  const sweep = () => useTool("runSweepTool", {});
-  // [user, the tool call the model makes first (or none)]: a chat turn (the eval's chat-weekend-plans) and a sweep turn
-  const CONTEXTS = [["Got any big plans for the weekend?", () => []], ["who should I call today?", sweep]];
-  const reply = async (u, script, said) => (await runTurn({
-    messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...[].concat(script()), say(said)]),
-    judge: judgeSays("CHAT"),
-  })).reply;
+// F1: [user, the tool call the model makes first (or none)]: a chat turn (the eval's chat-weekend-plans) and a sweep turn
+const T7_F1_TURNS = [["Got any big plans for the weekend?", () => []], ["who should I call today?", () => useTool("runSweepTool", {})]];
+const t7F1Reply = async (u, script, said) => (await runTurn({
+  messages: userSays(u), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([...[].concat(script()), say(said)]),
+  judge: judgeSays("CHAT"),
+})).reply;
+
+test("Charlie T7 F1 (Ruling T7-2, fix round 3): an elliptical question in the narrow form ('Anything fun on the calendar?', 'Anything planned for ...?') asks, so it is said", async () => {
   await capturingInfo(async () => {
     // (eval chat-weekend-plans, 5.5) it asks the user and states nothing about the calendar: said; and what passed before still passes
+    // ("Any plans this weekend?" is outside the form, and screened as a statement it states nothing either)
     for (const said of [
       "How about you? Anything fun on the calendar, or are you praying nobody's file blows up on Friday afternoon?",
-      "Anything fun on the calendar?",
-      "Any meetings today?", "Anything on your calendar Friday?", "Any open slots Friday afternoon?",
+      "Anything fun on the calendar?", "Anything on your calendar Friday?", "Anything planned for the weekend?", "Any plans this weekend?",
       "Got anything fun lined up for the weekend?", "Want me to look at your calendar and find a gap for a break?",
       "I hope your Friday is quiet.", "Enjoy your weekend!",
     ]) {
-      for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), said, `${u}: ${said}`);
+      for (const [u, script] of T7_F1_TURNS) assert.equal(await t7F1Reply(u, script, said), said, `${u}: ${said}`);
     }
-    // the same openers on a question that presupposes the broker's free time or an event (PRESUPPOSED_FORMS), or with a fact said
-    // after it: held
+  });
+});
+
+test("Charlie T7 F1 (Ruling T7-2, fix round 3): outside the form a sentence is screened as a statement, as before F1, and a question in it that presupposes the broker's time is still held", async () => {
+  await capturingInfo(async () => {
     for (const said of [
-      "Anything else before your noon call with the Chens?",
-      "Anything I can do with your free Friday afternoon?",
-      "Anything to prep since you're free all Friday afternoon?",
-      "Something to fill your free hour this afternoon?",
-      "Any calls you want to make in your open slot this afternoon?",
-      "Anything fun on the calendar? You're free all afternoon.",
-      // (fix round 2) the opener as the subject of a verb, or in a contraction, is uptalk that states a fact: held as before F1
+      // a question that presupposes the broker's free time or an event (PRESUPPOSED_FORMS), or a fact said after one
+      "Anything else before your noon call with the Chens?", "Anything I can do with your free Friday afternoon?",
+      "Anything to prep since you're free all Friday afternoon?", "Something to fill your free hour this afternoon?",
+      "Any calls you want to make in your open slot this afternoon?", "Anything fun on the calendar? You're free all afternoon.",
+      // uptalk that states a fact: the opener as the subject of a verb, or in a contraction
       "Something is on your calendar at noon?", "Anything else is on your calendar at noon?", "Anything is open Friday afternoon?",
       "Something's on your calendar Friday?", "Anything's open Friday afternoon?", "Anything else's on your calendar Friday?",
       "Something seems booked at noon?", "Anything else looks open Friday?", "Something came up on your calendar Friday?",
-      "Something popped up on your calendar Friday?",
+      "Something popped up on your calendar Friday?", "Something fell off your calendar Friday?",
+      // (fix round 3) outside the form, held again as before F1: "Any" + a calendar noun, and a booking word after the opener
+      "Any meetings today?", "Any open slots Friday afternoon?", "Anything else booked Friday?",
     ]) {
-      for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
+      for (const [u, script] of T7_F1_TURNS) assert.equal(await t7F1Reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
     }
-    // ... and a booked-claim in uptalk, which the claim guard holds before the calendar screen reads it: never said
+    // "Something" opens no elliptical question: held on the chat turn (on a cited turn a fact needs a day or a time, Ruling 65, as
+    // before F1)
+    assert.equal(await t7F1Reply(...T7_F1_TURNS[0], "Something fun on the calendar?"), CANT_VERIFY);
+    // a booked-claim in uptalk, which the claim guard holds before the calendar screen reads it: never said
     for (const said of ["Something is booked at noon?", "Something got booked Friday?"]) {
-      for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), NOTHING_CHANGED, `${u}: ${said}`);
+      for (const [u, script] of T7_F1_TURNS) assert.equal(await t7F1Reply(u, script, said), NOTHING_CHANGED, `${u}: ${said}`);
     }
   });
 });
