@@ -200,7 +200,7 @@ const buildCharliSystem = (user, { jokeTopic } = {}) =>
 const JOKE_TOPICS = Object.freeze([
   "escrow", "appraisals", "underwriters", "the closing table", "credit reports", "title searches", "home inspections",
   "open houses", "pre-approvals", "realtors", "stacks of paperwork", "curb appeal", "fixer-uppers", "HOA meetings",
-  "down payments", "moving day", "lockboxes", "yard signs", "the closing pen", "loan estimates",
+  "home staging", "moving day", "lockboxes", "yard signs", "the closing pen", "the final walk-through",
 ]);
 
 module.exports = {

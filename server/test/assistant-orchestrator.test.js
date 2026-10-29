@@ -469,10 +469,20 @@ test("JOKE_TOPICS (polish P3): exactly the twenty approved topics, frozen, no di
   assert.deepStrictEqual([...JOKE_TOPICS], [
     "escrow", "appraisals", "underwriters", "the closing table", "credit reports", "title searches", "home inspections",
     "open houses", "pre-approvals", "realtors", "stacks of paperwork", "curb appeal", "fixer-uppers", "HOA meetings",
-    "down payments", "moving day", "lockboxes", "yard signs", "the closing pen", "loan estimates",
+    "home staging", "moving day", "lockboxes", "yard signs", "the closing pen", "the final walk-through",
   ]);
+  assert.equal(JOKE_TOPICS.length, 20);
   assert.ok(Object.isFrozen(JOKE_TOPICS));
   for (const t of JOKE_TOPICS) assert.ok(!/\d/.test(t), t);
+});
+
+test("JOKE_TOPICS (Q3): a joke on any topic passes the ungrounded-text screen — none matches the loan-book words", () => {
+  // "down payments" and "loan estimates" used to match the book-fact words (payments?, loans?), so a joke on either was soft-blocked
+  const { classifyUngrounded } = require("../lib/assistant/orchestrator");
+  for (const t of JOKE_TOPICS) {
+    const said = `Here's one about ${t}: it walked into a bar and the bartender said, not you again.`;
+    assert.equal(classifyUngrounded("Tell me a joke.", said).kind, "pass", t);
+  }
 });
 
 test("buildCharliSystem (polish P3): a joke topic is one closing sentence after the coaching block; without one nothing changes", () => {
