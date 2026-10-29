@@ -231,7 +231,8 @@ const CLAIM_RES = [
   // your calendar", "Should I put it on your calendar?")
   new RegExp(`${NOT_ASKING}\\b(?:it's|it is|that's|that is)\\s+(?:now\\s+|already\\s+)?in\\s+(?:your|the)\\s+calendar\\b`, "i"),
   new RegExp(`${NOT_ASKING}${NOT_NEGATED}\\b(?:it's|it is|that's|that is|it was|that was|they're|they are|has been|have been|is now|are now|is|are|was|were|got)\\s+(?:all\\s+|now\\s+|already\\s+|just\\s+)?taken care of\\b`, "i"),
-  new RegExp(`${NOT_ASKING}\\bI(?:'ve| have)\\s+(?:just\\s+|already\\s+|now\\s+)?taken care of\\b`, "i"),
+  // "I've (just|already|now) (gone ahead and) taken care of it", "I (already) (went ahead and) took care of it"
+  new RegExp(`${NOT_ASKING}\\bI(?:(?:'ve| have)\\s+(?:just\\s+|already\\s+|now\\s+)?(?:gone ahead and\\s+)?taken|\\s+(?:just\\s+|already\\s+|now\\s+)?(?:went ahead and\\s+)?took)\\s+care of\\b`, "i"),
   new RegExp(`${NOT_ASKING}\\bI(?:'ve| have)?\\s+(?:just\\s+|already\\s+|now\\s+)?put\\s+(?:it|that|this|them)\\s+(?:on|in)\\s+(?:your|the)\\s+calendar\\b`, "i"),
   new RegExp(`${SENTENCE}(?:(?:logged|sent|booked|saved|scheduled|added|recorded)(?:\\s+it\\b|\\s*(?:[.!…]|$))` +
     "|added\\s+(?:it\\s+|that\\s+|this\\s+)?to\\s+(?:your|the)\\s+calendar\\b|taken care of\\b)", "i"),
