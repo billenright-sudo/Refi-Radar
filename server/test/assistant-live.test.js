@@ -499,13 +499,15 @@ test("makeLive (Q1): the retry logs the dropped sites — not the query, not an 
   assert.deepStrictEqual(none, []);
 });
 
-test("makeLive (polish P2): only the weather prompt asks for Fahrenheit, from a source that reports it", async () => {
-  const FAHRENHEIT = "Give temperatures in degrees Fahrenheit, from a source that reports Fahrenheit; never convert units yourself.";
+test("makeLive (polish P2, Q2): only the weather prompt asks for Fahrenheit only, from a source that reports it, with no Celsius-only readings", async () => {
+  const FAHRENHEIT = "Give temperatures in degrees Fahrenheit only, from a source that reports Fahrenheit; leave out any reading given only in Celsius, and never convert units yourself.";
+  const OLD = "Give temperatures in degrees Fahrenheit, from a source that reports Fahrenheit; never convert units yourself.";
   for (const kind of ["weather", "news", "scores", "general"]) {
     const client = fakeClient([searched()]);
     await capturingInfo(() => makeLive({ client, db, userId: broker }).lookUp({ kind, query: "anything", place: "Denver" }));
     const prompt = client.calls[0].params.messages[0].content;
     assert.equal(prompt.includes(FAHRENHEIT), kind === "weather", kind);
+    assert.ok(!prompt.includes(OLD), `the old sentence is gone (${kind})`);
     if (kind === "weather") {
       // right after the answer-only-from-searches line, before the as-of line
       const lines = prompt.split("\n");

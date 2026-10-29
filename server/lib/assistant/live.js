@@ -84,7 +84,7 @@ function buildPrompt({ kind, query, place }, nowMs) {
     "",
     "Answer only from what your searches found, never from memory, in at most two short sentences: neutral, facts only, " +
       "no opinions. Give scores, temperatures and other figures exactly as your sources give them.",
-    ...(kind === "weather" ? ["Give temperatures in degrees Fahrenheit, from a source that reports Fahrenheit; never convert units yourself."] : []),
+    ...(kind === "weather" ? ["Give temperatures in degrees Fahrenheit only, from a source that reports Fahrenheit; leave out any reading given only in Celsius, and never convert units yourself."] : []),
     "Then, on a last line of its own, write \"As of: \" and when that information is from, as your sources give it. " +
       "Leave that line out if they don't say.",
   ].join("\n");
