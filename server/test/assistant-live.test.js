@@ -334,6 +334,23 @@ test("makeLive (polish P1): news, scores and general lookups search only the nam
   }
 });
 
+test("makeLive (polish P2): only the weather prompt asks for Fahrenheit, from a source that reports it", async () => {
+  const FAHRENHEIT = "Give temperatures in degrees Fahrenheit, from a source that reports Fahrenheit; never convert units yourself.";
+  for (const kind of ["weather", "news", "scores", "general"]) {
+    const client = fakeClient([searched()]);
+    await capturingInfo(() => makeLive({ client, db, userId: broker }).lookUp({ kind, query: "anything", place: "Denver" }));
+    const prompt = client.calls[0].params.messages[0].content;
+    assert.equal(prompt.includes(FAHRENHEIT), kind === "weather", kind);
+    if (kind === "weather") {
+      // right after the answer-only-from-searches line, before the as-of line
+      const lines = prompt.split("\n");
+      const at = lines.indexOf(FAHRENHEIT);
+      assert.match(lines[at - 1], /^Answer only from what your searches found/);
+      assert.match(lines[at + 1], /^Then, on a last line of its own, write "As of: "/);
+    }
+  }
+});
+
 test("makeLive: the answer is the text after the search, the as-of line apart; sources are the results' unique domains", async () => {
   const client = fakeClient([searched({
     results: [
