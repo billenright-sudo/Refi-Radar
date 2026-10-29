@@ -284,6 +284,15 @@ test("coaching content by stage", () => {
   assert.match(coachingStyle(null), /balanced way for a Developing user/);
 });
 
+test("Charlie T3: every block allows plain chat up to four sentences; the terse stages are terse in work answers only", () => {
+  for (const stage of [...IDS, null]) {
+    assert.match(coachingStyle(stage), /Your replies stay spoken: one to three short sentences for an answer; plain chat may run to four\./, String(stage));
+  }
+  // the Veteran's "no encouragement, no preamble" and the Established "be concise" rule the work answers, not the chat
+  assert.match(coachingStyle("veteran"), /No definitions, no encouragement, no preamble in a work answer; in plain chat/);
+  assert.match(coachingStyle("established"), /In a work answer, be concise and lead with the ranked actions/);
+});
+
 // ── setCareerStageTool ───────────────────────────────────────────────────────
 
 test("setCareerStageTool: a stage id packages a setCareerStage side effect and writes nothing", () => {

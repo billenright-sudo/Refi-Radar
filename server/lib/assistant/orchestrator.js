@@ -22,7 +22,7 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA } = require("./tools");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
+  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
@@ -35,7 +35,10 @@ const MAX_MODEL_CALLS = 4;   // model calls per turn, including the one that nar
 // not started with less than MIN_CALL_MS left: it could not plausibly finish.
 const DEFAULT_TURN_DEADLINE_MS = 25_000;
 const MIN_CALL_MS = 1_500;
-const MAX_TOKENS = 600;      // replies are 1-3 spoken sentences
+// Replies are a few spoken sentences (the prompt holds that); on Sonnet 5.5 thinking counts toward the cap, so it has room for it.
+const MAX_TOKENS = 2000;
+// Adaptive thinking is on by default on Sonnet 5.5 and adds time before the first word; low effort keeps it short for voice.
+const OUTPUT_CONFIG = Object.freeze({ effort: "low" });
 const SWEEP_TOP_OPPORTUNITIES = 10;
 const SWEEP_TOP_CHECKINS = 10;
 const FIND_CLIENT_MAX_MATCHES = 5;
@@ -46,8 +49,9 @@ const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "setCareer
 // confirm, and an email to set up (its result ends the turn in code, so no later model call is needed to narrate it).
 const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool"]);
 
-// Same fallback as routes/rates.js and index.js. Read per call so the env can change.
-const modelName = () => process.env.CLAUDE_MODEL || "claude-sonnet-4-5";
+// Charlie's own model setting. CLAUDE_MODEL stays the setting of routes/rates.js (and index.js's log line) and does not move her.
+// Read per call so the env can change.
+const charliModel = () => process.env.CHARLI_MODEL || "claude-sonnet-5-5";
 
 // ── Text screening ───────────────────────────────────────────────────────────
 
@@ -2628,14 +2632,14 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
 
   for (let call = 0; call < MAX_MODEL_CALLS; call++) {
     const lastCall = call === MAX_MODEL_CALLS - 1;
-    // No temperature / tool_choice / thinking: CLAUDE_MODEL is configurable and newer models
-    // reject forced tool use and non-default sampling.
+    // No temperature / tool_choice / thinking: newer models reject forced tool use and non-default sampling, and thinking stays
+    // at the model's adaptive default (OUTPUT_CONFIG keeps it short).
     const remaining = deadline - Date.now();
     if (remaining < minCallMs) return tookTooLong();
     let response;
     try {
       response = await createWithin(client, {
-        model: modelName(), max_tokens: MAX_TOKENS, system, tools: TOOL_SCHEMA,
+        model: charliModel(), max_tokens: MAX_TOKENS, output_config: { ...OUTPUT_CONFIG }, system, tools: TOOL_SCHEMA,
         messages: convo.slice(),
       }, remaining);
     } catch (err) {
@@ -2647,6 +2651,9 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
     const u = response.usage || {};
     usage.inputTokens += Number.isFinite(u.input_tokens) ? u.input_tokens : 0;
     usage.outputTokens += Number.isFinite(u.output_tokens) ? u.output_tokens : 0;
+    // A decline is an HTTP 200 with stop_reason "refusal": whatever it carries is not an answer, so none of it is said and the turn
+    // is the error line, like a failed call (error:true), with this call's tokens metered.
+    if (response.stop_reason === "refusal") return { ...finish(ERROR_TURN), error: true };
 
     const content = response && Array.isArray(response.content) ? response.content : [];
     const toolUses = response && response.stop_reason === "tool_use"
@@ -2740,17 +2747,16 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         if (screen.kind === "hard") return speak(screen.line);
         // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its
         // line. It only ever rules here, after every screen above, so it cannot let through what any of them or a hard rule
-        // blocks. With no judge, no time left for one (the deadline less the minCallMs margin), or a reply or user message that
-        // judge.js would cut (it would judge the head alone: rulings T1-1 and T2-1), the soft block stays the can't-verify line.
+        // blocks. With no judge, no time left for one (the deadline less the minCallMs margin), or a reply, user message or previous
+        // message of Charlie's that judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3), the soft block
+        // stays the can't-verify line.
         const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
-        if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(text) || !fitsUnclipped(userText)) {
+        const before = messages[messages.length - 2];
+        const previous = before && before.role === "assistant" ? messageText(before) : undefined;
+        if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(text) || !fitsUnclipped(userText) || !fitsUnclipped(previous)) {
           return speak(CANT_VERIFY);
         }
-        const before = messages[messages.length - 2];
-        const verdict = await askJudge(judge, {
-          previous: before && before.role === "assistant" ? messageText(before) : undefined,
-          user: userText, reply: text, timeoutMs,
-        }, usage);
+        const verdict = await askJudge(judge, { previous, user: userText, reply: text, timeoutMs }, usage);
         return speak(verdictLine(verdict, CANT_VERIFY) ?? text);
       }
       // Grounded: every figure the model speaks must be one the tools returned this turn.
@@ -2848,5 +2854,5 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
-  classifyUngrounded, verdictLine,
+  classifyUngrounded, verdictLine, charliModel,
 };

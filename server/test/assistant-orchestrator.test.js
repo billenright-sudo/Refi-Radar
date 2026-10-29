@@ -17,11 +17,11 @@ const refi = require("../lib/refi");
 const { TOOL_SCHEMA } = require("../lib/assistant/tools");
 const {
   CHARLI_SYSTEM, CANT_VERIFY, GUIDELINE_HANDOFF, NOTHING_CHANGED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG, buildCharliSystem,
-  BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED,
+  BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ERROR_TURN,
 } = require("../lib/assistant/prompt");
 const {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -424,29 +424,58 @@ test("a response with no usage block does not break the totals", async () => {
 
 // ── what the model is sent ───────────────────────────────────────────────────
 
-test("request shape: env model with the documented fallback, system prompt, tools, token cap", async () => {
-  const saved = process.env.CLAUDE_MODEL;
-  try {
-    delete process.env.CLAUDE_MODEL;
-    let client = fakeClient([say("Hello!")]);
+test("request shape: Charlie's own CHARLI_MODEL (default claude-sonnet-5-5), system prompt, tools, token cap, low effort", async () => {
+  const saved = { CHARLI_MODEL: process.env.CHARLI_MODEL, CLAUDE_MODEL: process.env.CLAUDE_MODEL };
+  const sent = async () => {
+    const client = fakeClient([say("Hello!")]);
     await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client });
-    const p = client.calls[0];
-    assert.equal(p.model, "claude-sonnet-4-5");
+    return client.calls[0];
+  };
+  try {
+    delete process.env.CHARLI_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    const p = await sent();
+    assert.equal(p.model, "claude-sonnet-5-5");
+    assert.equal(charliModel(), "claude-sonnet-5-5");
     // Task 7: the system prompt is CHARLI_SYSTEM plus the coaching block for the user's career stage (brokerCtx's user has none)
     assert.equal(p.system, buildCharliSystem(brokerCtx.user));
     assert.ok(p.system.startsWith(CHARLI_SYSTEM + "\n\n"));
     assert.deepStrictEqual(p.tools, TOOL_SCHEMA);
-    assert.equal(p.max_tokens, 600);
+    // thinking counts toward max_tokens on Sonnet 5.5, so the cap has room for it; the prompt holds the reply's length
+    assert.equal(p.max_tokens, 2000);
+    assert.deepStrictEqual(p.output_config, { effort: "low" });
+    assert.equal(p.thinking, undefined, "adaptive thinking, the model's default: no thinking setting is sent");
     assert.equal(p.tool_choice, undefined, "no forced tool use: newer models reject it");
     assert.equal(p.temperature, undefined, "no sampling params: newer models reject them");
 
+    // CLAUDE_MODEL is routes/rates.js's setting: it does not move Charlie
     process.env.CLAUDE_MODEL = "claude-test-model";
-    client = fakeClient([say("Hello!")]);
-    await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client });
-    assert.equal(client.calls[0].model, "claude-test-model");
+    assert.equal((await sent()).model, "claude-sonnet-5-5");
+    // CHARLI_MODEL does, read per call
+    process.env.CHARLI_MODEL = "claude-sonnet-4-6";
+    assert.equal((await sent()).model, "claude-sonnet-4-6");
+    assert.equal(charliModel(), "claude-sonnet-4-6");
   } finally {
-    if (saved === undefined) delete process.env.CLAUDE_MODEL; else process.env.CLAUDE_MODEL = saved;
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
+});
+
+test("a refusal (HTTP 200, stop_reason refusal) ends the turn with the error line, whatever text it carries", async () => {
+  // on the first call, with nothing in it
+  let r = await runTurn({ messages: userSays("hello"), ctx: brokerCtx, client: fakeClient([resp([], "refusal")]) });
+  assert.equal(r.reply, ERROR_TURN);
+  assert.equal(r.error, true);
+  assert.deepStrictEqual(r.sources, []);
+  assert.deepStrictEqual(r.usage, { inputTokens: 100, outputTokens: 20 });
+  // after a tool call, with a text block: nothing of it is said, nothing is cited
+  r = await runTurn({
+    messages: userSays("what are rates today?"), ctx: brokerCtx,
+    client: fakeClient([useTool("getMarketUpdate"), resp([{ type: "text", text: "The thirty-year is at 6.52 percent." }], "refusal")]),
+  });
+  assert.equal(r.reply, ERROR_TURN);
+  assert.equal(r.error, true);
+  assert.deepStrictEqual(r.sources, []);
+  assert.equal(r.sideEffect, undefined);
 });
 
 test("the caller's messages array is not mutated", async () => {
@@ -6702,4 +6731,58 @@ test("Charlie T2 (ruling T2-1): a user message longer than the judge reads whole
 test("Charlie T2: ADVICE_HANDOFF and NO_LIVE_DATA are the design's lines, word for word", () => {
   assert.equal(ADVICE_HANDOFF, "That's one for a CPA or an attorney, so I won't guess.");
   assert.equal(NO_LIVE_DATA, "I couldn't look that up just now, so I won't guess.");
+});
+
+test("Charlie T3 (ruling T2-3): Charlie's previous message longer than the judge reads whole is FACT, with no judge call", async () => {
+  const [u, said] = SOFT[0];
+  const turn = async (previous) => {
+    const judge = recordingJudge("CHAT");
+    const messages = [{ role: "user", content: "hey there" }, { role: "assistant", content: previous }, { role: "user", content: u }];
+    const r = await capturingInfo(() => runTurn({ messages, ctx: brokerCtx, client: fakeClient([say(said)]), judge }));
+    return { reply: r.reply, calls: judge.calls.length };
+  };
+  const chatty = "Good to hear from you, honestly. ".repeat(70);
+  assert.deepStrictEqual(await turn(chatty.slice(0, 2000)), { reply: said, calls: 1 });
+  assert.deepStrictEqual(await turn(chatty.slice(0, 2001)), { reply: CANT_VERIFY, calls: 0 });
+  // counted as the judge counts it: 1,949 characters that escape to 2,549
+  const escaped = "Good & glad. ".repeat(150).trim();
+  assert.ok(escaped.length <= 2000);
+  assert.deepStrictEqual(await turn(escaped), { reply: CANT_VERIFY, calls: 0 });
+});
+
+// ── Charlie personality, Task 3: who she is ──────────────────────────────────────────────────────────────────────────────────────
+
+test("Charlie T3: CHARLI_SYSTEM says who she is — the colleague, her range, dad jokes, AI honesty, live lookups, boundaries", () => {
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const para = (re) => paragraphs.find((p) => re.test(p)) || "";
+  assert.ok(CHARLI_SYSTEM.includes("You are Charlie"));
+  // range: chat and general advice framed as her take; questions about the book still go to the tools
+  assert.match(CHARLI_SYSTEM, /your take/);
+  assert.match(CHARLI_SYSTEM, /never as a fact about this user's book/);
+  // dad jokes: on request, now and then otherwise, never on a bad moment, never a repeat, and never a number in one
+  const jokes = para(/dad joke/i);
+  assert.match(jokes, /jokes carry no numbers/i);
+  assert.match(jokes, /venting/);
+  assert.match(jokes, /already told/);
+  // honesty: an AI, said plainly when asked; no invented personal life
+  assert.match(CHARLI_SYSTEM, /You are an AI, and if anyone asks/);
+  assert.match(CHARLI_SYSTEM, /never invent a personal life/i);
+  // live questions go to lookUpLive (ruling P3: the tool a later task adds) and never come from memory; a failed one is NO_LIVE_DATA
+  const live = para(/lookUpLive/);
+  for (const word of [/scores/, /news/, /weather/, /never from memory/, /as of/, /ask where they are/]) assert.match(live, word);
+  assert.ok(live.includes(`"${NO_LIVE_DATA}"`), "the exact no-live-data line (ruling P2)");
+  // boundaries: politics and religion deflected; legal, tax, medical and personal-investment questions handed off in code's words
+  const limits = para(/politics or religion/i);
+  assert.match(limits, /medical/);
+  assert.match(limits, /personal-investment/);
+  assert.ok(limits.includes(`"${ADVICE_HANDOFF}"`), "the exact advice hand-off line (ruling P2)");
+  // length: answers one to three short sentences, plain chat up to four, not every reply ends on a question
+  assert.match(CHARLI_SYSTEM, /one to three short sentences for an answer; plain chat may run to four/);
+  assert.match(CHARLI_SYSTEM, /don't end every reply with a question/);
+  // venting: listen first
+  assert.match(para(/When someone vents/), /acknowledge it first and listen/);
+  // explainTerm only on request; the greeting no longer stops at the greeting but still names no unfetched fact
+  assert.ok(CHARLI_SYSTEM.includes("call explainTerm only when the user asks what a term means"));
+  assert.ok(!CHARLI_SYSTEM.includes("keep it to the greeting"));
+  assert.ok(CHARLI_SYSTEM.includes("do not mention rates, clients, calls or any figure unless you have just fetched them with a tool."));
 });
