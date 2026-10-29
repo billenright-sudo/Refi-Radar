@@ -419,6 +419,25 @@ const namesClient = (text, ctx) => {
   return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id)
     .some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
 };
+// Final review I-1: true when `text` mentions a client of the caller's org (every row with the caller's org_id, as namesClient):
+// whatever namesClient screens, and also any other word of the name, a first name too ("How's Grace doing?"). Here a match only
+// sends an unsourced reply to the judge, so it is wider than the lookup screen (where a first name alone may be searched: "Austin"
+// is a city). A word of one letter, with no letter in it ("Client 01"), a suffix or a joining word ("Tom and Ellie") is not
+// matched alone. It returns a boolean and logs nothing, so no name leaves it.
+const NAME_JOINERS = new Set(["and", "or", "the", "of"]);
+const mentionsClient = (text, ctx) => {
+  const { user, db } = ctx || {};
+  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
+  const t = plainText(text);
+  return db.prepare("SELECT name FROM clients WHERE org_id = ?").all(user.org_id).some((row) => {
+    const name = row.name || "";
+    const words = (plainText(name).match(NAME_WORD_RE) || []).filter((w) => {
+      const lower = w.toLowerCase();
+      return w.length > 1 && /\p{L}/u.test(w) && !NAME_SUFFIXES.has(lower) && !NAME_JOINERS.has(lower);
+    });
+    return [...screenedNames(name), ...words].some((term) => wholeWordIn(t, term));
+  });
+};
 
 // The sentences of a lookup's answer: a break is . ! or ? (and any closing quote or bracket) before a space, except after an
 // initial or a short title ("Jerome H. Powell", "U.S. stocks", "Dr. Lee"), where the pieces stay one sentence. A wrong join only
@@ -670,5 +689,5 @@ const TOOL_SCHEMA = [
 
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-  getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME,
+  getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient,
 };

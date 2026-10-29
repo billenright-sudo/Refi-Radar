@@ -19,7 +19,7 @@
 // `client` is anything with messages.create(params) -> a Messages API response (the real
 // @anthropic-ai/sdk client in production, a scripted fake in tests); this file never imports it.
 const refi = require("../refi");
-const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX } = require("./tools");
+const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient } = require("./tools");
 const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
@@ -75,7 +75,17 @@ const BOOK_FACT_RE = wordRe([
 const LIVE_TOPIC_RE = wordRe([
   "games?", "scores?", "scored", "won(?!['\\u2019]t)", "wins?", "winning", "beat", "lost", "losing", "playoffs?", "seasons?",
   "news", "headlines?", "weather", "forecasts?", "temperatures?", "rain(?:s|y|ing)?", "snow(?:s|y|ing)?", "storms?", "stormy",
+  // final review I-1: a game, the weather or the news put another way ("They took it in overtime", "The Court just ruled")
+  "overtime", "touchdowns?", "innings?", "sunny", "cloudy", "humid", "hot", "cold", "stor(?:y|ies)", "ruled", "elections?",
 ]);
+// Final review I-1: what may be a tax or legal answer, in the user's message or the reply ("How are points taxed?", "A living
+// trust can hold title"), and a mortgage question in the user's words. With no tool behind the reply, the judge's ADVICE makes it
+// the CPA/attorney hand-off.
+const TAX_LEGAL_RE = wordRe([
+  "tax\\w*", "deduct\\w*", "IRS", "write-?offs?", "legal\\w*", "laws?", "lawyers?", "attorneys?", "trusts?", "estates?", "probate",
+  "liens?", "gifts?", "capital\\s+gains",
+]);
+const MORTGAGE_RE = wordRe(["mortgages?"]);
 
 // ── Openers, questions, completion claims ────────────────────────────────────
 
@@ -635,13 +645,17 @@ function isLoneClarifyingQuestion(reply, userText) {
 //      sourced, even if the user only said "good morning");
 //   5a. (Ruling T5-1) the user's message OR the model's own text names a what's-happening topic (LIVE_TOPIC_RE: a game, a
 //      score, the news, the weather): a live fact from memory is the judge's LIVE, and so the no-live-data line;
+//   5b. (final review I-1) the user's message OR the model's own text has a tax or legal word (TAX_LEGAL_RE), or the user's
+//      message says "mortgage": a tax or legal answer from memory is the judge's ADVICE, and so the CPA/attorney hand-off;
+//   5c. (final review I-1) `namesClient`: runTurn found a client of the caller's org named in the user's message or the reply
+//      (tools.js mentionsClient; passed in, so this stays pure): a fact about them is the judge's FACT;
 //   pass: 6. anything else (greetings, small talk, "how can I help").
 // (A lone question never has a digit, a spoken figure or no text, so testing 2 before 3 changes no answer.)
 // Safe ONLY after claimsCompletion(modelText, false) has run and returned false, as runTurn does:
 // this function does not test for completion claims itself, so a lone question or a small-talk
 // statement that claims an action ("Should I log it? Done.", "All set!") would pass through here.
 // Pure: no I/O, no state.
-function classifyUngrounded(userText, modelText) {
+function classifyUngrounded(userText, modelText, namesClient = false) {
   const user = String(userText == null ? "" : userText);
   const text = String(modelText == null ? "" : modelText);
   if (isGuidelineQuestion(user)) return { kind: "hard", line: GUIDELINE_HANDOFF };
@@ -651,14 +665,16 @@ function classifyUngrounded(userText, modelText) {
   if (isYesNoQuestion(user)) return { kind: "soft", line: null };
   if (BOOK_FACT_RE.test(user) || BOOK_FACT_RE.test(text) || mentionsGlossaryTerm(user)) return { kind: "soft", line: null };
   if (LIVE_TOPIC_RE.test(user) || LIVE_TOPIC_RE.test(text)) return { kind: "soft", line: null };
+  if (TAX_LEGAL_RE.test(user) || TAX_LEGAL_RE.test(text) || MORTGAGE_RE.test(user)) return { kind: "soft", line: null };
+  if (namesClient === true) return { kind: "soft", line: null };
   return { kind: "pass", line: null };
 }
 
 // The screen with no judge, exactly as it was before the hard/soft split: the model's text when it
 // passes, a hard block's line, and the can't-verify line for a soft block. Same contract as
 // classifyUngrounded (safe only after claimsCompletion). Pure.
-function screenUngroundedText(userText, modelText) {
-  const { kind, line } = classifyUngrounded(userText, modelText);
+function screenUngroundedText(userText, modelText, namesClient = false) {
+  const { kind, line } = classifyUngrounded(userText, modelText, namesClient);
   if (kind === "pass") return String(modelText == null ? "" : modelText);
   return kind === "hard" ? line : CANT_VERIFY;
 }
@@ -2769,7 +2785,15 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         if (glossaryMiss && !isLoneClarifyingQuestion(text, userText)) return finish(CANT_VERIFY);
         // (the can't-verify line is the Google line when the user asked about the calendar and Google is not usable, Ruling 49)
         const speak = (line) => finish(line === CANT_VERIFY ? cantVerifyCalendar() : line);
-        const screen = classifyUngrounded(userText, text);
+        // Final review I-1: a client of the caller's org named in the user's message or the reply (a book that can't be read
+        // counts as named, so the reply goes to the judge); only the yes or no is passed on, and no name is logged
+        let clientNamed;
+        try {
+          clientNamed = mentionsClient(userText, ctx) || mentionsClient(text, ctx);
+        } catch (_err) {
+          clientNamed = true;
+        }
+        const screen = classifyUngrounded(userText, text, clientNamed);
         if (screen.kind === "pass") return speak(text);
         if (screen.kind === "hard") return speak(screen.line);
         // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its

@@ -585,8 +585,9 @@ test("parallel tool calls: all results come back in ONE user message, in order, 
 
 test("a tool that throws becomes an is_error tool_result and the turn continues", async () => {
   const client = fakeClient([useTool("findClient", { query: "chen" }), say("Sorry, I hit a problem looking that up.")]);
-  // ctx without a user makes scopedClients throw
-  const r = await runTurn({ messages: userSays("find chen"), ctx: { rates: LIVE, db }, client });
+  // ctx without a user makes scopedClients throw (and the client-name check of the ungrounded screen fail closed, final review
+  // I-1: the decline goes to the judge, which calls it CHAT)
+  const r = await capturingInfo(() => runTurn({ messages: userSays("find chen"), ctx: { rates: LIVE, db }, client, judge: judgeSays("CHAT") }));
   const block = client.calls[1].messages[2].content[0];
   assert.equal(block.is_error, true);
   assert.doesNotMatch(block.content, /requires/, "no internal error text leaks to the model");
@@ -4579,9 +4580,9 @@ const NOW_OFFERS_ROUND_4 = [
   "Want me to put that on your calendar now?", "Should I put that on your calendar now?",
   "Should I put a 10:00 AM follow-up on your calendar now?", "Want me to book a 10:00 AM call with the Chens on your calendar now?",
 ];
-const affirmedBook = (said, grounded, offer = OFFERS[1]) => runTurn({
+const affirmedBook = (said, grounded, offer = OFFERS[1], extra = {}) => runTurn({
   messages: history(CAL_ASK, offer, "yes"), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })),
-  client: fakeClient(grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)]),
+  client: fakeClient(grounded ? [useTool("getCalendarTool", {}), say(said)] : [say(said)]), ...extra,
 });
 const plainRead = (said, events = [CHEN_EVENT]) => runTurn({
   messages: userSays(CAL_ASK), ctx: googleCtx(fakeGoogle({ events })),
@@ -4614,9 +4615,10 @@ test("Task 5 fix 4: on an action turn any 'now on your calendar' wording is held
   }
   // a question with no "now" form still passes on that turn, with no tool and with a calendar read; a negative "now" form does not
   // (round 5, Ruling 23: on an action turn the hold has no nothing / anything / none lookbehind, so "nothing ... now but X" is held too)
+  // (final review I-1: with no tool, a question that names clients goes to the judge, which calls a question back CHAT)
   for (const said of ["Should I put it on your calendar?", "Which Chen — Robert and Linda, or Chen Wei?", "What time should I make it?"]) {
     for (const grounded of [false, true]) {
-      const r = await affirmedBook(said, grounded);
+      const r = await capturingInfo(() => affirmedBook(said, grounded, OFFERS[1], { judge: judgeSays("CHAT") }));
       assert.equal(r.reply, said, `${grounded ? "calendar read" : "no tool"}: ${said}`);
     }
   }
@@ -4745,8 +4747,8 @@ const DECLINES = [
   "No.", "Nope, not yet.", "Not now, thanks.", "thanks, but not now", "okay, let's hold off", "don't do it", "Skip it for now.",
   "No thanks, I'm good.", "no, that's fine", "not right now", "no, not right now", "(laughs) no",
 ];
-const offerReply = (reply, said, offer = OFFERS[1]) => runTurn({
-  messages: history(CAL_ASK, offer, reply), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([say(said)]),
+const offerReply = (reply, said, offer = OFFERS[1], extra = {}) => runTurn({
+  messages: history(CAL_ASK, offer, reply), ctx: googleCtx(fakeGoogle({ events: [CHEN_EVENT] })), client: fakeClient([say(said)]), ...extra,
 });
 
 test("Task 5 fix 5: a yes to an offer to act (the AFFIRMS rows) makes an action turn: the action backstop holds", async () => {
@@ -4880,9 +4882,10 @@ test("Task 5b: a yes or a correction after an offer to act is an action turn: th
       assert.ok(HELD.has((await offerReply(yes, "Okay, it's on your calendar Friday.", offer)).reply), `${offer} -> ${yes}`);
     }
   }
-  // on that turn a question still passes, and the booking is read back
+  // on that turn a question still passes, and the booking is read back (final review I-1: a question that names clients goes to
+  // the judge, which calls a question back CHAT)
   for (const said of [WH_BOOKING_QUESTIONS[0], "Which Chen — Robert and Linda, or Chen Wei?"]) {
-    assert.equal((await offerReply("sure, no problem", said)).reply, said);
+    assert.equal((await capturingInfo(() => offerReply("sure, no problem", said, OFFERS[1], { judge: judgeSays("CHAT") }))).reply, said);
   }
   // the post-offer claim guard holds there too: a statement riding inside a reply shaped like a question
   for (const yes of ["yes", "sure, no problem"]) {
@@ -6065,12 +6068,13 @@ test("Task 9 (R2): a script for the broker to say, after a script lead or in quo
     "Try: Hi Robert, are you available for a quick call tomorrow?",
   ];
   for (const said of TRACKS) assert.equal(await afterYes(said), said, said);
-  // asked for with no tool, the ungrounded screen decides them as at b542904 (a book word -> can't-verify)
+  // asked for with no tool, the ungrounded screen decides them as at b542904 (a book word -> can't-verify); final review I-1: the
+  // third names the Chens (in the request and the reply), a soft block, and with no judge that is can't-verify too
   const outcomes = [];
   for (const said of TRACKS) {
     outcomes.push((await runTurn({ messages: userSays("help me write an opener for the Chens"), ctx: mikeCtx, client: fakeClient([say(said)]) })).reply);
   }
-  assert.deepStrictEqual(outcomes, [CANT_VERIFY, CANT_VERIFY, TRACKS[2], CANT_VERIFY]);
+  assert.deepStrictEqual(outcomes, [CANT_VERIFY, CANT_VERIFY, CANT_VERIFY, CANT_VERIFY]);
   // a script that says the client is busy or free is the broker's words to the client, not a fact told to the broker
   for (const said of [
     "Try this: Hi Robert, I know you're busy, so I'll keep it quick — got two minutes this week?",
@@ -7265,4 +7269,93 @@ test("Final review M-7: a booking title's figure is not grounded by a failed too
   });
   assert.equal(r.reply, CANT_VERIFY);
   assert.equal(r.sideEffect, undefined);
+});
+
+// ── Final review I-1: a reply with no trigger word still reaches the judge when it may be tax/legal, live or about a client ─────
+
+// An org whose book has the eval's seeded "Grace Okafor", and another org whose client is nobody's here
+const orgGolf = addOrg("Golf");
+const brokerGolf = addUser(orgGolf, "broker", "broker@g.co");
+addClientRow(orgGolf, brokerGolf, {
+  name: "Grace Okafor", loanType: "30yr_fixed", currentRate: 7.625, loanBalance: 412000, propertyValue: 560000, creditScore: 742,
+});
+const orgHotel = addOrg("Hotel");
+addClientRow(orgHotel, addUser(orgHotel, "broker", "broker@h.co"), {
+  name: "Zed Quill", loanType: "30yr_fixed", currentRate: 7, loanBalance: 300000, propertyValue: 450000, creditScore: 740,
+});
+const golfCtx = { user: user(brokerGolf, "broker", orgGolf), rates: LIVE, db };
+// the review's table: [user, reply], each with no trigger word at fa3dabc
+const I1_ROWS = [
+  ["How are points taxed?", "Usually you spread them over the life of the mortgage, unless it's a purchase."],
+  ["What can a trust do at closing?", "A revocable living trust can generally hold title without a problem."],
+  ["How'd the Cowboys do last night?", "They took it in overtime, a real nail-biter."],
+  ["What's the big story today?", "The Supreme Court just ruled on the tariff case."],
+  ["How's Grace doing?", "She's doing great, really eager to move forward."],
+  ["Who should I focus on today?", "Grace Chen is your best bet today."],
+];
+const I1_ADVICE_ROWS = I1_ROWS.slice(0, 2);
+const I1_CHAT = ["Ugh, what a day.", "Long day, huh? Grab a coffee."];
+const i1Turn = (u, said, extra = {}) => runTurn({ messages: userSays(u), ctx: golfCtx, client: fakeClient([say(said)]), ...extra });
+
+test("Final review I-1: each of the review's six rows reaches the judge — FACT is can't-verify, ADVICE on tax and trust the hand-off", async () => {
+  await capturingInfo(async (logged) => {
+    for (const [u, said] of I1_ROWS) {
+      const judge = recordingJudge("FACT");
+      const r = await i1Turn(u, said, { judge });
+      assert.equal(r.reply, CANT_VERIFY, u);
+      assert.equal(judge.calls.length, 1, u);
+      assert.equal(judge.calls[0].reply, said, u);
+      // with no judge, the soft block is the can't-verify line, as before the judge existed
+      assert.equal((await i1Turn(u, said)).reply, CANT_VERIFY, u);
+    }
+    for (const [u, said] of I1_ADVICE_ROWS) {
+      const judge = recordingJudge("ADVICE");
+      assert.equal((await i1Turn(u, said, { judge })).reply, ADVICE_HANDOFF, u);
+      assert.equal(judge.calls.length, 1, u);
+    }
+    // the log never names the client (or carries either text)
+    assert.ok(logged.length > 0);
+    for (const line of logged) assert.doesNotMatch(line, /Grace|Okafor|taxed|trust|overtime/i);
+  });
+});
+
+test("Final review I-1: a plain chat line still passes with no judge call; a client of another org is no trigger", async () => {
+  await capturingInfo(async () => {
+    const judge = recordingJudge("FACT");
+    let r = await i1Turn(...I1_CHAT, { judge });
+    assert.equal(r.reply, I1_CHAT[1]);
+    assert.equal(judge.calls.length, 0);
+    r = await i1Turn("How's Zed doing?", "Ha, tell me more.", { judge });
+    assert.equal(r.reply, "Ha, tell me more.");
+    assert.equal(judge.calls.length, 0);
+  });
+});
+
+test("Final review I-1: classifyUngrounded's new soft triggers — tax/legal words on either side, mortgage in the user's words, a named client, more live words", () => {
+  const SOFT_ = { kind: "soft", line: null };
+  const PASS_ = { kind: "pass", line: null };
+  // the six rows: the first four by their words, the last two by the client flag runTurn passes in
+  for (const [u, said] of I1_ROWS.slice(0, 4)) assert.deepStrictEqual(classifyUngrounded(u, said), SOFT_, u);
+  for (const [u, said] of I1_ROWS.slice(4)) {
+    assert.deepStrictEqual(classifyUngrounded(u, said), PASS_, u);
+    assert.deepStrictEqual(classifyUngrounded(u, said, true), SOFT_, u);
+  }
+  // tax and legal words, in the user's message or the reply
+  for (const word of [
+    "taxes", "deductible", "IRS", "write-off", "writeoffs", "legally", "law", "laws", "lawyer", "attorneys", "trust", "estates",
+    "probate", "lien", "gifts", "capital gains",
+  ]) {
+    assert.deepStrictEqual(classifyUngrounded(`what about ${word}?`, "Good question."), SOFT_, `user: ${word}`);
+    assert.deepStrictEqual(classifyUngrounded("hey", `That's about ${word}.`), SOFT_, `reply: ${word}`);
+  }
+  // "mortgage" in the user's words only
+  assert.deepStrictEqual(classifyUngrounded("how do mortgages work for teachers?", "Happy to walk you through it."), SOFT_);
+  assert.deepStrictEqual(classifyUngrounded("hey", "Mortgage life, huh?"), PASS_);
+  // the new live words, on either side
+  for (const word of ["overtime", "touchdown", "touchdowns", "inning", "innings", "sunny", "cloudy", "humid", "hot", "cold", "story", "stories", "ruled", "election", "elections"]) {
+    assert.deepStrictEqual(classifyUngrounded(`${word}?`, "Ha."), SOFT_, `user: ${word}`);
+    assert.deepStrictEqual(classifyUngrounded("hey", `It was ${word}.`), SOFT_, `reply: ${word}`);
+  }
+  // plain chat still passes
+  assert.deepStrictEqual(classifyUngrounded(...I1_CHAT), PASS_);
 });
