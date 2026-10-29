@@ -33,6 +33,12 @@ addClientRow(orgA, broker, "Robert Brown");
 addClientRow(orgA, broker, "Austin Smith");
 addClientRow(orgA, broker, "Okafor, Grace");
 addClientRow(orgA, broker, "Daniel Reyes Jr.");
+// Accented names, one stored composed (NFC) and one decomposed (NFD, as some imports write it), and a hyphenated surname.
+const MARTINEZ_NFC = "Sofía Martínez".normalize("NFC");
+const NUNEZ_NFD = "José Núñez".normalize("NFD");
+addClientRow(orgA, broker, MARTINEZ_NFC);
+addClientRow(orgA, broker, NUNEZ_NFD);
+addClientRow(orgA, broker, "Lin Wu-Okonkwo");
 const other = addUser(orgA, "broker", "other@a.co");
 // Two loan officers in the same org (Ruling T5-2), and another org whose client is nobody's here.
 const lo1 = addUser(orgA, "lo", "lo1@a.co");
@@ -111,6 +117,43 @@ test("lookUpLive: the client-name screen is whole-word — the Browns and Austin
     assert.equal(r.source, "web — espn.com", JSON.stringify(args));
     assert.deepStrictEqual(live.calls, [{ kind: args.kind, query: args.query, place: args.place }], JSON.stringify(args));
   }
+});
+
+test("lookUpLive (review I1): names are compared with accents folded, whatever the encoding of the book or the query", async () => {
+  const CASES = [
+    // the book's "Martínez" (composed): said without the accent, in capitals, or decomposed
+    { kind: "news", query: "martinez news" },
+    { kind: "scores", query: "MARTÍNEZ score" },
+    { kind: "news", query: "Martínez family".normalize("NFD") },
+    { kind: "general", query: "Sofia Martinez linkedin" },
+    // the book's "Núñez" (decomposed): asked composed, or with no accents at all
+    { kind: "news", query: "Núñez family".normalize("NFC") },
+    { kind: "news", query: "nunez family" },
+    { kind: "weather", query: "forecast", place: "the Nunez farm" },
+  ];
+  for (const args of CASES) {
+    const live = recordingLive();
+    const r = await lookUpLive(args, ctxWith(live));
+    assert.deepStrictEqual(r, { data: { error: NAMES_SOMEONE }, source: "(refused)" }, JSON.stringify(args));
+    assert.equal(live.calls.length, 0, JSON.stringify(args));
+  }
+  // folding doesn't loosen the whole-word rule
+  const live = recordingLive();
+  assert.equal((await lookUpLive({ kind: "news", query: "Martinezville parade" }, ctxWith(live))).source, "web — espn.com");
+  assert.equal(live.calls.length, 1);
+});
+
+test("lookUpLive (Ruling T5-4): each part of a hyphenated surname is screened like a surname", async () => {
+  for (const query of ["wu news", "Okonkwo obituary", "Wu-Okonkwo family", "wu okonkwo"]) {
+    const live = recordingLive();
+    const r = await lookUpLive({ kind: "news", query }, ctxWith(live));
+    assert.deepStrictEqual(r, { data: { error: NAMES_SOMEONE }, source: "(refused)" }, query);
+    assert.equal(live.calls.length, 0, query);
+  }
+  // whole words still: "Wuhan" is not "Wu"
+  const live = recordingLive();
+  assert.equal((await lookUpLive({ kind: "news", query: "Wuhan headlines" }, ctxWith(live))).source, "web — espn.com");
+  assert.equal(live.calls.length, 1);
 });
 
 test("lookUpLive (Ruling T5-2): the name screen is every client in the caller's org, not only the caller's own book", async () => {

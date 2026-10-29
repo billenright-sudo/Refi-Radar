@@ -385,25 +385,29 @@ const RATE_QUERY_RE = new RegExp([
 // The words of a name: letters and digits, with inner apostrophes and hyphens ("O'Brien", "Chen-Other").
 const NAME_WORD_RE = /[\p{L}\p{M}\p{N}]+(?:['-][\p{L}\p{M}\p{N}]+)*/gu;
 const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv"]);
-const plainText = (s) => String(s).replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
+// A name or a query as the screen compares it: compatibility-decomposed with every combining mark dropped, so "Martínez",
+// "Martínez" written decomposed and "Martinez" (speech-to-text drops accents) are one word; curly apostrophes straight; one space.
+const plainText = (s) =>
+  String(s).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const wholeWordIn = (text, term) =>
   new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(term)}(?![\\p{L}\\p{M}\\p{N}])`, "iu").test(text);
 
-// What of a client's name may not be searched: the full name, and the surname: the last word (a suffix such as "Jr." or "III"
-// aside) and, for a name filed surname-first ("Okafor, Grace"), the word before the comma. A first name alone may be searched
+// What of a client's name may not be searched (folded by plainText, as the query is): the full name, and the surname: the last
+// word (a suffix such as "Jr." or "III" aside) and, for a name filed surname-first ("Okafor, Grace"), the word before the comma;
+// a hyphenated surname also each of its parts ("Wu-Okonkwo": "Wu" and "Okonkwo", Ruling T5-4). A first name alone may be searched
 // ("Austin" is a city).
 function screenedNames(name) {
   const full = plainText(name);
   if (!full) return [];
   const words = full.match(NAME_WORD_RE) || [];
   while (words.length > 1 && NAME_SUFFIXES.has(words[words.length - 1].toLowerCase())) words.pop();
-  const terms = [full];
-  if (words.length > 0) terms.push(words[words.length - 1]);
+  const surnames = [];
+  if (words.length > 0) surnames.push(words[words.length - 1]);
   const comma = full.indexOf(",");
   const surnameFirst = comma > 0 ? full.slice(0, comma).match(NAME_WORD_RE) || [] : [];
-  if (surnameFirst.length > 0) terms.push(surnameFirst[surnameFirst.length - 1]);
-  return terms;
+  if (surnameFirst.length > 0) surnames.push(surnameFirst[surnameFirst.length - 1]);
+  return [full, ...surnames.flatMap((s) => (s.includes("-") ? [s, ...s.split("-")] : [s]))];
 }
 // True when `text` names any client of the caller's organization (Ruling T5-2: every row with the caller's org_id, not only the
 // caller's own book, so a loan officer can't send a colleague's client out either): a full name, or a surname as a whole word,
