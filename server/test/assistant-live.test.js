@@ -297,6 +297,22 @@ test("lookUpLive (final review C-1 follow-up): a lending sentence or title is dr
   }
 });
 
+test("lookUpLive (residual R4): a rate sentence with no rate word (a 30-year, borrowing costs, the APR) is dropped; a score is kept", async () => {
+  const look = (answer) =>
+    lookUpLive({ kind: "news", query: "top news today" }, ctxWith(recordingLive({ answer, sources: [{ title: "Headline", domain: "npr.org" }] })));
+  const KEPT = "The Chiefs lost 20-3 at Seattle.";
+  for (const dropped of [
+    "The average 30-year hit 6.1 percent.", "Borrowing costs rose again.", "The APR climbed.", "The thirty-year eased this week.",
+    "A 15-year now averages 5.4 percent.", "Fifteen-year terms got cheaper.", "The average apr fell.", "Borrowing cost hit a high.",
+  ]) {
+    assert.equal((await look(`${KEPT} ${dropped}`)).data.answer, KEPT, dropped);
+  }
+  assert.deepStrictEqual(await look("The average 30-year hit 6.1 percent. Borrowing costs rose again."), {
+    data: { error: "the lookup didn't work just now" }, source: "(unavailable)",
+  });
+  assert.equal((await look(KEPT)).data.answer, KEPT);
+});
+
 test("TOOL_SCHEMA: lookUpLive takes kind, query and place, for the outside world only — never clients, rates or guidelines", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "lookUpLive");
   assert.ok(t, "lookUpLive is described");
