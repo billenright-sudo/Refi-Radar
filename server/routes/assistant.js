@@ -20,6 +20,7 @@ const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
 const { runTurn, isCitation, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
 const { makeJudge } = require("../lib/assistant/judge");
+const { makeLive } = require("../lib/assistant/live");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const { ERROR_TURN } = require("../lib/assistant/prompt");
 const { stageById, spokenStageLabel, CAREER_QUESTION } = require("../lib/assistant/coaching");
@@ -453,6 +454,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
       // The second check on a reply only a topic rule blocked: `app.set("assistantJudge", fake)` is the test seam, otherwise the
       // Haiku judge on the same client. Its tokens come back in out.usage.
       const judge = req.app.get("assistantJudge") || makeJudge(client);
+      // lookUpLive's web search: `app.set("liveLookup", fake)` is the test seam, otherwise a search on the same client, each one
+      // metered as a 'live' row of its own under this turn's id (and counted toward the user's daily cap).
+      ctx.live = req.app.get("liveLookup") || makeLive({ client, db, userId: req.user.id, turnId });
       out = await runTurn({ messages, ctx, client, judge, deadlineMs: turnDeadlineMs() });
     } catch (err) {
       console.error("POST /api/assistant/turn:", errText(err));

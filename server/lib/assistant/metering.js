@@ -1,7 +1,8 @@
 "use strict";
 // Cost metering for Charli: assistant_usage rows, and the org-wide totals the broker reads back. A row is
-// one of three kinds: a 'turn' (one per conversational turn), a 'tts' (one spoken reply) or an 'stt' (one
-// recording transcribed), so the turn count is not inflated by the voice requests around it. Token counts come from the orchestrator's `usage`; tts_chars is the text sent to speech
+// one of four kinds: a 'turn' (one per conversational turn), a 'tts' (one spoken reply), an 'stt' (one
+// recording transcribed) or a 'live' (one web lookup a turn made, lib/assistant/live.js, under that turn's turn_id), so the
+// turn count is not inflated by the requests around it. Token counts come from the orchestrator's `usage`; tts_chars is the text sent to speech
 // synthesis (0 for a turn that only returned text) and stt_seconds the audio sent to transcription (0
 // unless it is a recording). The voice proxy writes a row of its own for each of those.
 const db = require("../../db");
@@ -18,10 +19,10 @@ const seconds = (n) => {
   return Number.isFinite(v) && v > 0 ? v : 0;
 };
 
-const KINDS = new Set(["turn", "tts", "stt"]);
+const KINDS = new Set(["turn", "tts", "stt", "live"]);
 
 // recordUsage({ userId, kind?, turnId?, inputTokens?, outputTokens?, ttsChars?, sttSeconds? }) -> void. `kind` is
-// 'turn' (the default), 'tts' or 'stt'; anything else is a 'turn'. Throws on a database error (an unknown userId
+// 'turn' (the default), 'tts', 'stt' or 'live'; anything else is a 'turn'. Throws on a database error (an unknown userId
 // violates the foreign key); callers that must not fail on metering catch it.
 function recordUsage({ userId, kind = "turn", turnId = null, inputTokens = 0, outputTokens = 0, ttsChars = 0, sttSeconds = 0 } = {}) {
   db.prepare(
@@ -34,8 +35,8 @@ function recordUsage({ userId, kind = "turn", turnId = null, inputTokens = 0, ou
 
 // Totals over the last `days` days (a whole number, already clamped by the caller) for every user in
 // the org. -> { turns, ttsRequests, sttRequests, inputTokens, outputTokens, ttsChars, sttSeconds }: turns counts
-// the 'turn' rows only, ttsRequests the 'tts' rows and sttRequests the 'stt' rows (sttSeconds is rounded to the
-// millisecond, so summing fractions never shows float dust)
+// the 'turn' rows only, ttsRequests the 'tts' rows and sttRequests the 'stt' rows; the token totals are every row's, a 'live'
+// lookup's included (sttSeconds is rounded to the millisecond, so summing fractions never shows float dust)
 function getOrgUsage(orgId, days) {
   const row = db.prepare(`
     SELECT COALESCE(SUM(a.kind = 'turn'), 0) AS turns,

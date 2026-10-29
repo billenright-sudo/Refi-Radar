@@ -19,7 +19,8 @@
 // `client` is anything with messages.create(params) -> a Messages API response (the real
 // @anthropic-ai/sdk client in production, a scripted fake in tests); this file never imports it.
 const refi = require("../refi");
-const { tools, TOOL_SCHEMA } = require("./tools");
+const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX } = require("./tools");
+const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
   ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST,
@@ -57,21 +58,7 @@ const charliModel = () => process.env.CHARLI_MODEL || "claude-sonnet-5-5";
 
 const wordRe = (alts) => new RegExp("\\b(?:" + alts.join("|") + ")\\b", "i");
 
-// Loan-guideline domain (deferred): the model has no verified source, so it must hand off.
-const GUIDELINE_RE = wordRe([
-  "guidelines?", "overlays?", "underwrit\\w*", "AUS", "DU\\s+findings?", "LPA",
-  "reserve\\s+requirements?", "DTI\\s+limits?", "max(?:imum)?\\s+DTI", "HUD\\s+handbook", "selling\\s+guide",
-]);
-// Eligibility is a guideline question only next to a program or requirement word, in either
-// order ("eligible for an FHA streamline", "FHA eligibility"); "is Chen eligible for a refi"
-// is a sweep question and must still reach the tools.
-const PROGRAM = "FHA|VA|USDA|conventional|jumbo|streamlines?|non[\\s-]?QM|programs?|requirements?";
-const ELIGIBLE_NEAR_PROGRAM_RE = new RegExp(
-  "\\beligib\\w*(?:\\W+\\w+){0,4}?\\W+(?:" + PROGRAM + ")\\b" +
-  "|\\b(?:" + PROGRAM + ")(?:\\W+\\w+){0,4}?\\W+eligib\\w*\\b",
-  "i"
-);
-const isGuidelineQuestion = (text) => GUIDELINE_RE.test(text) || ELIGIBLE_NEAR_PROGRAM_RE.test(text);
+// (the loan-guideline test, isGuidelineQuestion, is in ./guidelines: lookUpLive uses it too)
 
 // Questions about the book or the market: an answer needs a tool, so text alone can't stand.
 const BOOK_FACT_RE = wordRe([
@@ -2558,10 +2545,11 @@ const changeEventLine = (text, before) => {
 
 // runTurn({ messages, ctx, client, judge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, usage }
 //   messages:   Messages API history ending with the user's latest message (not mutated)
-//   ctx:        { user, rates, db, google? }, handed to the tools (google = the per-user Google adapter; without one the calendar
-//               tools say Google is not connected)
+//   ctx:        { user, rates, db, google?, live? }, handed to the tools (google = the per-user Google adapter; without one the
+//               calendar tools say Google is not connected; live = live.js makeLive, lookUpLive's search; without one it is unavailable)
 //   judge:      judge({ previous?, user, reply, timeoutMs }) -> { verdict, usage, ms } (judge.js makeJudge), asked only about a
-//               soft-blocked ungrounded reply (classifyUngrounded); its tokens are added to `usage`. Without one a soft block is the
+//               soft-blocked ungrounded reply (classifyUngrounded) and about the reply of a turn whose only citations are live
+//               lookups (and the glossary); its tokens are added to `usage`. Without one a soft block, like such a turn, is the
 //               can't-verify line, as before the judge existed.
 //   deadlineMs: how long the whole turn may take (default 25 s). When it runs out, in a model call, in the tool calls of a response
 //               (Google ones go out to the network) or before the next model call, the turn is the code-authored TOOK_TOO_LONG
@@ -2629,6 +2617,19 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
     }
   }
   const careerAnswerTurn = careerAnswer && givesDuration(userText);
+
+  // The one way this turn asks the judge about a reply (design §1): its verdict, or FACT with no call when there is no judge, no
+  // time left for one (the deadline less the minCallMs margin), or a reply, user message or previous message of Charlie's that
+  // judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3).
+  const judged = async (reply) => {
+    const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
+    const before = messages[messages.length - 2];
+    const previous = before && before.role === "assistant" ? messageText(before) : undefined;
+    if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(reply) || !fitsUnclipped(userText) || !fitsUnclipped(previous)) {
+      return "FACT";
+    }
+    return askJudge(judge, { previous, user: userText, reply, timeoutMs }, usage);
+  };
 
   for (let call = 0; call < MAX_MODEL_CALLS; call++) {
     const lastCall = call === MAX_MODEL_CALLS - 1;
@@ -2747,17 +2748,18 @@ async function runTurn({ messages, ctx, client, judge, deadlineMs = DEFAULT_TURN
         if (screen.kind === "hard") return speak(screen.line);
         // A soft block (only its topic held it): the judge reads the reply in context and may let it be said (CHAT) or pick its
         // line. It only ever rules here, after every screen above, so it cannot let through what any of them or a hard rule
-        // blocks. With no judge, no time left for one (the deadline less the minCallMs margin), or a reply, user message or previous
-        // message of Charlie's that judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3), the soft block
-        // stays the can't-verify line.
-        const timeoutMs = Math.min(JUDGE_TIMEOUT_MS, deadline - Date.now() - minCallMs);
-        const before = messages[messages.length - 2];
-        const previous = before && before.role === "assistant" ? messageText(before) : undefined;
-        if (typeof judge !== "function" || !(timeoutMs > 0) || !fitsUnclipped(text) || !fitsUnclipped(userText) || !fitsUnclipped(previous)) {
-          return speak(CANT_VERIFY);
-        }
-        const verdict = await askJudge(judge, { previous, user: userText, reply: text, timeoutMs }, usage);
-        return speak(verdictLine(verdict, CANT_VERIFY) ?? text);
+        // blocks. When it can't be asked (`judged`), the soft block stays the can't-verify line.
+        return speak(verdictLine(await judged(text), CANT_VERIFY) ?? text);
+      }
+      // Design §6: a live lookup grounds the live fact it returned and nothing about the book, and neither does the glossary (I3). A
+      // turn that cites only those gets the judge as an ungrounded turn does, with one difference: LIVE passes, because the lookup
+      // grounds it. FACT and DEFINE are can't-verify and ADVICE its hand-off; no judge, no time or a text it would cut is
+      // can't-verify. What passes still meets the figure check below, with the lookup's answer in `payloads`.
+      const liveCited = sources.some((src) => src.startsWith(LIVE_SOURCE_PREFIX));
+      if (text && liveCited && sources.every((src) => src.startsWith(LIVE_SOURCE_PREFIX) || src === GLOSSARY_SOURCE)) {
+        const verdict = await judged(text);
+        const line = verdict === "LIVE" ? null : verdictLine(verdict, CANT_VERIFY);
+        if (line) return finish(line === CANT_VERIFY ? cantVerifyCalendar() : line);
       }
       // Grounded: every figure the model speaks must be one the tools returned this turn.
       if (!text || ungroundedNumbers(text, payloads).length > 0) return finish(CANT_VERIFY);

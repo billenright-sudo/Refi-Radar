@@ -1604,3 +1604,60 @@ test("turn: a soft block goes to the judge (app.set(\"assistantJudge\") or the H
     app.set("assistantJudge", null);
   }
 });
+
+// ── Charlie personality, Task 5: live lookups on /turn ───────────────────────
+
+test("turn: lookUpLive runs through app.set(\"liveLookup\") or a real lookup on the same client, metered as its own 'live' row", async () => {
+  const ASK = "how did the Cowboys do last night?";
+  const SAID = "The Cowboys won 27 to 20.";
+  const LOOKUP = { kind: "scores", query: "Cowboys game last night" };
+  const logged = [];
+  const savedInfo = console.info;
+  console.info = (...args) => logged.push(args.join(" "));
+  try {
+    app.set("assistantJudge", async () => ({ verdict: "LIVE", usage: { inputTokens: 7, outputTokens: 1 }, ms: 1 }));
+    // the test seam: the injected lookup answers, and the client is only the model's
+    const asked = [];
+    app.set("liveLookup", { lookUp: async (args) => {
+      asked.push(args);
+      return { answer: "The Cowboys beat the Giants 27 to 20 last night.", sources: [{ title: "x", domain: "espn.com" }] };
+    } });
+    let client = fakeClient([useTool("lookUpLive", LOOKUP), say(SAID)]);
+    setClient(client);
+    let r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(ASK), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, SAID);
+    assert.deepStrictEqual(r.data.sources, ["web — espn.com"]);
+    assert.deepStrictEqual(asked, [{ ...LOOKUP, place: undefined }]);
+    assert.equal(client.calls.length, 2);
+    assert.deepStrictEqual(usageFor(r.data.turnId).map((row) => row.kind), ["turn"]);
+
+    // without it, the route builds the real lookup over the same client: a Haiku web search, metered under this turn's id
+    app.set("liveLookup", null);
+    const search = resp([
+      { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "cowboys giants" } },
+      { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [
+        { type: "web_search_result", url: "https://www.espn.com/nfl/game", title: "Giants 20-27 Cowboys", encrypted_content: "e" },
+      ] },
+      { type: "text", text: "The Cowboys beat the Giants 27 to 20 last night." },
+    ], "end_turn", { input_tokens: 2400, output_tokens: 60 });
+    client = fakeClient([useTool("lookUpLive", LOOKUP), search, say(SAID)]);
+    setClient(client);
+    r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(ASK), rates: LIVE });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, SAID);
+    assert.deepStrictEqual(r.data.sources, ["web — espn.com"]);
+    assert.equal(client.calls.length, 3);
+    assert.equal(client.calls[1].model, "claude-haiku-5-5");
+    assert.deepStrictEqual(client.calls[1].tools, [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }]);
+    const rows = usageFor(r.data.turnId).map((row) => [row.kind, row.input_tokens, row.output_tokens]);
+    assert.deepStrictEqual(rows, [["live", 2400, 60], ["turn", 207, 41]]);
+    // logs: the lookup's kind, outcome and time, never the query
+    assert.ok(logged.some((l) => /^charlie live: scores ok \d+ms$/.test(l)), logged.join("\n"));
+    assert.ok(logged.every((l) => !l.includes("Cowboys")), logged.join("\n"));
+  } finally {
+    console.info = savedInfo;
+    app.set("assistantJudge", null);
+    app.set("liveLookup", null);
+  }
+});

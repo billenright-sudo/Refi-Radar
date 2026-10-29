@@ -6797,3 +6797,137 @@ test("Charlie T3: CHARLI_SYSTEM says who she is — the colleague, her range, da
   assert.ok(!CHARLI_SYSTEM.includes("keep it to the greeting"));
   assert.ok(CHARLI_SYSTEM.includes("do not mention rates, clients, calls or any figure unless you have just fetched them with a tool."));
 });
+
+// ── Charlie personality, Task 5: live lookups ground live facts, never book facts ───────────────────────────────────────────────
+
+const COWBOYS = { answer: "The Cowboys beat the Giants 27 to 20 last night.", sources: [{ title: "x", domain: "espn.com" }] };
+// brokerCtx with a ctx.live that records what it is asked and answers `answer`
+function liveCtx(answer = COWBOYS) {
+  const calls = [];
+  return { ctx: { ...brokerCtx, live: { lookUp: async (args) => { calls.push(args); return answer; } } }, calls };
+}
+const LOOKUP = { kind: "scores", query: "Cowboys game last night" };
+const lookupTurn = (said, extra = {}, answer) => {
+  const { ctx, calls } = liveCtx(answer);
+  const client = fakeClient([useTool("lookUpLive", LOOKUP), say(said)]);
+  return runTurn({ messages: userSays("how did the Cowboys do last night?"), ctx, client, ...extra })
+    .then((r) => ({ ...r, lookups: calls, client }));
+};
+
+test("Charlie T5: a lookup-only turn the judge calls LIVE is spoken with its web citation; the lookup reached the model", async () => {
+  await capturingInfo(async (logged) => {
+    const judge = recordingJudge("LIVE");
+    const r = await lookupTurn("The Cowboys won 27 to 20.", { judge });
+    assert.equal(r.reply, "The Cowboys won 27 to 20.");
+    assert.deepStrictEqual(r.sources, ["web — espn.com"]);
+    assert.deepStrictEqual(r.lookups, [{ kind: "scores", query: "Cowboys game last night", place: undefined }]);
+    // the judge read the reply in context, and its tokens are the turn's
+    assert.equal(judge.calls.length, 1);
+    assert.equal(judge.calls[0].reply, "The Cowboys won 27 to 20.");
+    assert.equal(judge.calls[0].user, "how did the Cowboys do last night?");
+    assert.deepStrictEqual(r.usage, { inputTokens: 207, outputTokens: 41 });
+    // the model was handed the lookup as a cited tool result
+    const fed = r.client.calls[1].messages[r.client.calls[1].messages.length - 1].content[0];
+    assert.equal(fed.type, "tool_result");
+    assert.deepStrictEqual(JSON.parse(fed.content), { source: "web — espn.com", data: COWBOYS });
+    assert.deepStrictEqual(logged.map((l) => l.replace(/\d+ms$/, "Nms")), ["charlie judge: LIVE Nms"]);
+  });
+});
+
+test("Charlie T5: a figure the lookup did not return is can't-verify, even when the judge says LIVE", async () => {
+  await capturingInfo(async () => {
+    const judge = recordingJudge("LIVE");
+    const r = await lookupTurn("The Cowboys won 27 to 21.", { judge });
+    assert.equal(r.reply, CANT_VERIFY);
+    assert.deepStrictEqual(r.sources, []);
+    // the lookup ran and the judge passed it: the figure check is what held it
+    assert.equal(r.lookups.length, 1);
+    assert.equal(judge.calls.length, 1);
+  });
+});
+
+test("Charlie T5: on a lookup-only turn FACT and DEFINE are can't-verify, ADVICE the hand-off, CHAT spoken; no judge is can't-verify", async () => {
+  await capturingInfo(async () => {
+    const said = "The Cowboys won 27 to 20, and your pipeline looks strong.";
+    for (const [verdict, want] of [["FACT", CANT_VERIFY], ["DEFINE", CANT_VERIFY], ["ADVICE", ADVICE_HANDOFF], ["CHAT", said]]) {
+      const r = await lookupTurn(said, { judge: judgeSays(verdict) });
+      assert.equal(r.reply, want, verdict);
+      assert.deepStrictEqual(r.sources, verdict === "CHAT" ? ["web — espn.com"] : [], verdict);
+    }
+    for (const extra of [{}, { judge: null }]) {
+      const r = await lookupTurn("The Cowboys won 27 to 20.", extra);
+      assert.equal(r.reply, CANT_VERIFY);
+      assert.deepStrictEqual(r.usage, { inputTokens: 200, outputTokens: 40 });
+    }
+    // and with no time left for a judge it is not asked
+    const judge = recordingJudge("LIVE");
+    const { ctx } = liveCtx();
+    const slowSay = async () => { await new Promise((res) => setTimeout(res, 200)); return say("The Cowboys won 27 to 20."); };
+    const r = await runTurn({
+      messages: userSays("how did the Cowboys do last night?"), ctx, judge, deadlineMs: 1000, minCallMs: 850,
+      client: fakeClient([useTool("lookUpLive", LOOKUP), slowSay]),
+    });
+    assert.equal(r.reply, CANT_VERIFY);
+    assert.equal(judge.calls.length, 0);
+  });
+});
+
+test("Charlie T5: a lookup beside the glossary still gets the judge; beside a book source it is an ordinary grounded turn", async () => {
+  await capturingInfo(async () => {
+    // glossary + lookup: neither grounds a fact about the book
+    const { ctx } = liveCtx();
+    let judge = recordingJudge("FACT");
+    let r = await runTurn({
+      messages: userSays("what's LTV, and did the Cowboys win?"), ctx, judge,
+      client: fakeClient([
+        resp([
+          { type: "tool_use", id: "toolu_1", name: "explainTerm", input: { term: "LTV" } },
+          { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: LOOKUP },
+        ], "tool_use"),
+        say("The Cowboys won, and your book looks great."),
+      ]),
+    });
+    assert.equal(r.reply, CANT_VERIFY);
+    assert.equal(judge.calls.length, 1);
+    // rates + lookup: the rates ground it, so the judge is not asked and the figures meet the usual check
+    judge = recordingJudge("FACT");
+    r = await runTurn({
+      messages: userSays("rates today, and did the Cowboys win?"), ctx, judge,
+      client: fakeClient([
+        resp([
+          { type: "tool_use", id: "toolu_1", name: "getMarketUpdate", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "lookUpLive", input: LOOKUP },
+        ], "tool_use"),
+        say("The thirty-year is at 6.52 percent, and the Cowboys won 27 to 20."),
+      ]),
+    });
+    assert.equal(r.reply, "The thirty-year is at 6.52 percent, and the Cowboys won 27 to 20.");
+    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21", "web — espn.com"]);
+    assert.equal(judge.calls.length, 0);
+  });
+});
+
+test("Charlie T5: a failed lookup grounds nothing — a live fact said anyway is the no-live-data line", async () => {
+  await capturingInfo(async () => {
+    const { ctx, calls } = liveCtx({ code: "failed" });
+    const client = fakeClient([useTool("lookUpLive", LOOKUP), say("Yep, they won.")]);
+    const r = await runTurn({ messages: userSays("Did the Cowboys win?"), ctx, client, judge: judgeSays("LIVE") });
+    assert.equal(r.reply, NO_LIVE_DATA);
+    assert.deepStrictEqual(r.sources, []);
+    assert.equal(calls.length, 1);
+    const fed = client.calls[1].messages[client.calls[1].messages.length - 1].content[0];
+    assert.deepStrictEqual(JSON.parse(fed.content), { source: "(unavailable)", data: { error: "the lookup didn't work just now" } });
+  });
+});
+
+test("Charlie T5: a lookup that names a client in the book never reaches ctx.live, through runTurn", async () => {
+  const { ctx, calls } = liveCtx();
+  const client = fakeClient([useTool("lookUpLive", { kind: "news", query: "Linda Chen news" }), say("I can't search for that one.")]);
+  const r = await runTurn({ messages: userSays("anything in the news about Linda Chen?"), ctx, client });
+  assert.equal(calls.length, 0);
+  const fed = client.calls[1].messages[client.calls[1].messages.length - 1].content[0];
+  assert.deepStrictEqual(JSON.parse(fed.content), {
+    source: "(refused)", data: { error: "that search names someone in your book, so I can't search it" },
+  });
+  assert.deepStrictEqual(r.sources, []);
+});

@@ -4,7 +4,8 @@
 // ctx = { user, rates, db, google?, now? } (user = the req.user row; rates = the flat current-rates object; google = the
 // per-user Google adapter, lib/google googleFor(); now = epoch ms, set by tests, else the real clock).
 //
-// Read tools query the CRM / the server sweep engine (lib/refi.js, the single math source).
+// Read tools query the CRM / the server sweep engine (lib/refi.js, the single math source). lookUpLive (a Promise) asks ctx.live,
+// lib/assistant/live.js, for one web search, after its screens have refused anything that must not leave the server.
 // Side-effect tools (addClientTool, logContactTool, setCareerStageTool, createEventTool) only PACKAGE the intent in
 // `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
 // The two Google Calendar tools (getCalendarTool, createEventTool) return a Promise: a read goes out to Google.
@@ -17,6 +18,7 @@ const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
 const { validateClient } = require("../../routes/clients");   // the one POST /api/clients runs
 const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../google/time");
 const { PURPOSES, NMLS_PATTERN, renderEmail, composeLinks } = require("./outreach");
+const { isGuidelineQuestion } = require("./guidelines");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -353,12 +355,110 @@ function setCareerStageTool(args, _ctx) {
   return { data: { stage: id, label }, source: "(unsaved)", sideEffect: { type: "setCareerStage", stage: id } };
 }
 
+// ── Live lookup: scores, news, weather ───────────────────────────────────────
+
+// A lookup's citation: "web — " and the domains its answer came from ("web — espn.com", shown as a chip). The orchestrator knows a
+// lookup by it: a turn that cites nothing else still has its reply judged, because a lookup grounds no fact about the book.
+const LIVE_SOURCE_PREFIX = "web — ";
+const LIVE_KINDS = ["scores", "news", "weather", "general"];
+const MAX_QUERY_CHARS = 200;
+const MAX_PLACE_CHARS = 100;
+const NAMES_SOMEONE = "that search names someone in your book, so I can't search it";
+
+// Details that are somebody's, so never a search: an email address, a phone number (with or without an area code), an amount.
+const EMAIL_RE = /[^\s@]@[^\s@]/;
+const PHONE_RE = /(?<!\d)(?:(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}|\d{3}[.-]\d{4})(?!\d)/;
+const DOLLARS_RE = /\$\s*\d|\b\d[\d,.]*\s*(?:k|thousand|million|billion)?\s*(?:dollars?|bucks)\b/i;
+// Mortgage rates and the rate market, however a query puts it: those come from getMarketUpdate, never from the web.
+const RATE_QUERY_RE = new RegExp([
+  "\\bmortgages?\\b",
+  "\\b(?:interest|refi\\w*|refinanc\\w*|loan|lending|apr|fixed|arm|prime)\\s+rates?\\b",
+  "\\brates?\\s+(?:today|now|this\\s+(?:week|morning))\\b",
+  "\\brate\\s+(?:cuts?|hikes?|increases?|decreases?|decisions?)\\b",
+  "\\bfed\\b", "\\bfederal\\s+reserve\\b", "\\bfomc\\b",
+  "\\b(?:bond|treasury)\\s+(?:yields?|rates?)\\b", "\\btreasur(?:y|ies)\\s+(?:notes?|bonds?)\\b", "\\byield\\s+curve\\b",
+  "\\b10[\\s-]?(?:year|yr)\\s+(?:treasury|treasuries|yields?|notes?)\\b",
+  "\\b(?:30|15)[\\s-]?(?:year|yr)\\s+fixed\\b",
+  "\\b(?:housing|rate|bond|mbs)\\s+markets?\\b", "\\bmbs\\b",
+].join("|"), "i");
+
+// The words of a name: letters and digits, with inner apostrophes and hyphens ("O'Brien", "Chen-Other").
+const NAME_WORD_RE = /[\p{L}\p{M}\p{N}]+(?:['-][\p{L}\p{M}\p{N}]+)*/gu;
+const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv"]);
+const plainText = (s) => String(s).replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const wholeWordIn = (text, term) =>
+  new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(term)}(?![\\p{L}\\p{M}\\p{N}])`, "iu").test(text);
+
+// What of a client's name may not be searched: the full name, and the surname: the last word (a suffix such as "Jr." or "III"
+// aside) and, for a name filed surname-first ("Okafor, Grace"), the word before the comma. A first name alone may be searched
+// ("Austin" is a city).
+function screenedNames(name) {
+  const full = plainText(name);
+  if (!full) return [];
+  const words = full.match(NAME_WORD_RE) || [];
+  while (words.length > 1 && NAME_SUFFIXES.has(words[words.length - 1].toLowerCase())) words.pop();
+  const terms = [full];
+  if (words.length > 0) terms.push(words[words.length - 1]);
+  const comma = full.indexOf(",");
+  const surnameFirst = comma > 0 ? full.slice(0, comma).match(NAME_WORD_RE) || [] : [];
+  if (surnameFirst.length > 0) terms.push(surnameFirst[surnameFirst.length - 1]);
+  return terms;
+}
+// True when `text` names a client in the caller's book (scopedClients): a full name, or a surname as a whole word, in any case
+// ("Brown" is screened, "Browns" is not).
+const namesClient = (text, ctx) => {
+  const t = plainText(text);
+  return scopedClients(ctx).some((row) => screenedNames(row.name || "").some((term) => wholeWordIn(t, term)));
+};
+
+// One live lookup (design §6), for outside-world questions only: a score, the news, the weather, what's happening. Before
+// anything leaves the server, code refuses whatever the query or the place could carry out of it, and nothing is searched: a
+// client in the caller's book (full name or surname), an email address, a phone number or a dollar amount; a loan-guideline
+// question; mortgage rates or the rate market (getMarketUpdate's); and weather with no place (the model asks where). The search is
+// ctx.live's (lib/assistant/live.js makeLive, built by the route for each turn): its answer comes back as data, cited as
+// "web — " and the domains it came from. The daily cap and a failed search are tool errors.
+async function lookUpLive(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  if (!LIVE_KINDS.includes(a.kind)) return fail("(invalid input)", `kind must be one of: ${LIVE_KINDS.join(", ")}`);
+  const query = typeof a.query === "string" ? a.query.trim() : "";
+  if (!query || query.length > MAX_QUERY_CHARS) {
+    return fail("(invalid input)", `a query of at most ${MAX_QUERY_CHARS} characters is required`);
+  }
+  if (a.place != null && typeof a.place !== "string") return fail("(invalid input)", "the place must be text");
+  const place = typeof a.place === "string" ? a.place.trim() : "";
+  if (place.length > MAX_PLACE_CHARS) return fail("(invalid input)", `the place must be at most ${MAX_PLACE_CHARS} characters`);
+
+  const text = place ? `${query} ${place}` : query;
+  if (EMAIL_RE.test(text) || PHONE_RE.test(text) || DOLLARS_RE.test(text) || namesClient(text, ctx)) {
+    return fail("(refused)", NAMES_SOMEONE);
+  }
+  if (isGuidelineQuestion(text)) return fail("(refused)", "loan guidelines can't be looked up");
+  if (RATE_QUERY_RE.test(text)) return fail("(refused)", "mortgage rates come from getMarketUpdate");
+  if (a.kind === "weather" && !place) return fail("(invalid input)", "ask the user where they are");
+
+  const live = ctx && ctx.live;
+  if (!live || typeof live.lookUp !== "function") return fail("(unavailable)", "live lookups aren't available right now");
+  const out = await live.lookUp({ kind: a.kind, query, place: place || undefined });
+  if (out && out.code === "cap") return fail("(unavailable)", "daily lookup limit reached");
+  const answer = out && typeof out.answer === "string" ? out.answer.trim() : "";
+  const sources = (out && Array.isArray(out.sources) ? out.sources : [])
+    .filter((s) => s && typeof s.domain === "string" && s.domain.trim())
+    .map((s) => ({ title: typeof s.title === "string" ? s.title : "", domain: s.domain.trim() }));
+  if (!answer || sources.length === 0) return fail("(unavailable)", "the lookup didn't work just now");
+  const asOf = typeof out.asOf === "string" && out.asOf.trim() ? out.asOf.trim() : null;
+  return {
+    data: asOf ? { answer, asOf, sources } : { answer, sources },
+    source: LIVE_SOURCE_PREFIX + [...new Set(sources.map((s) => s.domain))].join(", "),
+  };
+}
+
 // Null-prototype map: a model-supplied tool name like "constructor" or "toString" must not
 // resolve to an inherited Object.prototype function.
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-    getCalendarTool, createEventTool, draftEmailTool,
+    getCalendarTool, createEventTool, draftEmailTool, lookUpLive,
   })
 );
 
@@ -518,9 +618,28 @@ const TOOL_SCHEMA = [
       required: ["clientId", "purpose"],
     },
   },
+  {
+    name: "lookUpLive",
+    description:
+      "Look something up on the web: a sports score or result, the news (headlines), the weather, or something else happening in " +
+      "the outside world right now. Outside-world questions only: never a client, a client's name or details, mortgage rates or " +
+      "the market (those come from getMarketUpdate), or loan guidelines; a search like that is refused. Weather needs a place: " +
+      "pass the place the user named, and if they haven't named one, ask where they are instead of calling this. Answer from what " +
+      "it returns in a sentence or two, saying \"as of\" when the time matters. If it comes back with an error, say you couldn't " +
+      "look it up; never guess.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: LIVE_KINDS, description: "scores, news, weather, or general for anything else happening now." },
+        query: { type: "string", description: "What to look up, in a few words, e.g. 'Cowboys game last night'." },
+        place: { type: "string", description: "The city or area, e.g. 'Austin, TX': required for weather, optional otherwise." },
+      },
+      required: ["kind", "query"],
+    },
+  },
 ];
 
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
-  getCalendarTool, createEventTool, draftEmailTool, PAST_TIME, NO_SUCH_TIME,
+  getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME,
 };
