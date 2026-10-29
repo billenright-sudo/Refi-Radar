@@ -6813,6 +6813,16 @@ test("Charlie T7 F2 (Ruling T7-2): one number rule — digits only for a figure 
   assert.ok(!CHARLI_SYSTEM.includes("Chat carries no figures"));
 });
 
+test("Charlie T7 F3 (Ruling T7-2): a vent that also asks a question gets its answer first and the log offered in words; a vent that asks nothing still proposes the log", () => {
+  const vent = CHARLI_SYSTEM.split("\n\n").find((p) => /When someone vents/.test(p)) || "";
+  // right after the vent-reports-a-call rule, which stays as it was (eval vent-named-client)
+  assert.ok(vent.includes(
+    "If the vent reports a call, a meeting or a text with a named client and asks nothing else, the confirmation rule still " +
+    "comes first: find the client and propose logging the contact. When the message also asks a question, answer the question " +
+    "first and offer to log the contact in words; propose the change only after they say yes.",
+  ));
+});
+
 // ── Charlie personality, Task 5: live lookups ground live facts, never book facts ───────────────────────────────────────────────
 
 const COWBOYS = { answer: "The Cowboys beat the Giants 27 to 20 last night.", sources: [{ title: "x", domain: "espn.com" }] };
