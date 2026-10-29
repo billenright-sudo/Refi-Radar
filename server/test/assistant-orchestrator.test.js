@@ -6798,6 +6798,21 @@ test("Charlie T3: CHARLI_SYSTEM says who she is — the colleague, her range, da
   assert.ok(CHARLI_SYSTEM.includes("do not mention rates, clients, calls or any figure unless you have just fetched them with a tool."));
 });
 
+test("Charlie T7 F2 (Ruling T7-2): one number rule — digits only for a figure a tool returned; chat, coaching, jokes and small talk carry no numbers at all", () => {
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const para = (re) => paragraphs.find((p) => re.test(p)) || "";
+  assert.ok(para(/read aloud/).includes(
+    "When you give a figure a tool returned, write it as digits, for example 6.52 percent or $485,000, and never do arithmetic yourself.",
+  ));
+  assert.ok(para(/You're more than a lookup/).includes(
+    "Chat, coaching, jokes and small talk carry no numbers at all, in digits or in words: say a couple of hours, a few calls or a " +
+    "short walk, never 2 hours, ten minutes or twenty calls.",
+  ));
+  // the two sentences they replace are gone
+  assert.ok(!CHARLI_SYSTEM.includes("Write numbers as digits"));
+  assert.ok(!CHARLI_SYSTEM.includes("Chat carries no figures"));
+});
+
 // ── Charlie personality, Task 5: live lookups ground live facts, never book facts ───────────────────────────────────────────────
 
 const COWBOYS = { answer: "The Cowboys beat the Giants 27 to 20 last night.", sources: [{ title: "x", domain: "espn.com" }] };
