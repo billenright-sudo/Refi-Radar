@@ -238,6 +238,30 @@ test("greeting that fails is shown, spoken, kept out of the history, and the ses
 
 // ── a normal turn ────────────────────────────────────────────────────────────
 
+test("final review M-6: every turn carries the user's localDate (YYYY-MM-DD), as the greeting does", async (t) => {
+  // the date handed to createSession (the one setup pins)
+  const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Hello."), turnReply("Sure.")) } });
+  await session.open();
+  await session.submit("what's in the news?");
+  assert.deepEqual(Object.keys(server.turns()[1].body).sort(), ["localDate", "messages", "rates"]);
+  assert.equal(server.turns()[1].body.localDate, "2026-10-28");
+
+  // with none handed in: the device's own date at the time of each turn, not the UTC one
+  const zone = process.env.TZ;
+  t.after(() => { if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone; });
+  process.env.TZ = "America/Los_Angeles";
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 30, 3, 30) });   // still the 29th on the US west coast
+  const server2 = fakeServer({ "GET /api/auth/me": me(), "POST /api/assistant/turn": queue(turnReply("Hello."), turnReply("Sure."), turnReply("Okay.")) });
+  const session2 = createSession({ fetch: server2.fetch, rates: RATES, user: { careerStage: null }, onSpeak: () => {} });
+  await session2.open();
+  await session2.submit("what's in the news?");
+  assert.equal(server2.turns()[1].body.localDate, "2026-10-29");
+  // past local midnight the next turn says the next day
+  t.mock.timers.setTime(Date.UTC(2026, 9, 30, 8, 0));
+  await session2.submit("and now?");
+  assert.equal(server2.turns()[2].body.localDate, "2026-10-30");
+});
+
 test("a normal turn sends plain {role, content} history ending with the user's message, and keeps sources", async () => {
   const { session, server, spoken } = setup({
     routes: {

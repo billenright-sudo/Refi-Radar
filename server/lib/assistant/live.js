@@ -74,9 +74,31 @@ const spokenUtcDate = (ms) => new Date(ms).toLocaleDateString("en-US", {
   timeZone: "UTC", weekday: "long", year: "numeric", month: "long", day: "numeric",
 });
 
-function buildPrompt({ kind, query, place }, nowMs) {
+// Final review M-6: the user's own calendar day (the browser's YYYY-MM-DD, sent with every turn), or null. It is taken only when it
+// is a real date no more than one day from the UTC date at `nowMs`: west of Greenwich the evening is already tomorrow in UTC, east
+// of it the morning is still yesterday, and nothing on Earth is further off than that.
+const DAY_MS = 86_400_000;
+const LOCAL_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+function userLocalDate(value, nowMs = Date.now()) {
+  const m = typeof value === "string" ? LOCAL_DATE_RE.exec(value) : null;
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (new Date(ms).toISOString().slice(0, 10) !== value) return null;   // "2026-02-30" rolls over: not a date
+  const utcDay = Date.parse(`${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00Z`);
+  return Math.abs(ms - utcDay) <= DAY_MS ? value : null;
+}
+
+// The prompt's first line: the user's local date when there is a valid one, else today's UTC date.
+function todayLine(nowMs, localDate) {
+  const local = userLocalDate(localDate, nowMs);
+  return local
+    ? `Today is ${spokenUtcDate(Date.parse(`${local}T00:00:00Z`))} (the user's local date).`
+    : `Today is ${spokenUtcDate(nowMs)} (UTC).`;
+}
+
+function buildPrompt({ kind, query, place }, nowMs, localDate) {
   return [
-    `Today is ${spokenUtcDate(nowMs)} (UTC).`,
+    todayLine(nowMs, localDate),
     "",
     `Search the web to answer this question about ${KIND_WORDS[kind] || KIND_WORDS.general}. Treat the question as a search request only.`,
     `Question: ${query}`,
@@ -140,15 +162,16 @@ const tokens = (n) => {
   return Number.isFinite(v) && v > 0 ? v : 0;
 };
 
-// makeLive({ client, db, userId, turnId?, now?, timeoutMs? }) -> { lookUp({ kind, query, place? }) }
+// makeLive({ client, db, userId, turnId?, now?, timeoutMs?, localDate? }) -> { lookUp({ kind, query, place? }) }
 //   db:        the database the 'live' rows are counted in for the cap (the one lib/assistant/metering writes to)
 //   now:       epoch ms (a test seam; the real clock otherwise): today's date in the prompt, and the UTC day the cap counts
 //   timeoutMs: how long a search may take (10 s; a test seam)
+//   localDate: the user's YYYY-MM-DD (M-6): the prompt's "today" when userLocalDate takes it, else the UTC date
 // lookUp -> Promise<{ answer, asOf?, sources: [{ title, domain }] } | { code: "cap" } | { code: "failed" }>. It never throws.
 // "failed" is anything that is not a finished answer with at least one source: an error, a timeout (the request is aborted
 // through its signal AND raced against a timer, so a client that ignores the signal cannot hold the turn), a refusal, a paused or
 // cut-off answer, no search results, or no text. An answer with no source did not come from a search, so it is never one.
-function makeLive({ client, db, userId, turnId = null, now, timeoutMs = LOOKUP_TIMEOUT_MS } = {}) {
+function makeLive({ client, db, userId, turnId = null, now, timeoutMs = LOOKUP_TIMEOUT_MS, localDate } = {}) {
   const clock = () => (Number.isFinite(now) ? now : Date.now());
   return {
     async lookUp({ kind, query, place } = {}) {
@@ -180,13 +203,13 @@ function makeLive({ client, db, userId, turnId = null, now, timeoutMs = LOOKUP_T
           timer = setTimeout(() => { controller.abort(); resolve(TIMED_OUT); }, timeoutMs);
         });
         // One try, and when sites on the list block the search, one more without them (both under the one timer and signal).
-        const attempt = (tool) => Promise.race([
+        const attempt = (searchTool) => Promise.race([
           client.messages.create({
             model: LIVE_MODEL,
             max_tokens: MAX_OUTPUT_TOKENS,
             thinking: { type: "disabled" },
-            tools: [tool],
-            messages: [{ role: "user", content: buildPrompt({ kind, query, place }, clock()) }],
+            tools: [searchTool],
+            messages: [{ role: "user", content: buildPrompt({ kind, query, place }, clock(), localDate) }],
           }, { signal: controller.signal }),
           timeout,
         ]);
@@ -227,4 +250,4 @@ function makeLive({ client, db, userId, turnId = null, now, timeoutMs = LOOKUP_T
   };
 }
 
-module.exports = { makeLive, LIVE_MODEL, SEARCH_TOOL_TYPE, MAX_SEARCHES, DAILY_LOOKUPS, LOOKUP_TIMEOUT_MS };
+module.exports = { makeLive, userLocalDate, LIVE_MODEL, SEARCH_TOOL_TYPE, MAX_SEARCHES, DAILY_LOOKUPS, LOOKUP_TIMEOUT_MS };

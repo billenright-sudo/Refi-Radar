@@ -1663,3 +1663,43 @@ test("turn: lookUpLive runs through app.set(\"liveLookup\") or a real lookup on 
     app.set("liveLookup", null);
   }
 });
+
+// ── Final review M-6: the lookup knows the user's date ───────────────────────
+
+test("turn (final review M-6): a valid localDate on /turn reaches the lookup prompt; an invalid or far-off one is ignored for the UTC date", async () => {
+  const LOOKUP = { kind: "scores", query: "Cowboys game last night" };
+  const search = () => resp([
+    { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "cowboys" } },
+    { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [
+      { type: "web_search_result", url: "https://www.espn.com/nfl/game", title: "Giants 20-27 Cowboys", encrypted_content: "e" },
+    ] },
+    { type: "text", text: "The Cowboys beat the Giants 27 to 20 last night." },
+  ], "end_turn");
+  const spoken = (ymd) => new Date(`${ymd}T00:00:00Z`).toLocaleDateString("en-US", {
+    timeZone: "UTC", weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+  const dayFrom = (offset) => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
+  const promptFor = async (localDate) => {
+    const client = fakeClient([useTool("lookUpLive", LOOKUP), search(), say("The Cowboys won.")]);
+    setClient(client);
+    const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("how did the Cowboys do?"), rates: LIVE, localDate });
+    assert.equal(r.status, 200);
+    return client.calls[1].messages[0].content.split("\n")[0];
+  };
+  const savedInfo = console.info;
+  console.info = () => {};
+  try {
+    app.set("assistantJudge", async () => ({ verdict: "LIVE", usage: { inputTokens: 0, outputTokens: 0 }, ms: 0 }));
+    for (const offset of [-1, 0, 1]) {
+      const local = dayFrom(offset);
+      assert.equal(await promptFor(local), `Today is ${spoken(local)} (the user's local date).`, local);
+    }
+    const utc = `Today is ${spoken(dayFrom(0))} (UTC).`;
+    for (const bad of [undefined, "tomorrow", "2026-02-30", dayFrom(-3), dayFrom(5), 20261029]) {
+      assert.equal(await promptFor(bad), utc, String(bad));
+    }
+  } finally {
+    console.info = savedInfo;
+    app.set("assistantJudge", null);
+  }
+});

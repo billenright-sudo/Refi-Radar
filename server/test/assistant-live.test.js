@@ -14,7 +14,7 @@ const assert = require("node:assert");
 
 const db = require("../db");
 const { tools, TOOL_SCHEMA, lookUpLive } = require("../lib/assistant/tools");
-const { makeLive, LIVE_MODEL, SEARCH_TOOL_TYPE, DAILY_LOOKUPS } = require("../lib/assistant/live");
+const { makeLive, LIVE_MODEL, SEARCH_TOOL_TYPE, DAILY_LOOKUPS, userLocalDate } = require("../lib/assistant/live");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
 
 const addOrg = (name) => Number(db.prepare("INSERT INTO organizations (name) VALUES (?)").run(name).lastInsertRowid);
@@ -356,6 +356,38 @@ test("makeLive: the request is Haiku with the web search tool (3 uses), thinking
   assert.match(prompt, /never from memory/);
   assert.match(prompt, /neutral/);
   assert.ok(options && options.signal && typeof options.signal.aborted === "boolean", "the request can be aborted");
+});
+
+test("makeLive (final review M-6): with the user's local date the prompt says that day; with none, or a bad one, today's UTC date", async () => {
+  // 03:30 UTC on Thursday the 29th: still Wednesday the 28th on the US west coast
+  const now = Date.UTC(2026, 9, 29, 3, 30, 0);
+  const promptFor = async (localDate) => {
+    const client = fakeClient([searched()]);
+    await capturingInfo(() => makeLive({ client, db, userId: broker, now, localDate }).lookUp({ kind: "scores", query: "Cowboys last night" }));
+    return client.calls[0].params.messages[0].content;
+  };
+  let prompt = await promptFor("2026-10-28");
+  const firstLine = (p) => p.split("\n")[0];
+  assert.equal(firstLine(prompt), "Today is Wednesday, October 28, 2026 (the user's local date).");
+  assert.doesNotMatch(prompt, /UTC/);
+  // a day ahead of UTC (Auckland) is a local date too
+  assert.equal(firstLine(await promptFor("2026-10-30")), "Today is Friday, October 30, 2026 (the user's local date).");
+  // no local date, a malformed or impossible one, or one more than a day from the UTC date: the UTC line
+  for (const bad of [undefined, null, "", "yesterday", "2026-10-29T00:00", "2026-1-29", "2026-02-30", "2026-13-01", 20261029, "2026-10-27", "2026-10-31", "2025-10-29"]) {
+    prompt = await promptFor(bad);
+    assert.equal(firstLine(prompt), "Today is Thursday, October 29, 2026 (UTC).", JSON.stringify(bad));
+  }
+});
+
+test("userLocalDate (final review M-6): a real YYYY-MM-DD within one day of the UTC date, else null", () => {
+  const now = Date.UTC(2026, 9, 29, 3, 30, 0);
+  for (const ok of ["2026-10-28", "2026-10-29", "2026-10-30"]) assert.equal(userLocalDate(ok, now), ok);
+  for (const bad of [undefined, null, "", " 2026-10-29", "2026-10-29 ", "2026/10/29", "2026-02-30", "2026-00-10", "2026-10-00", "2026-10-27", "2026-10-31", {}, 7]) {
+    assert.equal(userLocalDate(bad, now), null, JSON.stringify(bad));
+  }
+  // across a month and a year end
+  assert.equal(userLocalDate("2026-12-31", Date.UTC(2027, 0, 1, 2, 0)), "2026-12-31");
+  assert.equal(userLocalDate("2027-01-01", Date.UTC(2026, 11, 31, 20, 0)), "2027-01-01");
 });
 
 test("makeLive (polish P1): news, scores and general lookups search only the outlets that let the search in; weather is unrestricted", async () => {

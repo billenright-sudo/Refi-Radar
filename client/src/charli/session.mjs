@@ -7,7 +7,7 @@
 // a spoken or typed "yes" is never sent to /turn (the model would just propose the change again).
 //
 // Server contracts (server/routes/assistant.js):
-//   POST /api/assistant/turn     { messages, rates } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, turnId, error? }
+//   POST /api/assistant/turn     { messages, rates, localDate } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, turnId, error? }
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
@@ -183,7 +183,7 @@ const isRetryable = (res) => res.network || res.timedOut || res.status >= 500 ||
 const stillWorking = (res) => res.status === 409 && !!res.data && res.data.pending === true;
 
 // The device's own calendar day as YYYY-MM-DD (not UTC: Cloud Run's clock is, the user's is not). The greeting sends it so the
-// server can open with the day of the week.
+// server can open with the day of the week, and every turn sends it so a live lookup's "today" is the user's (M-6).
 const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const localDateOf = (date) =>
   `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -192,7 +192,7 @@ const localDateOf = (date) =>
 //   fetch      the window fetch (injected so tests need no network)
 //   rates      today's rates, as App.jsx holds them (may be null at first: setRates() when they arrive)
 //   localHour  0-23 for the greeting; defaults to the clock
-//   localDate  YYYY-MM-DD for the greeting; defaults to the clock's local date (tests pin it)
+//   localDate  YYYY-MM-DD for the greeting and every turn; defaults to the clock's local date at the time (tests pin it)
 //   user       { careerStage } from /api/auth/me
 //   onSpeak    ({ text, turnId? }) called, in order, for every line Charli should say aloud (the line is
 //              already in the transcript when it is called)
@@ -343,10 +343,13 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     speak(text);
   }
 
+  // The user's calendar day: the one handed to createSession when it is YYYY-MM-DD (tests pin it), else the device's own today.
+  const todayLocal = (now) => (typeof localDate === "string" && LOCAL_DATE_RE.test(localDate) ? localDate : localDateOf(now));
+
   async function runGreeting() {
     const now = new Date();
     const hour = Number.isInteger(localHour) ? localHour : now.getHours();
-    const date = typeof localDate === "string" && LOCAL_DATE_RE.test(localDate) ? localDate : localDateOf(now);
+    const date = todayLocal(now);
     const res = await request("POST", "/api/assistant/turn", { greeting: true, rates: currentRates, localHour: hour, localDate: date });
     if (res.ok && res.data && typeof res.data.reply === "string" && res.data.reply.trim()) {
       showTurnResult(res);
@@ -380,7 +383,8 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
 
   async function runTurn(text) {
     addTurn({ role: "user", content: text });
-    showTurnResult(await request("POST", "/api/assistant/turn", { messages: history(), rates: currentRates }));
+    // (final review M-6) every turn says the user's date, so a lookup's "today" and "last night" are theirs, not UTC's
+    showTurnResult(await request("POST", "/api/assistant/turn", { messages: history(), rates: currentRates, localDate: todayLocal(new Date()) }));
   }
 
   // The pending change was declined, by voice or by the Cancel button.
