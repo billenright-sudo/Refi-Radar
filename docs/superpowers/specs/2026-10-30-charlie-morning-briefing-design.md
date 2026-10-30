@@ -1,6 +1,6 @@
 # Charlie as the assistant: the main page, the morning briefing, rate-drop pings, and call follow-ups
 
-Date: 2026-10-30. Owner: Bill. Status: draft for Bill's approval (builder check done; team scope and Profile page decided by Bill).
+Date: 2026-10-30. Owner: Bill. Status: APPROVED by Bill 2026-10-30 (builder check done; team scope and Profile page decided by Bill).
 Repo: `C:\Users\bille\dev\refi-radar`, branch `feature/accurate-refi-scoring` (Charlie personality merged at e897427).
 
 ## 1. Intent: why we're building this
