@@ -14,7 +14,7 @@ const assert = require("node:assert");
 const db = require("../db");
 const { recordSnapshot, getMovement } = require("../lib/rateHistory");
 
-const PRIOR_DAY = "2000-01-01"; // always earlier than "today"
+const PRIOR_DAY = "2000-01-01"; // a CAPTURE day, always earlier than "today"; the FRED observation date (`rates.date`) is what drives a move
 // R2-9 FIXTURE CHANGE: the delta-math tests below give every set the same web-search label. A set with no label reads as the
 // web-search fallback ("claude"), and two of those are compared only when both carry the same, non-empty label.
 const MND = { source: "Mortgage News Daily" };
@@ -38,7 +38,7 @@ test("recordSnapshot writes one row, and a second call the same day upserts (sti
 });
 
 test("getMovement reports no history and null deltas when only today's snapshot exists", () => {
-  const today = { rate_30yr_fixed: 7.4 };
+  const today = { rate_30yr_fixed: 7.4, date: "2026-10-29" };
   recordSnapshot(today);
 
   const m = getMovement(today);
@@ -49,8 +49,8 @@ test("getMovement reports no history and null deltas when only today's snapshot 
 });
 
 test("getMovement computes deltas against the most recent prior-day snapshot", () => {
-  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, ...MND }, PRIOR_DAY);
-  const today = { rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7, ...MND };
+  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, date: "2026-10-28", ...MND }, PRIOR_DAY);
+  const today = { rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7, date: "2026-10-29", ...MND };
   recordSnapshot(today);
 
   const m = getMovement(today);
@@ -62,17 +62,17 @@ test("getMovement computes deltas against the most recent prior-day snapshot", (
 });
 
 test("getMovement uses the most recent prior day, not an older one", () => {
-  recordSnapshot({ rate_30yr_fixed: 8.0, ...MND }, "1999-12-30");
-  recordSnapshot({ rate_30yr_fixed: 7.5, ...MND }, PRIOR_DAY);
+  recordSnapshot({ rate_30yr_fixed: 8.0, date: "2026-10-27", ...MND }, "1999-12-30");
+  recordSnapshot({ rate_30yr_fixed: 7.5, date: "2026-10-28", ...MND }, PRIOR_DAY);
 
-  const m = getMovement({ rate_30yr_fixed: 7.4, ...MND });
+  const m = getMovement({ rate_30yr_fixed: 7.4, date: "2026-10-29", ...MND });
   assert.ok(Math.abs(m.deltas.rate_30yr_fixed - -0.1) < 1e-9);
 });
 
 test("getMovement skips non-finite values so a NaN can't produce a NaN delta", () => {
-  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, ...MND }, PRIOR_DAY);
+  recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, date: "2026-10-28", ...MND }, PRIOR_DAY);
 
-  const m = getMovement({ rate_30yr_fixed: NaN, rate_15yr_fixed: 6.6, ...MND });
+  const m = getMovement({ rate_30yr_fixed: NaN, rate_15yr_fixed: 6.6, date: "2026-10-29", ...MND });
   assert.equal(m.hasHistory, true);
   assert.ok(!("rate_30yr_fixed" in m.deltas), "NaN current value yields no delta");
   assert.ok(Math.abs(m.deltas.rate_15yr_fixed - -0.1) < 1e-9);
@@ -106,8 +106,8 @@ test("B3: a move is computed only between snapshots from the same provider", () 
   ];
   for (const [before, now, prevTag, curTag, moves] of cases) {
     db.prepare("DELETE FROM rate_snapshots").run();
-    recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, ...prevTag }, daysAgo(1));
-    const m = getMovement({ rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7, ...curTag });
+    recordSnapshot({ rate_30yr_fixed: 7.5, rate_15yr_fixed: 6.7, date: "2026-10-28", ...prevTag }, daysAgo(1));
+    const m = getMovement({ rate_30yr_fixed: 7.4, rate_15yr_fixed: 6.7, date: "2026-10-29", ...curTag });
     const label = `${before} -> ${now}`;
     assert.equal(m.hasHistory, moves, label);
     if (moves) {
@@ -119,19 +119,19 @@ test("B3: a move is computed only between snapshots from the same provider", () 
   }
   // the provider is stored with the row
   db.prepare("DELETE FROM rate_snapshots").run();
-  recordSnapshot({ rate_30yr_fixed: 7.5, source: FRED_SOURCE }, daysAgo(2));
-  recordSnapshot({ rate_30yr_fixed: 7.5, source: "Mortgage News Daily" }, daysAgo(1));
+  recordSnapshot({ rate_30yr_fixed: 7.5, date: "2026-10-27", source: FRED_SOURCE }, daysAgo(2));
+  recordSnapshot({ rate_30yr_fixed: 7.5, date: "2026-10-28", source: "Mortgage News Daily" }, daysAgo(1));
   assert.deepStrictEqual(db.prepare("SELECT provider FROM rate_snapshots ORDER BY day").all().map((r) => r.provider), ["fred", "claude"]);
   // ... and it is the most recent prior snapshot that counts: a web-search day between two FRED days means no move
-  assert.equal(getMovement({ rate_30yr_fixed: 7.4, source: FRED_SOURCE }).hasHistory, false);
+  assert.equal(getMovement({ rate_30yr_fixed: 7.4, date: "2026-10-29", source: FRED_SOURCE }).hasHistory, false);
 });
 
 test("B3: a row stored before the provider column (provider '') is read by its stored source label", () => {
   db.prepare("INSERT INTO rate_snapshots (day, rates, captured_at) VALUES (?, ?, ?)")
-    .run(daysAgo(1), JSON.stringify({ rate_30yr_fixed: 7.5, source: FRED_SOURCE }), new Date().toISOString());
+    .run(daysAgo(1), JSON.stringify({ rate_30yr_fixed: 7.5, date: "2026-10-28", source: FRED_SOURCE }), new Date().toISOString());
   assert.equal(db.prepare("SELECT provider FROM rate_snapshots").get().provider, "");
-  assert.equal(getMovement({ rate_30yr_fixed: 7.4, source: FRED_SOURCE }).hasHistory, true);
-  assert.equal(getMovement({ rate_30yr_fixed: 7.4, source: "Mortgage News Daily" }).hasHistory, false);
+  assert.equal(getMovement({ rate_30yr_fixed: 7.4, date: "2026-10-29", source: FRED_SOURCE }).hasHistory, true);
+  assert.equal(getMovement({ rate_30yr_fixed: 7.4, date: "2026-10-29", source: "Mortgage News Daily" }).hasHistory, false);
 });
 
 test("B3: the provider migration is idempotent and keeps the rows a database already had", () => {
@@ -166,8 +166,8 @@ test("B3: estimated rates are never snapshotted, by the route or by recordSnapsh
 });
 
 test("B3: the 5/1 ARM has no delta; its level is still the current one", () => {
-  recordSnapshot({ rate_30yr_fixed: 7.5, rate_5_1_arm: 7.4, source: FRED_SOURCE }, daysAgo(1));
-  const m = getMovement({ rate_30yr_fixed: 7.4, rate_5_1_arm: 7.1, source: FRED_SOURCE });
+  recordSnapshot({ rate_30yr_fixed: 7.5, rate_5_1_arm: 7.4, date: "2026-10-28", source: FRED_SOURCE }, daysAgo(1));
+  const m = getMovement({ rate_30yr_fixed: 7.4, rate_5_1_arm: 7.1, date: "2026-10-29", source: FRED_SOURCE });
   assert.equal(m.hasHistory, true);
   assert.equal("rate_5_1_arm" in m.deltas, false);
   assert.equal(m.current.rate_5_1_arm, 7.1);
@@ -186,8 +186,8 @@ test("B3: since is 'yesterday' for one day, the weekday for two to six, the date
   // through getMovement, against today's real date
   for (const [n, expected] of [[1, "yesterday"], [3, sinceLabel(daysAgo(3))], [10, sinceLabel(daysAgo(10))]]) {
     db.prepare("DELETE FROM rate_snapshots").run();
-    recordSnapshot({ rate_30yr_fixed: 7.5, source: FRED_SOURCE }, daysAgo(n));
-    const m = getMovement({ rate_30yr_fixed: 7.4, source: FRED_SOURCE });
+    recordSnapshot({ rate_30yr_fixed: 7.5, date: daysAgo(n), source: FRED_SOURCE }, daysAgo(n));
+    const m = getMovement({ rate_30yr_fixed: 7.4, date: daysAgo(0), source: FRED_SOURCE });
     assert.equal(m.since, expected, `${n} days`);
     assert.equal(m.sinceDate, daysAgo(n));
   }
@@ -209,6 +209,63 @@ test("R2-3: the since date's ordinal suffix (st / nd / rd / th, 11th-13th), spok
     assert.equal(toSpeech(`Down 0.1 since ${label}.`), `Down zero point one since ${spoken}.`, label);
     assert.deepStrictEqual(ungroundedNumbers(`down 0.1 since ${label}`, [{ deltas: { rate_30yr_fixed: -0.1 }, since: label, sinceDate: day }]), [], label);
   }
+});
+
+// ── Task 1 (morning briefing phase 1): a move is measured between FRED observation dates, never capture days ───────────
+
+test("movement compares FRED observation dates, not capture days", () => {
+  // R1: rate_snapshots.day (the capture day) is the primary key, so two snapshots cannot share one. Row A is a RE-FETCH of the
+  // current observation, captured yesterday; row B is the real previous observation, captured two days ago.
+  recordSnapshot({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, daysAgo(1), "fred");
+  recordSnapshot({ rate_30yr_fixed: 6.55, date: "2026-10-28", source: FRED_SOURCE }, daysAgo(2), "fred");
+  const m = getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, "fred");
+  assert.equal(m.hasHistory, true);
+  assert.equal(m.deltas.rate_30yr_fixed, -0.15, "the most recent capture day (row A) is not the comparison");
+  assert.equal(m.sinceDate, "2026-10-28");
+  assert.equal(m.previous.rate_30yr_fixed, 6.55);
+});
+
+test("the previous observation is the latest earlier date, whatever order the capture days run in", () => {
+  recordSnapshot({ rate_30yr_fixed: 6.7, date: "2026-10-26", source: FRED_SOURCE }, daysAgo(1), "fred");   // captured late, observed early
+  recordSnapshot({ rate_30yr_fixed: 6.55, date: "2026-10-28", source: FRED_SOURCE }, daysAgo(3), "fred");
+  recordSnapshot({ rate_30yr_fixed: 6.3, date: "2026-10-30", source: FRED_SOURCE }, daysAgo(2), "fred");   // a LATER observation: not a "previous"
+  const m = getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, "fred");
+  assert.equal(m.sinceDate, "2026-10-28");
+  assert.equal(m.deltas.rate_30yr_fixed, -0.15);
+});
+
+test("a re-fetch of the same observation shows no movement", () => {
+  recordSnapshot({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, daysAgo(1), "fred");
+  const m = getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, "fred");
+  assert.equal(m.hasHistory, false);
+  assert.equal(m.previous, null);
+  assert.deepStrictEqual([m.deltas, m.since, m.sinceDate], [null, null, null]);
+});
+
+test("since is labelled against the observation date", () => {
+  // Friday's FRED print, Monday's FRED print: a weekend between them, three capture days or none
+  recordSnapshot({ rate_30yr_fixed: 6.55, date: "2026-10-23", source: FRED_SOURCE }, daysAgo(1), "fred");
+  const m = getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-26", source: FRED_SOURCE }, "fred");
+  assert.equal(m.since, "Friday");
+  assert.equal(m.sinceDate, "2026-10-23");
+});
+
+test("no movement when the current set has no valid observation date", () => {
+  recordSnapshot({ rate_30yr_fixed: 6.55, date: "2026-10-28", source: FRED_SOURCE }, daysAgo(1), "fred");
+  for (const date of [undefined, "", "yesterday", "2026-13-45", "10/29/2026", 20261029, null]) {
+    const m = getMovement({ rate_30yr_fixed: 6.4, date, source: FRED_SOURCE }, "fred");
+    assert.deepStrictEqual([m.hasHistory, m.previous, m.deltas, m.since, m.sinceDate], [false, null, null, null, null], String(date));
+  }
+});
+
+test("stored snapshots with no valid observation date are never a previous observation", () => {
+  recordSnapshot({ rate_30yr_fixed: 6.9, source: FRED_SOURCE }, daysAgo(1), "fred");                       // no date
+  recordSnapshot({ rate_30yr_fixed: 6.8, date: "garbage", source: FRED_SOURCE }, daysAgo(2), "fred");     // bad date
+  assert.equal(getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, "fred").hasHistory, false);
+  db.prepare("INSERT INTO rate_snapshots (day, rates, captured_at, provider) VALUES (?, ?, ?, ?)").run(daysAgo(3), "not json", new Date().toISOString(), "fred");
+  recordSnapshot({ rate_30yr_fixed: 6.55, date: "2026-10-28", source: FRED_SOURCE }, daysAgo(4), "fred");
+  const m = getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-29", source: FRED_SOURCE }, "fred");
+  assert.equal(m.sinceDate, "2026-10-28", "an unreadable or undated row is skipped, not fatal");
 });
 
 // ── Capture-on-fetch wiring in POST /api/rates ──────────────────────────────
@@ -237,11 +294,11 @@ async function startRatesApp() {
 }
 
 // Stub FRED only (everything else, e.g. the local server, goes through the real fetch).
-function stubFred(getValue) {
+function stubFred(getValue, getDate = () => "2026-10-20") {
   const realFetch = global.fetch;
   global.fetch = async (url, opts) => {
     if (String(url).startsWith("https://api.stlouisfed.org/")) {
-      return { ok: true, json: async () => ({ observations: [{ date: "2026-10-20", value: String(getValue()) }] }) };
+      return { ok: true, json: async () => ({ observations: [{ date: getDate(), value: String(getValue()) }] }) };
     }
     return realFetch(url, opts);
   };
@@ -284,7 +341,8 @@ test("the rates cache does not outlive the UTC day, so every served response has
   process.env.FRED_API_KEY = "test-fred-key";
   delete process.env.ANTHROPIC_API_KEY;
   let fred = "6.50";
-  const restore = stubFred(() => fred);
+  let obsDate = "2026-10-20";
+  const restore = stubFred(() => fred, () => obsDate);
   // Mock only Date: the 6h cache window opened at 20:00 UTC still covers 01:00 UTC next day.
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-20T20:00:00Z") });
   const app = await startRatesApp();
@@ -301,6 +359,7 @@ test("the rates cache does not outlive the UTC day, so every served response has
 
     // 01:00 UTC next day: inside the 6h TTL but a new UTC day -> must refetch and snapshot.
     fred = "6.40";
+    obsDate = "2026-10-21";
     t.mock.timers.setTime(new Date("2026-10-21T01:00:00Z").getTime());
     const nextDay = await app.post();
     assert.ok(!nextDay.cached, "cache must not span UTC midnight");
@@ -335,13 +394,13 @@ test("R2-9: recordSnapshot stores the route's provider over the label's; estimat
 
 test("R2-9: a web-search set labelled 'Optimal Blue' is stored as claude and never diffed against a FRED row, either way round", () => {
   // yesterday the web search (labelled like FRED), today FRED: no move
-  recordSnapshot({ rate_30yr_fixed: 6.9, source: WEB_LABELLED_FRED }, daysAgo(1), "claude");
-  assert.equal(getMovement({ rate_30yr_fixed: 6.8, source: FRED_SOURCE }).hasHistory, false);
-  assert.equal(getMovement({ rate_30yr_fixed: 6.8, source: FRED_SOURCE }, "fred").hasHistory, false);
+  recordSnapshot({ rate_30yr_fixed: 6.9, date: "2026-10-19", source: WEB_LABELLED_FRED }, daysAgo(1), "claude");
+  assert.equal(getMovement({ rate_30yr_fixed: 6.8, date: "2026-10-20", source: FRED_SOURCE }).hasHistory, false);
+  assert.equal(getMovement({ rate_30yr_fixed: 6.8, date: "2026-10-20", source: FRED_SOURCE }, "fred").hasHistory, false);
   // yesterday FRED, today the web search (labelled like FRED) as the route stored it: the current set's provider is the one
   // stored today for this same set, not its label
   db.prepare("DELETE FROM rate_snapshots").run();
-  recordSnapshot({ rate_30yr_fixed: 6.9, source: FRED_SOURCE }, daysAgo(1), "fred");
+  recordSnapshot({ rate_30yr_fixed: 6.9, date: "2026-10-19", source: FRED_SOURCE }, daysAgo(1), "fred");
   const web = { rate_30yr_fixed: 6.8, rate_15yr_fixed: 6.1, date: "2026-10-20", source: WEB_LABELLED_FRED };
   recordSnapshot(web, undefined, "claude");
   assert.equal(getMovement(web).hasHistory, false);
@@ -360,8 +419,8 @@ test("R2-9: two web-search (claude) snapshots are diffed only when both carry th
     [undefined, undefined, false],
   ]) {
     db.prepare("DELETE FROM rate_snapshots").run();
-    recordSnapshot({ rate_30yr_fixed: 6.9, source: prev }, daysAgo(1), "claude");
-    const m = getMovement({ rate_30yr_fixed: 6.8, source: cur }, "claude");
+    recordSnapshot({ rate_30yr_fixed: 6.9, date: "2026-10-19", source: prev }, daysAgo(1), "claude");
+    const m = getMovement({ rate_30yr_fixed: 6.8, date: "2026-10-20", source: cur }, "claude");
     assert.equal(m.hasHistory, moves, `${prev} -> ${cur}`);
     if (moves) assert.ok(Math.abs(m.deltas.rate_30yr_fixed - -0.1) < 1e-9);
   }
@@ -380,7 +439,7 @@ test("R2-9: POST /api/rates stores its web-search fallback as claude, whatever t
   const prevKey = process.env.ANTHROPIC_API_KEY;
   delete process.env.FRED_API_KEY;   // FRED fails, so the web-search fallback answers
   process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
-  recordSnapshot({ rate_30yr_fixed: 7.1, rate_15yr_fixed: 6.2, source: FRED_SOURCE }, daysAgo(1), "fred");
+  recordSnapshot({ rate_30yr_fixed: 7.1, rate_15yr_fixed: 6.2, date: "2026-10-19", source: FRED_SOURCE }, daysAgo(1), "fred");
   const app = await startRatesApp();
   try {
     const data = await app.post();

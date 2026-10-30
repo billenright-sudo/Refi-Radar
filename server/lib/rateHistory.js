@@ -1,5 +1,5 @@
 "use strict";
-// Daily market-rate snapshots and day-over-day movement.
+// Daily market-rate snapshots and the movement between FRED observation dates.
 const db = require("../db");
 const { MONTHS, WEEKDAYS, ordinal } = require("./dateLabels");
 
@@ -55,11 +55,12 @@ function currentProvider(rates, provider) {
 // "30-year minus 0.10" estimate (routes/rates.js). Its level is still reported; its change never is.
 const NO_DELTA_KEYS = new Set(["rate_5_1_arm"]);
 
-// The spoken "since when" for a snapshot taken on `day`, seen from `today` (both YYYY-MM-DD, UTC days): "yesterday" one day
-// back, the weekday ("Thursday") two to six days back, otherwise the date with an ordinal day ("October 18th", with the year
-// when it is not this year's), which toSpeech reads "October eighteenth" (a bare "October 18" is read "October eighteen"); the
-// digits still ground the model's "since October 18th". Code computes it so the model never has to (and never says "since
-// yesterday" about an older snapshot). Pure.
+// The spoken "since when" for an observation dated `day`, seen from the current observation's date `today` (both YYYY-MM-DD,
+// UTC days; getMovement passes the previous and current FRED observation dates): "yesterday" one day back, the weekday
+// ("Thursday") two to six days back, otherwise the date with an ordinal day ("October 18th", with the year when it is not this
+// year's), which toSpeech reads "October eighteenth" (a bare "October 18" is read "October eighteen"); the digits still ground
+// the model's "since October 18th". Code computes it so the model never has to (and never says "since yesterday" about an older
+// snapshot). `today` defaults to the current UTC day. Pure.
 function sinceLabel(day, today = dayKey()) {
   const then = new Date(`${day}T00:00:00Z`);
   const now = new Date(`${today}T00:00:00Z`);
@@ -70,22 +71,46 @@ function sinceLabel(day, today = dayKey()) {
   return then.getUTCFullYear() === now.getUTCFullYear() ? date : `${date}, ${then.getUTCFullYear()}`;
 }
 
-// Compare the given current rates to the most recent snapshot from a prior day. There is a movement only when that snapshot
+// A rate set's FRED observation date: its `date` when that is a real YYYY-MM-DD calendar day, else null. (The capture day a
+// snapshot is stored under, `rate_snapshots.day`, is a different thing: it is when we fetched, not what the figure is for.)
+function observationDate(rates) {
+  const date = rates && rates.date;
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const then = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(then.getTime()) && then.toISOString().slice(0, 10) === date ? date : null;
+}
+
+// How many of the latest capture days getMovement reads: one row per day, so over a year of them. The previous observation is
+// among the latest few; the cap only keeps the scan bounded.
+const SCAN_ROWS = 400;
+
+// Compare the given current rates to the stored snapshot of the most recent EARLIER FRED observation: the greatest stored
+// `rates.date` strictly before the current set's `date`. Observation dates, not capture days: a re-fetch of the same
+// observation, however many days later, is no movement, and a weekend sits between Friday's print and Monday's. A set with no
+// valid `date` has no movement, and a stored row with none (or unreadable JSON) is never the previous observation. When two
+// rows carry the same observation date, the later capture wins. There is a movement only when that snapshot
 // came from the same provider as the current rates and neither is an estimate (a FRED figure diffed against a web-search one
-// is no market move): otherwise deltas is null and hasHistory false, as before any prior day was recorded. Two web-search
+// is no market move): otherwise deltas is null and hasHistory false, as before any prior observation was recorded. Two web-search
 // ("claude") sets must also carry the same, non-empty source label: the search can return a different publisher each day, and
 // two publishers' averages are no move either. The current set's provider is `provider` when given, else the one the route
 // stored today for this same set, else its label's (currentProvider). With a movement, `since` is the spoken label for the
-// snapshot's day and `sinceDate` its YYYY-MM-DD.
+// previous observation's date, seen from the current one (sinceLabel), and `sinceDate` is that date.
 function getMovement(rates, provider) {
   const none = { current: rates, previous: null, deltas: null, hasHistory: false, since: null, sinceDate: null };
-  const row = db
-    .prepare("SELECT day, rates, provider FROM rate_snapshots WHERE day < ? ORDER BY day DESC LIMIT 1")
-    .get(dayKey());
-  if (!row) return none;
-  const previous = JSON.parse(row.rates);
+  const nowDate = observationDate(rates);
+  if (!nowDate) return none;
+  let latest = null;   // { previous, provider, date }: the stored set of the greatest observation date before nowDate
+  const rows = db.prepare("SELECT rates, provider FROM rate_snapshots ORDER BY day DESC LIMIT ?").all(SCAN_ROWS);
+  for (const row of rows) {
+    let stored = null;
+    try { stored = JSON.parse(row.rates); } catch (_err) { continue; }
+    const date = observationDate(stored);
+    if (date && date < nowDate && (!latest || date > latest.date)) latest = { previous: stored, provider: row.provider, date };
+  }
+  if (!latest) return none;
+  const { previous } = latest;
   // a row stored before the provider column existed: read its provider off the stored source label
-  const previousProvider = row.provider || providerOf(previous);
+  const previousProvider = latest.provider || providerOf(previous);
   const nowProvider = currentProvider(rates, provider);
   if (previousProvider !== nowProvider || nowProvider === "estimated" || previousProvider === "estimated") return none;
   if (nowProvider === "claude" && (!sourceOf(rates) || sourceOf(previous).slice(0, 200) !== sourceOf(rates).slice(0, 200))) return none;
@@ -98,7 +123,7 @@ function getMovement(rates, provider) {
       deltas[key] = Math.round((rates[key] - previous[key]) * 10000) / 10000;
     }
   }
-  return { current: rates, previous, deltas, hasHistory: true, since: sinceLabel(row.day), sinceDate: row.day };
+  return { current: rates, previous, deltas, hasHistory: true, since: sinceLabel(latest.date, nowDate), sinceDate: latest.date };
 }
 
 module.exports = { recordSnapshot, getMovement, providerOf, sinceLabel, ordinal, MONTHS, WEEKDAYS };

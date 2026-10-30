@@ -87,31 +87,34 @@ test("getMarketUpdate returns the rates, a cited source, and no deltas before an
 test("getMarketUpdate reports day-over-day deltas once a prior-day snapshot exists", () => {
   // B3 FIXTURE CHANGE: the prior snapshot carries the FRED source label the live path writes. A move is only computed
   // between two sets from the same provider, and a source-less set reads as the web-search fallback, not FRED.
-  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, source: "Optimal Blue lock data (2000-01-01)" }, "2000-01-01");
+  // FIXTURE CHANGE (morning briefing): a move is measured between FRED observation dates (`rates.date`), so the prior snapshot
+  // carries its own observation date, ten days before LIVE's; the capture day it is stored under no longer matters.
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, date: "2026-10-11", source: "Optimal Blue lock data (2026-10-11)" }, "2000-01-01");
   const r = getMarketUpdate({}, brokerCtx);
   assert.equal(r.data.hasHistory, true);
   assert.equal(r.data.deltas.rate_30yr_fixed, -0.08);
   assert.equal(r.data.deltas.rate_15yr_fixed, 0.01);
-  assert.equal(r.data.since, "January 1st, 2000");   // R2-3 FLIP: the ordinal day (was "January 1, 2000")
-  assert.equal(r.data.sinceDate, "2000-01-01");
+  assert.equal(r.data.since, "October 11th");   // R2-3 FLIP: the ordinal day (was "October 11"); labelled against LIVE's 2026-10-21
+  assert.equal(r.data.sinceDate, "2026-10-11");
 });
 
 test("B3: getMarketUpdate gives no move against a snapshot from another provider, none for the 5/1 ARM, and a code-computed since", () => {
   const day = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
   // the web-search fallback yesterday, FRED today: no move
-  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, source: "Mortgage News Daily" }, day(1));
+  // FIXTURE CHANGE (morning briefing): the prior snapshot's own observation date, the day before LIVE's 2026-10-21
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, date: "2026-10-20", source: "Mortgage News Daily" }, day(1));
   let r = getMarketUpdate({}, brokerCtx);
   assert.deepStrictEqual([r.data.deltas, r.data.hasHistory, r.data.since, r.data.sinceDate], [null, false, null, null]);
   // FRED yesterday and today: a move, no ARM entry, since yesterday
   db.prepare("DELETE FROM rate_snapshots").run();
-  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, source: "Optimal Blue lock data (x) · ARM via Bankrate" }, day(1));
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, date: "2026-10-20", source: "Optimal Blue lock data (x) · ARM via Bankrate" }, day(1));
   r = getMarketUpdate({}, brokerCtx);
   assert.equal(r.data.hasHistory, true);
   assert.equal(r.data.deltas.rate_30yr_fixed, -0.08);
   assert.equal("rate_5_1_arm" in r.data.deltas, false, "the ARM level is reported, its move never is");
   assert.equal(r.data.rates.rate_5_1_arm, RATES.rate_5_1_arm);
   assert.equal(r.data.since, "yesterday");
-  assert.equal(r.data.sinceDate, day(1));
+  assert.equal(r.data.sinceDate, "2026-10-20");
   // the prompt and the tool description tell the model to use the label, never to work one out
   const { CHARLI_SYSTEM } = require("../lib/assistant/prompt");
   assert.ok(CHARLI_SYSTEM.includes("When you report how rates moved, say since when using getMarketUpdate's `since` label as given; never say \"since yesterday\" or name a day on your own."));
@@ -133,7 +136,7 @@ const EST = { ...RATES, date: "2026-10-21", source: "Estimated — live fetch un
 test("getMarketUpdate on estimated rates never fabricates a delta, even with a prior-day live snapshot", () => {
   // A live prior-day snapshot exists, so getMovement would diff the hard-coded estimate against it
   // and invent a day-over-day move. The tool must skip getMovement entirely.
-  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9 }, "2000-01-01");
+  recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, date: "2026-10-20" }, "2000-01-01");
   const r = getMarketUpdate({}, { ...brokerCtx, rates: EST });
   assert.equal(r.data.deltas, null);
   assert.equal(r.data.hasHistory, false);
@@ -147,7 +150,7 @@ test("getMarketUpdate on estimated rates never fabricates a delta, even with a p
 test("A4: getMarketUpdate presents rates and deltas to two decimals in a new object; ctx.rates and the sweep keep the raw rates", () => {
   const raw = { rate_30yr_fixed: 7.251, rate_15yr_fixed: 6.564, rate_5_1_arm: 6.15, rate_30yr_top_tier: 6.9875, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
   const frozen = JSON.stringify(raw);
-  recordSnapshot({ ...raw, rate_30yr_fixed: 7.236, rate_15yr_fixed: 6.601, source: "Optimal Blue lock data (2000-01-01)" }, "2000-01-01");
+  recordSnapshot({ ...raw, rate_30yr_fixed: 7.236, rate_15yr_fixed: 6.601, date: "2026-10-20", source: "Optimal Blue lock data (2026-10-20)" }, "2000-01-01");
   const ctx = { ...brokerCtx, rates: raw };
   const sweepBefore = runSweepTool({}, ctx);
   const r = getMarketUpdate({}, ctx);
