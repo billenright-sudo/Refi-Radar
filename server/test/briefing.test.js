@@ -19,7 +19,7 @@ const { recordSnapshot } = require("../lib/rateHistory");
 const { CAREER_QUESTION } = require("../lib/assistant/coaching");
 const { openerFor } = require("../lib/assistant/openers");
 const assistantRoutes = require("../routes/assistant");
-const { buildBriefing, DROP_THRESHOLD, CLOSE_QUESTION, COUPLE_OF_CALLS } = require("../lib/assistant/briefing");
+const { buildBriefing, speakable, DROP_THRESHOLD, CLOSE_QUESTION, CLOSE_NO_CALLS, COUPLE_OF_CALLS } = require("../lib/assistant/briefing");
 
 test.after(() => {
   try { db.close(); } catch { /* */ }
@@ -177,12 +177,12 @@ test("a 30-year drop past the threshold leads with \"Rates dropped\" in the firs
   const opener = openerFor({ localHour: 8, localDate: TODAY, name: "Ann" });
 
   const first = await brief(annId, { rates });
-  assert.ok(first.reply.startsWith(`${opener} Rates dropped: the 30-year is at 6.4%, down 0.15 since yesterday, as of October 29th.`), first.reply);
+  assert.ok(first.reply.startsWith(`${opener} Rates dropped: the 30-year is at 6.4%, down 0.15 since October 28th, as of October 29th.`), first.reply);
   assert.ok(fu.dropAlreadyLed(db, annId, YESTERDAY));
 
   const again = await brief(annId, { rates });
   assert.ok(!again.reply.includes("Rates dropped"), again.reply);
-  assert.ok(again.reply.startsWith(`${opener} The 30-year is at 6.4%, down 0.15 since yesterday, as of October 29th.`), again.reply);
+  assert.ok(again.reply.startsWith(`${opener} The 30-year is at 6.4%, down 0.15 since October 28th, as of October 29th.`), again.reply);
   assert.equal(again.strip.move30, -0.15);
 
   // led for Ann only: another broker's first briefing still leads with it
@@ -192,7 +192,7 @@ test("a 30-year drop past the threshold leads with \"Rates dropped\" in the firs
 test("a drop smaller than the threshold is stated, never led with", async () => {
   recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.62 }), "2026-10-28", "fred");
   const r = await brief(annId, { rates: live(YESTERDAY, { rate_30yr_fixed: 6.5 }) });
-  assert.ok(r.reply.includes("The 30-year is at 6.5%, down 0.12 since yesterday, as of October 29th."), r.reply);
+  assert.ok(r.reply.includes("The 30-year is at 6.5%, down 0.12 since October 28th, as of October 29th."), r.reply);
   assert.ok(!r.reply.includes("Rates dropped"), r.reply);
   assert.ok(!fu.dropAlreadyLed(db, annId, YESTERDAY));
 });
@@ -200,7 +200,7 @@ test("a drop smaller than the threshold is stated, never led with", async () => 
 test("15-year, FHA and jumbo moves of 0.05 or more get one clause each; smaller ones are left out", async () => {
   recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.42, rate_15yr_fixed: 6.03, rate_30yr_fha: 6.2, rate_30yr_jumbo: 6.81 }), "2026-10-28", "fred");
   const r = await brief(annId, { rates: live(YESTERDAY, { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_30yr_fha: 6.18, rate_30yr_jumbo: 6.87 }) });
-  assert.ok(r.reply.includes("The 30-year is at 6.52%, up 0.1 since yesterday, as of October 29th. The 15-year is down 0.12 and jumbo is up 0.06."), r.reply);
+  assert.ok(r.reply.includes("The 30-year is at 6.52%, up 0.1 since October 28th, as of October 29th. The 15-year is down 0.12 and jumbo is up 0.06."), r.reply);
   assert.ok(!r.reply.includes("FHA"), r.reply);
 });
 
@@ -208,7 +208,7 @@ test("a quiet day (every move under 0.05) is one short market sentence", async (
   recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.54, rate_15yr_fixed: 5.93 }), "2026-10-28", "fred");
   const r = await brief(nellId);
   const opener = openerFor({ localHour: 8, localDate: TODAY, name: "Nell" });
-  assert.equal(r.reply, `${opener} The 30-year is at 6.52%, little changed since yesterday, as of October 29th. ${CAREER_QUESTION}`);
+  assert.equal(r.reply, `${opener} The 30-year is at 6.52%, little changed since October 28th, as of October 29th. ${CAREER_QUESTION}`);
 });
 
 test("with no earlier observation there is no move, only the rate as of its observation date", async () => {
@@ -222,7 +222,7 @@ test("an estimated rate set says estimated and claims no move, even with a store
   recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 7.2 }), "2026-10-28", "fred");
   const r = await brief(annId, { rates: EST });
   assert.ok(r.reply.includes("The 30-year is at an estimated 6.52%."), r.reply);
-  assert.ok(!/since yesterday|dropped|down 0|up 0|as of/.test(r.reply), r.reply);
+  assert.ok(!/since October|since yesterday|dropped|down 0|up 0|as of/.test(r.reply), r.reply);
   assert.ok(r.reply.includes("Today's calls, on estimated rates:"), r.reply);
   assert.equal(r.strip.move30, null);
   assert.equal(r.strip.asOf, null);
@@ -507,4 +507,180 @@ test("no briefing ever reads out a client's email or phone", async () => {
   for (const reply of replies) {
     for (const contact of CONTACTS) assert.ok(!reply.includes(contact), `${contact}: ${reply}`);
   }
+});
+
+// ── fix round 1 ──────────────────────────────────────────────────────────────
+
+test("the since label is the previous observation's own date, never a relative day", async () => {
+  recordSnapshot(live("2026-10-23", { rate_30yr_fixed: 6.6 }), "2026-10-23", "fred");
+  const r = await brief(nellId);
+  assert.ok(r.reply.includes("The 30-year is at 6.52%, down 0.08 since October 23rd, as of October 29th."), r.reply);
+});
+
+test("speakable: contact-shaped text (any digit-run separator, fullwidth forms, @, ?) and text over 80 characters is not spoken", () => {
+  for (const text of [
+    "Call 555-201-0103", "Call 555–201–0103", "555/201/0103", "555_201_0103", "555,201,0103", "555 – 201 – 0103",
+    "５５５２０１０１０３", "Call (555) 201 0103", "Room 123-4567", "1234567",
+    "lucy@mail.example", "lucy＠mail.example", "Rate lock?", "Rate lock？", "x".repeat(81), "", "   ", null, 42,
+  ]) {
+    assert.equal(speakable(text), null, JSON.stringify(text));
+  }
+  assert.equal(speakable("Room 123-456"), "Room 123-456", "6 digits are kept");
+  assert.equal(speakable("Team sync 10:30"), "Team sync 10:30");
+  assert.equal(speakable("  Lucy \n Tran "), "Lucy Tran");
+  assert.equal(speakable("x".repeat(80)), "x".repeat(80));
+});
+
+test("Review Focus 1, every separator: a phone-shaped title is read as \"an event\"", async () => {
+  seedBook();
+  for (const title of ["Call 555–201–0103", "555/201/0103", "555_201_0103", "555,201,0103", "Call 555 – 201 – 0103", "Call ５５５２０１０１０３", `Plan ${"x".repeat(80)}`]) {
+    const r = await brief(annId, { google: fakeGoogle({ byDate: { [TODAY]: [event(title, "9:00 AM", TODAY, 9, 30)] } }) });
+    assert.ok(r.reply.includes("You have 1 event on your calendar today: an event at 9:00 AM."), `${title}: ${r.reply}`);
+    assert.ok(!/0103|０１０３|xxxx/.test(r.reply), `${title}: ${r.reply}`);
+  }
+  const kept = await brief(annId, { google: fakeGoogle({ byDate: { [TODAY]: [event("Room 123-456", "9:00 AM", TODAY, 9, 30)] } }) });
+  assert.ok(kept.reply.includes("Room 123-456 at 9:00 AM"), kept.reply);
+});
+
+test("a client whose name holds an email or a phone number is never spoken: off the call list, and its follow-up is never asked", async () => {
+  seedBook();
+  const byEmail = addClient(annId, "lucy@mail.example", { rate: 7.5, balance: 400000, value: 500000 });
+  const byPhone = addClient(annId, "Lucy 555-201-0103", { rate: 7.5, balance: 400000, value: 500000 });
+  fu.recordRecommendations(db, annId, YESTERDAY, [
+    { clientId: byEmail, source: "briefing", reasonCode: "rate_term" },
+    { clientId: byPhone, source: "calendar", reasonCode: "calendar", dueAt: "2026-10-29 18:00:00" },
+  ]);
+  // two more with the best savings in the book and nothing recorded: they would top the list if their names could be read
+  const topEmail = addClient(annId, "zed@mail.example", { rate: 8.5, balance: 400000, value: 500000 });
+  const topPhone = addClient(annId, "Zed 555.201.0104", { rate: 8.5, balance: 400000, value: 500000 });
+  const r = await brief(annId);
+  for (const bad of ["lucy@mail.example", "zed@mail.example", "@", "555-201-0103", "555.201.0104", "0103", "0104", "Zed"]) {
+    assert.ok(!r.reply.includes(bad), `${bad}: ${r.reply}`);
+  }
+  assert.ok(r.reply.includes("Lucy Tran could save"), r.reply);
+  assert.equal(r.followUp, null);
+  assert.ok(r.reply.endsWith(CLOSE_QUESTION), r.reply);
+  assert.deepStrictEqual(recRows("client_id IN (?, ?)", byEmail, byPhone).map((row) => [row.day, row.ask_count]), [[YESTERDAY, 0], [YESTERDAY, 0]]);
+  assert.equal(recRows("client_id IN (?, ?, ?, ?) AND day = ?", byEmail, byPhone, topEmail, topPhone, TODAY).length, 0, "not recorded as recommended today");
+});
+
+test("a briefing row and a calendar row for the same client are one call: named once, both counted as asked", async () => {
+  const ids = seedBook();
+  fu.recordRecommendations(db, annId, YESTERDAY, [{ clientId: ids.lucy, source: "briefing", reasonCode: "rate_term" }]);
+  fu.recordRecommendations(db, annId, YESTERDAY, [{ clientId: ids.lucy, source: "calendar", reasonCode: "calendar", dueAt: "2026-10-29 18:00:00" }]);
+  const r = await brief(annId);
+  assert.ok(!r.reply.includes(COUPLE_OF_CALLS), r.reply);
+  assert.ok(r.reply.endsWith("Yesterday I suggested calling Lucy Tran. Were you able to reach them?"), r.reply);
+  assert.deepStrictEqual(recRows("client_id = ? AND day = ?", ids.lucy, YESTERDAY).map((row) => [row.source, row.ask_count]),
+    [["briefing", 1], ["calendar", 1]]);
+
+  // with a second client too, the couple is two clients, and Lucy's rows are both counted again
+  fu.recordRecommendations(db, annId, YESTERDAY, [{ clientId: ids.grace, source: "sweep", reasonCode: "check_in" }]);
+  const two = await brief(annId);
+  assert.ok(two.reply.includes(COUPLE_OF_CALLS), two.reply);
+  assert.deepStrictEqual(recRows("day = ?", YESTERDAY).map((row) => [row.client_id, row.ask_count]),
+    [[ids.lucy, 2], [ids.lucy, 2], [ids.grace, 1]]);
+});
+
+test("R11: with no call list (an empty book, a failed sweep, or everyone left off) the close does not offer to book \"those calls\"", quiet(async () => {
+  assert.equal(CLOSE_NO_CALLS, "Want a full sweep, or an update on a client?");
+  const empty = await brief(annId);
+  assert.ok(empty.reply.endsWith(CLOSE_NO_CALLS), empty.reply);
+
+  const ids = seedBook();
+  for (const clientId of [ids.lucy, ids.owen, ids.grace]) {
+    fu.logCall(db, { userId: annId, clientId, outcome: "reached", nowUtc: "2026-10-29 17:00:00" });
+  }
+  const allReached = await brief(annId);
+  assert.ok(!allReached.reply.includes("Today's call"), allReached.reply);
+  assert.ok(allReached.reply.endsWith(CLOSE_NO_CALLS), allReached.reply);
+
+  db.prepare("DELETE FROM contact_log").run();
+  const realSweep = refi.runSweep;
+  refi.runSweep = () => { throw new Error("sweep blew up"); };
+  try {
+    assert.ok((await brief(annId)).reply.endsWith(CLOSE_NO_CALLS));
+  } finally {
+    refi.runSweep = realSweep;
+  }
+  assert.ok((await brief(annId)).reply.endsWith(CLOSE_QUESTION), "with a list, the close offers to book it");
+}));
+
+test("R12: a carried client listed today is not carried again tomorrow; one the list had no room for stays carried", async () => {
+  const ids = seedBook();
+  const extra = [];
+  for (const name of ["Cara Mendez", "Dov Baker", "Eve Lund"]) extra.push(addClient(annId, name, { lastContact: "2026-10-01" }));
+  for (const clientId of [...extra, ids.grace]) fu.addCarry(db, annId, clientId, YESTERDAY);   // four carried, three slots
+
+  const today = await brief(annId);
+  assert.ok(today.reply.includes("Today's calls: Cara Mendez, who you asked me to put on today's list; Dov Baker"), today.reply);
+  assert.ok(!today.reply.includes("Grace Okafor"), today.reply);
+  const carry = (clientId) => recRows("client_id = ? AND source = 'carry'", clientId)[0];
+  for (const clientId of extra) {
+    assert.equal(carry(clientId).status, "expired");
+    assert.equal(carry(clientId).resolved_at, NOW_UTC);
+  }
+  assert.equal(carry(ids.grace).status, "open", "no room for her: still carried");
+
+  // re-opening today reads the same list (the carried clients are still today's)
+  assert.equal((await brief(annId)).reply, today.reply);
+
+  const TOMORROW = "2026-10-31";
+  assert.deepStrictEqual(fu.carriedIds(db, annId, TOMORROW), [ids.grace]);
+  const tomorrow = await brief(annId, { localDate: TOMORROW, nowMs: at(TOMORROW, 8) });
+  assert.ok(tomorrow.reply.includes("Today's calls: Grace Okafor, who you put on today's list, 12 months since your last check-in"), tomorrow.reply);
+  for (const name of ["Cara Mendez, who", "Dov Baker, who", "Eve Lund, who"]) assert.ok(!tomorrow.reply.includes(name), tomorrow.reply);
+});
+
+test("consumeCarries leaves a carry dated the briefing's own day (asked for later today) for tomorrow", () => {
+  const cara = addClient(annId, "Cara Mendez");
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  fu.addCarry(db, annId, cara, TODAY);
+  assert.equal(fu.consumeCarries(db, annId, [cara], NOW_UTC, TODAY), 1);
+  assert.deepStrictEqual(recRows("client_id = ?", cara).map((row) => [row.day, row.status]), [[YESTERDAY, "expired"], [TODAY, "open"]]);
+  assert.throws(() => fu.consumeCarries(db, annId, [cara], "2026-10-30T15:00:00Z", TODAY), TypeError);
+  assert.throws(() => fu.recommendedOn(db, annId, TODAY, "nope"), TypeError);
+});
+
+test("a missing or impossible localDate falls back to the UTC date, and a bad localHour to the UTC hour: no section vanishes", async () => {
+  const ids = seedBook();
+  fu.recordRecommendations(db, annId, YESTERDAY, [{ clientId: ids.lucy, source: "briefing", reasonCode: "rate_term" }]);
+  const google = () => fakeGoogle({ byDate: { [TODAY]: [event("Team sync", "9:00 AM", TODAY, 9, 30)] } });
+  for (const localDate of [null, "2026-13-45", undefined, "yesterday"]) {
+    db.prepare("UPDATE charlie_recommendations SET ask_count = 0").run();
+    const r = await brief(annId, { localDate, google: google() });
+    assert.ok(r.reply.includes("Today's calls: "), `${localDate}: ${r.reply}`);
+    assert.ok(r.reply.includes("Team sync at 9:00 AM"), `${localDate}: ${r.reply}`);
+    assert.ok(r.reply.endsWith("Yesterday I suggested calling Lucy Tran. Were you able to reach them?"), `${localDate}: ${r.reply}`);
+    assert.ok(recRows("day = ? AND source = 'briefing'", TODAY).length > 0);
+  }
+  // NOW_MS is 15:00 UTC: a bad hour is the UTC hour, so this is a catch-up
+  for (const localHour of [null, 24, -1, 8.5, "8"]) assert.equal((await brief(annId, { localHour })).kind, "catch_up", String(localHour));
+});
+
+test("the calendar follow-ups are not started once the wait is used up, even when today's read did answer", async () => {
+  seedBook();
+  const google = fakeGoogle({ listed: () => {
+    const until = Date.now() + 80;
+    while (Date.now() < until) { /* today's read answers, but only after the whole wait */ }
+    return { events: [event("Team sync", "9:00 AM", TODAY, 9, 30)] };
+  } });
+  const r = await brief(annId, { google, calendarWaitMs: 50 });
+  assert.deepStrictEqual(google.asked, [TODAY], "no follow-up read started with no time left to wait for it");
+  assert.ok(r.reply.includes("Team sync at 9:00 AM"), r.reply);
+  const none = fakeGoogle();
+  await brief(annId, { google: none, calendarWaitMs: 0 });
+  assert.deepStrictEqual(none.asked, [], "no wait at all: Google is not called");
+});
+
+test("\"Plus N more check-ins\" counts only clients that could be listed: not listed, not left off, and not asked about", async () => {
+  seedBook();
+  const named = {};
+  for (const name of ["Dee Lang", "Eli Moss", "Fay Nunez", "Hal Ortiz"]) named[name] = addClient(annId, name, { lastContact: "2025-09-01" });
+  fu.logCall(db, { userId: annId, clientId: named["Eli Moss"], outcome: "reached", nowUtc: "2026-10-28 17:00:00" });   // left off
+  fu.recordRecommendations(db, annId, "2026-10-25", [{ clientId: named["Fay Nunez"], source: "sweep", reasonCode: "check_in" }]);   // asked about
+  const r = await brief(annId);
+  // due: Grace, Dee, Eli, Fay, Hal. Listed: Dee. Eli was reached, Fay is the follow-up: Grace and Hal remain
+  assert.ok(r.reply.includes("Plus 2 more check-ins due."), r.reply);
+  assert.ok(r.reply.endsWith("Earlier I suggested calling Fay Nunez. Were you able to reach them?"), r.reply);
 });

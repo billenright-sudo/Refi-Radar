@@ -133,6 +133,39 @@ function carriedIds(db, userId, localDate) {
   `).all({ userId, localDate }).map((r) => r.clientId);
 }
 
+// A carry puts a client on ONE day's list: once a briefing has listed them, the carry rows that put them there (open, dated
+// before `beforeDay` when it is given, which the briefing always does) are expired and stamped. A carry the broker asks for
+// later that same day is dated that day, so it is left for the next day's list. A carried client the list had no room for is
+// not passed in, and stays carried. Returns the rows changed.
+function consumeCarries(db, userId, clientIds, nowUtc, beforeDay) {
+  assertUtc(nowUtc, "nowUtc");
+  if (beforeDay !== undefined) assertDay(beforeDay, "beforeDay");
+  const expire = db.prepare(`
+    UPDATE charlie_recommendations SET status = 'expired', resolved_at = @nowUtc
+    WHERE user_id = @userId AND client_id = @clientId AND source = 'carry' AND status = 'open'
+      AND (@beforeDay IS NULL OR day < @beforeDay)
+  `);
+  let changed = 0;
+  db.transaction(() => {
+    for (const clientId of new Set(clientIds || [])) {
+      changed += expire.run({ nowUtc, userId, clientId, beforeDay: beforeDay ?? null }).changes;
+    }
+  })();
+  return changed;
+}
+
+// What was recorded for this user on `day` from `source` ('briefing', 'sweep', 'calendar' or 'carry'), whatever became of it,
+// in the order it was recorded: [{ clientId, reasonCode }]. The briefing reads its own earlier list for the day from here.
+const SOURCES = ["briefing", "sweep", "calendar", "carry"];
+function recommendedOn(db, userId, day, source) {
+  assertDay(day, "day");
+  if (!SOURCES.includes(source)) throw new TypeError(`source must be one of ${SOURCES.join(", ")}, got ${JSON.stringify(source)}`);
+  return db.prepare(`
+    SELECT client_id AS clientId, reason_code AS reasonCode FROM charlie_recommendations
+    WHERE user_id = ? AND day = ? AND source = ? ORDER BY id
+  `).all(userId, day, source);
+}
+
 // Write a call to the contact log and return its id. outcome is 'reached' or 'not_reached' (anything else is refused by the
 // table); notes are the broker's own and stay in the log.
 function logCall(db, { userId, clientId, outcome, notes, nowUtc }) {
@@ -185,6 +218,8 @@ module.exports = {
   resolveForClient,
   addCarry,
   carriedIds,
+  consumeCarries,
+  recommendedOn,
   logCall,
   reachedSince,
   recentlyRecommended,
