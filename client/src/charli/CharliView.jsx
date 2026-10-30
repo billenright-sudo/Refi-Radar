@@ -1,8 +1,7 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { createSession, CAREER_STAGES, pendingRows, voiceNoteFor } from "./session.mjs";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createSession, pendingRows, voiceNoteFor } from "./session.mjs";
 import { keptSession } from "./keep.mjs";
 import { createReplay, shouldClear } from "./replay.mjs";
-import { googleCard, validNmls, connectUrlOk, inputAfterReload, createCoalescer } from "./google.mjs";
 import { createAudio, transcribe } from "./audio.js";
 
 // Charli, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and
@@ -93,238 +92,6 @@ const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
     </div>
   </div>
 );
-
-const StageCard = ({ current, disabled, onPick, ui: { C, card, Icon } }) => (
-  <div style={{ ...card, padding: "1.1rem" }}>
-    <div style={{ fontSize: 14, fontWeight: 600 }}>Coaching style</div>
-    <div style={{ color: C.muted, fontSize: 12.5, margin: "4px 0 12px", lineHeight: 1.45 }}>
-      How long you&rsquo;ve been originating. Charlie explains more or less to match; the numbers never change.
-    </div>
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {CAREER_STAGES.map(({ id, label }) => {
-        const active = id === current;
-        return (
-          <button
-            key={id}
-            data-testid={`charli-stage-${id}`}
-            aria-pressed={active}
-            disabled={disabled}
-            onClick={() => onPick(id)}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, textAlign: "left", fontFamily: "inherit", fontSize: 13,
-              fontWeight: active ? 700 : 500, padding: "9px 12px", borderRadius: 9,
-              background: active ? C.amberBg : C.surfaceHi, color: active ? C.amber : C.mutedHi,
-              border: `1px solid ${active ? C.amber : C.border}`, cursor: disabled ? "default" : "pointer", opacity: disabled && !active ? 0.6 : 1,
-            }}
-          >
-            {active ? <Icon name="check" size={14} color={C.amber} /> : <span style={{ width: 14 }} />}
-            {label}
-          </button>
-        );
-      })}
-    </div>
-    {!current && <div style={{ color: C.muted, fontSize: 12, marginTop: 10 }}>Not set yet. Charlie will ask, or pick one.</div>}
-  </div>
-);
-
-// ── Calendar & email: the Google connection and the NMLS IDs every email is signed with ──
-
-// One call to the app's own API; never throws. -> { ok, status, data }
-async function callApi(method, url, body) {
-  try {
-    const res = await fetch(url, body === undefined ? { method } : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    let data = null;
-    try { data = await res.json(); } catch { data = null; }
-    return { ok: res.ok, status: res.status, data };
-  } catch {
-    return { ok: false, status: 0, data: null };
-  }
-}
-const errorOf = (res, fallback) => (res.data && typeof res.data.error === "string" && res.data.error.trim()) || fallback;
-
-const GOOGLE_BUTTONS = { connect: "Connect", reconnect: "Reconnect", disconnect: "Disconnect" };
-const DISCONNECT_CONFIRM = "Disconnect Google? Charlie will stop reading and booking your calendar.";
-
-const NmlsField = ({ label, value, saved, busy, testId, onChange, onSave, ui: { C } }) => {
-  const id = useId();
-  const valid = validNmls(value);
-  const changed = value.trim() !== (saved || "");
-  const can = valid && changed && !busy;
-  return (
-    <div style={{ flex: "1 1 190px", minWidth: 0 }}>
-      <label htmlFor={id} style={{ display: "block", color: C.muted, fontSize: 11.5, marginBottom: 4 }}>{label}</label>
-      <div style={{ display: "flex", gap: 6 }}>
-        <input
-          id={id}
-          data-testid={testId}
-          inputMode="numeric"
-          maxLength={12}
-          placeholder="Digits only"
-          value={value}
-          aria-invalid={!valid}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && can) onSave(); }}
-          style={{ flex: 1, minWidth: 0, background: C.surfaceHi, border: `1px solid ${valid ? C.border : C.red}`, borderRadius: 8, padding: "7px 10px", color: C.text, fontFamily: "inherit", fontSize: 13, outline: "none", boxSizing: "border-box" }}
-        />
-        <button
-          type="button"
-          data-testid={`${testId}-save`}
-          disabled={!can}
-          onClick={onSave}
-          style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", background: "transparent", color: C.mutedHi, fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: can ? "pointer" : "default", opacity: can ? 1 : 0.5 }}
-        >
-          {value.trim() === "" && saved ? "Clear" : "Save"}
-        </button>
-      </div>
-      {!valid && <div style={{ color: C.red, fontSize: 11.5, marginTop: 3 }}>An NMLS ID is digits only (up to twelve).</div>}
-    </div>
-  );
-};
-
-// `working`: Charli's session is busy with a turn, a confirm or a cancel (not the opening greeting). The card reads Google's
-// state and the NMLS IDs on open, again whenever that ends, and whenever the window gets focus back: Charli can find out
-// mid-conversation that the connection expired (her reply says to reconnect it here), and an ID can be saved from another tab.
-const CalendarEmailCard = ({ ui, working }) => {
-  const { C, card, Icon } = ui;
-  const [google, setGoogle] = useState(null);     // null: checking | "failed" | what /api/google/status answered
-  const [profile, setProfile] = useState(null);   // null: not loaded | what /api/profile/nmls answered
-  const [own, setOwn] = useState("");
-  const [org, setOrg] = useState("");
-  const [busy, setBusy] = useState("");           // "google" | "own" | "org" | "" (nothing running)
-  const [note, setNote] = useState(null);         // { text, bad? } | null
-
-  const profileRef = useRef(null);   // what the profile was when it was last taken (state, for the code that must not wait for a render)
-  const epoch = useRef(0);           // bumped around every change made here: a read that started before one is stale and is thrown away
-  const reread = useRef(null);
-  const wasWorking = useRef(false);
-
-  const isProfile = (res) => res.ok && res.data && typeof res.data === "object" && "nmlsId" in res.data;
-  // A field the user has typed in is never overwritten by a re-read; `overwrite` ("own" | "org") is the one just saved.
-  const takeProfile = (p, { overwrite } = {}) => {
-    const before = profileRef.current;
-    profileRef.current = p;
-    setProfile(p);
-    setOwn((now) => (overwrite === "own" ? p.nmlsId || "" : inputAfterReload(now, before && before.nmlsId, p.nmlsId)));
-    setOrg((now) => (overwrite === "org" ? p.orgNmlsId || "" : inputAfterReload(now, before && before.orgNmlsId, p.orgNmlsId)));
-  };
-  // One read of both. A failed re-read leaves what is shown as it was (only a first read that fails says so).
-  const readAll = async () => {
-    const started = epoch.current;
-    const [g, p] = await Promise.all([callApi("GET", "/api/google/status"), callApi("GET", "/api/profile/nmls")]);
-    if (started !== epoch.current) { reread.current(); return; }   // something changed here while it was in flight: read again
-    setGoogle((shown) => (g.ok && g.data && typeof g.data === "object" ? g.data : shown === null ? "failed" : shown));
-    if (isProfile(p)) takeProfile(p.data);
-  };
-  if (!reread.current) reread.current = createCoalescer(readAll);
-
-  useEffect(() => {
-    reread.current();
-    const onFocus = () => reread.current({ soft: true });
-    const onVisible = () => { if (document.visibilityState === "visible") reread.current({ soft: true }); };
-    // coming back to this page from Google with the Back button can restore it as it was, with Connect still "working"
-    const onShow = (e) => { if (e.persisted) { setBusy(""); reread.current(); } };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("pageshow", onShow);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("pageshow", onShow);
-    };
-  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (wasWorking.current && !working) reread.current();
-    wasWorking.current = working;
-  }, [working]);
-
-  const line = google === null
-    ? { label: "Checking your Google connection…", action: null }
-    : google === "failed"
-      ? { label: "Couldn't check your Google connection right now.", action: null }
-      : googleCard(google);
-  const dot = line.action === "disconnect" ? C.green : line.action === "reconnect" ? C.amber : C.muted;
-
-  // Connect and Reconnect are the same trip: ask the server for Google's consent address and go there (it comes back to /?google=...).
-  // Only Google's own address is followed. On the way there the button stays busy, so a second click cannot start another sign-in.
-  const goToGoogle = async () => {
-    setBusy("google"); setNote(null);
-    const res = await callApi("POST", "/api/google/connect");
-    if (res.ok && res.data && connectUrlOk(res.data.url)) {
-      window.location.assign(res.data.url);
-      return;
-    }
-    setNote({ bad: true, text: res.ok ? "Google couldn't be connected. Try again." : errorOf(res, "Google couldn't be connected. Try again.") });
-    setBusy("");
-  };
-  const disconnect = async () => {
-    if (!window.confirm(DISCONNECT_CONFIRM)) return;
-    setBusy("google"); setNote(null);
-    epoch.current += 1;
-    const res = await callApi("POST", "/api/google/disconnect");
-    if (res.ok && res.data && res.data.success === true) {
-      setGoogle((shown) => (shown && typeof shown === "object" ? { ...shown, connected: false, status: null, googleEmail: null } : shown));
-      setNote({ text: "Google is disconnected." });
-    } else {
-      setNote({ bad: true, text: errorOf(res, "Google couldn't be disconnected. Try again.") });
-    }
-    epoch.current += 1;
-    reread.current();   // whatever happened, what the server says now is what the card shows
-    setBusy("");
-  };
-
-  const saveNmls = async (which) => {
-    const [url, value] = which === "org" ? ["/api/profile/org-nmls", org] : ["/api/profile/nmls", own];
-    setBusy(which); setNote(null);
-    epoch.current += 1;
-    const res = await callApi("PUT", url, { nmlsId: value.trim() });
-    if (isProfile(res)) {
-      takeProfile(res.data, { overwrite: which });
-      setNote({ text: "Saved." });
-    } else {
-      setNote({ bad: true, text: errorOf(res, "That didn't save. Try again.") });
-    }
-    epoch.current += 1;
-    setBusy("");
-  };
-
-  const googleBusy = busy === "google";
-  return (
-    <div data-testid="charli-google-card" style={{ ...card, padding: "0.9rem 1.1rem", marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-          <Icon name="mail" size={15} color={C.amber} />
-          <span style={{ fontSize: 14, fontWeight: 600 }}>Calendar &amp; email</span>
-        </div>
-        {line.action && (
-          <button
-            type="button"
-            data-testid="charli-google-action"
-            disabled={googleBusy}
-            onClick={line.action === "disconnect" ? disconnect : goToGoogle}
-            style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 14px", background: line.action === "disconnect" ? "transparent" : C.amber, color: line.action === "disconnect" ? C.mutedHi : "#0f2040", fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: googleBusy ? "default" : "pointer", opacity: googleBusy ? 0.6 : 1 }}
-          >
-            {GOOGLE_BUTTONS[line.action]}
-          </button>
-        )}
-      </div>
-      <div data-testid="charli-google-status" style={{ display: "flex", alignItems: "center", gap: 8, color: C.mutedHi, fontSize: 13, lineHeight: 1.45, margin: "6px 0 10px" }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: dot, flex: "none" }} />
-        <span style={{ overflowWrap: "anywhere" }}>{line.label}</span>
-      </div>
-      {profile && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-          <NmlsField label="Your NMLS ID" value={own} saved={profile.nmlsId} busy={busy !== ""} testId="charli-nmls" onChange={setOwn} onSave={() => saveNmls("own")} ui={ui} />
-          {profile.canEditOrg && (
-            <NmlsField label="Company NMLS ID" value={org} saved={profile.orgNmlsId} busy={busy !== ""} testId="charli-org-nmls" onChange={setOrg} onSave={() => saveNmls("org")} ui={ui} />
-          )}
-        </div>
-      )}
-      {profile && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 8, lineHeight: 1.45 }}>Every email Charlie sets up is signed with your NMLS ID. You review it and send it yourself.</div>}
-      {note && <div role="status" data-testid="charli-google-note" style={{ color: note.bad ? C.red : C.mutedHi, fontSize: 12.5, marginTop: 8 }}>{note.text}</div>}
-    </div>
-  );
-};
 
 // ── the view ─────────────────────────────────────────────────────────────────
 
@@ -524,7 +291,6 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 520px", minWidth: 0 }}>
-          <CalendarEmailCard ui={ui} working={snap.busy && !snap.opening} />
           <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", height: 380, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
             {snap.turns.length === 0 && (
               <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
@@ -574,12 +340,6 @@ export default function CharliView({ rates, user, ui, notice, onNoticeShown }) {
         </div>
 
         <div style={{ flex: "0 0 250px", maxWidth: "100%" }}>
-          <StageCard
-            current={snap.careerStage}
-            disabled={snap.busy || snap.opening}
-            onPick={(id) => { if (id !== snap.careerStage) act(() => session.setStage(id)); }}
-            ui={ui}
-          />
           <div style={{ ...mono, color: C.muted, fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
             Anything Charlie changes is read back first and only saved when you confirm.
           </div>

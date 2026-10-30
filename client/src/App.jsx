@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import CharliView from "./charli/CharliView.jsx";
 import { returnNotice } from "./charli/google.mjs";
 import { endKeptSession } from "./charli/keep.mjs";
+import ProfileView from "./profile/ProfileView.jsx";
+import { emailChangedNotice } from "./profile/profile.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -402,8 +404,8 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
     return view === id;
   };
 
-  const initials = user ? `${(user.firstName || "?")[0]}${(user.lastName || "?")[0]}`.toUpperCase() : "??";
-  const shortName = user ? `${user.firstName} ${(user.lastName || "")[0]}.` : "";
+  const initials = user ? `${(user.firstName || "?")[0]}${(user.lastName || "")[0] || ""}`.toUpperCase() : "??";
+  const shortName = user ? (user.lastName ? `${user.firstName} ${user.lastName[0]}.` : user.firstName) : "";
 
   return (
     <aside style={{ width: 220, minHeight: "100vh", background: C.bg, borderRight: `1px solid ${C.border}`, padding: "1.5rem 1rem", display: "flex", flexDirection: "column", flexShrink: 0 }}>
@@ -439,11 +441,13 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
       <div style={{ marginTop: "auto" }}>
         {user && (
           <div style={{ padding: "10px 8px", borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.amber, color: "#000", fontWeight: 700, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ color: C.text, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shortName}</div>
-              <div style={{ color: C.muted, fontSize: 11, textTransform: "capitalize" }}>{user.role}</div>
-            </div>
+            <button onClick={() => setView("profile")} title="Your profile" aria-label="Your profile" data-testid="sidebar-profile" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, margin: "-4px 0 -4px -4px", padding: 4, borderRadius: 9, background: view === "profile" ? C.surfaceHi : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: "inherit" }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.amber, color: "#000", fontWeight: 700, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: C.text, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shortName}</div>
+                <div style={{ color: C.muted, fontSize: 11, textTransform: "capitalize" }}>{user.role}</div>
+              </div>
+            </button>
             <button onClick={onLogout} title="Sign out" style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, padding: 4, display: "flex", alignItems: "center" }}>
               <Icon name="logout" size={15} color={C.muted} />
             </button>
@@ -456,6 +460,17 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
     </aside>
   );
 };
+
+// The line after the emailed confirm link (/?emailChanged=1 or =0). The person may not be signed in when they land here, so it is
+// drawn over the sign-in page too.
+const NoticeBanner = ({ notice, onClose }) => notice && (
+  <div role="status" data-testid="email-changed-notice" style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 100, width: "max-content", maxWidth: "calc(100vw - 32px)", display: "flex", alignItems: "flex-start", gap: 12, background: notice.bad ? C.redBg : C.greenBg, border: `1px solid ${notice.bad ? C.red : C.green}`, color: notice.bad ? C.red : C.green, borderRadius: 10, padding: "10px 14px", fontSize: 13.5, lineHeight: 1.45 }}>
+    <span>{notice.text}</span>
+    <button onClick={onClose} aria-label="Dismiss" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex", flexShrink: 0 }}>
+      <Icon name="x" size={14} color={notice.bad ? C.red : C.green} />
+    </button>
+  </div>
+);
 
 // ---------------------------------------------------------------------------
 // Auth pages
@@ -1994,17 +2009,29 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [treasury, setTreasury] = useState(null);
   const [selectedLO, setSelectedLO] = useState(null);
-  const [googleNotice, setGoogleNotice] = useState(null);   // the line for Charli's transcript after Google sent the browser back
+  const [googleNotice, setGoogleNotice] = useState(null);   // the line for the Profile page after Google sent the browser back
+  const [emailNotice, setEmailNotice] = useState(null);     // { text, bad } after the emailed confirm link sent the browser back
 
-  // Google's consent screen sends the browser back to /?google=connected|denied|scope|error: open Charli with that line, once, and
-  // take the parameter out of the address so a reload does not repeat it.
+  // Google's consent screen sends the browser back to /?google=connected|denied|scope|error: open the Profile page (where the Google
+  // connection is) with that line, once, and take the parameter out of the address so a reload does not repeat it.
   useEffect(() => {
     const url = new URL(window.location.href);
     if (!url.searchParams.has("google")) return;
     const text = returnNotice(url.search);
     url.searchParams.delete("google");
     window.history.replaceState({}, "", url.pathname + url.search + url.hash);
-    if (text) { setGoogleNotice(text); setView("charli"); }
+    if (text) { setGoogleNotice(text); setView("profile"); }
+  }, []);
+
+  // The link mailed to a new login address sends the browser to /?emailChanged=1 (done) or =0 (did not work), signed in or not: show
+  // that line once, and take the parameter out of the address.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("emailChanged")) return;
+    const found = emailChangedNotice(url.search);
+    url.searchParams.delete("emailChanged");
+    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    if (found) setEmailNotice(found);
   }, []);
 
   // Check for accept-invite token in URL first
@@ -2033,6 +2060,7 @@ export default function App() {
     setAuthState("authenticated");
     setView("dashboard");
     setGoogleNotice(null);   // a Google result from before this sign-in is stale
+    setEmailNotice(null);    // and so is the line about the emailed link: they have signed in
     endKeptSession();        // and so is any Charli conversation: a sign-in starts a fresh one
   };
 
@@ -2044,6 +2072,11 @@ export default function App() {
     setAuthView("login");
     setClients([]);
   };
+
+  // The Profile page saved something: App's copy of the user (the sidebar shows the name) follows it.
+  const handleUserChanged = useCallback((patch) => {
+    setUser((u) => (u && Object.keys(patch).some((k) => u[k] !== patch[k]) ? { ...u, ...patch } : u));
+  }, []);
 
   // Load clients once authenticated
   useEffect(() => {
@@ -2135,6 +2168,7 @@ export default function App() {
     return (
       <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
         <style>{globalStyles}</style>
+        <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
         {authView === "accept-invite" && inviteToken
           ? <AcceptInvitePage token={inviteToken} onLogin={handleLogin} />
           : authView === "register"
@@ -2149,6 +2183,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
       <style>{globalStyles}</style>
+      <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <Sidebar view={view} setView={setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -2160,6 +2195,7 @@ export default function App() {
             {view === "dashboard"     && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
             {view === "charli"        && <CharliView rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
+            {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}
