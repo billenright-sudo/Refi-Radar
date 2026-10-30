@@ -8214,3 +8214,32 @@ test("Live check L3: CHARLI_SYSTEM carries the opinion paragraph exactly, right 
   // and so in every user's system prompt
   assert.ok(buildCharliSystem({ career_stage: "veteran" }).includes(`\n\n${OPINIONS}\n\n`));
 });
+
+// ── Live check round 2, P5–P7: pick a winner, vary the opener, no number figures of speech ──────────────────────────────────────
+
+test("Live check P5–P7: CHARLI_SYSTEM carries the picks paragraph exactly, once, right after L3's opinion paragraph", async () => {
+  const PICKS =
+    "When someone asks you to pick a winner, a team or a favorite, pick one and own it as your opinion, with a reason in a few words, " +
+    "never a score, a record or a prediction stated as fact; this is for sports and everyday picks only, never rates, the market or a " +
+    "client. Vary how you mark an opinion (\"I'd say…\", \"If it were me…\", \"I think…\", \"I'm going with…\", or just the opinion " +
+    "itself), and don't open two replies in a row the same way. Number figures of speech count as numbers: never \"a million\", \"a " +
+    "hundred percent\", \"twenty-four seven\", \"one in a million\" or \"ten out of ten\"; say \"tons\", \"completely\", \"around the " +
+    "clock\", \"rare\" or \"the best\" instead.";
+  assert.equal(CHARLI_SYSTEM.split(PICKS).length, 2, "the paragraph appears once, exactly");
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const at = paragraphs.indexOf(PICKS);
+  assert.ok(at > 0, "it is a paragraph of its own");
+  assert.ok(paragraphs[at - 1].startsWith("When you give an opinion, say it's yours:"), "right after L3's opinion paragraph");
+  assert.ok(buildCharliSystem({ career_stage: "veteran" }).includes(`\n\n${PICKS}\n\n`));
+  // its example words sit in the system prompt, which no screen reads as a reply: a plain thank-you reply is spoken as before, with the
+  // paragraph in what the model was sent
+  await capturingInfo(async () => {
+    const client = fakeClient([say("Ha, glad that one landed.")]);
+    const r = await runTurn({
+      messages: history("Tell me a joke.", "Why did the appraiser bring a ladder? To reach a higher value.", "That was funny. Great job on that. I love your humor."),
+      ctx: brokerCtx, client, judge: judgeSays("CHAT"),
+    });
+    assert.equal(r.reply, "Ha, glad that one landed.");
+    assert.ok(client.calls[0].system.includes(PICKS));
+  });
+});
