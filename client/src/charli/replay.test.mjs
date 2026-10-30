@@ -129,14 +129,19 @@ test("her own new lines, a busy flag flipping or an old user turn do not", () =>
 const SIDE_EFFECT = { type: "logContact", clientId: 7, confirmId: "0b6f5a58-1c3c-4a46-9b34-5d3a8f2a9c11" };
 const READ_BACK = "Just to confirm, log a contact for Robert and Linda Chen?";
 
-function screen(replies) {
+function screen(replies, options = {}) {
   const next = [...replies];
-  const fetch = async () => { const body = await next.shift(); return { ok: true, status: 200, json: async () => body }; };
+  const fetch = async (url) => {
+    if (url === "/api/auth/me") return { ok: true, status: 200, json: async () => ({ user: { careerStage: null } }) };   // open() re-reads the stage
+    const body = await next.shift();
+    return { ok: true, status: 200, json: async () => body };
+  };
   const replay = createReplay();
   const played = [];
   const state = { paused: false, speaking: false };
   const session = createSession({
     fetch, rates: { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-28", source: "live" }, localHour: 9,
+    ...options,
     onSpeak: (line) => {
       if (state.paused) { replay.held(line); return; }
       replay.said(line);
@@ -212,4 +217,47 @@ test("a new turn typed while paused drops the kept line, even when Resume comes 
   arrive({ reply: "Here is the answer to the new question.", sources: [], turnId: "t2" });
   await asking;
   assert.deepEqual(s.played, ["Rates are steady today.", "Here is the answer to the new question."]);
+});
+
+// ── "Brief me" (the briefing said again under the same turnId) ──
+// (session.briefMe() hands the speaker the briefing turn's line with the turnId it came with. Nothing here is keyed on the turnId:
+// replay holds the line itself, so saying the same turn a second time is just another line.)
+const BRIEFING_LINE = "Good morning, Ann. The 30-year is at 6.52%. Want to start with Lucy Tran?";
+const briefingReply = {
+  reply: BRIEFING_LINE, sources: [], turnId: "b1",
+  briefing: { kind: "morning", strip: { rate30: 6.52, move30: null, asOf: null, opportunities: null, checkInsDue: null, nextEvent: null }, followUp: null },
+};
+
+test("Brief me twice says the same turn twice; a Pause in the second keeps it, and Resume says it once", async () => {
+  const s = screen([briefingReply], { speakGreeting: false });
+  await s.session.open();
+  assert.deepEqual(s.played, [], "the briefing is shown, not spoken");
+  assert.deepEqual(await s.session.briefMe(), { ok: true });
+  assert.deepEqual(s.played, [BRIEFING_LINE]);
+  s.finish();
+  assert.deepEqual(await s.session.briefMe(), { ok: true });   // same turnId again
+  assert.deepEqual(s.played, [BRIEFING_LINE, BRIEFING_LINE]);
+  s.pause();
+  s.resume();
+  assert.deepEqual(s.played, [BRIEFING_LINE, BRIEFING_LINE, BRIEFING_LINE], "cut mid-line: said again from the start, once");
+  s.finish();
+  s.pause();
+  s.resume();
+  assert.equal(s.played.length, 3, "a saying that finished is not kept for a fourth");
+});
+
+test("Brief me while paused is kept for Resume, once, and a finished saying before it is not said too", async () => {
+  const s = screen([briefingReply], { speakGreeting: false });
+  await s.session.open();
+  await s.session.briefMe();
+  s.finish();
+  s.pause();
+  assert.deepEqual(await s.session.briefMe(), { ok: true });
+  assert.equal(s.played.length, 1, "nothing is spoken while paused");
+  s.resume();
+  assert.deepEqual(s.played, [BRIEFING_LINE, BRIEFING_LINE]);
+  s.finish();
+  s.pause();
+  s.resume();
+  assert.equal(s.played.length, 2);
 });

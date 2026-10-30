@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import CharliView from "./charli/CharliView.jsx";
 import { returnNotice } from "./charli/google.mjs";
 import { endKeptSession } from "./charli/keep.mjs";
+import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
 
@@ -175,6 +176,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     upload:    "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
     logout:    "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
     mic:       "M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8",
+    user:      "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -385,19 +387,7 @@ const RefiRadarLogo = () => (
 );
 
 const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
-  const nav = [
-    { id: "dashboard", label: "Dashboard",      icon: "dashboard" },
-    { id: "sweeps",    label: "Sweeps",         icon: "search" },
-    { id: "charli",    label: "Charlie",         icon: "mic" },
-    { id: "clients",   label: "All Clients",    icon: "users" },
-    { id: "rates",     label: "Rate Watch",     icon: "trending" },
-    { id: "add",       label: "Add Client",     icon: "plus" },
-  ];
-
-  const brokerNav = user?.role === "broker" ? [
-    { id: "team",   label: "My Team",         icon: "users" },
-    { id: "import", label: "Import Clients",  icon: "upload" },
-  ] : [];
+  const { main: nav, broker: brokerNav, bottom: bottomNav } = navGroups(user?.role);
 
   const isBrokerActive = (id) => {
     if (id === "team") return view === "team" || view === "lo-portal";
@@ -439,6 +429,15 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
       )}
 
       <div style={{ marginTop: "auto" }}>
+        {bottomNav.map(({ id, label, icon }) => {
+          const active = view === id;
+          return (
+            <button key={id} onClick={() => setView(id)} data-testid={`nav-${id}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 9, background: active ? C.surfaceHi : "transparent", color: active ? C.text : C.muted, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: active ? 600 : 400, marginBottom: 4, width: "100%", textAlign: "left" }}>
+              <Icon name={icon} size={16} color={active ? C.amber : C.muted} />
+              {label}
+            </button>
+          );
+        })}
         {user && (
           <div style={{ padding: "10px 8px", borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <button onClick={() => setView("profile")} title="Your profile" aria-label={`Your profile, ${shortName}, ${user.role}`} data-testid="sidebar-profile" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, margin: "-4px 0 -4px -4px", padding: 4, borderRadius: 9, background: view === "profile" ? C.surfaceHi : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: "inherit" }}>
@@ -1999,7 +1998,9 @@ export default function App() {
   const [authView, setAuthView] = useState("login"); // "login" | "register" | "accept-invite"
   const [inviteToken, setInviteToken] = useState(null);
 
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState(DEFAULT_VIEW);
+  const [panelOpen, setPanelOpen] = useState(false);       // the corner Charlie panel, on every page but Home
+  const cornerRef = useRef(null);
   const [clients, setClients] = useState([]);
   const [clientsLoading, setClientsLoading] = useState(true);
   const [rates, setRates] = useState(null);
@@ -2055,10 +2056,19 @@ export default function App() {
       .catch(() => setAuthState("unauthenticated"));
   }, []);
 
+  // Home is Charlie's own page: going there takes the panel away.
+  useEffect(() => { if (view === "home") setPanelOpen(false); }, [view]);
+
+  const closePanel = useCallback(() => {
+    setPanelOpen(false);
+    window.requestAnimationFrame(() => { if (cornerRef.current) cornerRef.current.focus(); });   // focus goes back to the button that opened it
+  }, []);
+
   const handleLogin = (userData) => {
     setUser(userData);
     setAuthState("authenticated");
-    setView("dashboard");
+    setView(DEFAULT_VIEW);
+    setPanelOpen(false);
     setGoogleNotice(null);   // a Google result from before this sign-in is stale
     setEmailNotice(null);    // and so is the line about the emailed link: they have signed in
     endKeptSession();        // and so is any Charli conversation: a sign-in starts a fresh one
@@ -2192,9 +2202,9 @@ export default function App() {
             <NotificationBell />
           </header>
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
-            {view === "dashboard"     && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
+            {view === "home"          && <CharliView mode="home" rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} />}
+            {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
-            {view === "charli"        && <CharliView rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
@@ -2207,6 +2217,20 @@ export default function App() {
           </main>
         </div>
       </div>
+      {/* On every page but Home, a corner button opens the same Charlie conversation in a panel (Home is Charlie's page). */}
+      {view !== "home" && !panelOpen && (
+        <button
+          ref={cornerRef}
+          data-testid="charli-corner"
+          onClick={() => setPanelOpen(true)}
+          aria-label="Open Charlie"
+          title="Open Charlie"
+          style={{ position: "fixed", right: 20, bottom: 20, zIndex: 50, display: "flex", alignItems: "center", gap: 8, background: C.amber, color: "#0f2040", border: "none", borderRadius: 999, padding: "12px 18px", fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 6px 20px rgba(0,0,0,0.4)" }}
+        >
+          <Icon name="mic" size={16} color="#0f2040" />Charlie
+        </button>
+      )}
+      {view !== "home" && panelOpen && <CharliView mode="panel" rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} />}
     </div>
   );
 }

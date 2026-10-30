@@ -570,7 +570,8 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     });
   }
 
-  // The stage selector: the click is the confirmation.
+  // The stage selector: the click is the confirmation. UNUSED by the screens now: tenure is set on the Profile page (profile.mjs
+  // saveStage), not in the conversation. Kept, with its tests, because it also spends the briefing's follow-up id the way a turn does.
   async function setStage(stageId) {
     if (!stageById(stageId)) return { ok: false, reason: "invalid" };
     return exclusive(async () => {
