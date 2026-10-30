@@ -15,7 +15,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const db = require("../db");
-const { clientsInText, getCalendarTool, namesClient } = require("../lib/assistant/tools");
+const { clientsInText, buildOwnerIndex, clientsInIndex, getCalendarTool, namesClient } = require("../lib/assistant/tools");
 const { collectCalendarFollowUps } = require("../lib/assistant/calendarFollowUps");
 const fu = require("../lib/assistant/followups");
 
@@ -54,9 +54,25 @@ test("clientsInText: a full name in a title finds that client, as {id, name}", (
   assert.deepStrictEqual(clientsInText("Follow-up: Lucy Tran", own("Lucy Tran", "Grace Okafor")), [{ id: 1, name: "Lucy Tran" }]);
 });
 
-test("clientsInText: a colleague's client is not found, because only the user's own clients are passed in (team scope)", () => {
-  const mine = own("Grace Okafor");
+test("clientsInText: a colleague's client named in the text is not found when the book passed in is the user's own (team scope)", () => {
+  addClient(orgId, colleagueId, "Lucy Tran");
+  const grace = addClient(orgId, userId, "Grace Okafor");
+  const mine = db.prepare("SELECT id, name FROM clients WHERE user_id = ?").all(userId);
   assert.deepStrictEqual(clientsInText("Follow-up: Lucy Tran", mine), []);
+  assert.deepStrictEqual(clientsInText("Follow-up: Lucy Tran, then Grace Okafor", mine), [{ id: grace, name: "Grace Okafor" }]);
+  // the same text against the whole org's book would have found her: the scope is the caller's book, not the matcher
+  const org = db.prepare("SELECT id, name FROM clients WHERE org_id = ?").all(orgId);
+  assert.equal(clientsInText("Follow-up: Lucy Tran", org).length, 1);
+});
+
+test("buildOwnerIndex + clientsInIndex: one index answers many titles, the same as clientsInText answers each", () => {
+  const mine = own("Ann Smith", "Bo Jones", "Cy Smith", "Priya Wu-Okonkwo", "&&");
+  const index = buildOwnerIndex(mine);
+  for (const text of ["Jones and Smith", "Smith", "Okonkwo call", "Wu", "fees && closing", "Lunch", "Ann", ""]) {
+    assert.deepStrictEqual(clientsInIndex(text, index), clientsInText(text, mine), `"${text}"`);
+  }
+  assert.deepStrictEqual(clientsInIndex("Smith", buildOwnerIndex(null)), []);
+  assert.deepStrictEqual(clientsInIndex(null, index), []);
 });
 
 test("clientsInText: a surname alone finds the client; a first name alone does not", () => {
@@ -209,6 +225,37 @@ test("collectCalendarFollowUps: today's events are read too, each recorded on it
   assert.deepStrictEqual([byClient[grace].day, byClient[grace].due_at], [TODAY, "2026-10-30 21:15:00"]);
 });
 
+test("collectCalendarFollowUps: yesterday and today are read at the same time, not one after the other", async () => {
+  addClient(orgId, userId, "Lucy Tran");
+  const open = [];
+  const google = fakeGoogle({ listed: (date) => new Promise((resolve) => open.push(() => resolve({ events: date === YESTERDAY ? [timed("Lucy Tran call", YESTERDAY, 10, 0)] : [] }))) });
+  const done = collect(google);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(google.asked, [YESTERDAY, TODAY], "both reads are in flight before either answers");
+  for (const release of open) release();
+  assert.strictEqual(await done, 1);
+});
+
+test("collectCalendarFollowUps: one day failing while the other is slow still records nothing and leaves no unhandled rejection", async () => {
+  addClient(orgId, userId, "Lucy Tran");
+  const unhandled = [];
+  const onUnhandled = (err) => unhandled.push(err);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const google = fakeGoogle({ listed: (date) => (date === YESTERDAY
+      ? Promise.reject(new Error("yesterday blew up"))
+      : new Promise((_, reject) => setTimeout(() => reject(new Error("today blew up")), 20))) });
+    const realError = console.error;
+    console.error = () => {};
+    try { assert.strictEqual(await collect(google), 0); } finally { console.error = realError; }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepStrictEqual(unhandled, []);
+  assert.equal(rows().length, 0);
+});
+
 test("collectCalendarFollowUps: yesterday is worked out in code across a month and a year end", async () => {
   addClient(orgId, userId, "Lucy Tran");
   for (const [localDate, yesterday] of [["2026-11-01", "2026-10-31"], ["2027-01-01", "2026-12-31"], ["2028-03-01", "2028-02-29"]]) {
@@ -240,12 +287,30 @@ test("collectCalendarFollowUps: running again never reopens a row the broker has
   assert.deepStrictEqual(rows().map((r) => r.status), ["reached"]);
 });
 
-test("collectCalendarFollowUps: an event listed on both days (it spans midnight) is one row, on the first day", async () => {
+test("collectCalendarFollowUps: a call that spans midnight is one row, on the day it ends, however many days or runs see it", async () => {
   addClient(orgId, userId, "Lucy Tran");
-  const spanning = { title: "Lucy Tran late call", start: "11:00 PM", end: "1:00 AM", allDay: false, endAt: at(TODAY, 1, 0) };
+  // 11:30 PM yesterday to 12:30 AM today, listed by Google under both days
+  const spanning = { title: "Lucy Tran late call", start: "11:30 PM", end: "12:30 AM", allDay: false, endAt: at(TODAY, 0, 30) };
   const google = fakeGoogle({ byDate: { [YESTERDAY]: [spanning], [TODAY]: [spanning] } });
   assert.strictEqual(await collect(google), 1);
-  assert.deepStrictEqual(rows().map((r) => [r.day, r.due_at]), [[YESTERDAY, "2026-10-30 08:00:00"]]);
+  assert.deepStrictEqual(rows().map((r) => [r.day, r.due_at]), [[TODAY, "2026-10-30 07:30:00"]]);
+  // the next day's run lists today and tomorrow: it sees the call under today only, and the one row stays the one row
+  const NEXT = "2026-10-31";
+  const next = fakeGoogle({ byDate: { [TODAY]: [spanning], [NEXT]: [] } });
+  assert.strictEqual(await collect(next, { localDate: NEXT }), 1);
+  assert.deepStrictEqual(rows().map((r) => [r.day, r.due_at]), [[TODAY, "2026-10-30 07:30:00"]]);
+});
+
+test("collectCalendarFollowUps: a call that ends exactly at midnight belongs to the day it started on; one that ends later is not recorded yet", async () => {
+  addClient(orgId, userId, "Lucy Tran");
+  const toMidnight = { title: "Lucy Tran call", start: "11:00 PM", end: "12:00 AM", allDay: false, endAt: at(TODAY, 0, 0) };
+  assert.strictEqual(await collect(fakeGoogle({ byDate: { [YESTERDAY]: [toMidnight] } })), 1);
+  assert.deepStrictEqual(rows().map((r) => [r.day, r.due_at]), [[YESTERDAY, "2026-10-30 07:00:00"]]);
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  // a call running into tomorrow is listed under today but ends tomorrow: it is recorded when tomorrow's run reads it
+  const intoTomorrow = { title: "Lucy Tran call", start: "11:30 PM", end: "12:30 AM", allDay: false, endAt: at("2026-10-31", 0, 30) };
+  assert.strictEqual(await collect(fakeGoogle({ byDate: { [TODAY]: [intoTomorrow] } })), 0);
+  assert.equal(rows().length, 0);
 });
 
 test("collectCalendarFollowUps: only the user's own clients match, never a colleague's (team scope)", async () => {
@@ -257,6 +322,33 @@ test("collectCalendarFollowUps: only the user's own clients match, never a colle
   ] } });
   assert.strictEqual(await collect(google), 1);
   assert.deepStrictEqual(rows().map((r) => r.client_id), [mine]);
+});
+
+test("collectCalendarFollowUps: a title that names more than one of the user's clients records nothing; exactly one is recorded (R9)", async () => {
+  const ann = addClient(orgId, userId, "Ann Smith");
+  const bo = addClient(orgId, userId, "Bo Jones");
+  const cy = addClient(orgId, userId, "Cy Smith");
+  const google = fakeGoogle({ byDate: { [YESTERDAY]: [
+    timed("Smith closing", YESTERDAY, 9, 0),                   // two Smiths in the book: which one is not known
+    timed("Jones and Ann Smith review", YESTERDAY, 10, 0),     // two different clients
+    timed("Jones refi call", YESTERDAY, 11, 0),                // exactly one
+  ] } });
+  assert.strictEqual(await collect(google), 1);
+  assert.deepStrictEqual(rows().map((r) => r.client_id), [bo]);
+  // with one Smith in the book the same title is that Smith
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  db.prepare("DELETE FROM clients WHERE id = ?").run(cy);
+  assert.strictEqual(await collect(fakeGoogle({ byDate: { [YESTERDAY]: [timed("Smith closing", YESTERDAY, 9, 0)] } })), 1);
+  assert.deepStrictEqual(rows().map((r) => r.client_id), [ann]);
+});
+
+test("collectCalendarFollowUps: an ambiguous event does not stop an unambiguous one on the same day", async () => {
+  addClient(orgId, userId, "Ann Smith");
+  addClient(orgId, userId, "Cy Smith");
+  const lucy = addClient(orgId, userId, "Lucy Tran");
+  const google = fakeGoogle({ byDate: { [YESTERDAY]: [timed("Smith closing", YESTERDAY, 9, 0), timed("Tran call", YESTERDAY, 10, 0)] } });
+  assert.strictEqual(await collect(google), 1);
+  assert.deepStrictEqual(rows().map((r) => r.client_id), [lucy]);
 });
 
 test("collectCalendarFollowUps: an all-day event, an event with no end, a title naming nobody and a first name alone record nothing", async () => {
@@ -310,8 +402,15 @@ test("collectCalendarFollowUps: any Google failure returns 0, never throws, and 
     // a connection() that throws, and a bad date
     const throwing = { connection: () => { throw new Error("db down"); }, listDay: async () => ({ events: [] }) };
     assert.strictEqual(await collect(throwing), 0);
-    assert.strictEqual(await collect(fakeGoogle(), { localDate: "friday" }), 0);
-    assert.strictEqual(await collect(fakeGoogle(), { localDate: undefined }), 0);
+    for (const localDate of ["friday", undefined, "2026-02-30", ""]) {
+      const google = fakeGoogle();
+      assert.strictEqual(await collect(google, { localDate }), 0, String(localDate));
+      assert.deepStrictEqual(google.asked, [], `a bad date (${localDate}) never reaches Google`);
+    }
+    // a calendar zone Intl rejects
+    const badZone = fakeGoogle({ connection: { timeZone: "Mars/Olympus", googleEmail: "a@b.c" }, byDate: { [YESTERDAY]: [timed("Lucy Tran call", YESTERDAY, 10, 0)] } });
+    assert.strictEqual(await collect(badZone), 0);
+    assert.equal(rows().length, 0);
   } finally {
     console.error = realError;
   }

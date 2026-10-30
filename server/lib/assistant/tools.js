@@ -543,17 +543,19 @@ const mentionsClient = (text, ctx) => {
 };
 
 // Which of these clients (`ownClients`, [{ id, name }]: the caller passes the user's own book, never the org's, so a match is
-// always a client the user can log) `text` names, as [{ id, name }] in the order given. Exactly what namesClient screens: a full
+// always a client the user can log) a text names, as [{ id, name }] in the order given. Exactly what namesClient screens: a full
 // name, or a surname (a hyphen part, a surname-first filing) as a whole word, in any case and accent; a first name alone is not
 // found. It walks the same trie, with each client at the ends of their own name words (addNameWord's `owner`), so a text costs the
 // same as textHasName's and no name is searched for one client at a time. A name word shared by many clients holds them all in
 // one Set, and a Set is read once per text, so a book of clients who share a surname costs no more per hit.
-function clientsInText(text, ownClients) {
-  if (typeof text !== "string" || !Array.isArray(ownClients)) return [];
+//
+// buildOwnerIndex reads the book once; clientsInIndex finds the clients of one text in it, so a caller with many texts (a day's
+// calendar titles) builds the index once. clientsInText is the two together, for one text.
+function buildOwnerIndex(ownClients) {
   const trie = new Map();
   const wordless = [];   // [{ client, re }]
-  const clients = [];
-  for (const client of ownClients) {
+  const clients = [];    // the usable clients, in book order
+  for (const client of Array.isArray(ownClients) ? ownClients : []) {
     if (!client || typeof client !== "object") continue;
     const name = typeof client.name === "string" ? client.name : "";
     const terms = screenedNames(name);
@@ -565,11 +567,15 @@ function clientsInText(text, ownClients) {
     }
     for (const term of terms.slice(1)) addNameWord(trie, fold(term), client);
   }
+  return { trie, wordless, clients };
+}
+function clientsInIndex(text, index) {
+  if (typeof text !== "string" || !index || !index.trie) return [];
   const found = new Set();
   const read = new Set();   // the owner Sets already added to `found`
   const t = plainText(text);
   for (const word of t.match(NAME_WORD_RE) || []) {
-    walkNameRuns(word, trie, (owners) => {
+    walkNameRuns(word, index.trie, (owners) => {
       if (!read.has(owners)) {
         read.add(owners);
         for (const client of owners) found.add(client);
@@ -577,9 +583,10 @@ function clientsInText(text, ownClients) {
       return false;
     });
   }
-  for (const { client, re } of wordless) if (re.test(t)) found.add(client);
-  return clients.filter((client) => found.has(client)).map(({ id, name }) => ({ id, name }));
+  for (const { client, re } of index.wordless) if (re.test(t)) found.add(client);
+  return index.clients.filter((client) => found.has(client)).map(({ id, name }) => ({ id, name }));
 }
+const clientsInText = (text, ownClients) => clientsInIndex(text, buildOwnerIndex(ownClients));
 
 // The sentences of a lookup's answer: a break is . ! or ? (and any closing quote or bracket) before a space, except after an
 // initial or a short title ("Jerome H. Powell", "U.S. stocks", "Dr. Lee"), where the pieces stay one sentence. A wrong join only
@@ -846,5 +853,5 @@ const TOOL_SCHEMA = [
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
-  withTurnClientNames, clientsInText,
+  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex,
 };
