@@ -164,10 +164,12 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.deepEqual(await session.submit("log a contact for the Chens"), { ok: true, action: "turn" });
   const contact = state().pending;
   assert.equal(model.calls.length, 2);
-  assert.deepEqual({ ...contact.sideEffect, confirmId: undefined }, { type: "logContact", clientId: chen, confirmId: undefined });
+  assert.deepEqual({ ...contact.sideEffect, confirmId: undefined }, { type: "logContact", clientId: chen, outcome: "reached", notes: "", confirmId: undefined });
   assert.match(contact.sideEffect.confirmId, UUID);
   assert.equal(contact.readBack, "Just to confirm — log a contact for Robert & Linda Chen?");
-  assert.deepEqual(contact.details, [{ label: "Client", value: "Robert & Linda Chen" }, { label: "Contact date", value: "Today" }]);
+  assert.deepEqual(contact.details, [
+    { label: "Client", value: "Robert & Linda Chen" }, { label: "Outcome", value: "Reached" }, { label: "Contact date", value: "Today" },
+  ]);
   assert.equal(lastContactInDb(), STALE, "nothing written before the yes");
 
   assert.deepEqual(await session.submit("yes"), { ok: true, action: "confirm" });

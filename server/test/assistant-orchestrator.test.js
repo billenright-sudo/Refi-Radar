@@ -21,7 +21,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel, randomJokeTopic,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel, randomJokeTopic, isDecline,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -160,7 +160,7 @@ test("logContactTool is returned as a sideEffect for confirmation, read back by 
   const client = fakeClient([useTool("logContactTool", { clientId: chenId })]);
   const r = await runTurn({ messages: userSays("log a call with Chen"), ctx: brokerCtx, client });
   assert.equal(r.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
-  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId });
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId, outcome: "reached", notes: "" });
   assert.equal(lastContactOf(chenId), before, "the confirmation gate: nothing is written by the orchestrator");
   assert.equal(client.calls.length, 1, "short-circuits: no second model call for narration");
 });
@@ -368,12 +368,105 @@ test("B2: an addClientTool call with a missing field hands up no change; the mod
 
 test("B2: the logContact and setCareerStage card rows name the client and the date, and the stage", async () => {
   let r = await runTurn({ messages: userSays("log a call with Chen"), ctx: brokerCtx, client: fakeClient([useTool("logContactTool", { clientId: chenId })]) });
-  assert.deepStrictEqual(r.details, [{ label: "Client", value: "Robert & Linda Chen" }, { label: "Contact date", value: "Today" }]);
+  assert.deepStrictEqual(r.details, [
+    { label: "Client", value: "Robert & Linda Chen" }, { label: "Outcome", value: "Reached" }, { label: "Contact date", value: "Today" },
+  ]);
   r = await runTurn({ messages: userSays("make me a veteran"), ctx: brokerCtx, client: fakeClient([useTool("setCareerStageTool", { stage: "veteran" })]) });
   assert.deepStrictEqual(r.details, [{ label: "Career stage", value: "Veteran (10+ years)" }]);
   // no change, no rows
   r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client: fakeClient([say("Good morning!")]) });
   assert.equal("details" in r, false);
+});
+
+// ── Task 7: call outcomes, notes and tomorrow's list ─────────────────────────
+
+const FOLLOW_UP_QUESTION = "Yesterday I suggested calling Robert & Linda Chen. Were you able to reach them?";
+const answersFollowUp = (text) => [
+  { role: "user", content: "(Session started.)" }, { role: "assistant", content: FOLLOW_UP_QUESTION }, { role: "user", content: text },
+];
+
+test("Task 7: a reached log with notes reads back 'with your notes', never the notes; only the card's Notes row shows them", async () => {
+  const notes = "Wants to wait until spring; her cell is 555-0199";
+  const before = lastContactOf(chenId);
+  const r = await runTurn({
+    messages: answersFollowUp("Yeah I got them, they want to wait until spring."), ctx: brokerCtx,
+    client: fakeClient([useTool("logContactTool", { clientId: chenId, outcome: "reached", notes })]),
+  });
+  assert.equal(r.reply, "Just to confirm — log a call with Robert & Linda Chen, with your notes?");
+  assert.ok(!r.reply.includes("spring") && !r.reply.includes("555"), "the notes are never spoken");
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId, outcome: "reached", notes });
+  assert.deepStrictEqual(r.details, [
+    { label: "Client", value: "Robert & Linda Chen" }, { label: "Outcome", value: "Reached" },
+    { label: "Notes", value: notes }, { label: "Contact date", value: "Today" },
+  ]);
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  assert.equal(lastContactOf(chenId), before, "nothing is written");
+});
+
+test("Task 7: reached without notes keeps today's read-back; not reached says so, with the notes on the card only", async () => {
+  const run = (input) => runTurn({ messages: answersFollowUp("whatever they said"), ctx: brokerCtx, client: fakeClient([useTool("logContactTool", input)]) });
+  let r = await run({ clientId: chenId, outcome: "reached", notes: "   " });
+  assert.equal(r.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
+  assert.deepStrictEqual(r.details.map((d) => d.label), ["Client", "Outcome", "Contact date"], "blank notes are no notes");
+
+  r = await run({ clientId: chenId, outcome: "not_reached" });
+  assert.equal(r.reply, "Just to confirm — note that you couldn't reach Robert & Linda Chen?");
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId, outcome: "not_reached", notes: "" });
+  assert.deepStrictEqual(r.details, [
+    { label: "Client", value: "Robert & Linda Chen" }, { label: "Outcome", value: "Couldn't reach" }, { label: "Contact date", value: "Today" },
+  ]);
+
+  r = await run({ clientId: chenId, outcome: "not_reached", notes: "Left a voicemail" });
+  assert.equal(r.reply, "Just to confirm — note that you couldn't reach Robert & Linda Chen?");
+  assert.deepStrictEqual(r.details, [
+    { label: "Client", value: "Robert & Linda Chen" }, { label: "Outcome", value: "Couldn't reach" },
+    { label: "Notes", value: "Left a voicemail" }, { label: "Contact date", value: "Today" },
+  ]);
+
+  // a bad outcome is the model's to fix: no change is handed up, and the tool's error goes back to it
+  const client = fakeClient([useTool("logContactTool", { clientId: chenId, outcome: "voicemail" }), say("Did you reach them, or not?")]);
+  r = await runTurn({ messages: answersFollowUp("left a voicemail"), ctx: brokerCtx, client });
+  assert.equal(r.sideEffect, undefined);
+  assert.equal(toolResultPayload(client.calls[1]).data.error, "outcome must be reached or not_reached");
+});
+
+test("Task 7: callListTool proposes tomorrow's list: its read-back and card rows; it writes nothing, and works on the last allowed call", async () => {
+  const carries = () => db.prepare("SELECT COUNT(*) AS n FROM charlie_recommendations").get().n;
+  const n = carries();
+  let r = await runTurn({
+    messages: answersFollowUp("No, I missed them. Put them on tomorrow's list."), ctx: { ...brokerCtx, localDate: "2026-10-29" },
+    client: fakeClient([useTool("callListTool", { clientId: chenId })]),
+  });
+  assert.equal(r.reply, "Just to confirm — put Robert & Linda Chen on tomorrow's call list?");
+  assert.deepStrictEqual(r.sideEffect, { type: "addToCallList", clientId: chenId, day: "2026-10-29" });
+  assert.deepStrictEqual(r.details, [{ label: "Client", value: "Robert & Linda Chen" }, { label: "List", value: "Tomorrow" }]);
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  assert.equal(carries(), n, "nothing is carried before the yes");
+
+  const client = fakeClient([
+    useTool("getMarketUpdate", {}, "toolu_1"), useTool("getMarketUpdate", {}, "toolu_2"),
+    useTool("getMarketUpdate", {}, "toolu_3"), useTool("callListTool", { clientId: chenId }, "toolu_4"),
+  ]);
+  r = await runTurn({ messages: answersFollowUp("put them on tomorrow's list"), ctx: brokerCtx, client });
+  assert.equal(client.calls.length, 4);
+  assert.equal(r.sideEffect.type, "addToCallList");
+  assert.equal(r.reply, "Just to confirm — put Robert & Linda Chen on tomorrow's call list?");
+
+  // one change at a time: a carry and a log in one response hand up neither
+  r = await runTurn({
+    messages: answersFollowUp("no luck, log it and put them on tomorrow's list"), ctx: brokerCtx,
+    client: fakeClient([resp([
+      { type: "tool_use", id: "toolu_1", name: "logContactTool", input: { clientId: chenId, outcome: "not_reached" } },
+      { type: "tool_use", id: "toolu_2", name: "callListTool", input: { clientId: chenId } },
+    ], "tool_use")]),
+  });
+  assert.equal(r.reply, ONE_AT_A_TIME);
+  assert.equal(r.sideEffect, undefined);
+});
+
+test("Task 7: isDecline is exported for the route's skip", () => {
+  for (const text of ["skip it", "not now", "no thanks", "nah, skip it", "Skip."]) assert.equal(isDecline(text), true, text);
+  for (const text of ["yes I reached her", "put her on tomorrow's list", "skip to the rates"]) assert.equal(isDecline(text), false, text);
 });
 
 // ── tool-name safety, loop cap, usage ────────────────────────────────────────
@@ -864,7 +957,7 @@ test("more than one side-effect call in a response returns no sideEffect and ask
     { type: "tool_use", id: "toolu_b", name: "logContactTool", input: { clientId: 999999 } },
   ], "tool_use")]);
   const ok = await runTurn({ messages: userSays("log Chen"), ctx: brokerCtx, client: oneBad });
-  assert.deepStrictEqual(ok.sideEffect, { type: "logContact", clientId: chenId });
+  assert.deepStrictEqual(ok.sideEffect, { type: "logContact", clientId: chenId, outcome: "reached", notes: "" });
 });
 
 // ── the last allowed model call ──────────────────────────────────────────────
@@ -891,7 +984,7 @@ test("a side-effect call on the last allowed model call still returns its sideEf
   ]);
   const r = await runTurn({ messages: userSays("log a call with Chen"), ctx: brokerCtx, client });
   assert.equal(client.calls.length, 4);
-  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId });
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId, outcome: "reached", notes: "" });
   assert.equal(r.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
   assert.equal(lastContactOf(chenId), before);
 });
@@ -1785,7 +1878,7 @@ test("R5-3: on an action request with no sideEffect, only a question-shaped repl
     messages: userSays("log a call with Chen"), ctx: brokerCtx,
     client: fakeClient([useTool("logContactTool", { clientId: chenId })]),
   });
-  assert.deepStrictEqual(se.sideEffect, { type: "logContact", clientId: chenId });
+  assert.deepStrictEqual(se.sideEffect, { type: "logContact", clientId: chenId, outcome: "reached", notes: "" });
 });
 
 test("R5-4: an offer also gets the later-clause completion test", async () => {
@@ -2272,7 +2365,7 @@ test("multi-turn: the model's logContactTool call in an answered-question chain 
     ctx: brokerCtx, client,
   });
   assert.equal(r.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
-  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId });
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId, outcome: "reached", notes: "" });
   assert.equal(lastContactOf(chenId), before);
 });
 
@@ -2300,7 +2393,7 @@ test("multi-turn: the caller's history is not mutated; block-array content count
 
 test("CHARLI_SYSTEM tells her to reply with ONE question, starting with the question word, when she is not calling a change tool", () => {
   assert.ok(CHARLI_SYSTEM.includes(
-    "On a request to change something, if you are not calling addClientTool, logContactTool, createEventTool or draftEmailTool, " +
+    "On a request to change something, if you are not calling addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, " +
     "reply with only ONE question that starts with the question word"
   ));
   assert.ok(CHARLI_SYSTEM.includes("'Which Chen — Robert and Linda, or Chen Wei?'"));
@@ -2801,8 +2894,8 @@ test("R7-a: CHARLI_SYSTEM tells her to call explainTerm for a term and never def
 });
 
 test("Fix round 1: CHARLI_SYSTEM's confirmation rule names setCareerStageTool alongside addClientTool and logContactTool", () => {
-  // Task 5: createEventTool joins the list of tools that only prepare an action
-  assert.ok(CHARLI_SYSTEM.includes("addClientTool, logContactTool, setCareerStageTool and createEventTool only prepare an action, and nothing is saved until the user confirms."));
+  // Task 5: createEventTool joins the list of tools that only prepare an action (and the briefing's Task 7, callListTool)
+  assert.ok(CHARLI_SYSTEM.includes("addClientTool, logContactTool, setCareerStageTool, createEventTool and callListTool only prepare an action, and nothing is saved until the user confirms."));
   // the pinned sentences of the earlier rounds are untouched
   assert.ok(CHARLI_SYSTEM.includes("Never say an action is done, logged, added or saved"));
 });
@@ -3984,8 +4077,23 @@ test("Task 5: CHARLI_SYSTEM carries the Calendar and Email paragraphs, and creat
     "email yourself and you never send email: it opens in the user's own email for them to review and send. After a sweep or a calendar " +
     "read you may offer to book a follow-up or write a check-in; offering is fine, doing needs their request."
   ));
-  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool, setCareerStageTool and createEventTool only prepare an action/);
+  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool, setCareerStageTool, createEventTool and callListTool only prepare an action/);
   assert.ok(buildCharliSystem(null).startsWith(CHARLI_SYSTEM + "\n\n"));
+});
+
+test("Task 7: CHARLI_SYSTEM says how to answer a follow-up question, right after the Email paragraph; callListTool only prepares", () => {
+  const FOLLOW_UPS =
+    "Follow-up answers: when the user tells you they reached a client you asked about, call logContactTool with outcome reached " +
+    "and any notes they give, and once it is logged offer to book a follow-up call on their calendar with createEventTool. When " +
+    "they couldn't reach them, offer to put them on tomorrow's call list with callListTool, to book a time to call with " +
+    "createEventTool, or to set up a check-in email with draftEmailTool.";
+  assert.equal(CHARLI_SYSTEM.split(FOLLOW_UPS).length, 2, "the paragraph appears once, exactly");
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const at = paragraphs.indexOf(FOLLOW_UPS);
+  assert.ok(at > 0, "it is a paragraph of its own");
+  assert.ok(paragraphs[at - 1].startsWith("Email: to write to a client"), "right after the Email paragraph");
+  const rule = paragraphs.find((p) => p.startsWith("Confirmation rule:"));
+  assert.ok(rule.includes("if you are not calling addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, reply with only ONE question"));
 });
 
 // Live check 2026-10-28: "book a call with Dave" (Dave not in the book) got findClient -> no match -> "I don't see a Dave in your
@@ -4381,7 +4489,7 @@ test("Task 5 fix: a draft is honoured only on an action turn (a request, or a ye
 
 test("Task 5 fix: CHARLI_SYSTEM's one-question rule names the calendar and email tools too", () => {
   assert.ok(CHARLI_SYSTEM.includes(
-    "if you are not calling addClientTool, logContactTool, createEventTool or draftEmailTool, reply with only ONE question that starts with the question word"
+    "if you are not calling addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, reply with only ONE question that starts with the question word"
   ));
 });
 

@@ -264,7 +264,7 @@ test("turn that proposes logContact returns the sideEffect and writes nothing; c
   assert.equal(turn.status, 200);
   assert.equal(turn.data.reply, "Just to confirm — log a contact for Robert & Linda Chen?");
   assert.match(turn.data.sideEffect.confirmId, UUID, "/turn stamps every sideEffect with a server-generated confirmId");
-  assert.deepStrictEqual(withoutConfirmId(turn.data.sideEffect), { type: "logContact", clientId: chen });
+  assert.deepStrictEqual(withoutConfirmId(turn.data.sideEffect), { type: "logContact", clientId: chen, outcome: "reached", notes: "" });
   assert.deepStrictEqual(turn.data.sources, ["client record"]);
   assert.equal(clientRow(chen).last_contact, before, "the turn is read-only");
 
@@ -2019,4 +2019,294 @@ test("turn (final review M-2): a refusal is logged as a refusal, a deadline as a
     console.warn = savedWarn;
     if (saved === undefined) delete process.env.CHARLI_TURN_DEADLINE_MS; else process.env.CHARLI_TURN_DEADLINE_MS = saved;
   }
+});
+
+// ── Task 7: call outcomes, notes, tomorrow's list, and skipping a follow-up ──
+
+const followups = require("../lib/assistant/followups");
+const orgF = addOrg("Foxtrot");
+const fay = addUser(orgF, "broker", "fay@f.co", "Fay");
+const leo = addUser(orgF, "lo", "leo@f.co", "Leo");
+const nowSql = () => new Date().toISOString().replace("T", " ").slice(0, 19);
+const shiftDay = (day, n) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const recRow = (id) => db.prepare("SELECT * FROM charlie_recommendations WHERE id = ?").get(id);
+const callsFor = (clientId) => db.prepare("SELECT * FROM contact_log WHERE client_id = ? ORDER BY id").all(clientId);
+const carriesFor = (clientId) => db.prepare("SELECT * FROM charlie_recommendations WHERE client_id = ? AND source = 'carry' ORDER BY id").all(clientId);
+// An open recommendation of `clientId` to `userId` from an earlier day (so it is due to be asked about): its row id.
+function recommend(userId, clientId, day = "2026-10-01", source = "briefing") {
+  followups.recordRecommendations(db, userId, day, [{ clientId, source, reasonCode: "rate_term" }]);
+  return db.prepare("SELECT id FROM charlie_recommendations WHERE user_id = ? AND client_id = ? AND day = ? AND source = ?")
+    .get(userId, clientId, day, source).id;
+}
+const openIds = (userId) => followups.openFollowUps(db, userId, { localDate: TODAY, localHour: 9, nowUtc: nowSql() }).map((f) => f.id);
+const askedAbout = (name) => ({ role: "assistant", content: `Yesterday I suggested calling ${name}. Were you able to reach them?` });
+
+test("Task 7: confirm logContact reached with notes logs the call, sets last_contact and closes the open recommendation; a replay writes nothing", async () => {
+  const nora = addClientRow(orgF, fay, { name: "Nora Quinn", lastContact: "2024-01-01" });
+  const recId = recommend(fay, nora);
+  assert.ok(openIds(fay).includes(recId), "precondition: it is due to be asked about");
+  const sideEffect = { type: "logContact", clientId: nora, outcome: "reached", notes: "  Wants to wait until spring.\n ", confirmId: newId() };
+  const r = await confirmAs(fay, sideEffect);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, "Done — I logged a contact for Nora Quinn.");
+  assert.equal(r.data.result.id, nora);
+  const calls = callsFor(nora);
+  assert.equal(calls.length, 1);
+  assert.deepStrictEqual([calls[0].user_id, calls[0].outcome, calls[0].notes], [fay, "reached", "Wants to wait until spring."]);
+  assert.notEqual(clientRow(nora).last_contact, "2024-01-01", "a reached call sets last_contact");
+  assert.equal(recRow(recId).status, "reached");
+  assert.ok(recRow(recId).resolved_at);
+  assert.ok(!openIds(fay).includes(recId), "never asked about again");
+  // what is kept per confirmId is { id, name }: never the notes
+  assert.deepStrictEqual(JSON.parse(confirmation(sideEffect.confirmId).result_json), { id: nora, name: "Nora Quinn" });
+  assert.ok(!JSON.stringify(confirmation(sideEffect.confirmId)).includes("spring"));
+
+  db.prepare("UPDATE clients SET last_contact = '2000-01-01' WHERE id = ?").run(nora);
+  const again = await confirmAs(fay, sideEffect);
+  assert.equal(again.status, 200);
+  assert.equal(again.data.duplicate, true);
+  assert.equal(again.data.reply, r.data.reply);
+  assert.equal(callsFor(nora).length, 1, "the replay logged nothing");
+  assert.equal(clientRow(nora).last_contact, "2000-01-01", "the replay wrote nothing");
+});
+
+test("Task 7: confirm logContact not reached logs the call and closes the recommendation as not_reached; last_contact is untouched", async () => {
+  const sid = addClientRow(orgF, fay, { name: "Sid Park", lastContact: "2024-01-01" });
+  const recId = recommend(fay, sid);
+  const sideEffect = { type: "logContact", clientId: sid, outcome: "not_reached", notes: "Left a voicemail", confirmId: newId() };
+  const r = await confirmAs(fay, sideEffect);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, "Done — I noted that you couldn't reach Sid Park.");
+  assert.equal(r.data.result.id, sid);
+  assert.equal(clientRow(sid).last_contact, "2024-01-01", "a call that did not connect is no contact");
+  const calls = callsFor(sid);
+  assert.deepStrictEqual(calls.map((c) => [c.user_id, c.outcome, c.notes]), [[fay, "not_reached", "Left a voicemail"]]);
+  assert.equal(recRow(recId).status, "not_reached");
+  assert.ok(!openIds(fay).includes(recId));
+
+  // a replay is the same reply and writes nothing; the same confirmId as a reached log is another action (409)
+  const again = await confirmAs(fay, sideEffect);
+  assert.deepStrictEqual([again.status, again.data.duplicate, again.data.reply], [200, true, r.data.reply]);
+  const other = await confirmAs(fay, { ...sideEffect, outcome: "reached" });
+  assert.equal(other.status, 409);
+  assert.equal(callsFor(sid).length, 1);
+  assert.equal(clientRow(sid).last_contact, "2024-01-01");
+});
+
+test("Task 7: confirm logContact (either outcome) reaches what logContactForUser reaches: 404 unknown, 403 another org's or another LO's; nothing logged", async () => {
+  const faysClient = addClientRow(orgF, fay, { name: "Fay Own", lastContact: "2024-01-01" });
+  const leosClient = addClientRow(orgF, leo, { name: "Leo Own", lastContact: "2024-01-01" });
+  const beaBefore = callsFor(beaClient).length;
+  for (const outcome of ["reached", "not_reached"]) {
+    for (const [userId, clientId, status] of [[leo, faysClient, 403], [fay, beaClient, 403], [bea, faysClient, 403], [fay, 99999999, 404]]) {
+      const r = await confirmAs(userId, { type: "logContact", clientId, outcome, notes: "a note", confirmId: newId() });
+      assert.equal(r.status, status, `${outcome}: user ${userId} -> client ${clientId}`);
+      assert.equal(r.data.success, false);
+      assert.equal("reply" in r.data, false);
+    }
+    // an LO logs their own clients; the broker any client in the org
+    assert.equal((await confirmAs(leo, { type: "logContact", clientId: leosClient, outcome, confirmId: newId() })).status, 200, outcome);
+    assert.equal((await confirmAs(fay, { type: "logContact", clientId: leosClient, outcome, confirmId: newId() })).status, 200, outcome);
+  }
+  assert.equal(callsFor(faysClient).length, 0);
+  assert.equal(callsFor(beaClient).length, beaBefore);
+  assert.deepStrictEqual(callsFor(leosClient).map((c) => [c.user_id, c.outcome]),
+    [[leo, "reached"], [fay, "reached"], [leo, "not_reached"], [fay, "not_reached"]]);
+  assert.equal(clientRow(faysClient).last_contact, "2024-01-01");
+});
+
+test("Task 7: confirm logContact refuses a bad outcome or notes that are not text (400, nothing written); notes are cleaned and capped", async () => {
+  const kim = addClientRow(orgF, fay, { name: "Kim Ode", lastContact: "2024-01-01" });
+  for (const outcome of ["maybe", "", "Reached", 1, true, ["reached"]]) {
+    const r = await confirmAs(fay, { type: "logContact", clientId: kim, outcome, confirmId: newId() });
+    assert.equal(r.status, 400, JSON.stringify(outcome));
+    assert.equal(r.data.error, "outcome must be reached or not_reached");
+  }
+  for (const notes of [5, true, ["a note"], { text: "a note" }]) {
+    const r = await confirmAs(fay, { type: "logContact", clientId: kim, notes, confirmId: newId() });
+    assert.equal(r.status, 400, JSON.stringify(notes));
+    assert.equal(r.data.error, "notes must be text");
+  }
+  assert.equal(callsFor(kim).length, 0);
+  assert.equal(clientRow(kim).last_contact, "2024-01-01");
+  // no outcome is a reached log; the notes are trimmed, their control characters stripped and the rest capped at 1000
+  const ok = await confirmAs(fay, { type: "logContact", clientId: kim, notes: " Call\u0000 back\n" + "x".repeat(1200), confirmId: newId() });
+  assert.equal(ok.status, 200);
+  const [call] = callsFor(kim);
+  assert.equal(call.outcome, "reached");
+  assert.equal(call.notes.length, 1000);
+  assert.ok(call.notes.startsWith("Call back x"), call.notes.slice(0, 20));
+  assert.ok(!/[\u0000-\u001f]/.test(call.notes));
+});
+
+test("Task 7: confirm addToCallList carries the user's own client to tomorrow's list; anyone else's is 403 (a broker's LO's too), unknown 404", async () => {
+  const ana = addClientRow(orgF, fay, { name: "Ana Diaz" });
+  const leos = addClientRow(orgF, leo, { name: "Leo Two" });
+  const sideEffect = { type: "addToCallList", clientId: ana, day: TODAY, confirmId: newId() };
+  const r = await confirmAs(fay, sideEffect);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.success, true);
+  assert.equal(r.data.reply, "Done — Ana Diaz is on tomorrow's call list.");
+  const rows = carriesFor(ana);
+  assert.deepStrictEqual(rows.map((c) => [c.user_id, c.day, c.status]), [[fay, TODAY, "open"]]);
+  assert.deepStrictEqual(followups.carriedIds(db, fay, shiftDay(TODAY, 1)), [ana], "tomorrow's list leads with her");
+
+  // a replay writes nothing twice: even after the next briefing used the carry up, it is not reopened
+  db.prepare("UPDATE charlie_recommendations SET status = 'expired' WHERE id = ?").run(rows[0].id);
+  const again = await confirmAs(fay, sideEffect);
+  assert.deepStrictEqual([again.status, again.data.duplicate, again.data.reply], [200, true, r.data.reply]);
+  assert.deepStrictEqual(carriesFor(ana).map((c) => c.status), ["expired"]);
+
+  // the call list is the user's own: not an LO's client for their broker, not the broker's for an LO, nobody another org's
+  for (const [userId, clientId, status] of [[fay, leos, 403], [leo, ana, 403], [fay, beaClient, 403], [bea, ana, 403], [fay, 99999999, 404]]) {
+    const denied = await confirmAs(userId, { type: "addToCallList", clientId, day: TODAY, confirmId: newId() });
+    assert.equal(denied.status, status, `user ${userId} -> client ${clientId}`);
+    assert.equal(denied.data.success, false);
+    assert.equal("reply" in denied.data, false);
+  }
+  assert.equal(carriesFor(leos).length, 0);
+  assert.equal(carriesFor(beaClient).length, 0);
+  assert.equal(carriesFor(ana).length, 1);
+  // an LO carries their own
+  assert.equal((await confirmAs(leo, { type: "addToCallList", clientId: leos, day: TODAY, confirmId: newId() })).status, 200);
+  assert.deepStrictEqual(carriesFor(leos).map((c) => c.user_id), [leo]);
+});
+
+test("Task 7: confirm addToCallList needs a clientId, a real day within a day of the UTC date and a confirmId (400, nothing carried)", async () => {
+  const ben = addClientRow(orgF, fay, { name: "Ben Ito" });
+  for (const se of [
+    { clientId: ben, confirmId: newId() },
+    { clientId: ben, day: "2020-01-01", confirmId: newId() },
+    { clientId: ben, day: shiftDay(TODAY, 2), confirmId: newId() },
+    { clientId: ben, day: "tomorrow", confirmId: newId() },
+    { clientId: ben, day: "2026-02-30", confirmId: newId() },
+    { clientId: ben, day: 20261030, confirmId: newId() },
+    { clientId: String(ben), day: TODAY, confirmId: newId() },
+    { clientId: 0, day: TODAY, confirmId: newId() },
+    { clientId: ben, day: TODAY },
+    { clientId: ben, day: TODAY, confirmId: "abc" },
+  ]) {
+    const r = await confirmAs(fay, { type: "addToCallList", ...se });
+    assert.equal(r.status, 400, JSON.stringify(se));
+    assert.equal(r.data.success, false);
+  }
+  assert.equal(carriesFor(ben).length, 0);
+  // the browser's own date may be a day either side of the UTC date
+  for (const day of [shiftDay(TODAY, -1), shiftDay(TODAY, 1)]) {
+    assert.equal((await confirmAs(fay, { type: "addToCallList", clientId: ben, day, confirmId: newId() })).status, 200, day);
+  }
+  assert.deepStrictEqual(carriesFor(ben).map((c) => c.day).sort(), [shiftDay(TODAY, -1), shiftDay(TODAY, 1)]);
+});
+
+test("Task 7: /turn hands callListTool the browser's valid localDate, else the UTC date; the read-back and the card come back with it", async () => {
+  const zed = addClientRow(orgF, fay, { name: "Zed Ames" });
+  let last;
+  for (const [localDate, day] of [[shiftDay(TODAY, -1), shiftDay(TODAY, -1)], [undefined, TODAY], ["2020-01-01", TODAY], ["nonsense", TODAY]]) {
+    setClient(fakeClient([useTool("callListTool", { clientId: zed })]));
+    last = await as(fay)("POST", "/api/assistant/turn", { messages: userMsgs("put Zed Ames on tomorrow's list"), rates: LIVE, localDate });
+    assert.equal(last.status, 200);
+    assert.equal(last.data.reply, "Just to confirm — put Zed Ames on tomorrow's call list?");
+    assert.deepStrictEqual(withoutConfirmId(last.data.sideEffect), { type: "addToCallList", clientId: zed, day }, String(localDate));
+    assert.match(last.data.sideEffect.confirmId, UUID);
+    assert.deepStrictEqual(last.data.details, [{ label: "Client", value: "Zed Ames" }, { label: "List", value: "Tomorrow" }]);
+  }
+  assert.equal(carriesFor(zed).length, 0, "the turn is read-only");
+  const ok = await confirmAs(fay, last.data.sideEffect);
+  assert.equal(ok.status, 200);
+  assert.deepStrictEqual(carriesFor(zed).map((c) => c.day), [TODAY]);
+});
+
+test("Task 7: skip — a decline with the briefing's followUpRecId dismisses it in code: no model call, no change, never asked again", async () => {
+  const lucy = addClientRow(orgF, fay, { name: "Lucy Tran" });
+  const recId = recommend(fay, lucy);
+  const sibling = recommend(fay, lucy, "2026-10-02", "sweep");   // the same call, recorded twice: one question asks about both
+  followups.addCarry(db, fay, lucy, "2026-10-02");               // a carry is never a question, and stays as the broker asked
+  assert.ok(openIds(fay).includes(recId) && openIds(fay).includes(sibling), "precondition: both are due");
+  const client = fakeClient([]);   // any model call would exhaust the script and fail the turn
+  setClient(client);
+  const r = await as(fay)("POST", "/api/assistant/turn", {
+    messages: [askedAbout("Lucy Tran"), { role: "user", content: "skip it" }], rates: LIVE, followUpRecId: recId,
+  });
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual(Object.keys(r.data).sort(), ["reply", "sources", "turnId"], "no sideEffect, no error");
+  assert.equal(r.data.reply, "No problem — I won't ask about Lucy Tran again.");
+  assert.deepStrictEqual(r.data.sources, []);
+  assert.equal(client.calls.length, 0, "no model call");
+  assert.equal(recRow(recId).status, "expired");
+  assert.equal(recRow(sibling).status, "expired");
+  assert.ok(!openIds(fay).includes(recId) && !openIds(fay).includes(sibling), "never asked about again");
+  assert.deepStrictEqual(carriesFor(lucy).map((c) => c.status), ["open"]);
+  const usage = usageFor(r.data.turnId);
+  assert.equal(usage.length, 1, "metered like the greeting");
+  assert.deepStrictEqual([usage[0].input_tokens, usage[0].output_tokens], [0, 0]);
+
+  // "not now" is a decline too; a row already closed is not reopened or changed, and the answer is the same
+  const second = await as(fay)("POST", "/api/assistant/turn", {
+    messages: [askedAbout("Lucy Tran"), { role: "user", content: "not now" }], rates: LIVE, followUpRecId: recId,
+  });
+  assert.equal(second.data.reply, "No problem — I won't ask about Lucy Tran again.");
+  assert.equal(recRow(recId).status, "expired");
+  assert.equal(client.calls.length, 0);
+});
+
+test("Task 7: skip — a followUpRecId that is not a positive integer or not the caller's, or a reply that is no decline, goes to the model", async () => {
+  const mia = addClientRow(orgF, fay, { name: "Mia Sato" });
+  const recId = recommend(fay, mia);
+  const turn = (userId, text, followUpRecId) => as(userId)("POST", "/api/assistant/turn", {
+    messages: [askedAbout("Mia Sato"), { role: "user", content: text }], rates: LIVE, followUpRecId,
+  });
+  for (const [userId, id] of [
+    [leo, recId], [bea, recId], [fay, String(recId)], [fay, 0], [fay, -recId], [fay, recId + 0.5], [fay, null], [fay, 99999999], [fay, [recId]],
+  ]) {
+    const client = fakeClient([say("No worries."), say("CHAT")]);
+    setClient(client);
+    const r = await turn(userId, "skip it", id);
+    assert.equal(r.status, 200, JSON.stringify(id));
+    assert.ok(client.calls.length >= 1, `the turn went to the model (${userId}, ${JSON.stringify(id)})`);
+    assert.notEqual(r.data.reply, "No problem — I won't ask about Mia Sato again.");
+    assert.equal(recRow(recId).status, "open", "a skip that is ignored never touches the row");
+  }
+  // the caller's own row, but no decline: the model's turn, and the row stays open
+  const client = fakeClient([say("Nice — how did it go?"), say("CHAT")]);
+  setClient(client);
+  const r = await turn(fay, "yes I reached her", recId);
+  assert.equal(r.status, 200);
+  assert.ok(client.calls.length >= 1);
+  assert.equal(recRow(recId).status, "open");
+});
+
+test("Task 7: saved notes never reach the model: the proposal, the yes, then a turn about the client — no model request carries them", async () => {
+  const NOTES = "Wants to wait until spring — call back in March";
+  const ivy = addClientRow(orgF, fay, { name: "Ivy Chu", lastContact: "2024-01-01" });
+  recommend(fay, ivy);
+  const said = "Yeah I got her, she wants to wait until spring.";
+  // 1. the broker's answer: the model proposes the log with her notes
+  setClient(fakeClient([useTool("logContactTool", { clientId: ivy, outcome: "reached", notes: NOTES })]));
+  const turn = await as(fay)("POST", "/api/assistant/turn", { messages: [askedAbout("Ivy Chu"), { role: "user", content: said }], rates: LIVE });
+  assert.equal(turn.data.reply, "Just to confirm — log a call with Ivy Chu, with your notes?");
+  assert.equal(turn.data.sideEffect.notes, NOTES);
+  assert.deepStrictEqual(turn.data.details.find((d) => d.label === "Notes"), { label: "Notes", value: NOTES }, "the card shows them");
+  // 2. the yes
+  const confirm = await confirmAs(fay, turn.data.sideEffect);
+  assert.equal(confirm.data.reply, "Done — I logged a contact for Ivy Chu.");
+  assert.equal(callsFor(ivy)[0].notes, NOTES, "saved");
+  // 3. the next turn, with the read-back and the Done line in its history, looks her up and runs a sweep
+  const client = fakeClient([
+    useTool("findClient", { query: "Ivy" }), useTool("runSweepTool", {}, "toolu_2"), say("Ivy Chu owes $485,000 at 7.85 percent."), say("CHAT"),
+  ]);
+  setClient(client);
+  const later = await as(fay)("POST", "/api/assistant/turn", {
+    messages: [
+      askedAbout("Ivy Chu"), { role: "user", content: said },
+      { role: "assistant", content: turn.data.reply }, { role: "assistant", content: confirm.data.reply },
+      { role: "user", content: "Pull up Ivy Chu" },
+    ],
+    rates: LIVE,
+  });
+  assert.equal(later.status, 200);
+  assert.ok(client.calls.length >= 3, "the lookups and the answer went to the model");
+  const wire = JSON.stringify(client.calls);
+  assert.ok(wire.includes("Done — I logged a contact for Ivy Chu."), "the history it was sent holds the Done line");
+  assert.ok(!wire.includes(NOTES), "the saved notes are in no model request");
+  assert.ok(!wire.includes("call back in March"));
 });

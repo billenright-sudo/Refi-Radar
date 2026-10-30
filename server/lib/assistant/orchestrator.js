@@ -48,7 +48,7 @@ const SWEEP_TOP_CHECKINS = 10;
 const FIND_CLIENT_MAX_MATCHES = 5;
 
 // The tools that only PACKAGE a change (they never write; see tools.js).
-const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "setCareerStageTool", "createEventTool"]);
+const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool"]);
 // On the last allowed model call these are the only tools run, because nothing else's result could be used: a change to
 // confirm, and an email to set up (its result ends the turn in code, so no later model call is needed to narrate it).
 const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool"]);
@@ -1860,6 +1860,11 @@ function eventSpeech(event) {
   }
 }
 
+// The client a logContact or an addToCallList change is about, as its tool's own data names them.
+const clientNameOf = (out) => cleanName(out.data && out.data.client && out.data.client.name) || "that client";
+// Whether a logContact change carries the broker's notes (logContactTool packages "" for none).
+const hasNotes = (se) => typeof se.notes === "string" && se.notes !== "";
+
 // Code-authored confirmation question, built from the tool's own data (never from anything the
 // model wrote), so what is read back is what would be saved. Every read-back opens with READ_BACK_PREFIX
 // (answersActionQuestion keys on it).
@@ -1873,8 +1878,15 @@ function readBack(out) {
         ? `${READ_BACK_PREFIX} put "${event.title}" on your calendar for ${said.day} at ${said.at}${said.zone}, ${event.durationMinutes} minutes? Nobody gets an invite.`
         : `${READ_BACK_PREFIX} go ahead with that?`;
     }
-    case "logContact":
-      return `${READ_BACK_PREFIX} log a contact for ${cleanName(out.data && out.data.client && out.data.client.name) || "that client"}?`;
+    case "logContact": {
+      // The broker's notes are never read out (a phone number or an email in one must not be spoken, and nothing spoken here goes
+      // back into the conversation the model is sent): only that there are some. The card shows them.
+      const name = clientNameOf(out);
+      if (se.outcome === "not_reached") return `${READ_BACK_PREFIX} note that you couldn't reach ${name}?`;
+      return hasNotes(se) ? `${READ_BACK_PREFIX} log a call with ${name}, with your notes?` : `${READ_BACK_PREFIX} log a contact for ${name}?`;
+    }
+    case "addToCallList":
+      return `${READ_BACK_PREFIX} put ${clientNameOf(out)} on tomorrow's call list?`;
     case "addClient":
       return addClientReadBack(se.fields);
     case "setCareerStage": {
@@ -1890,8 +1902,9 @@ function readBack(out) {
 
 // What the pending card shows under the read-back: [{ label, value }], code-authored from the same packaged change. addClient
 // lists every field of sideEffect.fields (the object /confirm will write), the credit-score default included; logContact the
-// client and the date (the write sets the last contact to now); setCareerStage the stage; createEvent the title, the day with its
-// start and end time on the calendar's clock, and that nobody is invited. Never sent to the model.
+// client, the outcome, the broker's notes (the only place they are shown) and the date; addToCallList the client and the list;
+// setCareerStage the stage; createEvent the title, the day with its start and end time on the calendar's clock, and that nobody
+// is invited. Never sent to the model.
 const CLIENT_FIELD_LABELS = [
   ["name", "Name"], ["loanType", "Loan type"], ["currentRate", "Rate"], ["loanBalance", "Balance"], ["propertyValue", "Property value"],
   ["closeDate", "Close date"], ["creditScore", "Credit score"], ["email", "Email"], ["phone", "Phone"], ["notes", "Notes"],
@@ -1910,10 +1923,13 @@ function changeDetails(out) {
   }
   if (se.type === "logContact") {
     return [
-      { label: "Client", value: cleanName(out.data && out.data.client && out.data.client.name) || "that client" },
+      { label: "Client", value: clientNameOf(out) },
+      { label: "Outcome", value: se.outcome === "not_reached" ? "Couldn't reach" : "Reached" },
+      ...(hasNotes(se) ? [{ label: "Notes", value: se.notes }] : []),
       { label: "Contact date", value: "Today" },
     ];
   }
+  if (se.type === "addToCallList") return [{ label: "Client", value: clientNameOf(out) }, { label: "List", value: "Tomorrow" }];
   if (se.type === "setCareerStage") {
     const stage = stageById(se.stage);
     return stage ? [{ label: "Career stage", value: stage.label }] : [];
@@ -2999,5 +3015,5 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
-  classifyUngrounded, verdictLine, charliModel, randomJokeTopic,
+  classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isDecline,
 };

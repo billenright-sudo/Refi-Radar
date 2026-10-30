@@ -16,7 +16,7 @@ const refi = require("../lib/refi");
 const { recordSnapshot } = require("../lib/rateHistory");
 const {
   tools, TOOL_SCHEMA,
-  getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, getCalendarTool, createEventTool, draftEmailTool,
+  getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, callListTool, getCalendarTool, createEventTool, draftEmailTool,
 } = require("../lib/assistant/tools");
 const { PURPOSES, composeLinks } = require("../lib/assistant/outreach");
 
@@ -311,6 +311,78 @@ test("logContactTool accepts only plain digit strings for an id (no exponent, he
     assert.match(r.source, NON_CITING);
   }
   assert.equal(logContactTool({ clientId: `${chenId}` }, brokerCtx).sideEffect.clientId, chenId);
+});
+
+// ── Task 7: call outcomes, notes and tomorrow's list ────────────────────────
+
+const contactLogCount = () => db.prepare("SELECT COUNT(*) AS n FROM contact_log").get().n;
+const recommendationCount = () => db.prepare("SELECT COUNT(*) AS n FROM charlie_recommendations").get().n;
+
+test("Task 7: logContactTool packages the outcome (reached by default) and the broker's notes, cleaned; it writes nothing", () => {
+  const before = clientRow(chenId);
+  const logs = contactLogCount();
+  assert.deepStrictEqual(logContactTool({ clientId: chenId }, brokerCtx).sideEffect,
+    { type: "logContact", clientId: chenId, outcome: "reached", notes: "" });
+  assert.deepStrictEqual(logContactTool({ clientId: chenId, outcome: null, notes: null }, brokerCtx).sideEffect,
+    { type: "logContact", clientId: chenId, outcome: "reached", notes: "" }, "null is not given");
+  const r = logContactTool({ clientId: chenId, outcome: "not_reached", notes: "  Left a voicemail,\n\tcall back\u0007 Friday.  " }, brokerCtx);
+  assert.deepStrictEqual(r.sideEffect, { type: "logContact", clientId: chenId, outcome: "not_reached", notes: "Left a voicemail, call back Friday." },
+    "trimmed, and every control character is stripped");
+  assert.equal(r.source, "client record");
+  assert.equal(r.data.client.name, "Robert & Linda Chen");
+  assert.deepStrictEqual(logContactTool({ clientId: chenId, outcome: "reached", notes: "Wants to wait until spring." }, brokerCtx).sideEffect,
+    { type: "logContact", clientId: chenId, outcome: "reached", notes: "Wants to wait until spring." });
+  // notes are capped at 1000 characters
+  const long = logContactTool({ clientId: chenId, notes: "x".repeat(1500) }, brokerCtx);
+  assert.equal(long.sideEffect.notes.length, 1000);
+  assert.equal(logContactTool({ clientId: chenId, notes: "y".repeat(1000) }, brokerCtx).sideEffect.notes.length, 1000);
+  assert.equal(contactLogCount(), logs, "nothing logged");
+  assert.deepStrictEqual(clientRow(chenId), before, "no column of the row changed");
+});
+
+test("Task 7: logContactTool refuses an outcome that is not reached or not_reached, and notes that are not text", () => {
+  for (const outcome of ["maybe", "Reached", "REACHED", "not reached", "", 1, true, ["reached"], { reached: true }]) {
+    const r = logContactTool({ clientId: chenId, outcome }, brokerCtx);
+    assert.deepStrictEqual(r, { data: { error: "outcome must be reached or not_reached" }, source: "(invalid input)" }, JSON.stringify(outcome));
+  }
+  for (const notes of [5, true, ["a note"], { text: "a note" }]) {
+    const r = logContactTool({ clientId: chenId, notes }, brokerCtx);
+    assert.equal(r.sideEffect, undefined, JSON.stringify(notes));
+    assert.equal(r.source, "(invalid input)");
+    assert.equal(r.data.error, "notes must be text");
+  }
+});
+
+test("Task 7: callListTool packages a carry to tomorrow's list for the user's OWN client only (a broker's too), and writes nothing", () => {
+  const orgT = addOrg("Tango");
+  const brokerT = addUser(orgT, "broker", "broker@t.co");
+  const loT = addUser(orgT, "lo", "lo@t.co");
+  const own = addClientRow(orgT, brokerT, { name: "Lucy Tran", loanType: "30yr_fixed", currentRate: 8.125, loanBalance: 620000, propertyValue: 800000, creditScore: 755 });
+  const theLos = addClientRow(orgT, loT, { name: "Omar Lee", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 450000, creditScore: 720 });
+  const brokerTCtx = { user: user(brokerT, "broker", orgT), rates: LIVE, db };
+  const loTCtx = { user: user(loT, "lo", orgT), rates: LIVE, db };
+  const recs = recommendationCount();
+  const today = new Date().toISOString().slice(0, 10);
+
+  assert.deepStrictEqual(callListTool({ clientId: own }, brokerTCtx), {
+    data: { client: { id: own, name: "Lucy Tran" } },
+    source: "client record",
+    sideEffect: { type: "addToCallList", clientId: own, day: today },
+  }, "no localDate on ctx: the UTC date");
+  assert.deepStrictEqual(callListTool({ clientId: String(theLos) }, { ...loTCtx, localDate: "2026-10-29" }).sideEffect,
+    { type: "addToCallList", clientId: theLos, day: "2026-10-29" }, "the user's own date; a digit-string id");
+  assert.equal(callListTool({ clientId: own }, { ...brokerTCtx, localDate: "tomorrow" }).sideEffect.day, today, "a malformed date is the UTC date");
+
+  // the call list is never the team's: a broker can't carry an LO's client, an LO can't carry the broker's, nobody another org's
+  for (const [clientId, ctx] of [[theLos, brokerTCtx], [own, loTCtx], [chenId, brokerTCtx], [otherOrgClientId, brokerTCtx], [999999, brokerTCtx]]) {
+    assert.deepStrictEqual(callListTool({ clientId }, ctx), { data: { error: "no such client in your book" }, source: "(not found)" }, String(clientId));
+  }
+  for (const clientId of ["abc", undefined, 0, -1, 1.5, `${own}e0`]) {
+    const r = callListTool({ clientId }, brokerTCtx);
+    assert.equal(r.sideEffect, undefined, String(clientId));
+    assert.deepStrictEqual(r, { data: { error: "a valid clientId is required" }, source: "(invalid input)" });
+  }
+  assert.equal(recommendationCount(), recs, "nothing carried");
 });
 
 test("addClientTool previews the new client and does NOT write", () => {
@@ -838,10 +910,28 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   );
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
-    ["addClientTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "runSweepTool", "setCareerStageTool"]
+    ["addClientTool", "callListTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "runSweepTool", "setCareerStageTool"]
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);
+});
+
+test("Task 7: TOOL_SCHEMA: logContactTool takes an outcome and notes; callListTool takes a clientId; both only prepare", () => {
+  const log = TOOL_SCHEMA.find((t) => t.name === "logContactTool");
+  assert.deepStrictEqual(log.input_schema.required, ["clientId"]);
+  assert.deepStrictEqual(Object.keys(log.input_schema.properties), ["clientId", "outcome", "notes"]);
+  assert.deepStrictEqual(log.input_schema.properties.outcome, {
+    type: "string", enum: ["reached", "not_reached"], description: log.input_schema.properties.outcome.description,
+  });
+  assert.equal(log.input_schema.properties.notes.type, "string");
+  assert.equal(log.input_schema.properties.notes.maxLength, 1000);
+  const list = TOOL_SCHEMA.find((t) => t.name === "callListTool");
+  assert.deepStrictEqual(list.input_schema.required, ["clientId"]);
+  assert.deepStrictEqual(Object.keys(list.input_schema.properties), ["clientId"]);
+  assert.equal(list.input_schema.properties.clientId.type, "integer");
+  assert.match(list.input_schema.properties.clientId.description, /findClient/);
+  for (const t of [log, list]) assert.match(t.description, /does NOT save anything/, `${t.name} only prepares: the user confirms first`);
+  assert.match(list.description, /tomorrow's call list/);
 });
 
 test("TOOL_SCHEMA: the calendar tools say the day is worked out for the model and that nobody is invited", () => {

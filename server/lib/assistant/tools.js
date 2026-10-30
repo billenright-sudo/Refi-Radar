@@ -6,7 +6,7 @@
 //
 // Read tools query the CRM / the server sweep engine (lib/refi.js, the single math source). lookUpLive (a Promise) asks ctx.live,
 // lib/assistant/live.js, for one web search, after its screens have refused anything that must not leave the server.
-// Side-effect tools (addClientTool, logContactTool, setCareerStageTool, createEventTool) only PACKAGE the intent in
+// Side-effect tools (addClientTool, logContactTool, callListTool, setCareerStageTool, createEventTool) only PACKAGE the intent in
 // `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
 // The two Google Calendar tools (getCalendarTool, createEventTool) return a Promise: a read goes out to Google.
 // draftEmailTool sets up a client email and returns it as compose links at the TOP level of the result (`compose`, next to
@@ -207,17 +207,61 @@ function addClientTool(fields, _ctx) {
   };
 }
 
+// What became of a call the broker logs, and their notes on it: the same rules /api/assistant/confirm applies to the body it is
+// sent. callOutcome -> { outcome } | { error }, none given (undefined or null) being "reached". callNotes -> { notes } | { error },
+// none given being "": the text is kept on one line (every control character, a newline or a tab included, is stripped, and the
+// spaces it leaves collapse to one), trimmed and capped at NOTES_MAX characters. The notes are the broker's own words about a
+// borrower: they are saved and shown on the card, and never spoken or sent to the model.
+const CALL_OUTCOMES = Object.freeze(["reached", "not_reached"]);
+const BAD_OUTCOME = "outcome must be reached or not_reached";
+const BAD_NOTES = "notes must be text";
+const NOTES_MAX = 1000;
+const callOutcome = (raw) => (raw == null ? { outcome: "reached" } : CALL_OUTCOMES.includes(raw) ? { outcome: raw } : { error: BAD_OUTCOME });
+function callNotes(raw) {
+  if (raw == null) return { notes: "" };
+  if (typeof raw !== "string") return { error: BAD_NOTES };
+  const text = raw.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
+  return { notes: Array.from(text).slice(0, NOTES_MAX).join("").trim() };
+}
+
+// Package a call to log: `outcome` reached (the default; /confirm sets the client's last contact) or not_reached (noted, and the
+// last contact stays as it was), with the broker's `notes` (optional). Any client the caller can see, as for the REST route.
 function logContactTool(args, ctx) {
   const raw = args && args.clientId;
   // A string id must be plain digits: Number() would also accept "1e2", "0x10" and " 5 ".
   const id = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
   if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
+  const { outcome, error: badOutcome } = callOutcome(args.outcome);
+  if (badOutcome) return fail("(invalid input)", badOutcome);
+  const { notes, error: badNotes } = callNotes(args.notes);
+  if (badNotes) return fail("(invalid input)", badNotes);
   const row = scopedClients(ctx).find((r) => r.id === id);
   if (!row) return fail("(not found)", "no such client in your book");
   return {
     data: { client: toClient(row) },
     source: "client record",
-    sideEffect: { type: "logContact", clientId: row.id },
+    sideEffect: { type: "logContact", clientId: row.id, outcome, notes },
+  };
+}
+
+// "Put them on tomorrow's list": package a carry for the user to confirm. It does NOT write: /api/assistant/confirm adds it, and
+// the next day's briefing puts the client on its call list. The call list is never the team's, so only the user's OWN clients
+// (clients.user_id = user.id, a broker's too) can go on it. The carry is dated the day it was asked for: the user's own date
+// (ctx.localDate, which the route sets only from a valid browser date), else the UTC date.
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function callListTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const id = idOf(a.clientId);
+  if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
+  const { user, db } = ctx || {};
+  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
+  const row = db.prepare("SELECT id, name FROM clients WHERE id = ? AND user_id = ?").get(id, user.id);
+  if (!row) return fail("(not found)", "no such client in your book");
+  const day = typeof ctx.localDate === "string" && DAY_RE.test(ctx.localDate) ? ctx.localDate : todayUtc();
+  return {
+    data: { client: { id: row.id, name: row.name } },
+    source: "client record",
+    sideEffect: { type: "addToCallList", clientId: row.id, day },
   };
 }
 
@@ -668,7 +712,7 @@ async function lookUpLive(args, ctx) {
 // resolve to an inherited Object.prototype function.
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
-    getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
+    getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
     getCalendarTool, createEventTool, draftEmailTool, lookUpLive,
   })
 );
@@ -749,9 +793,30 @@ const TOOL_SCHEMA = [
   {
     name: "logContactTool",
     description:
-      "Prepare to log that the user just contacted an existing client (sets their last contact to now). " +
+      "Prepare to log a call or a contact the user had with an existing client. outcome reached (the default) means they spoke " +
+      "with the client and sets their last contact to now; not_reached means they tried and couldn't reach them, which is noted " +
+      "and leaves their last contact as it was. Pass any notes the user gives about the call, in their words. " +
       "This does NOT save anything: the user must confirm first. Get the clientId from findClient; never " +
       "guess it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        clientId: { type: "integer", description: "The id of the client, from findClient." },
+        outcome: {
+          type: "string", enum: CALL_OUTCOMES.slice(),
+          description: "reached if they spoke with the client (the default); not_reached if they tried and couldn't reach them.",
+        },
+        notes: { type: "string", maxLength: NOTES_MAX, description: "What the user said about the call, in their words, if anything." },
+      },
+      required: ["clientId"],
+    },
+  },
+  {
+    name: "callListTool",
+    description:
+      "Prepare to put one of the user's own clients on tomorrow's call list, so tomorrow's briefing names them first: for example " +
+      "when the user couldn't reach someone and asks for that. This does NOT save anything: the user must confirm first. Get the " +
+      "clientId from findClient; never guess it. Only the user's own clients can go on the list.",
     input_schema: {
       type: "object",
       properties: { clientId: { type: "integer", description: "The id of the client, from findClient." } },
@@ -851,7 +916,7 @@ const TOOL_SCHEMA = [
 ];
 
 module.exports = {
-  tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
+  tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
-  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex,
+  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes,
 };

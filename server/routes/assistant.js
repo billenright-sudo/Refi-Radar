@@ -8,9 +8,10 @@
 // deadline (CHARLI_TURN_DEADLINE_MS, see turnDeadlineMs). A change Charli
 // proposes comes back as `sideEffect` with a code-authored read-back; the browser echoes it to
 // /confirm only after the user says yes. That body is UNTRUSTED browser input, so /confirm accepts
-// four action types, takes org/user from the session alone, and runs the same validation and checks
-// as the REST routes (createClientForUser / logContactForUser in routes/clients.js). Three of them write synchronously, in one
-// transaction; the fourth, createEvent, books on the user's own Google calendar, which a transaction cannot wait for.
+// five action types, takes org/user from the session alone, and runs the same validation and checks
+// as the REST routes (createClientForUser / logContactForUser in routes/clients.js). Four of them write synchronously, in one
+// transaction; the fifth, createEvent, books on the user's own Google calendar, which a transaction cannot wait for.
+// A broker who declines the briefing's follow-up question ("skip it", with its followUpRecId) is answered by code: see skipFollowUp.
 // An email Charli sets up for the broker (draftEmailTool) comes back from /turn as `compose` and is never confirmed or sent.
 const crypto = require("crypto");
 const express = require("express");
@@ -18,7 +19,8 @@ const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
-const { runTurn, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
+const { runTurn, DEFAULT_TURN_DEADLINE_MS, isDecline } = require("../lib/assistant/orchestrator");
+const followups = require("../lib/assistant/followups");
 const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
 const { makeLive, userLocalDate } = require("../lib/assistant/live");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
@@ -30,7 +32,7 @@ const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
-const { createClientForUser, logContactForUser } = require("./clients");
+const { createClientForUser, logContactForUser, toClient } = require("./clients");
 const { googleFor } = require("../lib/google");
 const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, zoneName } = require("../lib/google/time");
 
@@ -145,7 +147,75 @@ function confirmReply(type, receipt) {
     return `Done — "${receipt.title}" is on your calendar for ${spokenDay(receipt.date)} at ${spokenTime(parseTime(receipt.time))}${zone ? ` ${zone}` : ""}.`;
   }
   if (type === "setCareerStage") return `Done — your career stage is set to ${spokenStageLabel(receipt.stage) || receipt.label}.`;
+  if (type === "addToCallList") return `Done — ${receipt.name} is on tomorrow's call list.`;
+  if (type === "logContact" && receipt.outcome === "not_reached") return `Done — I noted that you couldn't reach ${receipt.name}.`;
   return type === "logContact" ? `Done — I logged a contact for ${receipt.name}.` : `Done — I added ${receipt.name} as a new client.`;
+}
+
+// ── Calls and tomorrow's list (logContact, addToCallList) ───────────────────
+
+// An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
+const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+
+// logContactForUser's reach check without its write: 404 for no such client, 403 for another org's client and, for an LO, for
+// another LO's. -> { status, error } | { status: 200, client }
+function clientInReach(user, id) {
+  const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+  if (!existing) return { status: 404, error: "Client not found" };
+  if (user.role === "lo" && existing.user_id !== user.id) return { status: 403, error: "Access denied" };
+  if (existing.org_id !== user.org_id) return { status: 403, error: "Access denied" };
+  return { status: 200, client: toClient(existing) };
+}
+
+// The logContact write, run inside /confirm's transaction. A reached call is logContactForUser's write first (its reach check,
+// then last_contact = now); a call that did not connect gets the same reach check and no write to the client (it is no contact,
+// so their six-month check-in date stays as it was). Only then is the call logged with the broker's notes, and the caller's open
+// recommendations of that client closed with the outcome, so Charlie does not ask about them again. The receipt kept per
+// confirmId is { id, name }, plus the outcome when it was not reached: never the notes.
+function logCallForUser(user, id, outcome, notes) {
+  const reach = outcome === "reached" ? logContactForUser(db, user, id) : clientInReach(user, id);
+  if (reach.status !== 200) return reach;
+  const nowUtc = sqliteUtc(Date.now());
+  followups.logCall(db, { userId: user.id, clientId: id, outcome, notes, nowUtc });
+  followups.resolveForClient(db, user.id, id, outcome, nowUtc);
+  const receipt = outcome === "reached" ? receiptOf(reach.client) : { ...receiptOf(reach.client), outcome };
+  return { result: reach.client, receipt };
+}
+
+// The addToCallList write: a carry dated `day` for one of the caller's OWN clients (the call list is never the team's, so a broker
+// cannot carry an LO's client either): 404 for no such client, 403 for anyone else's. The receipt is { id, name, day }.
+function addToCallListForUser(user, id, day) {
+  const client = db.prepare("SELECT id, name, user_id FROM clients WHERE id = ?").get(id);
+  if (!client) return { status: 404, error: "Client not found" };
+  if (client.user_id !== user.id) return { status: 403, error: "Access denied" };
+  followups.addCarry(db, user.id, id, day);
+  const receipt = { id: client.id, name: client.name, day };
+  return { result: receipt, receipt };
+}
+
+// "Skip it": the broker's answer to the briefing's follow-up question (its briefing.followUp.recId, sent back as followUpRecId) is
+// a decline (isDecline). The line code says after dismissing it, or null when this turn is no skip. The row must be a positive
+// integer id of the caller's own, about a client who is still theirs; the name is read from the client record (never from the
+// body), and only when it may be spoken (briefing.js speakable, which every name the briefing asks about passed). Every open row
+// of that client the briefing could ask about goes with it, since one question asks about all of a client's rows (briefing.js
+// pickFollowUps) and the line says it won't be asked again; a carry is no question, and stays as the broker asked. A row already
+// closed is left as it is.
+function skipFollowUp(user, recId, text) {
+  if (!Number.isInteger(recId) || recId <= 0 || !isDecline(text)) return null;
+  const rec = db.prepare(`
+    SELECT r.client_id AS clientId, c.name AS name FROM charlie_recommendations r
+    JOIN clients c ON c.id = r.client_id AND c.user_id = r.user_id
+    WHERE r.id = ? AND r.user_id = ?
+  `).get(recId, user.id);
+  const name = rec ? assistantBriefing.speakable(rec.name) : null;
+  if (!name) return null;
+  db.transaction(() => {
+    const open = db.prepare(
+      "SELECT id FROM charlie_recommendations WHERE user_id = ? AND client_id = ? AND status = 'open' AND source <> 'carry'"
+    ).all(user.id, rec.clientId);
+    for (const row of open) followups.dismiss(db, user.id, row.id);
+  })();
+  return `No problem — I won't ask about ${name} again.`;
 }
 
 // The setCareerStage write: ONLY the signed-in user's own row (never an id from the body), and the receipt kept per
@@ -323,8 +393,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
   };
 
   // POST /api/assistant/turn
-  // Body: { rates, messages, localDate? } or { rates, greeting: true, localHour?, localDate? } (localDate: the browser's YYYY-MM-DD;
-  // on a turn it is the lookup's "today" when it is a real date within a day of the UTC date, and ignored otherwise: M-6).
+  // Body: { rates, messages, localDate?, followUpRecId? } or { rates, greeting: true, localHour?, localDate? } (localDate: the
+  // browser's YYYY-MM-DD; on a turn it is the lookup's "today", and the day callListTool dates a carry, when it is a real date within
+  // a day of the UTC date, and ignored otherwise: M-6; followUpRecId: the briefing's followUp.recId, on the answer to its question).
   // -> { reply, sources, sideEffect?, details?, turnId }; a failed turn, or one that outran its deadline,
   //    -> 200 { reply, error: true, sources: [], turnId }
   // The greeting is the morning briefing (lib/assistant/briefing.js): -> { reply, sources, turnId, briefing: { kind, strip, followUp } }.
@@ -368,6 +439,22 @@ function createAssistantRouter({ limiter = {} } = {}) {
     // normalizeHistory joins consecutive same-role messages, so the cap is checked again on what would be sent
     if (hasOversizedNormalizedMessage(messages)) return tooLong();
 
+    // A decline of the briefing's follow-up question is answered by code (skipFollowUp): no model call, nothing to confirm, metered
+    // like the greeting. A followUpRecId that is not a positive integer or not the caller's, or an answer that is no decline, is
+    // ignored, and the turn goes to the model as usual.
+    let skipped;
+    try {
+      skipped = skipFollowUp(req.user, body.followUpRecId, messages[messages.length - 1].content);
+    } catch (err) {
+      console.error("POST /api/assistant/turn (skip):", errText(err));
+      meter(req.user.id, turnId, {});
+      return res.json({ reply: ERROR_TURN, error: true, sources: [], turnId });
+    }
+    if (skipped) {
+      meter(req.user.id, turnId, {});
+      return res.json({ reply: skipped, sources: [], turnId });
+    }
+
     let out;
     try {
       const client = getClient(req);
@@ -381,6 +468,8 @@ function createAssistantRouter({ limiter = {} } = {}) {
       // metered as a 'live' row of its own under this turn's id (and counted toward the user's daily cap). Its "today" is the
       // user's own date when the browser sent a valid one (M-6: a real date within a day of the UTC date), else the UTC date.
       const localDate = userLocalDate(body.localDate) || undefined;
+      // callListTool dates a carry by it too (the UTC date when there is none)
+      if (localDate) ctx.localDate = localDate;
       ctx.live = req.app.get("liveLookup") || makeLive({ client, db, userId: req.user.id, turnId, localDate });
       out = await runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs: turnDeadlineMs() });
     } catch (err) {
@@ -417,12 +506,21 @@ function createAssistantRouter({ limiter = {} } = {}) {
   //   * setCareerStage ({ type, stage, confirmId? }, stage one of the CAREER_STAGES ids, else 400) sets
   //     users.career_stage for the signed-in user ONLY and replies "Done — your career stage is set to <label>."
   //     (result { stage, label }); its confirmId is optional (the update is idempotent) and its target is the stage id.
-  //   * addClient requires a confirmId; logContact may send one. A malformed one is 400.
+  //   * logContact ({ type, clientId, outcome?, notes?, confirmId? }): outcome "reached" (the default) or "not_reached", else 400;
+  //     notes text (else 400), cleaned and capped as logContactTool does. One transaction: for reached, logContactForUser (its
+  //     404 / 403, then last_contact = now); for not_reached the same reach check and no write to the client; then the call goes
+  //     in contact_log with the notes and the caller's open recommendations of that client are closed with the outcome. Replies
+  //     "Done — I logged a contact for <name>." or, not reached, "Done — I noted that you couldn't reach <name>."
+  //   * addToCallList ({ type, clientId, day, confirmId }, day a real YYYY-MM-DD within a day of the UTC date, else 400) carries one
+  //     of the caller's OWN clients to the next day's call list (404 unknown, 403 anyone else's, a broker's LO's included) and
+  //     replies "Done — <name> is on tomorrow's call list." (result { id, name, day }).
+  //   * addClient and addToCallList require a confirmId; logContact may send one. A malformed one is 400.
   //   * a confirmId is bound to the user AND to the action it was recorded for (type + target); the same id
   //     from another user, or for another type or target, is 409 and nothing is executed.
   //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
   //     that fails (400 / 403 / 404) records nothing, so the id is still good for a corrected retry.
-  //   * what is kept per confirmId is { id, name } only (no email, phone or notes), or { stage, label }.
+  //   * what is kept per confirmId is { id, name } only (no email, phone or notes; a not-reached log adds its outcome, a carry its
+  //     day), or { stage, label }.
   //   * createEvent ({ type, event: { title, date, time, durationMinutes, timeZone }, confirmId }, the confirmId required) books the
   //     event on the signed-in user's own Google calendar: asynchronous, see confirmCreateEvent. What is kept is
   //     { eventId, title, date, time }; the reply is `Done — "<title>" is on your calendar for <day> at <time>.`
@@ -453,8 +551,23 @@ function createAssistantRouter({ limiter = {} } = {}) {
     } else if (sideEffect.type === "logContact") {
       const id = sideEffect.clientId;
       if (!Number.isInteger(id) || id <= 0) return bad("a valid clientId is required");
-      target = String(id);
-      execute = () => clientOutcome(logContactForUser(db, req.user, id));
+      // the outcome and the notes are checked and cleaned as logContactTool does (tools.js callOutcome, callNotes)
+      const how = assistantTools.callOutcome(sideEffect.outcome);
+      if (how.error) return bad(how.error);
+      const said = assistantTools.callNotes(sideEffect.notes);
+      if (said.error) return bad(said.error);
+      // a reached log keeps the target a logContact always had, so a confirmId kept before outcomes existed still dedupes; the
+      // notes are never part of it (they are not kept)
+      target = how.outcome === "reached" ? String(id) : `${id}:${how.outcome}`;
+      execute = () => logCallForUser(req.user, id, how.outcome, said.notes);
+    } else if (sideEffect.type === "addToCallList") {
+      const id = sideEffect.clientId;
+      if (!Number.isInteger(id) || id <= 0) return bad("a valid clientId is required");
+      // the day it was asked for: the browser's own date, so a real date within a day of the UTC date (as /turn takes it)
+      const day = userLocalDate(sideEffect.day);
+      if (!day) return bad("a valid day is required");
+      target = `${id}:${day}`;
+      execute = () => addToCallListForUser(req.user, id, day);
     } else if (sideEffect.type === "setCareerStage") {
       const stage = stageById(sideEffect.stage);
       if (!stage) return bad("a valid career stage is required");
@@ -468,7 +581,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
     if (sideEffect.confirmId != null) {
       if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return bad("confirmId must be a UUID");
       confirmId = sideEffect.confirmId.toLowerCase();
-    } else if (sideEffect.type === "addClient") {
+    } else if (sideEffect.type === "addClient" || sideEffect.type === "addToCallList") {
       return bad("confirmId required");
     }
 

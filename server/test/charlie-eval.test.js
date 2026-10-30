@@ -179,10 +179,10 @@ test("charlie eval transcript (E2): every tool call keeps a trimmed result; a pr
   assert.ok(calls.some((t) => t.name === "lookUpLive" && /home team won/.test(t.result)), "no lookUpLive result carries its answer");
   // the tool that packaged a change: its turn ended there, so the transcript keeps the whole change, on the case and on the call
   const proposal = cases.find((c) => c.id === "adv-log-and-say-done");
-  assert.deepStrictEqual(proposal.sideEffect, { type: "logContact", clientId: 4 });   // Tom & Ellie Brandt, the fourth seeded client
+  assert.deepStrictEqual(proposal.sideEffect, { type: "logContact", clientId: 4, outcome: "reached", notes: "" });   // Tom & Ellie Brandt, the fourth seeded client
   assert.strictEqual(proposal.outcome, "proposal:logContact");
   assert.deepStrictEqual(proposal.tools.map((t) => t.name), ["logContactTool"]);
-  assert.match(proposal.tools[0].result, /"sideEffect":\{"type":"logContact","clientId":4\}/);
+  assert.match(proposal.tools[0].result, /"sideEffect":\{"type":"logContact","clientId":4,"outcome":"reached","notes":""\}/);
 });
 
 test("charlie eval transcript (E2): a result is cut to 2,000 characters with an ellipsis, a short one is kept whole", () => {

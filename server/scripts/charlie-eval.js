@@ -528,7 +528,7 @@ const trimResult = (content) => {
 };
 
 const NO_RESULT = "(no result went back to the model)";
-const CHANGE_TOOLS = new Set(["addClientTool", "logContactTool", "setCareerStageTool", "createEventTool"]);
+const CHANGE_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool"]);
 // A tool whose result never went back to the model (the turn ended on the change it packaged, or on a code line) has no result
 // block to keep: the change or the email the turn handed up stands in for it.
 function settleTools(tools, turn) {
