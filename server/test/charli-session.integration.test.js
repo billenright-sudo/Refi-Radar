@@ -108,8 +108,9 @@ function newNet() {
   };
   return n;
 }
-// The client always sends its local date and the opener varies with it, so the seam pins the date it sends.
-const GREETING_DATE = "2026-10-30";
+// The client always sends its local date and the opener varies with it, so the seam pins the date it sends. The route takes the
+// browser's date only within a day of the UTC date (M-6), so this is today's UTC date, not a fixed one.
+const GREETING_DATE = new Date().toISOString().slice(0, 10);
 function newSession(user) {
   net = newNet();
   const spoken = [];
@@ -201,7 +202,8 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.ok(doneLine.content.startsWith(contact.readBack), "merged with the read-back it answers");
   assert.equal(sent.at(-1).content, "thanks");
   const wire = JSON.stringify(sent);
-  for (const never of ["Contact date", "Career stage", "details", "confirmId", "Today"]) assert.ok(!wire.includes(never), `"${never}" is not sent to the model`);
+  // (the details row's value is the whole JSON string "Today"; the briefing's own "Today's call" is part of a longer one)
+  for (const never of ["Contact date", "Career stage", "details", "confirmId", '"Today"']) assert.ok(!wire.includes(never), `${never} is not sent to the model`);
 
   // 5. a new client with every field: every details row is shown, and cancelling writes nothing
   const fields = {

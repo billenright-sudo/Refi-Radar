@@ -21,6 +21,8 @@ const cookieParser = require("cookie-parser");
 const db = require("../db");
 const { signToken } = require("../middleware/auth");
 const assistantTools = require("../lib/assistant/tools");
+const refi = require("../lib/refi");
+const { CLOSE_QUESTION, CLOSE_NO_CALLS } = require("../lib/assistant/briefing");
 const { tools, TOOL_SCHEMA, setCareerStageTool } = assistantTools;
 const { CHARLI_SYSTEM, NOTHING_CHANGED, CANT_VERIFY, STAGE_REASK, buildCharliSystem, JOKE_TOPICS } = require("../lib/assistant/prompt");
 const { CAREER_STAGES, coachingStyle, stageById, stageForYears } = require("../lib/assistant/coaching");
@@ -43,7 +45,6 @@ const assistantRoutes = require("../routes/assistant");
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
 const LIVE = { ...RATES, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const WANT_MORE = "Want a market update, a sweep of your book, or something else?";
 const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
 const IDS = ["new", "developing", "established", "veteran"];
 const LABEL = {
@@ -829,7 +830,8 @@ test("end to end: greeting asks, 'about 20 years' reads back, confirm saves, the
   assert.equal(withoutJoke(next.calls[0].system), buildCharliSystem({ career_stage: "veteran" }));
   setClient(fakeClient([]));
   const again = await asKit("POST", "/api/assistant/turn", { greeting: true, rates: LIVE, localHour: 9 });
-  assert.ok(again.data.reply.endsWith(WANT_MORE), again.data.reply);
+  assert.ok(again.data.reply.endsWith(CLOSE_NO_CALLS), again.data.reply);
+  assert.ok(!again.data.reply.includes(CAREER_QUESTION));
 });
 
 test("turn: requireAuth hands the stage to the prompt for each user (a different user, a different prompt)", async () => {
@@ -856,37 +858,49 @@ async function greet(userId, body) {
   return r;
 }
 
+// The browser's own date is taken only within a day of the UTC date (M-6), so dates below are relative to now.
+const utcDay = (offset = 0) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+const questionMarks = (text) => (text.match(/\?/g) || []).length;
+
 test("greeting: a user with no career stage is asked how long they've been originating, and nothing else", async () => {
   const who = addUser(addOrg("NoStage"), "broker", "Nell");
-  const r = await greet(who, { localHour: 9 });
+  const day = utcDay();
+  const r = await greet(who, { localHour: 9, localDate: day });
   assert.equal(r.status, 200);
-  assert.equal(r.data.reply, `Good morning, Nell. You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${CAREER_QUESTION}`);
-  assert.doesNotMatch(r.data.reply, /Want a market update/, "the greeting asks exactly one thing");
-  assert.equal((r.data.reply.match(/\?/g) || []).length, 1);
-  assert.deepStrictEqual(r.data.sources, ["sweep engine", "live rates 2026-10-21"]);
+  assert.ok(r.data.reply.startsWith(assistantRoutes.openerFor({ localHour: 9, localDate: day, name: "Nell" })), r.data.reply);
+  assert.match(r.data.reply, /The 30-year is at 6\.52%/);
+  assert.ok(r.data.reply.endsWith(CAREER_QUESTION), r.data.reply);
+  assert.doesNotMatch(r.data.reply, /Want a full sweep/, "the greeting asks exactly one thing");
+  assert.equal(questionMarks(r.data.reply), 1);
+  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21", "sweep engine"]);
+  assert.equal(r.data.briefing.kind, "morning");
+  assert.equal(r.data.briefing.followUp, null);
   assert.equal("error" in r.data, false);
   assert.equal("sideEffect" in r.data, false);
 });
 
-test("greeting: a user with a career stage keeps the existing close", async () => {
+test("greeting: a user with a career stage gets the standing close, not the career question", async () => {
   for (const id of IDS) {
     const who = addUser(addOrg("Staged " + id), "broker", "Sid", id);
     const r = await greet(who, { localHour: 9 });
-    assert.equal(r.data.reply, `Good morning, Sid. You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${WANT_MORE}`, id);
+    assert.ok(r.data.reply.endsWith(CLOSE_NO_CALLS), `${id}: ${r.data.reply}`);   // an empty book: nothing to offer to book
+    assert.equal(questionMarks(r.data.reply), 1, id);
     assert.doesNotMatch(r.data.reply, /originating/, id);
   }
 });
 
-test("greeting: a varied opener leaves the career question, and the single question, exactly as they were", async () => {
+test("greeting: a varied opener leaves the career question, and the single question, as they were", async () => {
   const who = addUser(addOrg("NoStageDated"), "broker", "Nell");
   const staged = addUser(addOrg("StagedDated"), "broker", "Sid", "veteran");
-  for (const localDate of ["2026-10-26", "2026-10-30", "2026-10-31", "2026-11-01"]) {
+  for (const localDate of [utcDay(-1), utcDay(), utcDay(1)]) {
     const asked = await greet(who, { localHour: 9, localDate });
-    const opener = assistantRoutes.openerFor({ localHour: 9, localDate, name: "Nell" });
-    assert.equal(asked.data.reply, `${opener} You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${CAREER_QUESTION}`, localDate);
-    assert.equal((asked.data.reply.match(/\?/g) || []).length, 1, "the greeting asks exactly one thing");
+    assert.ok(asked.data.reply.startsWith(assistantRoutes.openerFor({ localHour: 9, localDate, name: "Nell" })), `${localDate}: ${asked.data.reply}`);
+    assert.ok(asked.data.reply.endsWith(CAREER_QUESTION), localDate);
+    assert.equal(questionMarks(asked.data.reply), 1, "the greeting asks exactly one thing");
     const close = await greet(staged, { localHour: 14, localDate });
-    assert.equal(close.data.reply, `${assistantRoutes.openerFor({ localHour: 14, localDate, name: "Sid" })} You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${WANT_MORE}`, localDate);
+    assert.ok(close.data.reply.startsWith(assistantRoutes.openerFor({ localHour: 14, localDate, name: "Sid" })), `${localDate}: ${close.data.reply}`);
+    assert.ok(close.data.reply.endsWith(CLOSE_NO_CALLS), localDate);
+    assert.equal(questionMarks(close.data.reply), 1, localDate);
   }
 });
 
@@ -902,17 +916,22 @@ test("greeting: a stored stage that is not one of the four ids is treated as not
 });
 
 test("greeting: the question follows a failed sweep or market tool too, and an LO is asked like a broker", async () => {
-  const original = assistantTools.runSweepTool;
-  assistantTools.runSweepTool = () => ({ data: { error: "unavailable" }, source: "(unavailable)" });
+  const originalSweep = refi.runSweep;
+  refi.runSweep = () => { throw new Error("boom"); };
   const originalMarket = assistantTools.getMarketUpdate;
   assistantTools.getMarketUpdate = () => ({ data: { error: "unavailable" }, source: "(unavailable)" });
+  const realError = console.error;
+  console.error = () => {};
   try {
-    const r = await greet(lee, { localHour: 19 });
-    assert.equal(r.data.reply, `Good evening, Lee. ${CAREER_QUESTION}`);
+    const day = utcDay();
+    const r = await greet(lee, { localHour: 19, localDate: day });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, `${assistantRoutes.openerFor({ localHour: 19, localDate: day, name: "Lee" })} ${CAREER_QUESTION}`);
     assert.deepStrictEqual(r.data.sources, []);
   } finally {
-    assistantTools.runSweepTool = original;
+    refi.runSweep = originalSweep;
     assistantTools.getMarketUpdate = originalMarket;
+    console.error = realError;
   }
 });
 

@@ -21,6 +21,8 @@ const db = require("../db");
 const { signToken } = require("../middleware/auth");
 const refi = require("../lib/refi");
 const assistantTools = require("../lib/assistant/tools");
+const assistantBriefing = require("../lib/assistant/briefing");   // the route calls assistantBriefing.buildBriefing(): tests can swap it
+const { CLOSE_QUESTION, CLOSE_NO_CALLS } = assistantBriefing;
 const { toSpeech } = require("../lib/assistant/speech");
 const { ERROR_TURN, NOTHING_CHANGED, TOOK_TOO_LONG } = require("../lib/assistant/prompt");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
@@ -32,7 +34,6 @@ const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81
 const LIVE = { ...RATES, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
 const EST = { ...RATES, date: "2026-10-21", source: "Estimated — live fetch unavailable" };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const WANT_MORE = "Want a market update, a sweep of your book, or something else?";
 
 // ── seed data ────────────────────────────────────────────────────────────────
 
@@ -74,7 +75,7 @@ const max = addUser(orgMix, "broker", "max@mix.co", "Max");
 addClientRow(orgMix, max, { name: "Stale Refi", currentRate: 8.0, lastContact: STALE });
 addClientRow(orgMix, max, { name: "Fresh Refi", currentRate: 8.0, lastContact: TODAY });
 // Task 7: a user with no career stage is asked how long they've been originating instead of "Want a market update ...".
-// These four are established, so the greeting tests below keep pinning the existing close (coaching.test.js has the other).
+// These four are established, so the briefing tests below end in the standing close (coaching.test.js has the career question).
 db.prepare("UPDATE users SET career_stage = 'established' WHERE id IN (?, ?, ?, ?)").run(sam, pat, zoe, max);
 
 // ── harness ──────────────────────────────────────────────────────────────────
@@ -334,7 +335,7 @@ test("B2: a confirmed voice add-client writes exactly the fields its read-back s
   assert.equal("details" in half.data, false);
 });
 
-// ── the greeting ─────────────────────────────────────────────────────────────
+// ── the greeting: the morning briefing (code-authored, no model call) ────────
 
 async function greet(userId, body) {
   const client = fakeClient([]);
@@ -344,45 +345,102 @@ async function greet(userId, body) {
   return r;
 }
 
-test("greeting: code-authored from the sweep and market tools, with the model untouched and a zero usage row", async () => {
-  const r = await greet(sam, { localHour: 9 });
+// The browser's own date is taken only within a day of the UTC date (M-6), so every date below is relative to now.
+const utcDay = (offset = 0) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+const questionMarks = (text) => (text.match(/\?/g) || []).length;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// A broker in an org of their own (so no team line) with a career stage and the given book; one client by default,
+// due for a refinance and a check-in.
+let freshSeq = 0;
+function freshBroker(first, clients = [{ name: "Only Refi", currentRate: 8.0, lastContact: STALE }], stage = "established") {
+  freshSeq += 1;
+  const org = addOrg(`Fresh ${freshSeq}`);
+  const id = addUser(org, "broker", `fresh${freshSeq}@fresh.co`, first);
+  db.prepare("UPDATE users SET career_stage = ? WHERE id = ?").run(stage, id);
+  for (const c of clients) addClientRow(org, id, c);
+  return id;
+}
+// The days a user's briefings have recorded their call lists under.
+const recordedDays = (userId) =>
+  db.prepare("SELECT DISTINCT day FROM charlie_recommendations WHERE user_id = ? ORDER BY day").all(userId).map((row) => row.day);
+// Swaps a function on any module for the duration of fn (the route calls them through the module).
+async function withSwapped(target, name, impl, fn) {
+  const original = target[name];
+  target[name] = impl;
+  try { await fn(); } finally { target[name] = original; }
+}
+const { openerFor } = assistantRoutes;
+
+test("greeting: the morning briefing, code-authored: opener, market, call list, one question; the model untouched, a zero usage row", async () => {
+  const day = utcDay();
+  const r = await greet(sam, { localHour: 9, localDate: day });
   assert.equal(r.status, 200);
-  assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due; the 30-year is at 6.52%. ${WANT_MORE}`);
-  assert.deepStrictEqual(r.data.sources, ["sweep engine", "live rates 2026-10-21"]);
+  const reply = r.data.reply;
+  assert.ok(reply.startsWith(openerFor({ localHour: 9, localDate: day, name: "Sam" })), "the opener comes first: " + reply);
+  const market = reply.indexOf("The 30-year is at 6.52%");
+  const calls = reply.indexOf("Today's call: ");
+  assert.ok(market > 0 && calls > market, "the 30-year, then the call list: " + reply);
+  assert.match(reply, /Today's call: Only Refi could save about \$/);
+  assert.equal(questionMarks(reply), 1, "exactly one question: " + reply);
+  assert.ok(reply.endsWith(CLOSE_QUESTION), reply);
+  assert.doesNotMatch(reply, /originating/, "a user with a stage is not asked for one");
+  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21", "sweep engine"]);
   assert.match(r.data.turnId, UUID);
   assert.equal("sideEffect" in r.data, false);
   assert.equal("error" in r.data, false);
+  assert.deepStrictEqual(r.data.briefing, {
+    kind: "morning",
+    strip: { rate30: 6.52, move30: null, asOf: "2026-10-21", opportunities: 1, checkInsDue: 1, nextEvent: null },
+    followUp: null,
+  });
   const rows = usageFor(r.data.turnId);
   assert.equal(rows.length, 1);
   assert.deepStrictEqual(
-    [rows[0].user_id, rows[0].input_tokens, rows[0].output_tokens, rows[0].tts_chars], [sam, 0, 0, 0]
+    [rows[0].user_id, rows[0].kind, rows[0].input_tokens, rows[0].output_tokens, rows[0].tts_chars], [sam, "turn", 0, 0, 0]
   );
 });
 
-test("greeting: singular and plural forms follow the counts", async () => {
+test("greeting: the strip's counts and the call list follow the user's own book", async () => {
   const counts = (orgId) => refi.runSweep(db.prepare("SELECT * FROM clients WHERE org_id = ?").all(orgId), LIVE).counts;
   assert.deepStrictEqual([counts(orgOne).withOpportunity, counts(orgOne).checkInsDue], [1, 1]);
   assert.deepStrictEqual([counts(orgMany).withOpportunity, counts(orgMany).checkInsDue], [3, 3]);
   assert.deepStrictEqual([counts(orgNone).withOpportunity, counts(orgNone).checkInsDue], [0, 0]);
   assert.deepStrictEqual([counts(orgMix).withOpportunity, counts(orgMix).checkInsDue], [2, 1]);
 
-  const rate = "the 30-year is at 6.52%";
-  assert.equal((await greet(pat, { localHour: 9 })).data.reply, `Good morning, Pat. You have 3 opportunities and 3 check-ins due; ${rate}. ${WANT_MORE}`);
-  assert.equal((await greet(zoe, { localHour: 9 })).data.reply, `Good morning, Zoe. You have 0 opportunities and 0 check-ins due; ${rate}. ${WANT_MORE}`);
-  assert.equal((await greet(max, { localHour: 9 })).data.reply, `Good morning, Max. You have 2 opportunities and 1 check-in due; ${rate}. ${WANT_MORE}`);
+  const stripCounts = (r) => [r.data.briefing.strip.opportunities, r.data.briefing.strip.checkInsDue];
+  const many = await greet(pat, { localHour: 9 });
+  assert.deepStrictEqual(stripCounts(many), [3, 3]);
+  assert.match(many.data.reply, /Today's calls: /);
+  for (const name of ["Refi One", "Refi Two", "Refi Three"]) assert.ok(many.data.reply.includes(name), `${name}: ${many.data.reply}`);
+  assert.ok(many.data.reply.endsWith(CLOSE_QUESTION), many.data.reply);
+
+  const none = await greet(zoe, { localHour: 9 });
+  assert.deepStrictEqual(stripCounts(none), [0, 0]);
+  assert.doesNotMatch(none.data.reply, /Today's call/);
+  assert.ok(none.data.reply.endsWith(CLOSE_NO_CALLS), "no list, so no offer to book its calls: " + none.data.reply);
+  assert.equal(questionMarks(none.data.reply), 1);
+  assert.deepStrictEqual(none.data.sources, ["live rates 2026-10-21", "sweep engine"]);
+
+  const mix = await greet(max, { localHour: 9 });
+  assert.deepStrictEqual(stripCounts(mix), [2, 1]);
+  for (const name of ["Stale Refi", "Fresh Refi"]) assert.ok(mix.data.reply.includes(name), `${name}: ${mix.data.reply}`);
 });
 
-test("greeting: morning before noon, afternoon before 5pm, evening after (from the browser's localHour)", async () => {
-  for (const [localHour, part] of [[0, "morning"], [5, "morning"], [11, "morning"], [12, "afternoon"], [16, "afternoon"], [17, "evening"], [23, "evening"]]) {
-    const r = await greet(zoe, { localHour });
-    assert.ok(r.data.reply.startsWith(`Good ${part}, Zoe. `), `${localHour}: ${r.data.reply}`);
+test("greeting: kind and the opener follow the browser's localHour (morning 4 to 11, catch-up otherwise)", async () => {
+  const day = utcDay();
+  for (const [localHour, kind] of [[0, "catch_up"], [3, "catch_up"], [4, "morning"], [11, "morning"], [12, "catch_up"], [16, "catch_up"], [17, "catch_up"], [23, "catch_up"]]) {
+    const r = await greet(zoe, { localHour, localDate: day });
+    assert.equal(r.data.briefing.kind, kind, String(localHour));
+    assert.ok(r.data.reply.startsWith(openerFor({ localHour, localDate: day, name: "Zoe" })), `${localHour}: ${r.data.reply}`);
   }
   // no usable localHour: the server's own hour decides
   for (const localHour of [undefined, null, "9", 24, -1, 9.5, NaN, [], {}]) {
-    const hour = new Date().getHours();
-    const part = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+    const kindAt = (h) => (h >= 4 && h <= 11 ? "morning" : "catch_up");
+    const first = new Date().getHours();
     const r = await greet(zoe, { localHour });
-    assert.ok(r.data.reply.startsWith(`Good ${part}, Zoe. `) || new Date().getHours() !== hour, `${String(localHour)}: ${r.data.reply}`);
+    const last = new Date().getHours();
+    assert.equal(r.status, 200, String(localHour));
+    assert.ok([kindAt(first), kindAt(last)].includes(r.data.briefing.kind), `${String(localHour)}: ${r.data.briefing.kind}`);
   }
 });
 
@@ -393,17 +451,6 @@ const DATES_2026 = Array.from({ length: 365 }, (_, i) => new Date(Date.UTC(2026,
 const weekdayOf = (isoDate) => WEEKDAY_NAMES[new Date(`${isoDate}T00:00:00Z`).getUTCDay()];
 const HOUR_FOR = { morning: 9, afternoon: 14, evening: 20 };
 const NUMBER_WORD = /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|teen|twenty|thirty|forty|fifty|hundred|thousand|million|first|second|third|half|once|twice|dozen)\b/i;
-
-test("greeting: a missing or malformed localDate keeps the plain opener (Review Focus 5)", async () => {
-  const bad = [undefined, null, "", "2026-13-40", "2026-02-30", "2026-00-10", "yesterday", 20261028, "2026-10-28T10:00:00Z",
-    " 2026-10-28", "10/28/2026", "26-10-28", ["2026-10-28"], {}, true];
-  for (const localDate of bad) {
-    const r = await greet(sam, { localHour: 9, localDate });
-    assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due; the 30-year is at 6.52%. ${WANT_MORE}`, JSON.stringify(localDate));
-    assert.equal(assistantRoutes.openerFor({ localHour: 14, localDate, name: "Sam" }), "Good afternoon, Sam.", JSON.stringify(localDate));
-    assert.equal(assistantRoutes.openerFor({ localHour: 20, localDate, name: "" }), "Good evening.", JSON.stringify(localDate));
-  }
-});
 
 test("greeting: openers are deterministic, digit-free, spoken-safe, and read well with or without a name", () => {
   const { openerFor, GREETING_OPENERS } = assistantRoutes;
@@ -449,81 +496,264 @@ test("greeting: each weekday can produce its own opener, no other day's, and the
   assert.ok(fridays.some((localDate) => openerFor({ localHour: 9, localDate, name: "William" }) === "Happy Friday, William."));
 });
 
-test("greeting: the opener comes from localDate and the hour; the facts and the close are exactly what they were", async () => {
-  const { openerFor } = assistantRoutes;
-  const facts = "You have 1 opportunity and 1 check-in due; the 30-year is at 6.52%.";
-  for (const localDate of ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01", "2024-02-29"]) {
+test("greeting: a missing or malformed localDate gives a briefing on the UTC date (Review Focus 5)", async () => {
+  const bad = [undefined, null, "", "2026-13-45", "2026-13-40", "2026-02-30", "2026-00-10", "yesterday", 20261028, "2026-10-28T10:00:00Z",
+    " 2026-10-28", "10/28/2026", "26-10-28", ["2026-10-28"], {}, true];
+  for (const localDate of bad) {
+    const who = freshBroker("Sam");
+    const first = utcDay();
+    const r = await greet(who, { localHour: 9, localDate });
+    const last = utcDay();
+    const where = JSON.stringify(localDate);
+    assert.equal(r.status, 200, where);
+    assert.equal("error" in r.data, false, where);
+    assert.equal(r.data.briefing.kind, "morning", where);
+    assert.ok([first, last].some((d) => r.data.reply.startsWith(openerFor({ localHour: 9, localDate: d, name: "Sam" }))), `${where}: ${r.data.reply}`);
+    assert.match(r.data.reply, /Today's call: Only Refi/, where);
+    assert.equal(questionMarks(r.data.reply), 1, where);
+    const days = recordedDays(who);
+    assert.equal(days.length, 1, `${where}: ${days}`);
+    assert.ok([first, last].includes(days[0]), `${where}: the call list was recorded under the UTC date, not ${days[0]}`);
+    // the plain opener is what openerFor itself gives a date it cannot read
+    assert.equal(openerFor({ localHour: 14, localDate, name: "Sam" }), "Good afternoon, Sam.", where);
+    assert.equal(openerFor({ localHour: 20, localDate, name: "" }), "Good evening.", where);
+  }
+  // a real date that is 5 days off is not the user's day either way (M-6: only the UTC date and its neighbours count)
+  for (const offset of [-5, 5]) {
+    const who = freshBroker("Sam");
+    const first = utcDay();
+    const r = await greet(who, { localHour: 9, localDate: utcDay(offset) });
+    const last = utcDay();
+    assert.equal(r.status, 200, String(offset));
+    assert.equal(r.data.briefing.kind, "morning");
+    assert.ok([first, last].some((d) => r.data.reply.startsWith(openerFor({ localHour: 9, localDate: d, name: "Sam" }))), `${offset}: ${r.data.reply}`);
+    assert.match(r.data.reply, /Today's call: Only Refi/, String(offset));
+    const days = recordedDays(who);
+    assert.ok(days.length === 1 && [first, last].includes(days[0]), `${offset}: recorded under ${days}`);
+  }
+});
+
+test("greeting: the route hands the briefing a checked date and hour and a ctx bound to the caller", async () => {
+  const original = assistantBriefing.buildBriefing;
+  const seen = [];
+  await withSwapped(assistantBriefing, "buildBriefing", (args) => { seen.push(args); return original(args); }, async () => {
+    const who = freshBroker("Sam");
+    // [what the browser sent, the day the briefing should be given (as an offset from the UTC date), its hour or null for the server's own]
+    const inputs = [
+      [{ localDate: "2026-13-45", localHour: "9" }, 0, null],
+      [{ localDate: utcDay(5), localHour: 24 }, 0, null],
+      [{ localDate: utcDay(-5), localHour: 9.5 }, 0, null],
+      [{ localDate: null, localHour: NaN }, 0, null],
+      [{ localDate: utcDay(1), localHour: 17 }, 1, 17],
+      [{ localDate: utcDay(-1), localHour: 0 }, -1, 0],
+    ];
+    for (const [body, offset, hour] of inputs) {
+      seen.length = 0;
+      const days = [utcDay(offset)];
+      const r = await greet(who, body);
+      days.push(utcDay(offset));
+      assert.equal(r.status, 200, JSON.stringify(body));
+      assert.equal(seen.length, 1, JSON.stringify(body));
+      const args = seen[0];
+      assert.ok(days.includes(args.localDate), `${JSON.stringify(body)}: ${args.localDate}`);
+      assert.ok(Number.isInteger(args.localHour) && args.localHour >= 0 && args.localHour <= 23, `${JSON.stringify(body)}: ${args.localHour}`);
+      if (hour !== null) assert.equal(args.localHour, hour, JSON.stringify(body));
+      assert.equal(args.db, db);
+      assert.equal(args.user.id, who);
+      assert.equal(args.ctx.user, args.user);
+      assert.equal(args.ctx.db, db);
+      assert.equal(args.ctx.rates.rate_30yr_fixed, 6.52);
+      assert.equal(typeof args.ctx.google.listDay, "function", "ctx.google is the user's own calendar");
+      assert.ok(Object.getOwnPropertySymbols(args.ctx).length > 0, "the ctx carries the once-per-turn client-name index (withTurnClientNames)");
+    }
+  });
+});
+
+test("greeting: the browser's date within a day of the UTC date is the briefing's day, and so its opener's", async () => {
+  for (const offset of [-1, 0, 1]) {
+    const localDate = utcDay(offset);
     for (const localHour of [9, 14, 19]) {
-      const r = await greet(sam, { localHour, localDate });
-      assert.equal(r.data.reply, `${openerFor({ localHour, localDate, name: "Sam" })} ${facts} ${WANT_MORE}`, `${localDate} ${localHour}`);
-      // asked again, the same day says the same thing
-      assert.equal((await greet(sam, { localHour, localDate })).data.reply, r.data.reply);
-      assert.deepStrictEqual(r.data.sources, ["sweep engine", "live rates 2026-10-21"]);
+      const who = freshBroker("Sam");
+      const r = await greet(who, { localHour, localDate });
+      assert.ok(r.data.reply.startsWith(openerFor({ localHour, localDate, name: "Sam" })), `${localDate} ${localHour}: ${r.data.reply}`);
+      assert.deepStrictEqual(recordedDays(who), [localDate], `${localDate} ${localHour}`);
     }
   }
-  // a Friday morning: the facts stay on the same ground when a tool is down
-  const friday = "2026-10-30";
-  const said = openerFor({ localHour: 9, localDate: friday, name: "Sam" });
-  await withTool("runSweepTool", toolFails, async () => {
-    assert.equal((await greet(sam, { localHour: 9, localDate: friday })).data.reply, `${said} The 30-year is at 6.52%. ${WANT_MORE}`);
-  });
-  await withTool("getMarketUpdate", toolFails, async () => {
-    assert.equal((await greet(sam, { localHour: 9, localDate: friday })).data.reply, `${said} You have 1 opportunity and 1 check-in due. ${WANT_MORE}`);
-  });
-  await withTool("runSweepTool", toolFails, () => withTool("getMarketUpdate", toolFails, async () => {
-    assert.equal((await greet(sam, { localHour: 9, localDate: friday })).data.reply, `${said} ${WANT_MORE}`);
-  }));
+  // asked again, the same day says the same thing
+  const who = freshBroker("Sam");
+  const localDate = utcDay();
+  const a = await greet(who, { localHour: 9, localDate });
+  const b = await greet(who, { localHour: 9, localDate });
+  assert.equal(b.data.reply, a.data.reply);
+  assert.deepStrictEqual(b.data.sources, a.data.sources);
   // no first name: the opener loses the name, nothing else moves
-  const nameless = addUser(addOrg("Nameless"), "broker", "nameless@x.co", "");
-  db.prepare("UPDATE users SET career_stage = 'established' WHERE id = ?").run(nameless);
-  const r = await greet(nameless, { localHour: 9, localDate: friday });
-  assert.equal(r.data.reply, `${openerFor({ localHour: 9, localDate: friday, name: "" })} You have 0 opportunities and 0 check-ins due; the 30-year is at 6.52%. ${WANT_MORE}`);
+  const nameless = freshBroker("");
+  const r = await greet(nameless, { localHour: 9, localDate });
+  assert.ok(r.data.reply.startsWith(openerFor({ localHour: 9, localDate, name: "" })), r.data.reply);
+  assert.match(r.data.reply, /Today's call: Only Refi/);
 });
 
-test("A4: the greeting speaks a three-decimal FRED rate to two decimals", async () => {
-  const r = await greet(sam, { localHour: 9, rates: { ...LIVE, rate_30yr_fixed: 7.251 } });
-  assert.match(r.data.reply, /; the 30-year is at 7\.25%\. /);
-  assert.doesNotMatch(r.data.reply, /7\.251/);
-  // a two-decimal rate reads the same as before
-  assert.match((await greet(sam, { localHour: 9 })).data.reply, /the 30-year is at 6\.52%\./);
-});
-
-test("R2-3: the greeting says the rounded rate as the number it is: 7.2 is '7.2%', never a padded '7.20%' or '7.00%'", async () => {
-  for (const [rate, said] of [[7.2, "7.2%"], [7.25, "7.25%"], [7, "7%"], [7.251, "7.25%"], [6.999, "7%"], [7.104, "7.1%"]]) {
-    const r = await greet(sam, { localHour: 9, rates: { ...LIVE, rate_30yr_fixed: rate } });
-    assert.ok(r.data.reply.includes(`; the 30-year is at ${said}. `), `${rate}: ${r.data.reply}`);
-    assert.doesNotMatch(r.data.reply, /\d\.\d0%|\.00%/, String(rate));
+test("A4: the strip's 30-year is the request's rate to two decimals, and the briefing says it as the number it is", async () => {
+  for (const [rate, said] of [[6.52, 6.52], [7.251, 7.25], [7.2, 7.2], [7.25, 7.25], [7, 7], [6.999, 7], [7.104, 7.1]]) {
+    const r = await greet(zoe, { localHour: 9, rates: { ...LIVE, rate_30yr_fixed: rate } });
+    assert.equal(r.status, 200, String(rate));
+    assert.equal(r.data.briefing.strip.rate30, Number(rate.toFixed(2)), String(rate));
+    assert.equal(r.data.briefing.strip.rate30, said, String(rate));
+    assert.ok(r.data.reply.includes(`The 30-year is at ${said}%`), `${rate}: ${r.data.reply}`);
+    assert.doesNotMatch(r.data.reply, /\d\.\d0%|\.00%|7\.251/, String(rate));
   }
 });
 
-test("greeting: estimated rates say so, and cite the estimated sources", async () => {
+test("greeting: estimated rates say so, claim no move, and cite the estimated sources", async () => {
   const r = await greet(sam, { localHour: 9, rates: EST });
-  assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due; the 30-year is at 6.52% (estimated). ${WANT_MORE}`);
-  assert.deepStrictEqual(r.data.sources, ["sweep engine (estimated rates 2026-10-21)", "estimated rates 2026-10-21"]);
+  assert.match(r.data.reply, /The 30-year is at an estimated 6\.52%\./);
+  assert.match(r.data.reply, /Today's call, on estimated rates: Only Refi/);
+  assert.deepStrictEqual(r.data.sources, ["estimated rates 2026-10-21", "sweep engine (estimated rates 2026-10-21)"]);
+  assert.deepStrictEqual(r.data.briefing.strip, { rate30: 6.52, move30: null, asOf: null, opportunities: 1, checkInsDue: 1, nextEvent: null });
 });
 
-test("greeting: a failed sweep drops the counts clause, a failed market tool drops the rate clause, both drop both", async () => {
-  await withTool("runSweepTool", toolFails, async () => {
-    const r = await greet(sam, { localHour: 14 });
-    assert.equal(r.data.reply, `Good afternoon, Sam. The 30-year is at 6.52%. ${WANT_MORE}`);
-    assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+test("greeting: a failed sweep, a failed market tool or both leave their part out and still ask one question", async () => {
+  const day = utcDay();
+  const fresh = () => freshBroker("Fay");
+  await capturingErrors(async () => {
+    await withSwapped(refi, "runSweep", () => { throw new Error("boom"); }, async () => {
+      const r = await greet(fresh(), { localHour: 14, localDate: day });
+      assert.equal(r.status, 200);
+      assert.ok(r.data.reply.startsWith(openerFor({ localHour: 14, localDate: day, name: "Fay" })), r.data.reply);
+      assert.match(r.data.reply, /The 30-year is at 6\.52%/);
+      assert.doesNotMatch(r.data.reply, /Today's call/);
+      assert.ok(r.data.reply.endsWith(CLOSE_NO_CALLS), r.data.reply);
+      assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+      assert.deepStrictEqual(
+        [r.data.briefing.strip.rate30, r.data.briefing.strip.opportunities, r.data.briefing.strip.checkInsDue], [6.52, null, null]
+      );
+    });
+    await withTool("getMarketUpdate", toolFails, async () => {
+      const r = await greet(fresh(), { localHour: 19, localDate: day });
+      assert.doesNotMatch(r.data.reply, /30-year/);
+      assert.match(r.data.reply, /Today's call: Only Refi/);
+      assert.ok(r.data.reply.endsWith(CLOSE_QUESTION), r.data.reply);
+      assert.deepStrictEqual(r.data.sources, ["sweep engine"]);
+      assert.deepStrictEqual(
+        [r.data.briefing.strip.rate30, r.data.briefing.strip.opportunities, r.data.briefing.strip.checkInsDue], [null, 1, 1]
+      );
+    });
+    await withTool("getMarketUpdate", () => { throw new Error("boom"); }, async () => {
+      const r = await greet(fresh(), { localHour: 9, localDate: day });
+      assert.equal(r.status, 200);
+      assert.doesNotMatch(r.data.reply, /30-year/);
+      assert.match(r.data.reply, /Today's call: Only Refi/);
+      assert.equal("error" in r.data, false);
+    });
+    await withSwapped(refi, "runSweep", () => { throw new Error("boom"); }, () => withTool("getMarketUpdate", toolFails, async () => {
+      const r = await greet(fresh(), { localHour: 9, localDate: day });
+      assert.equal(r.status, 200);
+      assert.equal("error" in r.data, false);
+      assert.equal(r.data.reply, `${openerFor({ localHour: 9, localDate: day, name: "Fay" })} ${CLOSE_NO_CALLS}`);
+      assert.deepStrictEqual(r.data.sources, []);
+      assert.equal(r.data.briefing.kind, "morning");
+      assert.deepStrictEqual(r.data.briefing.strip, { rate30: null, move30: null, asOf: null, opportunities: null, checkInsDue: null, nextEvent: null });
+      assert.equal(r.data.briefing.followUp, null);
+      assert.equal(usageFor(r.data.turnId).length, 1);
+    }));
   });
-  await withTool("getMarketUpdate", toolFails, async () => {
-    const r = await greet(sam, { localHour: 19 });
-    assert.equal(r.data.reply, `Good evening, Sam. You have 1 opportunity and 1 check-in due. ${WANT_MORE}`);
-    assert.deepStrictEqual(r.data.sources, ["sweep engine"]);
+});
+
+// ── Ruling R13: one briefing at a time per user ──────────────────────────────
+
+test("R13: two greetings from one user at once build one briefing, share it, and are each metered; other users run on their own", async () => {
+  const una = freshBroker("Una");
+  const otto = freshBroker("Otto");
+  const day = utcDay();
+  const original = assistantBriefing.buildBriefing;
+  let calls = 0;
+  let running = 0;
+  let mostRunning = 0;
+  setClient(fakeClient([]));
+  await withSwapped(assistantBriefing, "buildBriefing", async (args) => {
+    calls += 1;
+    running += 1;
+    mostRunning = Math.max(mostRunning, running);
+    try { await sleep(150); return await original(args); } finally { running -= 1; }
+  }, async () => {
+    const ask = (userId) => as(userId)("POST", "/api/assistant/turn", { greeting: true, rates: LIVE, localHour: 9, localDate: day });
+
+    const [a, b] = await Promise.all([ask(una), ask(una)]);
+    assert.deepStrictEqual([a.status, b.status], [200, 200]);
+    assert.equal(calls, 1, "one briefing was built for both requests");
+    assert.equal(mostRunning, 1);
+    assert.equal(a.data.reply, b.data.reply);
+    assert.ok(a.data.reply.startsWith(openerFor({ localHour: 9, localDate: day, name: "Una" })), a.data.reply);
+    assert.deepStrictEqual(a.data.briefing, b.data.briefing);
+    assert.deepStrictEqual(a.data.sources, b.data.sources);
+    assert.notEqual(a.data.turnId, b.data.turnId, "each request has its own turn");
+    for (const r of [a, b]) {
+      const rows = usageFor(r.data.turnId);
+      assert.equal(rows.length, 1);
+      assert.deepStrictEqual([rows[0].user_id, rows[0].kind, rows[0].input_tokens, rows[0].output_tokens], [una, "turn", 0, 0]);
+    }
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM charlie_recommendations WHERE user_id = ?").get(una).n, 1, "one call list recorded, not two");
+
+    // the entry is cleared once the briefing is done: the next greeting builds its own
+    const later = await ask(una);
+    assert.equal(later.status, 200);
+    assert.equal(calls, 2);
+
+    // two different users are not held up by each other
+    calls = 0;
+    mostRunning = 0;
+    const [c, d] = await Promise.all([ask(una), ask(otto)]);
+    assert.deepStrictEqual([c.status, d.status], [200, 200]);
+    assert.equal(calls, 2);
+    assert.equal(mostRunning, 2, "both briefings were in flight together");
+    assert.ok(c.data.reply.startsWith(openerFor({ localHour: 9, localDate: day, name: "Una" })), c.data.reply);
+    assert.ok(d.data.reply.startsWith(openerFor({ localHour: 9, localDate: day, name: "Otto" })), d.data.reply);
   });
-  await withTool("getMarketUpdate", () => { throw new Error("boom"); }, async () => {
-    const r = await greet(sam, { localHour: 9 });
-    assert.equal(r.data.reply, `Good morning, Sam. You have 1 opportunity and 1 check-in due. ${WANT_MORE}`);
+});
+
+test("R13: a briefing that fails is a 200 error turn for every request waiting on it, and the next greeting builds afresh", async () => {
+  const who = freshBroker("Wes");
+  const day = utcDay();
+  const original = assistantBriefing.buildBriefing;
+  let calls = 0;
+  let failure = null;   // "reject" (after an await), "throw" (before any), or null
+  setClient(fakeClient([]));
+  const ask = () => as(who)("POST", "/api/assistant/turn", { greeting: true, rates: LIVE, localHour: 9, localDate: day });
+  await withSwapped(assistantBriefing, "buildBriefing", (args) => {
+    calls += 1;
+    if (failure === "throw") throw new Error("sync boom");
+    return (async () => {
+      await sleep(100);
+      if (failure === "reject") throw new Error("async boom");
+      return original(args);
+    })();
+  }, async () => {
+    await capturingErrors(async (logged) => {
+      failure = "reject";
+      const [a, b] = await Promise.all([ask(), ask()]);
+      assert.equal(calls, 1);
+      for (const r of [a, b]) {
+        assert.equal(r.status, 200);
+        assert.deepStrictEqual([r.data.reply, r.data.error, r.data.sources], [ERROR_TURN, true, []]);
+        assert.equal("briefing" in r.data, false);
+        assert.equal(usageFor(r.data.turnId).length, 1);
+      }
+      assert.notEqual(a.data.turnId, b.data.turnId);
+      assert.ok(logged.length >= 1);
+
+      failure = "throw";
+      const thrown = await ask();
+      assert.equal(calls, 2, "the failed one was cleared: this request built its own");
+      assert.deepStrictEqual([thrown.status, thrown.data.reply, thrown.data.error], [200, ERROR_TURN, true]);
+
+      failure = null;
+      const ok = await ask();
+      assert.equal(calls, 3);
+      assert.equal(ok.status, 200);
+      assert.equal("error" in ok.data, false);
+      assert.ok(ok.data.reply.startsWith(openerFor({ localHour: 9, localDate: day, name: "Wes" })), ok.data.reply);
+    });
   });
-  await withTool("runSweepTool", toolFails, () => withTool("getMarketUpdate", toolFails, async () => {
-    const r = await greet(sam, { localHour: 9 });
-    assert.equal(r.data.reply, `Good morning, Sam. ${WANT_MORE}`);
-    assert.deepStrictEqual(r.data.sources, []);
-    assert.equal(r.status, 200);
-    assert.equal("error" in r.data, false);
-  }));
 });
 
 // ── history sanitation ───────────────────────────────────────────────────────
@@ -1298,10 +1528,9 @@ test("m8: a message over 4,000 characters is 400 before anything runs; 4,000 is 
   assert.equal(fine.status, 200);
 });
 
-test("m4: the route uses the orchestrator's isCitation instead of its own copy", () => {
+test("m4: the route has no copy of isCitation of its own (the orchestrator's is the one; the greeting that used it is the briefing now)", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "routes", "assistant.js"), "utf8");
   assert.doesNotMatch(source, /const isCitation\s*=/);
-  assert.match(source, /isCitation[^\n]*require\("\.\.\/lib\/assistant\/orchestrator"\)/);
 });
 
 // ── metering ─────────────────────────────────────────────────────────────────

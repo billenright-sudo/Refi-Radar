@@ -18,13 +18,14 @@ const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
-const { runTurn, isCitation, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
+const { runTurn, DEFAULT_TURN_DEADLINE_MS } = require("../lib/assistant/orchestrator");
 const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
 const { makeLive, userLocalDate } = require("../lib/assistant/live");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
+const assistantBriefing = require("../lib/assistant/briefing");   // called as assistantBriefing.buildBriefing(): tests can swap it
 const { ERROR_TURN } = require("../lib/assistant/prompt");
-const { stageById, spokenStageLabel, CAREER_QUESTION } = require("../lib/assistant/coaching");
-const { GREETING_OPENERS, openerFor } = require("../lib/assistant/openers");   // the opening words (re-exported below)
+const { stageById, spokenStageLabel } = require("../lib/assistant/coaching");
+const { GREETING_OPENERS, openerFor, hourOf } = require("../lib/assistant/openers");   // the opening words (GREETING_OPENERS and openerFor re-exported below)
 const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
@@ -87,48 +88,21 @@ function cleanRates(raw) {
 // A confirmId is a UUID (case-insensitive; stored lowercase).
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// ── The greeting (no model call) ─────────────────────────────────────────────
+// ── The greeting: the morning briefing (no model call) ───────────────────────
 
-// A tool result counts only if it carries a citation (isCitation): error labels like "(unavailable)" are not one.
-const runSafely = (tool, ctx) => {
-  try { return tool({}, ctx); } catch (_err) { return null; }
-};
-
-// "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. Want a
-// market update, a sweep of your book, or something else?" (openerFor varies the first words.) Every figure comes straight
-// from the sweep and market tools; a tool that failed leaves its clause out. A user with no career stage is asked how long
-// they've been originating instead (the greeting asks exactly one thing); their answer is what Charli maps to a
-// stage with setCareerStageTool.
-const WANT_MORE = "Want a market update, a sweep of your book, or something else?";
-function buildGreeting(user, ctx, localHour, localDate) {
-  const sweep = runSafely(assistantTools.runSweepTool, ctx);
-  const market = runSafely(assistantTools.getMarketUpdate, ctx);
-
-  const counts = sweep && isCitation(sweep.source) && sweep.data && sweep.data.counts;
-  const opportunities = counts && counts.withOpportunity;
-  const checkIns = counts && counts.checkInsDue;
-  const rate = market && isCitation(market.source) && market.data && market.data.rates && market.data.rates.rate_30yr_fixed;
-
-  const countsClause = Number.isFinite(opportunities) && Number.isFinite(checkIns)
-    ? `You have ${opportunities} ${opportunities === 1 ? "opportunity" : "opportunities"} and ${checkIns} ` +
-      `${checkIns === 1 ? "check-in" : "check-ins"} due`
-    : "";
-  // the rate as getMarketUpdate presents it, already rounded to two decimals (FRED publishes three: "7.251" would be spoken
-  // digit by digit), and said as the number it is: 7.2 is "7.2%", never a padded "7.20%" ("seven point two zero")
-  const rateClause = Number.isFinite(rate)
-    ? `the 30-year is at ${rate}%${market.data.estimated ? " (estimated)" : ""}`
-    : "";
-  let facts = "";
-  if (countsClause && rateClause) facts = ` ${countsClause}; ${rateClause}.`;
-  else if (countsClause) facts = ` ${countsClause}.`;
-  else if (rateClause) facts = ` ${rateClause[0].toUpperCase()}${rateClause.slice(1)}.`;
-
-  const name = typeof user.first_name === "string" ? user.first_name.trim() : "";
-  const reply =
-    `${openerFor({ localHour, localDate, name })}${facts}` +
-    ` ${stageById(user.career_stage) ? WANT_MORE : CAREER_QUESTION}`;
-  const sources = [sweep, market].filter((r) => r && isCitation(r.source)).map((r) => r.source);
-  return { reply, sources };
+// Ruling R13: one briefing at a time per user. Two greetings from the same user (two tabs, a double-fired effect) must not build
+// side by side, because two Google token refreshes racing can flag the connection 'reconnect'. The second awaits the first's
+// promise and gets the same briefing. The service runs a single instance, so a map in memory is enough. The entry goes when
+// the promise settles, whether it resolved or rejected.
+const briefingsInFlight = new Map();   // user id -> the briefing being built
+function briefingFor(userId, build) {
+  const building = briefingsInFlight.get(userId);
+  if (building) return building;
+  const promise = (async () => build())();   // a throw before the first await becomes a rejection too
+  briefingsInFlight.set(userId, promise);
+  const done = () => { if (briefingsInFlight.get(userId) === promise) briefingsInFlight.delete(userId); };
+  promise.then(done, done);
+  return promise;
 }
 
 // ── The /confirm action bodies ───────────────────────────────────────────────
@@ -353,6 +327,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
   // on a turn it is the lookup's "today" when it is a real date within a day of the UTC date, and ignored otherwise: M-6).
   // -> { reply, sources, sideEffect?, details?, turnId }; a failed turn, or one that outran its deadline,
   //    -> 200 { reply, error: true, sources: [], turnId }
+  // The greeting is the morning briefing (lib/assistant/briefing.js): -> { reply, sources, turnId, briefing: { kind, strip, followUp } }.
   router.post("/turn", async (req, res) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const rates = cleanRates(body.rates);
@@ -364,9 +339,16 @@ function createAssistantRouter({ limiter = {} } = {}) {
 
     if (body.greeting === true) {
       try {
-        const { reply, sources } = buildGreeting(req.user, ctx, body.localHour, body.localDate);
+        // the browser's date counts only within a day of the UTC date (M-6), else the UTC date; its hour only when it is a real hour
+        const localDate = userLocalDate(body.localDate) || new Date().toISOString().slice(0, 10);
+        const localHour = hourOf(body.localHour);
+        const made = await briefingFor(req.user.id, () => assistantBriefing.buildBriefing({
+          user: req.user, ctx: assistantTools.withTurnClientNames(ctx), db, localHour, localDate,
+        }));
         meter(req.user.id, turnId, {});
-        return res.json({ reply, sources, turnId });
+        return res.json({
+          reply: made.reply, sources: made.sources, turnId, briefing: { kind: made.kind, strip: made.strip, followUp: made.followUp },
+        });
       } catch (err) {
         console.error("POST /api/assistant/turn (greeting):", errText(err));
         meter(req.user.id, turnId, {});
