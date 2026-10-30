@@ -370,7 +370,138 @@ test("the input sweep is not mutated", () => {
   assert.strictEqual(JSON.stringify(sweep), before);
 });
 
+// ── carried clients the broker asked for (R7) ────────────────────────────────
+
+const NAMES = new Map([[1, "Lucy Tran"], [2, "Bob Rate"], [9, "Zoe Elsewhere"]]);
+
+test("a carried client with no sweep row is listed first when its name is in clientNames", () => {
+  const sweep = sweepOf([row(2, "Bob Rate", rateTerm("high", 400)), row(3, "Cat Rate", rateTerm("medium", 300))]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2, 3], carriedIds: [1], excludeIds: [], clientNames: NAMES });
+  assert.deepStrictEqual(idsOf(list), [1, 2, 3]);
+  assert.strictEqual(list[0].reasonCode, "carry");
+  assert.strictEqual(list[0].name, "Lucy Tran");
+  assert.strictEqual(list[0].reason, "Lucy Tran, who you asked me to put on today's list");
+  assert.ok(!/\d/.test(list[0].reason), "no figure is made up");
+  assert.ok(!FIGURE_WORDS.test(list[0].reason) && !list[0].reason.includes("?"), list[0].reason);
+});
+
+test("the same carried client is dropped without clientNames, or when its id is not in clientNames", () => {
+  const sweep = sweepOf([row(2, "Bob Rate", rateTerm("high", 400))]);
+  const args = { sweep, ownClientIds: [1, 2], carriedIds: [1], excludeIds: [] };
+  assert.deepStrictEqual(idsOf(pickCallList(args)), [2]);
+  assert.deepStrictEqual(idsOf(pickCallList({ ...args, clientNames: new Map() })), [2]);
+  assert.deepStrictEqual(idsOf(pickCallList({ ...args, clientNames: new Map([[7, "Someone Else"]]) })), [2]);
+  assert.deepStrictEqual(idsOf(pickCallList({ ...args, clientNames: new Map([[1, "   "]]) })), [2], "a blank name says nothing");
+});
+
+test("a carried client whose sweep row has nothing usable is also listed from clientNames", () => {
+  const sweep = sweepOf([row(1, "Lucy Tran", rateTerm("high", undefined))]);
+  const list = pickCallList({ sweep, ownClientIds: [1], carriedIds: [1], excludeIds: [], clientNames: NAMES });
+  assert.deepStrictEqual(list.map((c) => [c.clientId, c.reasonCode, c.reason]), [[1, "carry", "Lucy Tran, who you asked me to put on today's list"]]);
+});
+
+test("clientNames never widens scope: not-own and excluded carried clients still do not appear", () => {
+  const sweep = sweepOf([row(2, "Bob Rate", rateTerm("high", 400))]);
+  const names = new Map([[1, "Lucy Tran"], [3, "Cat Rate"]]);
+  const list = pickCallList({ sweep, ownClientIds: [2, 3], carriedIds: [1, 3], excludeIds: [3], clientNames: names });
+  assert.deepStrictEqual(idsOf(list), [2], "1 is not the broker's own, 3 is excluded");
+});
+
+test("a carried client with a usable sweep row keeps its figure; clientNames is only a fallback", () => {
+  const sweep = sweepOf([row(2, "Bob Rate", rateTerm("high", 400))]);
+  const [item] = pickCallList({ sweep, ownClientIds: [2], carriedIds: [2], excludeIds: [], clientNames: NAMES });
+  assert.ok(item.reason.includes("$400"), item.reason);
+});
+
+test("clientNames ids compare by value, and the id returned is the map's own key", () => {
+  const list = pickCallList({ sweep: sweepOf([]), ownClientIds: ["1"], carriedIds: ["1"], excludeIds: [], clientNames: NAMES });
+  assert.deepStrictEqual(idsOf(list), [1]);
+  assert.strictEqual(list[0].name, "Lucy Tran");
+});
+
+test("four carried clients with a limit of three give exactly the first three, in the order given", () => {
+  const sweep = sweepOf([
+    row(1, "Ann Rate", rateTerm("high", 500)),
+    row(2, "Bob Rate", rateTerm("high", 400)),
+    row(3, "Cat Rate", rateTerm("high", 300)),
+    row(4, "Dee Rate", rateTerm("high", 200)),
+    row(5, "Eve Cash", cashOut("high", 900000)),
+  ]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2, 3, 4, 5], carriedIds: [4, 2, 3, 1], excludeIds: [], limit: 3 });
+  assert.deepStrictEqual(idsOf(list), [4, 2, 3]);
+  assert.deepStrictEqual(list.map((c) => c.reasonCode), ["carry", "carry", "carry"]);
+});
+
+test("name-only carried clients take their place in the carried order and count against the limit", () => {
+  const sweep = sweepOf([row(2, "Bob Rate", rateTerm("high", 400)), row(3, "Cat Rate", rateTerm("high", 300))]);
+  const names = new Map([[1, "Lucy Tran"], [4, "Dee Nameonly"]]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2, 3, 4], carriedIds: [4, 2, 1, 3], excludeIds: [], limit: 3, clientNames: names });
+  assert.deepStrictEqual(idsOf(list), [4, 2, 1]);
+});
+
+// ── what the check-in is counted from (R8) ───────────────────────────────────
+
+const DUE_BY = (basis, monthsSince) => ({ due: true, monthsSince, basis });
+
+test("check-in basis last_contact: months since your last check-in", () => {
+  const sweep = sweepOf([row(1, "Sam Hill", null, DUE_BY("last_contact", 9)), row(2, "Lucy Tran", rateTerm("high", 574), DUE_BY("last_contact", 1))]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2], carriedIds: [], excludeIds: [] });
+  assert.strictEqual(list.find((c) => c.clientId === 1).reason, "Sam Hill, 9 months since your last check-in");
+  assert.strictEqual(list.find((c) => c.clientId === 2).reason, "Lucy Tran could save about $574 a month, 1 month since your last check-in");
+});
+
+test("check-in basis close_date: months since closing", () => {
+  const sweep = sweepOf([row(1, "Sam Hill", null, DUE_BY("close_date", 14)), row(2, "Lucy Tran", rateTerm("high", 574), DUE_BY("close_date", 1))]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2], carriedIds: [], excludeIds: [] });
+  const sam = list.find((c) => c.clientId === 1).reason;
+  const lucy = list.find((c) => c.clientId === 2).reason;
+  assert.strictEqual(sam, "Sam Hill, 14 months since closing");
+  assert.strictEqual(lucy, "Lucy Tran could save about $574 a month, 1 month since closing");
+  assert.ok(!/check-in/.test(sam + lucy), "no claim of a check-in that was never logged");
+});
+
+test("check-in basis created_at: months since you added them", () => {
+  const sweep = sweepOf([row(1, "Sam Hill", null, DUE_BY("created_at", 8)), row(2, "Lucy Tran", rateTerm("high", 574), DUE_BY("created_at", 1))]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2], carriedIds: [], excludeIds: [] });
+  const sam = list.find((c) => c.clientId === 1).reason;
+  const lucy = list.find((c) => c.clientId === 2).reason;
+  assert.strictEqual(sam, "Sam Hill, 8 months since you added them");
+  assert.strictEqual(lucy, "Lucy Tran could save about $574 a month, 1 month since you added them");
+  assert.ok(!/check-in/.test(sam + lucy), "no claim of a check-in that was never logged");
+});
+
+test("a due check-in with no known basis says nothing about it, rather than guess what it counts from", () => {
+  const sweep = sweepOf([
+    row(1, "Sam Hill", null, { due: true, monthsSince: 9, basis: null }),
+    row(2, "Lucy Tran", rateTerm("high", 574), { due: true, monthsSince: 9 }),
+  ]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2], carriedIds: [], excludeIds: [] });
+  assert.deepStrictEqual(list.map((c) => [c.clientId, c.reason]), [[2, "Lucy Tran could save about $574 a month"]]);
+});
+
+test("the carry reason uses the basis too", () => {
+  const sweep = sweepOf([row(1, "Sam Hill", null, DUE_BY("close_date", 14))]);
+  const [item] = pickCallList({ sweep, ownClientIds: [1], carriedIds: [1], excludeIds: [] });
+  assert.strictEqual(item.reason, "Sam Hill, who you put on today's list, 14 months since closing");
+});
+
 // ── the real sweep ───────────────────────────────────────────────────────────
+
+test("a real runSweep check-in carries the basis the engine reported", () => {
+  const rates = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
+  const now = new Date("2026-10-30T12:00:00Z");
+  const base = { loan_type: "30yr_fixed", current_rate: 6.4, loan_balance: 380000, property_value: 520000, credit_score: 760 };
+  const sweep = refi.runSweep([
+    { ...base, id: 21, name: "Last Contact", last_contact: "2025-06-01" },
+    { ...base, id: 22, name: "Close Date", close_date: "2025-06-01" },
+    { ...base, id: 23, name: "Created At", created_at: "2025-06-01" },
+  ], rates, now);
+  const list = pickCallList({ sweep, ownClientIds: [21, 22, 23], carriedIds: [], excludeIds: [], limit: 10 });
+  const said = (id) => list.find((c) => c.clientId === id).reason;
+  assert.ok(said(21).includes("since your last check-in"), said(21));
+  assert.ok(said(22).includes("since closing"), said(22));
+  assert.ok(said(23).includes("since you added them"), said(23));
+});
 
 test("works on a real runSweep result", () => {
   const rates = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
@@ -391,6 +522,7 @@ test("works on a real runSweep result", () => {
     assert.ok(!FIGURE_WORDS.test(c.reason) && !c.reason.includes("?"), c.reason);
   }
   const rita = list.find((c) => c.clientId === 11);
+  assert.ok(rita, "the rate-term client is on the list");
   const sweepRita = sweep.opportunities.find((r) => r.clientId === 11);
   assert.ok(rita.reason.includes(`$${sweepRita.best.monthlySavings.toLocaleString("en-US")}`), rita.reason);
 });

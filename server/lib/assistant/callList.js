@@ -16,6 +16,10 @@
 // Scope and exclusions are the caller's: only ownClientIds can appear (none when it is missing), and excludeIds never do,
 // carried or not. A carried client is exempt from the recent-recommendation exclusion because the caller takes carried ids out
 // of excludeIds before calling.
+//
+// The broker explicitly asked for a carried client, so it is never dropped for lack of something to say: with a name in
+// clientNames (a Map of client id -> name, the broker's own clients) it is listed even with no sweep row, no usable figure and
+// no due check-in, and the reason then names it with no figure. Without a name it cannot be spoken, so it is left off.
 
 const { PRIORITY_RANK, impact } = require("../refi");
 
@@ -73,10 +77,20 @@ function opportunityPhrase(best) {
   }
 }
 
+// What checkInStatus (refi.js) counted the months from: the last contact, else the closing, else the day the client was added.
+// Each says only what is true; an unknown basis says nothing rather than guess.
+const CHECK_IN_BASIS = new Map([
+  ["last_contact", "since your last check-in"],
+  ["close_date", "since closing"],
+  ["created_at", "since you added them"],
+]);
+
 function checkInPhrase(checkIn) {
   if (!checkIn || checkIn.due !== true || !Number.isFinite(checkIn.monthsSince) || checkIn.monthsSince < 0) return null;
+  const since = CHECK_IN_BASIS.get(checkIn.basis);
+  if (!since) return null;
   const months = Math.floor(checkIn.monthsSince);
-  return `${months} month${months === 1 ? "" : "s"} since your last check-in`;
+  return `${months} month${months === 1 ? "" : "s"} ${since}`;
 }
 
 // One sweep row -> a candidate, or null when there is nothing groundable to say (no name, no usable figure).
@@ -90,6 +104,7 @@ function describe(row) {
 }
 
 function reasonFor(c, carried) {
+  if (!c.phrase && !c.checkIn) return `${c.name}, who you asked me to put on today's list`; // a carried client with no figure to give
   const subject = carried ? `${c.name}, who you put on today's list,` : c.name;
   if (!c.phrase) return carried ? `${subject} ${c.checkIn}` : `${subject}, ${c.checkIn}`;
   return c.checkIn ? `${subject} ${c.phrase}, ${c.checkIn}` : `${subject} ${c.phrase}`;
@@ -98,11 +113,20 @@ function reasonFor(c, carried) {
 // Cross-client rank, the way orchestrator.js trimSweep orders opportunities: priority, then impact, both descending.
 const byRank = (a, b) => (PRIORITY_RANK[b.best.priority] || 0) - (PRIORITY_RANK[a.best.priority] || 0) || impact(b.best) - impact(a.best);
 
-function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, limit = DEFAULT_LIMIT } = {}) {
+function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames, limit = DEFAULT_LIMIT } = {}) {
   const max = Math.max(0, Math.floor(limit) || 0);
   const own = idSet(ownClientIds);
   const excluded = idSet(excludeIds);
   const eligible = (key) => own.has(key) && !excluded.has(key);
+
+  // Names for carried clients that have nothing else to say. The id kept is the map's own key.
+  const names = new Map();
+  if (clientNames instanceof Map) {
+    for (const [id, name] of clientNames) {
+      const trimmed = typeof name === "string" ? name.trim() : "";
+      if (trimmed) names.set(String(id), { clientId: id, name: trimmed, best: null, phrase: null, checkIn: null, monthsSince: 0 });
+    }
+  }
 
   // Every row the sweep has, keyed by client id. A client with an opportunity and a due check-in is in both lists.
   const rows = new Map();
@@ -127,8 +151,8 @@ function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, limit = DEF
   for (const id of Array.from(carriedIds || [])) {
     const key = String(id);
     if (picked.length >= max) break;
-    if (used.has(key) || !eligible(key) || !rows.has(key)) continue;
-    const c = describe(rows.get(key));
+    if (used.has(key) || !eligible(key)) continue;
+    const c = (rows.has(key) && describe(rows.get(key))) || names.get(key);
     if (c) take(c, "carry", true);
   }
 
