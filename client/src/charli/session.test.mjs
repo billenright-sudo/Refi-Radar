@@ -382,7 +382,7 @@ test("briefing: with no follow-up (or one that is not a positive integer id) no 
   }
 });
 
-test("briefing: the follow-up id is used up by the first turn, so a later confirm or cancel and the turns after them never carry it", async () => {
+test("briefing: the follow-up id goes with the first turn only, so the turn after a confirm or a cancel never carries it", async () => {
   for (const finish of ["confirm", "cancel"]) {
     const { session, server } = setup({
       routes: {
@@ -400,6 +400,22 @@ test("briefing: the follow-up id is used up by the first turn, so a later confir
     if (finish === "confirm") await session.confirmPending(); else await session.cancelPending();
     await session.submit("what are rates today");
     assert.equal("followUpRecId" in server.turns()[2].body, false, finish);
+  }
+});
+
+test("briefing: a first turn that fails (a 5xx or a dropped connection) still uses the follow-up id up, so a retry does not carry it", async () => {
+  const failures = { "a 5xx": () => reply(500, { error: "boom" }), "a dropped connection": () => { throw new Error("offline"); } };
+  for (const [name, fail] of Object.entries(failures)) {
+    const steps = [() => briefingReply(briefingOf({ followUp: FOLLOW_UP })), fail, () => turnReply("No problem.", { turnId: "n1" })];
+    const { session, server } = setup({ routes: { "POST /api/assistant/turn": () => steps.shift()() } });
+    await session.open();
+    await session.submit("skip it");
+    assert.equal(lastTurn(session).kind, "error", name);
+    await session.submit("skip it");
+    assert.equal(lastTurn(session).content, "No problem.", name);
+    const [, first, retry] = server.turns().map((c) => c.body);
+    assert.equal(first.followUpRecId, 7, name);
+    assert.equal("followUpRecId" in retry, false, name);
   }
 });
 
@@ -438,13 +454,27 @@ test("briefing: a briefing that is missing, or only partly there, is read as nul
   // each field is kept only when it has the documented type; extra fields are dropped
   const mixed = briefingSetup({
     kind: "morning",
-    strip: { rate30: "6.52", move30: -0.08, asOf: 20261027, opportunities: 2, checkInsDue: NaN, nextEvent: { title: "Call", start: 5 }, extra: 1 },
+    strip: { rate30: "6.52", move30: -0.08, asOf: 20261027, opportunities: 2, checkInsDue: NaN, nextEvent: { title: 5, start: "2026-10-28T10:00:00" }, extra: 1 },
     followUp: null,
   });
   await mixed.session.open();
   assert.deepEqual(mixed.session.getState().briefing.strip, {
     rate30: null, move30: -0.08, asOf: null, opportunities: 2, checkInsDue: null, nextEvent: null,
   });
+});
+
+test("briefing: an all-day next event (start: null, as the server sends it) stays in the strip; only a non-text start is dropped", async () => {
+  for (const [start, kept] of [[null, null], ["2026-10-28", "2026-10-28"], [5, null], [undefined, null]]) {
+    const { session } = briefingSetup(briefingOf({ strip: { ...STRIP, nextEvent: { title: "Conference day", start } } }));
+    await session.open();
+    assert.deepEqual(session.getState().briefing.strip.nextEvent, { title: "Conference day", start: kept }, String(start));
+  }
+  // no event, or one with no title, is no next event
+  for (const nextEvent of [null, undefined, { title: null, start: null }, { start: "2026-10-28T10:00:00" }, "Conference day"]) {
+    const { session } = briefingSetup(briefingOf({ strip: { ...STRIP, nextEvent } }));
+    await session.open();
+    assert.equal(session.getState().briefing.strip.nextEvent, null, JSON.stringify(nextEvent));
+  }
 });
 
 // ── a normal turn ────────────────────────────────────────────────────────────

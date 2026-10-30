@@ -161,7 +161,8 @@ function cleanCompose(compose) {
 
 // The morning briefing the greeting carries (/turn greeting's `briefing`): { kind, strip, followUp }. Kept only as the server documents
 // it: `kind` is "morning" or "catch_up" (anything else is no briefing); `strip` always has the six fields, each null unless it has
-// its documented type (a number, a string, or for nextEvent a { title, start } of strings), so nothing is guessed at; `followUp` is
+// its documented type (a number, a string, or for nextEvent a { title, start } with a text title and a text start, or null for an
+// all-day event), so nothing is guessed at; `followUp` is
 // { recId, clientId, name, source } when recId is a positive integer and name is text, else null. -> a fresh object, or null.
 const BRIEFING_KINDS = new Set(["morning", "catch_up"]);
 const numberOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -184,7 +185,8 @@ function cleanBriefing(briefing) {
       asOf: stringOrNull(s.asOf),
       opportunities: numberOrNull(s.opportunities),
       checkInsDue: numberOrNull(s.checkInsDue),
-      nextEvent: event && typeof event.title === "string" && typeof event.start === "string" ? { title: event.title, start: event.start } : null,
+      // an all-day event has start: null (the server's own shape), and is still the next event
+      nextEvent: event && typeof event.title === "string" ? { title: event.title, start: stringOrNull(event.start) } : null,
     },
     followUp,
   };
@@ -237,7 +239,8 @@ const localDateOf = (date) =>
 //
 // The greeting's briefing is kept in getState().briefing and the briefing's follow-up question is answered by the FIRST /turn after
 // it: that turn alone carries `followUpRecId` (the follow-up's recId), so the server can read "skip it" as a skip. The id is used
-// up by that turn, or by a confirm, a cancel or a stage change, whichever comes first, and is never sent again.
+// up by that turn, even a failed one, or by a stage change before it, whichever comes first, and is never sent again. (A pending
+// change only exists after a /turn, so a confirm or a cancel always comes after the id was used.)
 //
 // open() and leave() follow the Charli screen: the session outlives a visit to it (keep.mjs), so coming back shows the same
 // conversation and greets nobody twice. While away nothing is spoken and nothing new is sent; a request already out finishes and
@@ -463,7 +466,6 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
 
   // The pending change was declined, by voice or by the Cancel button.
   function leaveThat() {
-    takeFollowUp();
     set({ pending: null });
     addTurn({ role: "assistant", content: LEAVE_THAT });
     speak(LEAVE_THAT);
@@ -471,7 +473,6 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
 
   // POST /confirm with the sideEffect exactly as /turn returned it.
   async function doConfirm() {
-    takeFollowUp();
     const { sideEffect } = state.pending;
     const res = await request("POST", "/api/assistant/confirm", { sideEffect });
     if (res.ok && res.data && res.data.success === true) {
