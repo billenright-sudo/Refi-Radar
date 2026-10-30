@@ -210,8 +210,9 @@ function addClientTool(fields, _ctx) {
 // What became of a call the broker logs, and their notes on it: the same rules /api/assistant/confirm applies to the body it is
 // sent. callOutcome -> { outcome } | { error }, none given (undefined or null) being "reached". callNotes -> { notes } | { error },
 // none given being "": the text is kept on one line (every control character, a newline or a tab included, is stripped, and the
-// spaces it leaves collapse to one), trimmed and capped at NOTES_MAX characters. The notes are the broker's own words about a
-// borrower: they are saved and shown on the card, and never spoken or sent to the model.
+// spaces it leaves collapse to one), every format character (a bidi override, a zero-width space: M4) is removed, and the rest is
+// trimmed and capped at NOTES_MAX characters. The notes are the broker's own words about a borrower: they are saved and shown on
+// the card, and never spoken or sent to the model.
 const CALL_OUTCOMES = Object.freeze(["reached", "not_reached"]);
 const BAD_OUTCOME = "outcome must be reached or not_reached";
 const BAD_NOTES = "notes must be text";
@@ -220,7 +221,7 @@ const callOutcome = (raw) => (raw == null ? { outcome: "reached" } : CALL_OUTCOM
 function callNotes(raw) {
   if (raw == null) return { notes: "" };
   if (typeof raw !== "string") return { error: BAD_NOTES };
-  const text = raw.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
+  const text = raw.replace(/\p{Cf}/gu, "").replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
   return { notes: Array.from(text).slice(0, NOTES_MAX).join("").trim() };
 }
 

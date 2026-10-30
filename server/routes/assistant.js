@@ -19,7 +19,7 @@ const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
-const { runTurn, DEFAULT_TURN_DEADLINE_MS, isDecline } = require("../lib/assistant/orchestrator");
+const { runTurn, DEFAULT_TURN_DEADLINE_MS, isSkip } = require("../lib/assistant/orchestrator");
 const followups = require("../lib/assistant/followups");
 const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
 const { makeLive, userLocalDate } = require("../lib/assistant/live");
@@ -32,7 +32,7 @@ const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
-const { createClientForUser, logContactForUser, toClient } = require("./clients");
+const { createClientForUser, logContactForUser, clientInReach, toClient } = require("./clients");
 const { googleFor } = require("../lib/google");
 const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, zoneName } = require("../lib/google/time");
 
@@ -140,7 +140,10 @@ const fingerprintName = (name) => (typeof name === "string" ? name.trim().replac
 // The code-authored sentence after a confirmed change; the browser speaks it and appends it to the
 // conversation as the assistant's turn (so the read-back is no longer the last thing Charli said). The stage is said as the
 // read-back says it ("Veteran, ten or more years"): the screen label's "(10+ years)" reads aloud as "ten+".
-function confirmReply(type, receipt) {
+// Ruling R19: after a call that connected, when the caller's Google calendar can take a booking (`canBook`), the reply offers the
+// follow-up in code's words (FOLLOW_UP_OFFER), the reply's one question; a missed call, a carry and every other change are as before.
+const FOLLOW_UP_OFFER = "Want a follow-up call on your calendar?";
+function confirmReply(type, receipt, { canBook = false } = {}) {
   if (type === "createEvent") {
     // the zone as the read-back said it (a receipt kept before the zone was stored has none, and is read without it)
     const zone = zoneName(receipt.timeZone);
@@ -149,7 +152,20 @@ function confirmReply(type, receipt) {
   if (type === "setCareerStage") return `Done — your career stage is set to ${spokenStageLabel(receipt.stage) || receipt.label}.`;
   if (type === "addToCallList") return `Done — ${receipt.name} is on tomorrow's call list.`;
   if (type === "logContact" && receipt.outcome === "not_reached") return `Done — I noted that you couldn't reach ${receipt.name}.`;
-  return type === "logContact" ? `Done — I logged a contact for ${receipt.name}.` : `Done — I added ${receipt.name} as a new client.`;
+  if (type === "logContact") return `Done — I logged a contact for ${receipt.name}.${canBook ? ` ${FOLLOW_UP_OFFER}` : ""}`;
+  return `Done — I added ${receipt.name} as a new client.`;
+}
+
+// Whether the caller's own Google calendar can take a booking right now: its stored connection is usable (it has a time zone).
+// Reads the stored row only (lib/google connection()); no network. Never throws: a failure is "no".
+function canBookFor(req) {
+  try {
+    const connection = googleFor({ db, userId: req.user.id, fetchFn: req.app.get("googleFetch") || globalThis.fetch }).connection();
+    return !connection.code && typeof connection.timeZone === "string" && connection.timeZone !== "";
+  } catch (err) {
+    console.error("POST /api/assistant/confirm (calendar check):", errText(err));
+    return false;
+  }
 }
 
 // ── Calls and tomorrow's list (logContact, addToCallList) ───────────────────
@@ -157,63 +173,53 @@ function confirmReply(type, receipt) {
 // An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
 const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
 
-// logContactForUser's reach check without its write: 404 for no such client, 403 for another org's client and, for an LO, for
-// another LO's. -> { status, error } | { status: 200, client }
-function clientInReach(user, id) {
-  const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
-  if (!existing) return { status: 404, error: "Client not found" };
-  if (user.role === "lo" && existing.user_id !== user.id) return { status: 403, error: "Access denied" };
-  if (existing.org_id !== user.org_id) return { status: 403, error: "Access denied" };
-  return { status: 200, client: toClient(existing) };
-}
-
-// The logContact write, run inside /confirm's transaction. A reached call is logContactForUser's write first (its reach check,
-// then last_contact = now); a call that did not connect gets the same reach check and no write to the client (it is no contact,
-// so their six-month check-in date stays as it was). Only then is the call logged with the broker's notes, and the caller's open
-// recommendations of that client closed with the outcome, so Charlie does not ask about them again. The receipt kept per
-// confirmId is { id, name }, plus the outcome when it was not reached: never the notes.
+// The logContact write, run inside /confirm's transaction. A reached call is logContactForUser's write first (the shared reach
+// check, clientInReach, then last_contact = now); a call that did not connect gets the same reach check and no write to the client
+// (it is no contact, so their six-month check-in date stays as it was). Only then is the call logged with the broker's notes, and
+// the caller's open recommendations of that client closed with the outcome, so Charlie does not ask about them again. A carry
+// (tomorrow's list) is closed only by a call that connected (Ruling R18): "couldn't reach her" after "put her on tomorrow's list"
+// leaves her on it. The receipt kept per confirmId is { id, name }, plus the outcome when it was not reached: never the notes.
 function logCallForUser(user, id, outcome, notes) {
-  const reach = outcome === "reached" ? logContactForUser(db, user, id) : clientInReach(user, id);
+  const reach = outcome === "reached" ? logContactForUser(db, user, id) : clientInReach(db, user, id);
   if (reach.status !== 200) return reach;
+  const client = reach.client || toClient(reach.row);
   const nowUtc = sqliteUtc(Date.now());
   followups.logCall(db, { userId: user.id, clientId: id, outcome, notes, nowUtc });
-  followups.resolveForClient(db, user.id, id, outcome, nowUtc);
-  const receipt = outcome === "reached" ? receiptOf(reach.client) : { ...receiptOf(reach.client), outcome };
-  return { result: reach.client, receipt };
+  followups.resolveForClient(db, user.id, id, outcome, nowUtc, { includeCarry: outcome === "reached" });
+  const receipt = outcome === "reached" ? receiptOf(client) : { ...receiptOf(client), outcome };
+  return { result: client, receipt };
 }
 
 // The addToCallList write: a carry dated `day` for one of the caller's OWN clients (the call list is never the team's, so a broker
-// cannot carry an LO's client either): 404 for no such client, 403 for anyone else's. The receipt is { id, name, day }.
+// cannot carry an LO's client either): 404 for no such client, 403 for anyone else's. The client's open follow-ups are closed as
+// expired (Ruling R16), so Charlie does not ask "were you able to reach her?" while she is on tomorrow's list; the carry stays
+// open. The receipt is { id, name, day }.
 function addToCallListForUser(user, id, day) {
-  const client = db.prepare("SELECT id, name, user_id FROM clients WHERE id = ?").get(id);
-  if (!client) return { status: 404, error: "Client not found" };
-  if (client.user_id !== user.id) return { status: 403, error: "Access denied" };
+  const reach = clientInReach(db, user, id);
+  if (reach.status === 404) return reach;
+  if (reach.status !== 200 || reach.row.user_id !== user.id) return { status: 403, error: "Access denied" };
   followups.addCarry(db, user.id, id, day);
-  const receipt = { id: client.id, name: client.name, day };
+  followups.resolveForClient(db, user.id, id, "expired", sqliteUtc(Date.now()), { includeCarry: false });
+  const receipt = { id: reach.row.id, name: reach.row.name, day };
   return { result: receipt, receipt };
 }
 
-// "Skip it": the broker's answer to the briefing's follow-up question (its briefing.followUp.recId, sent back as followUpRecId) is
-// a decline (isDecline). The line code says after dismissing it, or null when this turn is no skip. The row must be a positive
-// integer id of the caller's own, about a client who is still theirs; the name is read from the client record (never from the
-// body), and only when it may be spoken (briefing.js speakable, which every name the briefing asks about passed). Every open row
-// of that client the briefing could ask about goes with it, since one question asks about all of a client's rows (briefing.js
+// "Skip it": the broker's answer to the briefing's follow-up question (its briefing.followUp.recId, sent back as followUpRecId)
+// says skip in so many words (isSkip, Ruling R14: a bare "no" answers the question and goes to the model). The line code says after
+// dismissing it, or null when this turn is no skip. The row is followups.followUpOf's: a positive integer id of the caller's own,
+// not a carry, about a client who is still theirs; the name is read from the client record (never from the body), and only when
+// it may be spoken (briefing.js speakable, which every name the briefing asks about passed). Every open row of that client the
+// briefing could ask about goes with it (expired), since one question asks about all of a client's rows (briefing.js
 // pickFollowUps) and the line says it won't be asked again; a carry is no question, and stays as the broker asked. A row already
 // closed is left as it is.
 function skipFollowUp(user, recId, text) {
-  if (!Number.isInteger(recId) || recId <= 0 || !isDecline(text)) return null;
-  const rec = db.prepare(`
-    SELECT r.client_id AS clientId, c.name AS name FROM charlie_recommendations r
-    JOIN clients c ON c.id = r.client_id AND c.user_id = r.user_id
-    WHERE r.id = ? AND r.user_id = ?
-  `).get(recId, user.id);
+  if (!Number.isInteger(recId) || recId <= 0 || !isSkip(text)) return null;
+  const rec = followups.followUpOf(db, user.id, recId);
   const name = rec ? assistantBriefing.speakable(rec.name) : null;
   if (!name) return null;
   db.transaction(() => {
-    const open = db.prepare(
-      "SELECT id FROM charlie_recommendations WHERE user_id = ? AND client_id = ? AND status = 'open' AND source <> 'carry'"
-    ).all(user.id, rec.clientId);
-    for (const row of open) followups.dismiss(db, user.id, row.id);
+    if (rec.status === "open") followups.dismiss(db, user.id, rec.id);
+    followups.resolveForClient(db, user.id, rec.clientId, "expired", sqliteUtc(Date.now()), { includeCarry: false });
   })();
   return `No problem — I won't ask about ${name} again.`;
 }
@@ -506,15 +512,18 @@ function createAssistantRouter({ limiter = {} } = {}) {
   //   * setCareerStage ({ type, stage, confirmId? }, stage one of the CAREER_STAGES ids, else 400) sets
   //     users.career_stage for the signed-in user ONLY and replies "Done — your career stage is set to <label>."
   //     (result { stage, label }); its confirmId is optional (the update is idempotent) and its target is the stage id.
-  //   * logContact ({ type, clientId, outcome?, notes?, confirmId? }): outcome "reached" (the default) or "not_reached", else 400;
-  //     notes text (else 400), cleaned and capped as logContactTool does. One transaction: for reached, logContactForUser (its
-  //     404 / 403, then last_contact = now); for not_reached the same reach check and no write to the client; then the call goes
-  //     in contact_log with the notes and the caller's open recommendations of that client are closed with the outcome. Replies
-  //     "Done — I logged a contact for <name>." or, not reached, "Done — I noted that you couldn't reach <name>."
+  //   * logContact ({ type, clientId, outcome?, notes?, confirmId }): outcome "reached" (the default) or "not_reached", else 400;
+  //     notes text (else 400), cleaned and capped as logContactTool does. One transaction: for reached, logContactForUser (the
+  //     shared reach check's 404 / 403, then last_contact = now); for not_reached the same reach check (clientInReach) and no write
+  //     to the client; then the call goes in contact_log with the notes and the caller's open recommendations of that client are
+  //     closed with the outcome (a carry only by a reached call: Ruling R18). Replies "Done — I logged a contact for <name>." (with
+  //     "Want a follow-up call on your calendar?" after it when the caller's Google calendar can take a booking: Ruling R19) or,
+  //     not reached, "Done — I noted that you couldn't reach <name>."
   //   * addToCallList ({ type, clientId, day, confirmId }, day a real YYYY-MM-DD within a day of the UTC date, else 400) carries one
-  //     of the caller's OWN clients to the next day's call list (404 unknown, 403 anyone else's, a broker's LO's included) and
-  //     replies "Done — <name> is on tomorrow's call list." (result { id, name, day }).
-  //   * addClient and addToCallList require a confirmId; logContact may send one. A malformed one is 400.
+  //     of the caller's OWN clients to the next day's call list (404 unknown, 403 anyone else's, a broker's LO's included), closes
+  //     the client's open follow-ups as expired (Ruling R16), and replies "Done — <name> is on tomorrow's call list." (result
+  //     { id, name, day }).
+  //   * addClient, addToCallList and logContact require a confirmId (M3: a logContact appends a call). A malformed one is 400.
   //   * a confirmId is bound to the user AND to the action it was recorded for (type + target); the same id
   //     from another user, or for another type or target, is 409 and nothing is executed.
   //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
@@ -581,10 +590,15 @@ function createAssistantRouter({ limiter = {} } = {}) {
     if (sideEffect.confirmId != null) {
       if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return bad("confirmId must be a UUID");
       confirmId = sideEffect.confirmId.toLowerCase();
-    } else if (sideEffect.type === "addClient" || sideEffect.type === "addToCallList") {
+    } else if (sideEffect.type === "addClient" || sideEffect.type === "addToCallList" || sideEffect.type === "logContact") {
+      // (M3: a logContact appends a call to contact_log, so a replay without one would log it twice)
       return bad("confirmId required");
     }
 
+    // R19: the reply after a call that connected offers a follow-up when the caller's calendar can take one (checked only then)
+    const replyTo = (receipt) => confirmReply(type, receipt, {
+      canBook: type === "logContact" && receipt.outcome !== "not_reached" && canBookFor(req),
+    });
     try {
       // One transaction: the duplicate check, the write and its record commit (or roll back) together.
       const outcome = db.transaction(() => {
@@ -607,11 +621,11 @@ function createAssistantRouter({ limiter = {} } = {}) {
       })();
       if (outcome.conflict) return res.status(409).json({ success: false, error: outcome.conflict });
       if (outcome.duplicate) {
-        return res.json({ success: true, result: outcome.duplicate, reply: confirmReply(type, outcome.duplicate), duplicate: true });
+        return res.json({ success: true, result: outcome.duplicate, reply: replyTo(outcome.duplicate), duplicate: true });
       }
       if (outcome.errors) return res.status(400).json({ success: false, errors: outcome.errors });
       if (outcome.error) return res.status(outcome.status).json({ success: false, error: outcome.error });
-      res.json({ success: true, result: outcome.result, reply: confirmReply(type, outcome.receipt) });
+      res.json({ success: true, result: outcome.result, reply: replyTo(outcome.receipt) });
     } catch (err) {
       console.error("POST /api/assistant/confirm:", errText(err));
       res.status(500).json({ success: false, error: "Database error" });

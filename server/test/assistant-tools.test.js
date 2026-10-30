@@ -17,6 +17,7 @@ const { recordSnapshot } = require("../lib/rateHistory");
 const {
   tools, TOOL_SCHEMA,
   getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, callListTool, getCalendarTool, createEventTool, draftEmailTool,
+  callNotes,
 } = require("../lib/assistant/tools");
 const { PURPOSES, composeLinks } = require("../lib/assistant/outreach");
 
@@ -338,6 +339,16 @@ test("Task 7: logContactTool packages the outcome (reached by default) and the b
   assert.equal(logContactTool({ clientId: chenId, notes: "y".repeat(1000) }, brokerCtx).sideEffect.notes.length, 1000);
   assert.equal(contactLogCount(), logs, "nothing logged");
   assert.deepStrictEqual(clientRow(chenId), before, "no column of the row changed");
+});
+
+test("Task 7 fix (M4): callNotes strips format characters too: a bidi override and a zero-width space are gone", () => {
+  const RLO = String.fromCharCode(0x202e);   // right-to-left override
+  const ZWSP = String.fromCharCode(0x200b);  // zero-width space
+  const notes = `${RLO}Call her back${ZWSP} Fri${ZWSP}day ${ZWSP}`;
+  const r = logContactTool({ clientId: chenId, notes }, brokerCtx);
+  assert.equal(r.sideEffect.notes, "Call her back Friday");
+  assert.deepStrictEqual(callNotes(notes), { notes: "Call her back Friday" });
+  assert.ok(!/\p{Cf}/u.test(r.sideEffect.notes));
 });
 
 test("Task 7: logContactTool refuses an outcome that is not reached or not_reached, and notes that are not text", () => {

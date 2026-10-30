@@ -286,6 +286,36 @@ test("resolveForClient not_reached closes the row, and rejects a status that is 
   assert.deepStrictEqual(open(), []);
 });
 
+test("resolveForClient with { includeCarry: false } leaves the client's carry open (Ruling R18); the default closes it too", () => {
+  const lucy = addClient(orgId, userId, "Lucy Park");
+  fu.recordRecommendations(db, userId, YESTERDAY, [{ clientId: lucy, source: "briefing", reasonCode: "x" }]);
+  fu.recordRecommendations(db, userId, TODAY, [{ clientId: lucy, source: "sweep", reasonCode: "y" }]);
+  fu.addCarry(db, userId, lucy, YESTERDAY);
+  assert.equal(fu.resolveForClient(db, userId, lucy, "not_reached", NOW, { includeCarry: false }), 2);
+  const bySource = Object.fromEntries(rows().map((r) => [r.source, r.status]));
+  assert.deepStrictEqual(bySource, { briefing: "not_reached", sweep: "not_reached", carry: "open" });
+  assert.deepStrictEqual(fu.carriedIds(db, userId, TODAY), [lucy], "still on today's list");
+  // the default (and includeCarry: true) closes the carry as well
+  assert.equal(fu.resolveForClient(db, userId, lucy, "reached", NOW, { includeCarry: true }), 1);
+  assert.equal(rows().find((r) => r.source === "carry").status, "reached");
+  assert.deepStrictEqual(fu.carriedIds(db, userId, TODAY), []);
+});
+
+test("followUpOf: a row of the user's own, not a carry, whose client is still theirs: { id, clientId, name, status }, else null", () => {
+  const lucy = addClient(orgId, userId, "Lucy Park");
+  fu.recordRecommendations(db, userId, YESTERDAY, [{ clientId: lucy, source: "briefing", reasonCode: "x" }]);
+  fu.addCarry(db, userId, lucy, YESTERDAY);
+  const [rec, carry] = rows();
+  assert.deepStrictEqual(fu.followUpOf(db, userId, rec.id), { id: rec.id, clientId: lucy, name: "Lucy Park", status: "open" });
+  assert.equal(fu.followUpOf(db, otherUserId, rec.id), null, "another user's row");
+  assert.equal(fu.followUpOf(db, userId, carry.id), null, "a carry is never a question");
+  assert.equal(fu.followUpOf(db, userId, 99999999), null);
+  fu.dismiss(db, userId, rec.id);
+  assert.equal(fu.followUpOf(db, userId, rec.id).status, "expired", "a closed row is still found, with its status");
+  db.prepare("UPDATE clients SET user_id = ? WHERE id = ?").run(otherUserId, lucy);
+  assert.equal(fu.followUpOf(db, userId, rec.id), null, "the client is no longer theirs");
+});
+
 // ── logCall / reachedSince ───────────────────────────────────────────────────
 
 test("logCall not_reached writes the row and returns its id; reachedSince does not include that client", () => {

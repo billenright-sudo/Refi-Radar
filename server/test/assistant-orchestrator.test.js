@@ -21,7 +21,7 @@ const {
 } = require("../lib/assistant/prompt");
 const {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel, randomJokeTopic, isDecline,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, charliModel, randomJokeTopic, isSkip,
 } = require("../lib/assistant/orchestrator");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 };
@@ -464,9 +464,53 @@ test("Task 7: callListTool proposes tomorrow's list: its read-back and card rows
   assert.equal(r.sideEffect, undefined);
 });
 
-test("Task 7: isDecline is exported for the route's skip", () => {
-  for (const text of ["skip it", "not now", "no thanks", "nah, skip it", "Skip."]) assert.equal(isDecline(text), true, text);
-  for (const text of ["yes I reached her", "put her on tomorrow's list", "skip to the rates"]) assert.equal(isDecline(text), false, text);
+test("Task 7 fix (Ruling R14): isSkip takes only an explicit skip; a bare no answers the follow-up question and is no skip", () => {
+  for (const text of [
+    "skip it", "Skip.", "skip", "Skip that one.", "not now", "Not now, thanks.", "Not right now", "never mind", "Nevermind.",
+    "forget it", "Forget about her.", "don't ask again", "Don't ask me about her again.", "do not ask again", "drop it", "leave it",
+    "Leave it for now.", "pass", "I'll pass.", "nah, skip it", "No, skip it for now.", "let's skip it", "Okay, just skip it, Charlie.",
+    "don’t ask again",
+  ]) assert.equal(isSkip(text), true, text);
+  for (const text of [
+    "no", "No.", "nope", "nah", "Not yet.", "not really", "wait", "no thanks", "No, I missed her.", "nope, voicemail",
+    "skip to the rates", "Skip it, what are rates today?", "never mind, I got her", "yes I reached her", "Put her on tomorrow's list.",
+    "", "   ",
+  ]) assert.equal(isSkip(text), false, text);
+});
+
+// ── Task 7 fix (Ruling R17, lock 2): a call-list placement nobody confirmed is a claim ───────────────────────────────────────
+
+test("Task 7 fix (R17): 'I've put her on tomorrow's list' and 'she's on your call list' are claims; an offer or a question is not", () => {
+  for (const grounded of [false, true]) {
+    for (const text of [
+      "I've put her on tomorrow's list.", "I put Lucy on tomorrow's call list.", "We moved Lucy to your call list.",
+      "I just put her on the list for tomorrow.", "I went ahead and put Lucy Tran on tomorrow's list.",
+      "She's on tomorrow's list now.", "Lucy Tran is on your call list.", "She's now on tomorrow's call list.",
+      "She'll be first on tomorrow's list.", "Lucy will be on tomorrow's list.", "They're on the call list.",
+      "She's been put on tomorrow's list.", "Lucy was moved to your call list.", "Added Lucy to your call list.",
+      "I added her to tomorrow's list.", "Lucy added to tomorrow's call list.", "Since she's on tomorrow's list, want a check-in email too?",
+      "Got it — she's on tomorrow's list.",
+    ]) assert.equal(claimsCompletion(text, grounded), true, `${grounded}: ${text}`);
+    for (const text of [
+      "Want me to put her on tomorrow's list?", "Should I put her on tomorrow's list?", "Should I put Lucy on your call list?",
+      "I can add her to tomorrow's list if you'd like.", "I can put her on tomorrow's list.", "I'd put her on tomorrow's list.",
+      "Do you want her on tomorrow's list?", "Is she on your call list?", "Who's on tomorrow's list?",
+      "Nobody's on tomorrow's list yet.", "Nothing's on your call list.", "She's not on your call list.",
+      "Want me to put her on tomorrow's list, book a time to call, or set up a check-in email?",
+    ]) assert.equal(claimsCompletion(text, grounded), false, `${grounded}: ${text}`);
+  }
+});
+
+test("Task 7 fix (R17): on a non-action turn, a reply that says she is on tomorrow's list, with nothing confirmed, is the nothing-changed line", async () => {
+  for (const said of ["I've put her on tomorrow's list.", "She's on tomorrow's list now.", "Lucy's on your call list."]) {
+    const r = await runTurn({ messages: answersFollowUp("No, I missed her."), ctx: brokerCtx, client: fakeClient([say(said)]) });
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+    assert.equal(r.sideEffect, undefined);
+  }
+  // the offer itself is said
+  const offer = "Want me to put them on tomorrow's list, book a time to call, or set up a check-in email?";
+  const r = await runTurn({ messages: answersFollowUp("No, I missed her."), ctx: brokerCtx, client: fakeClient([say(offer)]) });
+  assert.equal(r.reply, offer);
 });
 
 // ── tool-name safety, loop cap, usage ────────────────────────────────────────

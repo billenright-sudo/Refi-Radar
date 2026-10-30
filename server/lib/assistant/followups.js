@@ -98,15 +98,28 @@ function dismiss(db, userId, recId) {
     .run(recId, userId).changes > 0;
 }
 
+// The follow-up a briefing asked about, as the broker's answer names it (its row id): { id, clientId, name, status } when the
+// row is this user's own, is not a carry (a carry is never a question), and its client is still theirs; else null.
+function followUpOf(db, userId, recId) {
+  return db.prepare(`
+    SELECT r.id AS id, r.client_id AS clientId, c.name AS name, r.status AS status
+    FROM charlie_recommendations r
+    JOIN clients c ON c.id = r.client_id AND c.user_id = r.user_id
+    WHERE r.id = ? AND r.user_id = ? AND r.source <> 'carry'
+  `).get(recId, userId) || null;
+}
+
 // The broker has dealt with this client (status: 'reached', 'not_reached' or 'expired'): close every row still open for
 // them, whichever source it came from, and stamp when. Rows already closed are left as they are. Returns the rows changed.
-function resolveForClient(db, userId, clientId, status, nowUtc) {
+// With { includeCarry: false } a carry is left open (Ruling R18): a call that did not connect, or a carry the broker just asked
+// for, must not take the client off tomorrow's list. Only a call that happened closes it too (the default).
+function resolveForClient(db, userId, clientId, status, nowUtc, { includeCarry = true } = {}) {
   if (!RESOLUTIONS.includes(status)) throw new TypeError(`status must be one of ${RESOLUTIONS.join(", ")}, got ${JSON.stringify(status)}`);
   assertUtc(nowUtc, "nowUtc");
   return db.prepare(`
     UPDATE charlie_recommendations SET status = ?, resolved_at = ?
-    WHERE user_id = ? AND client_id = ? AND status = 'open'
-  `).run(status, nowUtc, userId, clientId).changes;
+    WHERE user_id = ? AND client_id = ? AND status = 'open' AND (? = 1 OR source <> 'carry')
+  `).run(status, nowUtc, userId, clientId, includeCarry ? 1 : 0).changes;
 }
 
 // "Put them on tomorrow's list": a carry row dated `day` (the day it was asked for). Asking again for the same day does not
@@ -215,6 +228,7 @@ module.exports = {
   openFollowUps,
   markAsked,
   dismiss,
+  followUpOf,
   resolveForClient,
   addCarry,
   carriedIds,

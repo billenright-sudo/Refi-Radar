@@ -1101,29 +1101,29 @@ test("confirm logContact: another org's client is 403, a missing one 404, an LO'
   const beaBefore = stamp(beaClient);
   const chenBefore = stamp(chen);
 
-  let r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: beaClient } });
+  let r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: beaClient, confirmId: newId() } });
   assert.equal(r.status, 403);
   assert.equal(r.data.success, false);
   assert.equal(stamp(beaClient), beaBefore);
 
-  r = await as(bea)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: chen } });
+  r = await as(bea)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: chen, confirmId: newId() } });
   assert.equal(r.status, 403);
   assert.equal(stamp(chen), chenBefore);
 
-  r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: 99999999 } });
+  r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: 99999999, confirmId: newId() } });
   assert.equal(r.status, 404);
 
   // an LO may not touch the broker's client (same org) ...
-  r = await as(lou)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: chen } });
+  r = await as(lou)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: chen, confirmId: newId() } });
   assert.equal(r.status, 403);
   assert.equal(stamp(chen), chenBefore);
   // ... but may log their own, and the broker may log the LO's
   const louBefore = stamp(louClient);
-  r = await as(lou)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: louClient } });
+  r = await as(lou)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: louClient, confirmId: newId() } });
   assert.equal(r.status, 200);
   assert.equal(r.data.result.id, louClient);
   assert.notEqual(stamp(louClient), louBefore);
-  r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: louClient } });
+  r = await as(ann)("POST", "/api/assistant/confirm", { sideEffect: { type: "logContact", clientId: louClient, confirmId: newId() } });
   assert.equal(r.status, 200);
 });
 
@@ -1252,13 +1252,19 @@ test("confirm: a confirmId used by one user is 409 for another, and the second u
   assert.equal(clientRow(beaClient).last_contact, beaBefore);
 });
 
-test("confirm logContact: works without a confirmId; with one, a replay returns the stored result and writes nothing", async () => {
-  // no confirmId: as before, and nothing is recorded
+test("confirm logContact: a confirmId is required (M3: the write appends a call); with one, a replay returns the stored result and writes nothing", async () => {
+  // no confirmId: 400, and nothing is written or recorded
   const before = db.prepare("SELECT COUNT(*) AS n FROM assistant_confirmations").get().n;
-  const plain = await confirmAs(ann, { type: "logContact", clientId: chen });
-  assert.equal(plain.status, 200);
-  assert.equal("duplicate" in plain.data, false);
+  const calls = db.prepare("SELECT COUNT(*) AS n FROM contact_log").get().n;
+  db.prepare("UPDATE clients SET last_contact = '2001-01-01' WHERE id = ?").run(chen);
+  for (const extra of [{}, { outcome: "reached" }, { outcome: "not_reached", notes: "voicemail" }, { confirmId: null }]) {
+    const plain = await confirmAs(ann, { type: "logContact", clientId: chen, ...extra });
+    assert.equal(plain.status, 400, JSON.stringify(extra));
+    assert.deepStrictEqual(plain.data, { success: false, error: "confirmId required" });
+  }
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM assistant_confirmations").get().n, before);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contact_log").get().n, calls);
+  assert.equal(clientRow(chen).last_contact, "2001-01-01");
 
   const confirmId = newId();
   const first = await confirmAs(ann, { type: "logContact", confirmId, clientId: chen });
@@ -1365,11 +1371,11 @@ test("I2: /confirm success carries a code-authored reply, for both types, and a 
   assert.equal(addedAgain.data.reply, "Done — I added Reply Test as a new client.");
   assert.equal(namedCount("Reply Test"), 1);
 
-  // a logContact without a confirmId has the reply too
+  // failures have none (a logContact without a confirmId is one: M3)
   const plain = await confirmAs(ann, { type: "logContact", clientId: chen });
-  assert.equal(plain.data.reply, DONE_REPLY);
-  // failures have none
-  const missing = await confirmAs(ann, { type: "logContact", clientId: 99999999 });
+  assert.equal(plain.status, 400);
+  assert.equal("reply" in plain.data, false);
+  const missing = await confirmAs(ann, { type: "logContact", clientId: 99999999, confirmId: newId() });
   assert.equal(missing.status, 404);
   assert.equal("reply" in missing.data, false);
   const invalid = await confirmAs(ann, { type: "addClient", confirmId: newId(), fields: {} });
@@ -2309,4 +2315,129 @@ test("Task 7: saved notes never reach the model: the proposal, the yes, then a t
   assert.ok(wire.includes("Done — I logged a contact for Ivy Chu."), "the history it was sent holds the Done line");
   assert.ok(!wire.includes(NOTES), "the saved notes are in no model request");
   assert.ok(!wire.includes("call back in March"));
+});
+
+// ── Task 7, fix round 1 ──────────────────────────────────────────────────────
+
+test("Task 7 fix (R14): a bare no, nope or not yet, or 'No, I missed her', answers the question: the model's turn, nothing dismissed", async () => {
+  const gus = addClientRow(orgF, fay, { name: "Gus Hale" });
+  const recId = recommend(fay, gus);
+  for (const text of ["no", "Nope.", "not yet", "No, I missed her."]) {
+    const client = fakeClient([say("Want me to put them on tomorrow's list?"), say("CHAT")]);
+    setClient(client);
+    const r = await as(fay)("POST", "/api/assistant/turn", {
+      messages: [askedAbout("Gus Hale"), { role: "user", content: text }], rates: LIVE, followUpRecId: recId,
+    });
+    assert.equal(r.status, 200, text);
+    assert.ok(client.calls.length >= 1, `${text}: the turn went to the model`);
+    assert.notEqual(r.data.reply, "No problem — I won't ask about Gus Hale again.", text);
+    assert.equal(recRow(recId).status, "open", `${text}: nothing dismissed`);
+  }
+  assert.ok(openIds(fay).includes(recId), "still asked about");
+});
+
+test("Task 7 fix (M6): a skip whose follow-up's client was reassigned to another LO after it was recommended is ignored: the model's turn", async () => {
+  const kai = addClientRow(orgF, fay, { name: "Kai Bell" });
+  const recId = recommend(fay, kai);
+  db.prepare("UPDATE clients SET user_id = ? WHERE id = ?").run(leo, kai);
+  const client = fakeClient([say("No worries."), say("CHAT")]);
+  setClient(client);
+  const r = await as(fay)("POST", "/api/assistant/turn", {
+    messages: [askedAbout("Kai Bell"), { role: "user", content: "skip it" }], rates: LIVE, followUpRecId: recId,
+  });
+  assert.equal(r.status, 200);
+  assert.ok(client.calls.length >= 1, "the turn went to the model");
+  assert.notEqual(r.data.reply, "No problem — I won't ask about Kai Bell again.");
+  assert.equal(recRow(recId).status, "open", "the row is not touched");
+});
+
+test("Task 7 fix (R18): a missed call after 'put her on tomorrow's list' keeps her on it; a reached call closes the carry", async () => {
+  const hal = addClientRow(orgF, fay, { name: "Hal Ruiz", lastContact: "2024-01-01" });
+  const tomorrow = shiftDay(TODAY, 1);
+  assert.equal((await confirmAs(fay, { type: "addToCallList", clientId: hal, day: TODAY, confirmId: newId() })).status, 200);
+  const missed = await confirmAs(fay, { type: "logContact", clientId: hal, outcome: "not_reached", confirmId: newId() });
+  assert.equal(missed.status, 200);
+  assert.deepStrictEqual(carriesFor(hal).map((c) => c.status), ["open"]);
+  assert.ok(followups.carriedIds(db, fay, tomorrow).includes(hal), "still on tomorrow's list");
+  const reached = await confirmAs(fay, { type: "logContact", clientId: hal, outcome: "reached", confirmId: newId() });
+  assert.equal(reached.status, 200);
+  assert.deepStrictEqual(carriesFor(hal).map((c) => c.status), ["reached"], "the call happened");
+  assert.ok(!followups.carriedIds(db, fay, tomorrow).includes(hal), "off tomorrow's list");
+});
+
+test("Task 7 fix (R16): confirming addToCallList closes the client's open follow-ups as expired; a refused one closes nothing", async () => {
+  const ida = addClientRow(orgF, fay, { name: "Ida Moss" });
+  const recId = recommend(fay, ida);
+  const sweepRow = recommend(fay, ida, "2026-10-02", "sweep");
+  const leosRow = recommend(leo, ida);
+  assert.ok(openIds(fay).includes(recId) && openIds(fay).includes(sweepRow), "precondition: both are due");
+  // Leo can't carry Fay's client, and his refused request closes nothing
+  assert.equal((await confirmAs(leo, { type: "addToCallList", clientId: ida, day: TODAY, confirmId: newId() })).status, 403);
+  assert.deepStrictEqual([recRow(recId).status, recRow(sweepRow).status, recRow(leosRow).status], ["open", "open", "open"]);
+
+  const r = await confirmAs(fay, { type: "addToCallList", clientId: ida, day: TODAY, confirmId: newId() });
+  assert.equal(r.status, 200);
+  for (const id of [recId, sweepRow]) {
+    assert.equal(recRow(id).status, "expired", "not asked about while she is carried");
+    assert.ok(recRow(id).resolved_at);
+  }
+  assert.ok(!openIds(fay).includes(recId) && !openIds(fay).includes(sweepRow));
+  assert.deepStrictEqual(carriesFor(ida).map((c) => [c.user_id, c.status]), [[fay, "open"]], "the carry itself stays open");
+  assert.equal(recRow(leosRow).status, "open", "another user's row is untouched");
+});
+
+test("Task 7 fix (R19): a confirmed reached log offers a follow-up when Google is usable; without it, and for a missed call, the reply is as before", async () => {
+  const jo = addClientRow(orgF, fay, { name: "Jo Kim", lastContact: "2024-01-01" });
+  const leos = addClientRow(orgF, leo, { name: "Leo Three", lastContact: "2024-01-01" });
+  const PLAIN = "Done — I logged a contact for Jo Kim.";
+  const OFFER = "Done — I logged a contact for Jo Kim. Want a follow-up call on your calendar?";
+  const connect = (status) => db.prepare(`
+    INSERT OR REPLACE INTO google_connections
+      (user_id, google_email, time_zone, scopes, access_token_enc, access_expires_at, refresh_token_enc, status)
+    VALUES (?, 'fay@gmail.example', 'America/Phoenix', 'calendar', 'x', 0, 'y', ?)
+  `).run(fay, status);
+  try {
+    let r = await confirmAs(fay, { type: "logContact", clientId: jo, confirmId: newId() });
+    assert.equal(r.data.reply, PLAIN, "no Google connection: as before");
+
+    connect("connected");
+    const sideEffect = { type: "logContact", clientId: jo, outcome: "reached", notes: "Wants a call next week", confirmId: newId() };
+    r = await confirmAs(fay, sideEffect);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.reply, OFFER);
+    assert.equal((r.data.reply.match(/\?/g) || []).length, 1, "exactly one question");
+    const again = await confirmAs(fay, sideEffect);
+    assert.deepStrictEqual([again.data.duplicate, again.data.reply], [true, OFFER], "a replay says the same");
+    assert.deepStrictEqual(JSON.parse(confirmation(sideEffect.confirmId).result_json), { id: jo, name: "Jo Kim" }, "the offer is not kept");
+
+    r = await confirmAs(fay, { type: "logContact", clientId: jo, outcome: "not_reached", confirmId: newId() });
+    assert.equal(r.data.reply, "Done — I noted that you couldn't reach Jo Kim.", "a missed call: no offer");
+    r = await confirmAs(fay, { type: "addToCallList", clientId: jo, day: TODAY, confirmId: newId() });
+    assert.equal(r.data.reply, "Done — Jo Kim is on tomorrow's call list.", "a carry: no offer");
+    // the offer is for the caller's own calendar: Leo has no connection
+    r = await confirmAs(leo, { type: "logContact", clientId: leos, confirmId: newId() });
+    assert.equal(r.data.reply, "Done — I logged a contact for Leo Three.");
+
+    connect("reconnect");
+    r = await confirmAs(fay, { type: "logContact", clientId: jo, confirmId: newId() });
+    assert.equal(r.data.reply, PLAIN, "an expired connection can't book: as before");
+  } finally {
+    db.prepare("DELETE FROM google_connections WHERE user_id = ?").run(fay);
+  }
+});
+
+test("Task 7 fix (M1): clientInReach is the one reach check (routes/clients.js): 404 unknown, 403 another org's or another LO's", () => {
+  const { clientInReach } = clientRoutes;
+  assert.equal(typeof clientInReach, "function");
+  const broker = { id: fay, org_id: orgF, role: "broker" };
+  const lo = { id: leo, org_id: orgF, role: "lo" };
+  const own = addClientRow(orgF, fay, { name: "Reach Fay" });
+  const leos = addClientRow(orgF, leo, { name: "Reach Leo" });
+  assert.equal(clientInReach(db, broker, own).status, 200);
+  assert.equal(clientInReach(db, broker, own).row.id, own);
+  assert.equal(clientInReach(db, broker, leos).status, 200, "a broker reaches the org");
+  assert.equal(clientInReach(db, lo, leos).status, 200, "an LO their own");
+  assert.deepStrictEqual(clientInReach(db, lo, own), { status: 403, error: "Access denied" });
+  assert.deepStrictEqual(clientInReach(db, broker, beaClient), { status: 403, error: "Access denied" });
+  for (const id of [99999999, 0, -1, 1.5, "5"]) assert.deepStrictEqual(clientInReach(db, broker, id), { status: 404, error: "Client not found" });
 });

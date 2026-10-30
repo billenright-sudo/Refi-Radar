@@ -56,14 +56,21 @@ function createClientForUser(db, user, body) {
   return { client: toClient(row) };
 }
 
-// Sets last_contact = now on client `id`. Broker: any org client; LO: own clients only. `id` must be a
-// positive integer. Throws only on a database error.
-function logContactForUser(db, user, id) {
+// Whether `user` may act on client `id`: a broker on any client in their org, a loan officer on their own only. `id` must be a
+// positive integer. -> { status: 404 | 403, error } | { status: 200, row } (the raw clients row). Throws only on a database error.
+function clientInReach(db, user, id) {
   if (!Number.isInteger(id) || id <= 0) return { status: 404, error: "Client not found" };
   const existing = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
   if (!existing) return { status: 404, error: "Client not found" };
   if (user.role === "lo" && existing.user_id !== user.id) return { status: 403, error: "Access denied" };
   if (existing.org_id !== user.org_id) return { status: 403, error: "Access denied" };
+  return { status: 200, row: existing };
+}
+
+// Sets last_contact = now on client `id`, for a user who may act on it (clientInReach). Throws only on a database error.
+function logContactForUser(db, user, id) {
+  const reach = clientInReach(db, user, id);
+  if (reach.status !== 200) return reach;
   db.prepare("UPDATE clients SET last_contact = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
   return { status: 200, client: toClient(db.prepare("SELECT * FROM clients WHERE id = ?").get(id)) };
 }
@@ -153,4 +160,4 @@ router.post("/:id/contact", (req, res) => {
   }
 });
 
-module.exports = Object.assign(router, { validateClient, toClient, createClientForUser, logContactForUser });
+module.exports = Object.assign(router, { validateClient, toClient, createClientForUser, logContactForUser, clientInReach });

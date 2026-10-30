@@ -554,6 +554,40 @@ const calendarClaim = (s, released) =>
 const NAMES_TITLE_RE = /\u0001\d+\u0002/;
 const NOW_CLAUSE_SPLIT_RE = /,|;|\band\b|\bplus\b|\balong\s+with\b/i;
 
+// Ruling R17 (lock 2): a client goes on tomorrow's call list only behind /confirm (callListTool packages it; the Done line is code's,
+// routes/assistant.js confirmReply), and no tool reads the list back, so a reply that says a client is on it, or was put on it, is
+// false on every turn, like the calendar's placing claims: "I've put her on tomorrow's list.", "We moved Lucy to your call list.",
+// "She's on tomorrow's list now.", "Lucy Tran is on your call list.", "She'll be first on tomorrow's list.", "She's been put on
+// tomorrow's list.", "Since she's on tomorrow's list, want a check-in email too?" ("added" is FIRST_PERSON_CLAIM_RE's, "Added Lucy
+// to ..." COMPLETION_OPENER_RE's, "Lucy added to ..." shortPassiveClaims'). The list is tomorrow's (call) list, the / your call
+// list, or the / your list for tomorrow. No claim: an offer or a question ("Want me to put her on tomorrow's list?", "Should I put
+// her on tomorrow's list?", "Do you want her on tomorrow's list?", "Is she on your call list?", "Who's on tomorrow's list?"), the
+// first person with a modal or 'd ("I can add her to tomorrow's list if you'd like.", "I'd put her on tomorrow's list."), and a
+// negative ("Nobody's on tomorrow's list yet.", "She's not on your call list."). The first-person form's question exemption is the
+// calendar's (INVERTED_MODAL_BEFORE_RE).
+const CALL_LIST =
+  "(?:tomorrow['\\u2019]s\\s+(?:call\\s+)?list|(?:your|the)\\s+call\\s+list|(?:your|the)\\s+list\\s+for\\s+tomorrow)(?![\\w'\\u2019-])";
+const LIST_PLACED_ALL_RE = new RegExp(
+  "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*" +
+    "\\s+(?:put|placed|moved|carried|slotted|dropped|stuck|bumped)\\b[^.!?;\\u2014\\u2013]*?\\b(?:on|to|onto|into)\\s+" + CALL_LIST,
+  "gi"
+);
+const ON_CALL_LIST_RE = new RegExp(
+  // a copula and the list ("she's on", "is now on", "will be first on"), not after nobody / nothing / no one / who / what
+  "(?<!\\b(?:nothing|nobody|no\\s+one|none|anything|anyone|anybody|who|what)(?:\\s+else)?\\s*)" +
+    "(?:\\b(?:is|are|will\\s+be)|['\\u2019](?:s|re|ll\\s+be))\\s+(?:(?:now|already|all|first|also|right)\\s+)*" +
+    "(?:on|at\\s+the\\s+top\\s+of)\\s+" + CALL_LIST +
+  // the passive placing ("has been put on", "was moved to")
+  "|(?:\\b(?:is|are|was|were|been|got)|['\\u2019](?:s|re))\\s+(?:(?:now|already|just|all)\\s+)*" +
+    "(?:put|placed|moved|carried|slotted|bumped)\\s+(?:on|to|onto|into)\\s+" + CALL_LIST +
+  // the "now" form
+  "|\\bon\\s+" + CALL_LIST + "\\s+now\\b",
+  "i"
+);
+const callListClaim = (s) =>
+  [...s.matchAll(LIST_PLACED_ALL_RE)].some((m) => !(/\?\s*$/.test(s) && INVERTED_MODAL_BEFORE_RE.test(s.slice(0, m.index)))) ||
+  (!NEGATIVE_START_RE.test(s) && ON_CALL_LIST_RE.test(s));
+
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
 // `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only); `plainReads` = null, or, on a
 // turn that cited a calendar read and is neither an action turn nor a reply to an offer, { events } (the events the read returned,
@@ -569,7 +603,7 @@ function claimsCompletion(text, grounded, storedStage, sweep, plainReads) {
       ? markTitles(part, groups).split(NOW_CLAUSE_SPLIT_RE).filter((c) => CALENDAR_NOW_FORM_RE.test(c))
       : [];
     const released = nowClauses.length > 0 && nowClauses.every((c) => NAMES_TITLE_RE.test(c));
-    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, released) ||
+    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, released) || callListClaim(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
@@ -965,6 +999,27 @@ const DECLINE_PAD_RE = new RegExp("^" + DECLINE_PAD + "(?:\\s+" + DECLINE_PAD + 
 const isDecline = (text) => {
   const clauses = String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
   return clauses.some((c) => DECLINE_CLAUSE_RE.test(c)) && clauses.every((c) => DECLINE_CLAUSE_RE.test(c) || DECLINE_PAD_RE.test(c));
+};
+
+// Ruling R14: the broker's answer to the briefing's follow-up question ("Were you able to reach them?") drops it only when it says
+// so in so many words: skip (it / that / this one / them / her / him), not (right) now, never mind, forget it (or about it / her),
+// don't ask (me) (about her) (again), drop it, leave it, (I'll) pass (on it). A bare no, nope, nah, not yet, not really or wait
+// ANSWERS the question (not reached) and goes to the model, which offers tomorrow's list, a time to call or a check-in email. As in
+// isDecline, every clause is a skip or words that add nothing (DECLINE_PAD: "no, skip it", "not now, thanks"), and one is a skip:
+// "No, I missed her", "skip to the rates" and "never mind, I got her" are no skips. Pure.
+const SKIP_OBJECT = "(?:it|that|this|them|her|him|(?:this|that)\\s+one)";
+const SKIP_HEAD =
+  "(?:skip(?:\\s+" + SKIP_OBJECT + ")?|not\\s+(?:right\\s+)?now|never\\s*mind|forget\\s+(?:it|that|about\\s+" + SKIP_OBJECT + ")" +
+  "|(?:don['\\u2019]?t|do\\s+not)\\s+ask(?:\\s+me)?(?:\\s+about\\s+" + SKIP_OBJECT + ")?(?:\\s+again)?" +
+  "|drop\\s+(?:it|that|this)|leave\\s+(?:it|that)|(?:i['\\u2019]?ll\\s+)?pass(?:\\s+on\\s+" + SKIP_OBJECT + ")?)";
+const SKIP_CLAUSE_RE = new RegExp(
+  "^(?:" + DECLINE_LEAD + "(?![\\w'\\u2019-])\\s*)*(?:(?:no|nope|nah|just)\\s+)*" + SKIP_HEAD + "(?:\\s+" + DECLINE_PAD + ")*" +
+    "(?![\\w'\\u2019-])\\s*$",
+  "i"
+);
+const isSkip = (text) => {
+  const clauses = String(text == null ? "" : text).split(USER_CLAUSE_BREAK_RE).map((c) => c.trim()).filter(Boolean);
+  return clauses.some((c) => SKIP_CLAUSE_RE.test(c)) && clauses.every((c) => SKIP_CLAUSE_RE.test(c) || DECLINE_PAD_RE.test(c));
 };
 
 // The classes of a reply to an offer to act (see above).
@@ -3015,5 +3070,5 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
-  classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isDecline,
+  classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip,
 };
