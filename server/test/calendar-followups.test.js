@@ -225,34 +225,41 @@ test("collectCalendarFollowUps: today's events are read too, each recorded on it
   assert.deepStrictEqual([byClient[grace].day, byClient[grace].due_at], [TODAY, "2026-10-30 21:15:00"]);
 });
 
-test("collectCalendarFollowUps: yesterday and today are read at the same time, not one after the other", async () => {
+test("collectCalendarFollowUps: today is not requested until yesterday's read has answered (a token refresh must not race itself)", async () => {
   addClient(orgId, userId, "Lucy Tran");
   const open = [];
   const google = fakeGoogle({ listed: (date) => new Promise((resolve) => open.push(() => resolve({ events: date === YESTERDAY ? [timed("Lucy Tran call", YESTERDAY, 10, 0)] : [] }))) });
   const done = collect(google);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepStrictEqual(google.asked, [YESTERDAY, TODAY], "both reads are in flight before either answers");
-  for (const release of open) release();
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  assert.deepStrictEqual(google.asked, [YESTERDAY], "only yesterday is in flight while it has not answered");
+  assert.equal(open.length, 1);
+  open[0]();
+  await settle();
+  assert.deepStrictEqual(google.asked, [YESTERDAY, TODAY], "today is asked once yesterday has answered");
+  open[1]();
   assert.strictEqual(await done, 1);
+  assert.deepStrictEqual(google.asked, [YESTERDAY, TODAY]);
 });
 
-test("collectCalendarFollowUps: one day failing while the other is slow still records nothing and leaves no unhandled rejection", async () => {
+test("collectCalendarFollowUps: a day that cannot be read records nothing, and a failed yesterday means today is never asked", async () => {
   addClient(orgId, userId, "Lucy Tran");
-  const unhandled = [];
-  const onUnhandled = (err) => unhandled.push(err);
-  process.on("unhandledRejection", onUnhandled);
+  const realError = console.error;
+  console.error = () => {};
   try {
-    const google = fakeGoogle({ listed: (date) => (date === YESTERDAY
-      ? Promise.reject(new Error("yesterday blew up"))
-      : new Promise((_, reject) => setTimeout(() => reject(new Error("today blew up")), 20))) });
-    const realError = console.error;
-    console.error = () => {};
-    try { assert.strictEqual(await collect(google), 0); } finally { console.error = realError; }
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    const rejects = fakeGoogle({ listed: (date) => (date === YESTERDAY ? Promise.reject(new Error("yesterday blew up")) : { events: [] }) });
+    assert.strictEqual(await collect(rejects), 0);
+    assert.deepStrictEqual(rejects.asked, [YESTERDAY]);
+    const refused = fakeGoogle({ listed: (date) => (date === YESTERDAY ? { code: "reconnect" } : { events: [timed("Lucy Tran call", TODAY, 9, 0)] }) });
+    assert.strictEqual(await collect(refused), 0);
+    assert.deepStrictEqual(refused.asked, [YESTERDAY]);
+    // yesterday fine, today fails: yesterday's calls are not recorded either, and the next run tries both again
+    const half = fakeGoogle({ listed: (date) => (date === YESTERDAY ? { events: [timed("Lucy Tran call", YESTERDAY, 10, 0)] } : { error: "Google Calendar could not be read" }) });
+    assert.strictEqual(await collect(half), 0);
+    assert.deepStrictEqual(half.asked, [YESTERDAY, TODAY]);
   } finally {
-    process.off("unhandledRejection", onUnhandled);
+    console.error = realError;
   }
-  assert.deepStrictEqual(unhandled, []);
   assert.equal(rows().length, 0);
 });
 

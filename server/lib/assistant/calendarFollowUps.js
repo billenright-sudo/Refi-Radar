@@ -35,12 +35,15 @@ async function collectCalendarFollowUps(ctx, { localDate, db, userId } = {}) {
     const own = db.prepare("SELECT id, name FROM clients WHERE user_id = ?").all(userId);
     if (own.length === 0) return 0;
 
-    // Both days are read at once (each read can take seconds) and both before any recording: a day that cannot be read is not
-    // guessed at, and the other is left for the next try.
+    // The days are read one at a time, yesterday first, and both before any recording: a day that cannot be read is not guessed
+    // at, and the other is left for the next try. Not in parallel: each read fetches its own token, and two that find it expired
+    // would both refresh it (googleFor has no single-flight), which can leave the connection flagged 'reconnect'.
     const days = [addDays(localDate, -1), localDate];
-    const listed = await Promise.all(days.map((date) => google.listDay({ date })));
-    for (const result of listed) {
+    const listed = [];
+    for (const date of days) {
+      const result = await google.listDay({ date });
       if (!result || result.code || result.error || !Array.isArray(result.events)) return 0;
+      listed.push(result);
     }
 
     const index = buildOwnerIndex(own);   // the book is read once for every title
