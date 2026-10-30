@@ -200,9 +200,11 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   const earlier = followups.recommendedOn(db, userId, localDate, "briefing");
   const listedToday = new Set(earlier.map((r) => r.clientId));
   const carriedToday = earlier.filter((r) => r.reasonCode === "carry").map((r) => r.clientId);
-  // Ruling R3: (reached ∪ recently recommended) − carried, so a carried client is never left off.
+  // Ruling R3: (reached ∪ recently recommended) − carried, so a carried client is never left off: neither one still carried nor
+  // one an earlier open today listed as carried (and consumed), so a reopen reads the same list.
   const excludeIds = new Set([...reached, ...[...recent].filter((id) => !listedToday.has(id))]);
   for (const id of carried) excludeIds.delete(id);
+  for (const id of carriedToday) excludeIds.delete(id);
 
   const picks = pickCallList({
     sweep,

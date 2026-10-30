@@ -632,6 +632,22 @@ test("R12: a carried client listed today is not carried again tomorrow; one the 
   for (const name of ["Cara Mendez, who", "Dov Baker, who", "Eve Lund, who"]) assert.ok(!tomorrow.reply.includes(name), tomorrow.reply);
 });
 
+test("R12 + R3: a carried client reached in the last 7 days is listed on the first open and on a same-day reopen, with no new rows", async () => {
+  seedBook();   // Lucy, Owen and Grace: one more client than the two slots left after Cara, so a dropped Cara would be replaced
+  const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
+  fu.logCall(db, { userId: annId, clientId: cara, outcome: "reached", nowUtc: "2026-10-28 17:00:00" });
+  fu.addCarry(db, annId, cara, YESTERDAY);
+
+  const first = await brief(annId);
+  assert.ok(first.reply.includes("Today's calls: Cara Mendez, who you asked me to put on today's list; "), first.reply);
+  assert.equal(recRows("client_id = ? AND source = 'carry'", cara)[0].status, "expired", "consumed by the first open");
+  const rowsAfterFirst = recRows("user_id = ?", annId).map((row) => [row.client_id, row.day, row.source]);
+
+  const reopen = await brief(annId);
+  assert.equal(reopen.reply, first.reply, "the reopen reads the same list");
+  assert.deepStrictEqual(recRows("user_id = ?", annId).map((row) => [row.client_id, row.day, row.source]), rowsAfterFirst, "no new rows");
+});
+
 test("consumeCarries leaves a carry dated the briefing's own day (asked for later today) for tomorrow", () => {
   const cara = addClient(annId, "Cara Mendez");
   fu.addCarry(db, annId, cara, YESTERDAY);
