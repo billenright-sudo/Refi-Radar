@@ -438,8 +438,11 @@ const fold = (s) => {
 // one Map lookup a piece, until the walk reaches a whole name word or a piece no name word has next. No run is built or folded
 // whole, so the work never grows with the square of the longest name (residual S1 capped the runs at the longest name word's
 // pieces, and one long hyphenated client name made a 4,000-character "a-a-a-…" cost seconds again).
+//
+// A trie that must say WHICH client a name word belongs to (clientsInText) passes an `owner` to addNameWord: the end of the word
+// then holds the Set of its owners instead of true. The pieces and the walk are the same.
 const NAME_END = Symbol("a whole name word ends here");
-function addNameWord(trie, term) {
+function addNameWord(trie, term, owner) {
   const parts = term.split(/(['-])/);   // pieces at the even places, the ' or - between them at the odd ones
   let node = trie;
   for (let i = 0; i < parts.length; i += 2) {
@@ -447,10 +450,13 @@ function addNameWord(trie, term) {
     if (!node.has(key)) node.set(key, new Map());
     node = node.get(key);
   }
-  node.set(NAME_END, true);
+  if (owner === undefined) node.set(NAME_END, true);
+  else if (node.get(NAME_END) instanceof Set) node.get(NAME_END).add(owner);
+  else node.set(NAME_END, new Set([owner]));
 }
-// True when some run of the pieces of `word` (as the text has it, not yet folded) is a whole name word of `trie`.
-function wordHoldsName(word, trie) {
+// Walks the runs of the pieces of `word` (as the text has it, not yet folded) that are whole name words of `trie`, handing what the
+// trie holds at the end of each (true, or the Set of its owners) to `visit`. The walk stops, and this returns true, when `visit` does.
+function walkNameRuns(word, trie, visit) {
   const parts = word.split(/(['-])/);
   const pieces = [];   // the folded pieces
   const joined = [];   // each folded piece with the ' or - before it (the key of a piece that is not a walk's first)
@@ -461,14 +467,18 @@ function wordHoldsName(word, trie) {
   for (let start = 0; start < pieces.length; start++) {
     let node = trie.get(pieces[start]);
     for (let k = start + 1; node; k++) {
-      if (node.has(NAME_END)) return true;
+      if (node.has(NAME_END) && visit(node.get(NAME_END))) return true;
       if (k === pieces.length) break;
       node = node.get(joined[k]);
     }
   }
   return false;
 }
+// True when some run of the pieces of `word` is a whole name word of `trie`.
+const wordHoldsName = (word, trie) => walkNameRuns(word, trie, () => true);
 const NAME_JOINERS = new Set(["and", "or", "the", "of"]);
+// The whole-word regex, in any case, of a name that has no word in it ("&&").
+const wordlessNameRe = (term) => new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(term)}(?![\\p{L}\\p{M}\\p{N}])`, "iu");
 // One org's client names, from one query: `screened` holds the folded name words namesClient screens (the surnames and their
 // hyphen parts), `mentioned` those plus every other word of a name mentionsClient adds, each a trie (addNameWord). A full name needs
 // no entry of its own: a full name found whole in a text has its last word found whole too, and that word is a surname. A name with
@@ -483,7 +493,7 @@ function buildClientNameIndex(user, db) {
     if (terms.length === 0) continue;
     const words = plainText(name).match(NAME_WORD_RE) || [];
     if (words.length === 0) {
-      wordless.push(new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${escapeRe(terms[0])}(?![\\p{L}\\p{M}\\p{N}])`, "iu"));
+      wordless.push(wordlessNameRe(terms[0]));
       continue;
     }
     for (const term of terms.slice(1)) {
@@ -531,6 +541,45 @@ const mentionsClient = (text, ctx) => {
   const { mentioned, wordless } = clientNameIndex(ctx);
   return textHasName(text, mentioned, wordless);
 };
+
+// Which of these clients (`ownClients`, [{ id, name }]: the caller passes the user's own book, never the org's, so a match is
+// always a client the user can log) `text` names, as [{ id, name }] in the order given. Exactly what namesClient screens: a full
+// name, or a surname (a hyphen part, a surname-first filing) as a whole word, in any case and accent; a first name alone is not
+// found. It walks the same trie, with each client at the ends of their own name words (addNameWord's `owner`), so a text costs the
+// same as textHasName's and no name is searched for one client at a time. A name word shared by many clients holds them all in
+// one Set, and a Set is read once per text, so a book of clients who share a surname costs no more per hit.
+function clientsInText(text, ownClients) {
+  if (typeof text !== "string" || !Array.isArray(ownClients)) return [];
+  const trie = new Map();
+  const wordless = [];   // [{ client, re }]
+  const clients = [];
+  for (const client of ownClients) {
+    if (!client || typeof client !== "object") continue;
+    const name = typeof client.name === "string" ? client.name : "";
+    const terms = screenedNames(name);
+    if (terms.length === 0) continue;
+    clients.push(client);
+    if ((plainText(name).match(NAME_WORD_RE) || []).length === 0) {
+      wordless.push({ client, re: wordlessNameRe(terms[0]) });
+      continue;
+    }
+    for (const term of terms.slice(1)) addNameWord(trie, fold(term), client);
+  }
+  const found = new Set();
+  const read = new Set();   // the owner Sets already added to `found`
+  const t = plainText(text);
+  for (const word of t.match(NAME_WORD_RE) || []) {
+    walkNameRuns(word, trie, (owners) => {
+      if (!read.has(owners)) {
+        read.add(owners);
+        for (const client of owners) found.add(client);
+      }
+      return false;
+    });
+  }
+  for (const { client, re } of wordless) if (re.test(t)) found.add(client);
+  return clients.filter((client) => found.has(client)).map(({ id, name }) => ({ id, name }));
+}
 
 // The sentences of a lookup's answer: a break is . ! or ? (and any closing quote or bracket) before a space, except after an
 // initial or a short title ("Jerome H. Powell", "U.S. stocks", "Dr. Lee"), where the pieces stay one sentence. A wrong join only
@@ -797,5 +846,5 @@ const TOOL_SCHEMA = [
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
-  withTurnClientNames,
+  withTurnClientNames, clientsInText,
 };

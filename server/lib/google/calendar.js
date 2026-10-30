@@ -4,8 +4,9 @@
 //   insertEvent  events.insert for one booking     -> no attendees, no invitations, no email
 //
 // Only a day's titles and times are ever kept: the request asks Google for just those fields, and the mapping below copies
-// four keys out of each event, so a description, attendees, a location or a link cannot reach the model whatever Google
-// sends. The spoken labels ("10:00 AM") are code-authored in the CALENDAR's own time zone (./time.js).
+// five keys out of each event (the model is shown four of them; the fifth is the end instant for code), so a description,
+// attendees, a location or a link cannot reach the model whatever Google sends. The spoken labels ("10:00 AM") are code-authored
+// in the CALENDAR's own time zone (./time.js).
 //
 // `token` comes from oauth.accessToken (through ./index.js); `fetchFn` is injected so tests script Google. Neither function
 // throws: a failure is { error: <fixed message> } and never carries Google's reply or the token. A failure is logged as an
@@ -52,26 +53,27 @@ const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{
 
 // ---- reading a day --------------------------------------------------------------------------------------------------------
 
-// One event of events.list as { title, start, end, allDay }, or null for a cancelled one. Throws on an event whose times
-// cannot be read (no start, a dateTime without an offset, a zone Intl rejects): the caller turns that into { error }, so a
-// meeting is never silently left off a day.
+// One event of events.list as { title, start, end, allDay, endAt }, or null for a cancelled one. `endAt` is the instant the event
+// ends (epoch ms), null for an all-day one: code-side callers use it (lib/assistant/calendarFollowUps.js); the model-facing mapping
+// (getCalendarTool) copies the other four keys only. Throws on an event whose times cannot be read (no start, a dateTime without
+// an offset, a zone Intl rejects): the caller turns that into { error }, so a meeting is never silently left off a day.
 function toEvent(item, timeZone) {
   if (!item || typeof item !== "object") throw new Error("event is not an object");
   if (item.status === "cancelled") return null;
   const title = typeof item.summary === "string" && item.summary.trim() ? item.summary.trim() : NO_TITLE;
   const start = item.start || {};
   const end = item.end || {};
-  if (typeof start.date === "string") return { title, start: null, end: null, allDay: true };
+  if (typeof start.date === "string") return { title, start: null, end: null, allDay: true, endAt: null };
   if (typeof start.dateTime !== "string" || typeof end.dateTime !== "string") throw new Error("event has no readable start and end");
   const label = (iso) => {
     const { hour, minute } = localTimeOf(iso, timeZone);
     return spokenTime({ hour, minute });
   };
-  return { title, start: label(start.dateTime), end: label(end.dateTime), allDay: false };
+  return { title, start: label(start.dateTime), end: label(end.dateTime), allDay: false, endAt: Date.parse(end.dateTime) };
 }
 
-// The events on `date` (YYYY-MM-DD) in `timeZone`, in start order: { events: [{ title, start, end, allDay }] } or { error }.
-// `start` / `end` are spoken labels ("10:00 AM") in that zone, null for an all-day event.
+// The events on `date` (YYYY-MM-DD) in `timeZone`, in start order: { events: [{ title, start, end, allDay, endAt }] } or { error }.
+// `start` / `end` are spoken labels ("10:00 AM") in that zone, null for an all-day event; `endAt` is the end as epoch ms.
 async function listDay(token, { date, timeZone } = {}, fetchFn = globalThis.fetch) {
   let params;
   try {

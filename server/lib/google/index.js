@@ -5,7 +5,8 @@
 //
 //   connection()        { timeZone, googleEmail } | { code: "not_connected" | "reconnect" }
 //                       Reads the stored row only. No network, no token. Cheap enough to ask before every tool call.
-//   listDay({ date })   { events } | { error } | { code }       one calendar day, titles and spoken times (./calendar.js)
+//   listDay({ date })   { events } | { error } | { code }       one calendar day, titles and spoken times, and each event's
+//                       end as epoch ms (endAt) for code-side callers (./calendar.js)
 //   insertEvent(event)  { eventId } | { duplicate: true } | { error } | { code }
 //                       event = { id, title, date, time, durationMinutes, timeZone? }; the event's own time zone wins, else
 //                       the calendar's. No attendees, no invitations.

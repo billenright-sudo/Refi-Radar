@@ -115,10 +115,10 @@ test("listDay: a timed event is a spoken start and end in the CALENDAR's zone; a
   const out = await calendar.listDay(ACCESS, { date: "2026-10-27", timeZone: PHX }, fetchFn);
   assert.deepEqual(out, {
     events: [
-      { title: "Closing with the Chens", start: "10:00 AM", end: "10:30 AM", allDay: false },
-      { title: "Lunch", start: "12:00 PM", end: "1:15 PM", allDay: false },
-      { title: "Late call", start: "11:05 PM", end: "11:50 PM", allDay: false },
-      { title: "Out of town", start: null, end: null, allDay: true },
+      { title: "Closing with the Chens", start: "10:00 AM", end: "10:30 AM", allDay: false, endAt: Date.UTC(2026, 9, 27, 17, 30) },
+      { title: "Lunch", start: "12:00 PM", end: "1:15 PM", allDay: false, endAt: Date.UTC(2026, 9, 27, 20, 15) },
+      { title: "Late call", start: "11:05 PM", end: "11:50 PM", allDay: false, endAt: Date.UTC(2026, 9, 28, 6, 50) },
+      { title: "Out of town", start: null, end: null, allDay: true, endAt: null },
     ],
   });
 });
@@ -136,7 +136,7 @@ test("listDay: cancelled events are dropped and a missing title is \"(no title)\
   assert.deepEqual(out.events.map((e) => e.title), ["(no title)", "(no title)", "Kept"]);
 });
 
-test("listDay: a description, attendees, a location and links never make it out: the event has exactly four keys", async () => {
+test("listDay: a description, attendees, a location and links never make it out: the event has exactly its five keys", async () => {
   const fetchFn = fakeFetch(() => json({
     items: [timed("Strategy", "2026-10-27T10:00:00-07:00", "2026-10-27T10:30:00-07:00", {
       id: "abc", htmlLink: "https://www.google.com/calendar/event?eid=secret", hangoutLink: "https://meet.google.com/xyz",
@@ -147,7 +147,9 @@ test("listDay: a description, attendees, a location and links never make it out:
   }));
   const out = await calendar.listDay(ACCESS, { date: "2026-10-27", timeZone: PHX }, fetchFn);
   assert.equal(out.events.length, 1);
-  assert.deepEqual(Object.keys(out.events[0]).sort(), ["allDay", "end", "start", "title"]);
+  assert.deepEqual(Object.keys(out.events[0]).sort(), ["allDay", "end", "endAt", "start", "title"]);
+  assert.equal(typeof out.events[0].endAt, "number");
+  assert.equal(out.events[0].endAt, Date.UTC(2026, 9, 27, 17, 30));
   assert.ok(!/client@example|passcode|Main St|meet\.google|eid=/.test(JSON.stringify(out)));
 });
 
@@ -284,7 +286,7 @@ test("googleFor.listDay: gets a token first, reads in the connection's zone, and
   seedConnection(userId);
   const fetchFn = fakeFetch(() => json({ items: [timed("Closing", "2026-10-27T10:00:00-07:00", "2026-10-27T10:30:00-07:00")] }));
   const out = await googleFor({ db, userId, fetchFn, now: NOW }).listDay({ date: "2026-10-27" });
-  assert.deepEqual(out, { events: [{ title: "Closing", start: "10:00 AM", end: "10:30 AM", allDay: false }] });
+  assert.deepEqual(out, { events: [{ title: "Closing", start: "10:00 AM", end: "10:30 AM", allDay: false, endAt: Date.UTC(2026, 9, 27, 17, 30) }] });
   assert.equal(fetchFn.calls.length, 1);
   assert.equal(fetchFn.calls[0].headers.Authorization, `Bearer ${ACCESS}`);
   assert.equal(urlOf(fetchFn.calls[0]).searchParams.get("timeMin"), "2026-10-27T00:00:00-07:00");

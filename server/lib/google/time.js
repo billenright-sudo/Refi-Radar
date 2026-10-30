@@ -232,4 +232,4 @@ function zoneName(timeZone) {
   }
 }
 
-module.exports = { localToday, resolveDate, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime, zoneName };
+module.exports = { localToday, resolveDate, addDays, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime, zoneName };
