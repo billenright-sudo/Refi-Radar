@@ -27,6 +27,7 @@ const assistantTools = require("../lib/assistant/tools");   // called as assista
 const assistantBriefing = require("../lib/assistant/briefing");   // called as assistantBriefing.buildBriefing(): tests can swap it
 const { ERROR_TURN } = require("../lib/assistant/prompt");
 const { stageById, spokenStageLabel } = require("../lib/assistant/coaching");
+const { setCareerStageForUser } = require("../lib/careerStage");
 const { GREETING_OPENERS, openerFor, hourOf } = require("../lib/assistant/openers");   // the opening words (GREETING_OPENERS and openerFor re-exported below)
 const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
@@ -222,15 +223,6 @@ function skipFollowUp(user, recId, text) {
     followups.resolveForClient(db, user.id, rec.clientId, "expired", sqliteUtc(Date.now()), { includeCarry: false });
   })();
   return `No problem — I won't ask about ${name} again.`;
-}
-
-// The setCareerStage write: ONLY the signed-in user's own row (never an id from the body), and the receipt kept per
-// confirmId is the stage and its label. It is idempotent, so a confirmId is optional here.
-function setCareerStageForUser(user, stage) {
-  const info = db.prepare("UPDATE users SET career_stage = ? WHERE id = ?").run(stage.id, user.id);
-  if (info.changes !== 1) return { status: 404, error: "User not found" };
-  const receipt = { stage: stage.id, label: stage.label };
-  return { result: receipt, receipt };
 }
 
 // ── Booking a calendar event (createEvent) ───────────────────────────────────

@@ -235,4 +235,15 @@ db.exec(`
   );
 `);
 
+// email_changes: a login-email change waiting for its confirmation link (routes/profile.js). One pending change per user; the
+// token is mailed to new_email only, and expires_at is epoch milliseconds. users.email changes only when the link is used.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS email_changes (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    new_email  TEXT    NOT NULL,
+    token      TEXT    NOT NULL UNIQUE,
+    expires_at INTEGER NOT NULL
+  );
+`);
+
 module.exports = db;
