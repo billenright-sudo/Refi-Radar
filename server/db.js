@@ -192,4 +192,47 @@ db.exec(`
   );
 `);
 
+// Charlie's follow-ups (lib/assistant/followups.js). Every instant here is SQLite UTC text (YYYY-MM-DD HH:MM:SS) and every
+// day is YYYY-MM-DD, so comparisons are plain string compares.
+// contact_log: one row per call the broker logs for a client; `at` is when the call happened.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS contact_log (
+    id        INTEGER PRIMARY KEY,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    user_id   INTEGER NOT NULL REFERENCES users(id),
+    at        TEXT    NOT NULL DEFAULT (datetime('now')),
+    outcome   TEXT    NOT NULL CHECK(outcome IN ('reached','not_reached')),
+    notes     TEXT    NOT NULL DEFAULT ''
+  );
+`);
+
+// charlie_recommendations: a client Charlie put in front of the broker (a briefing or sweep call list, a calendar event that
+// has ended, or a name carried to tomorrow's list), and what became of it. One row per (user, client, day, source);
+// ask_count is how many times Charlie has asked "did you get to ...?" about it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS charlie_recommendations (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    day         TEXT    NOT NULL,
+    source      TEXT    NOT NULL CHECK(source IN ('briefing','sweep','calendar','carry')),
+    reason_code TEXT    NOT NULL DEFAULT '',
+    due_at      TEXT,
+    status      TEXT    NOT NULL DEFAULT 'open' CHECK(status IN ('open','reached','not_reached','expired')),
+    ask_count   INTEGER NOT NULL DEFAULT 0,
+    asked_at    TEXT,
+    resolved_at TEXT,
+    UNIQUE(user_id, client_id, day, source)
+  );
+`);
+
+// user_briefing_state: per-user briefing memory. last_drop_obs is the FRED observation date of the latest rate drop the
+// briefing has already led with.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_briefing_state (
+    user_id       INTEGER PRIMARY KEY REFERENCES users(id),
+    last_drop_obs TEXT
+  );
+`);
+
 module.exports = db;
