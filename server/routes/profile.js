@@ -2,9 +2,9 @@
 // The signed-in user's own profile: name, login email, tenure, and NMLS ID (and, for a broker, their company's). Every client
 // email Charli sets up is signed with both NMLS IDs (lib/assistant/outreach.js), as mortgage advertising rules expect.
 //   GET  /api/profile                       -> { firstName, lastName, email, pendingEmail, careerStage, nmlsId, orgNmlsId, canEditOrg }
-//   PUT  /api/profile/name        { firstName, lastName }  letters, spaces, ' and - only; firstName 1-50, lastName 0-50 -> the profile
+//   PUT  /api/profile/name        { firstName, lastName }  letters, spaces, ' and - only (a curly ' is stored as '); firstName 1-50, lastName 0-50 -> the profile
 //   PUT  /api/profile/career-stage { stage }               new / developing / established / veteran                     -> the profile
-//   POST /api/profile/email       { email }   mails a confirmation link to the NEW address -> { pendingEmail }; 400, 409 (taken), 503 (mail not set up)
+//   POST /api/profile/email       { email }   mails a confirmation link to the NEW address -> { pendingEmail }; 400, 409 (taken), 429 (5 an hour), 503 (mail not set up)
 //   GET  /api/profile/email/confirm/:token    the emailed link: NO session needed; sets the login email, then 302s to /?emailChanged=1 (or =0)
 //   GET  /api/profile/nmls      -> { nmlsId, orgNmlsId, canEditOrg }   (canEditOrg: only a broker can set the company's)
 //   PUT  /api/profile/nmls      { nmlsId }  sets the caller's OWN ID      -> the same shape as GET /nmls
@@ -13,6 +13,7 @@
 // Every route but the confirm link acts only on req.user (the session), never on an id from the request.
 const crypto = require("crypto");
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const db = require("../db");
 const email = require("../email");
 const { requireAuth, requireBroker } = require("../middleware/auth");
@@ -26,9 +27,23 @@ const BAD_NMLS = "An NMLS ID is digits only";
 const BAD_NAME = "Use letters only in your name";
 const NAME_MAX = 50;
 const EMAIL_MAX = 254;
-const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;   // basic x@y.z
+// A basic x@y.z: no whitespace, no empty label, and none of <>(),;:"\[] anywhere. Those are what make nodemailer read a display
+// name (Name<x@y.co>), a quoted local part ("a"@y.co) or a list (a,b@c.co, x@y.co;z@y.co) as a different or an extra recipient.
+const EMAIL_RE = /^[^\s@<>(),;:"\\[\]]+@[^\s@.<>(),;:"\\[\]]+(\.[^\s@.<>(),;:"\\[\]]+)+$/;
 const TOKEN_RE = /^[0-9a-f]{64}$/;                    // what crypto.randomBytes(32).toString("hex") makes
 const EMAIL_CHANGE_TTL_MS = 48 * 60 * 60 * 1000;
+const EMAIL_CHANGE_LIMIT = 5;   // requests per signed-in user per hour; app.set("emailChangeLimit", n) overrides it (tests)
+
+// Each accepted request makes the app's own mail account send a message to an address the caller chose, and anyone can register,
+// so this route is limited, counted per signed-in user (an office shares one IP address). A refused request counts too.
+const emailChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: (req) => req.app.get("emailChangeLimit") || EMAIL_CHANGE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.user.id}`,
+  message: { success: false, error: "Too many email-change requests — please try again in an hour" },
+});
 
 // The emailed link is opened from an inbox, with no session, so it is registered before requireAuth. The token IS the
 // credential: it is single-use, and the change is applied to the account it was issued to. Any failure (a malformed or unknown
@@ -84,7 +99,8 @@ function profileOf(user) {
 // Anything non-empty needs a letter in it, so "-" and "'" are not names.
 function parseNamePart(value, required) {
   if (typeof value !== "string") return null;
-  const name = value.trim().normalize("NFC");
+  // iOS smart punctuation types a curly apostrophe (U+2018, U+2019) for ': store the plain one
+  const name = value.trim().normalize("NFC").replace(/[\u2018\u2019]/g, "'");
   if (name.length > NAME_MAX || (required && name.length < 1)) return null;
   if (name.length > 0 && !(/^[\p{L} '-]+$/u.test(name) && /\p{L}/u.test(name))) return null;
   return name;
@@ -130,7 +146,7 @@ router.put("/career-stage", (req, res) => {
 
 // Asking to change the login email does not change it: a one-time link goes to the NEW address, and users.email changes only
 // when that link is opened. One pending change per user (a second request replaces the first, and the old link dies).
-router.post("/email", async (req, res) => {
+router.post("/email", emailChangeLimiter, async (req, res) => {
   const given = (req.body || {}).email;
   const newEmail = typeof given === "string" ? given.trim().toLowerCase() : "";
   if (newEmail.length > EMAIL_MAX || !EMAIL_RE.test(newEmail)) {

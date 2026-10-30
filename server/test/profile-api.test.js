@@ -63,6 +63,8 @@ before(async () => {
   app.use(cookieParser());
   app.use("/api/auth", authRoutes);
   app.use("/api/profile", profileRoutes);
+  // the email-change rate limit is raised out of the way here; its own tests (below) use a small limit and the real default
+  app.set("emailChangeLimit", 100000);
   app.set("sendEmailChange", fakeSend);
   server = app.listen(0);
   await new Promise((r) => server.once("listening", r));
@@ -228,6 +230,24 @@ test("PUT /name trims, saves and returns the profile; a last name can be empty",
   assert.equal(r.status, 200, "50 characters is the longest allowed");
 });
 
+test("PUT /name turns a curly apostrophe (iOS smart punctuation) into a plain one before it checks and stores", async () => {
+  const id = addLoginUser(orgP, "lo", "curly@p.co", "Old", "Name");
+  let r = await as(id)("PUT", "/api/profile/name", { firstName: "D’Angelo", lastName: "O’Brien" });
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual([r.data.firstName, r.data.lastName], ["D'Angelo", "O'Brien"]);
+  assert.deepStrictEqual([userRow(id).first_name, userRow(id).last_name], ["D'Angelo", "O'Brien"]);
+  r = await as(id)("PUT", "/api/profile/name", { firstName: "Mary‘Jane", lastName: "  ’Neil-O’Hara " });
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual([r.data.firstName, r.data.lastName], ["Mary'Jane", "'Neil-O'Hara"]);
+  // a curly mark alone is still not a name, and the 50-character limit counts the stored (plain) form
+  for (const body of [{ firstName: "’", lastName: "" }, { firstName: "‘’", lastName: "Reed" }, { firstName: "A", lastName: "’" }]) {
+    assert.equal((await as(id)("PUT", "/api/profile/name", body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await as(id)("PUT", "/api/profile/name", { firstName: "O’".repeat(25), lastName: "" })).status, 200);
+  assert.equal((await as(id)("PUT", "/api/profile/name", { firstName: "O’".repeat(26), lastName: "" })).status, 400);
+  assert.equal(userRow(id).first_name, "O'".repeat(25));
+});
+
 test("PUT /name rejects anything but letters, spaces, apostrophes and hyphens, and changes nothing", async () => {
   const id = addLoginUser(orgP, "lo", "owen@p.co", "Owen", "Reed");
   const bad = [
@@ -268,7 +288,9 @@ test("PUT /career-stage sets the caller's own tenure and rejects an unknown stag
 
 // ── Changing the login email ─────────────────────────────────────────────────
 
-const LINK_RE = /^http:\/\/localhost:8080\/api\/profile\/email\/confirm\/[0-9a-f]{64}$/;
+// the link is built from email.js's APP_URL (which an APP_URL environment variable overrides), so the pattern is too
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+const LINK_RE = new RegExp("^" + escapeRe(emailLib.APP_URL) + "/api/profile/email/confirm/[0-9a-f]{64}$");
 const HOUR = 60 * 60 * 1000;
 const pathOf = (link) => new URL(link).pathname;
 
@@ -295,7 +317,12 @@ test("POST /email: a malformed address, the current one, or a taken one is refus
   const id = addLoginUser(orgP, "lo", "faye@p.co");
   addLoginUser(orgP, "lo", "taken@p.co");
   db.prepare("INSERT INTO users (org_id, role, first_name, last_name, email, invite_accepted) VALUES (?, 'lo', 'In', 'Vited', 'invited@p.co', 0)").run(orgP);
-  for (const mail of ["", "nope", "a@b", "a b@c.co", "@c.co", "a@.co", "a@@c.co", "a@b.c o", 5, null, ["a@b.co"], undefined]) {
+  for (const mail of [
+    "", "nope", "a@b", "a b@c.co", "@c.co", "a@.co", "a@@c.co", "a@b.c o", "a@b..co", 5, null, ["a@b.co"], undefined,
+    // forms nodemailer would read as a different or an extra recipient (a display name, a group, a list, a quoted local part)
+    "<x@y.co>", "Name<x@y.co>", "Name <x@y.co>", '"a"@y.co', "a;b@y.co", "a,b@c.co", "x@y.co,z@y.co", "x@y.co;z@y.co",
+    "a(b)@c.co", "a:b@c.co", "a\\b@c.co", "x@[1.2.3.4]", "x@y.co>", "x@y.c,o", "a\tb@c.co",
+  ]) {
     const r = await as(id)("POST", "/api/profile/email", { email: mail });
     assert.equal(r.status, 400, JSON.stringify(mail));
     assert.equal(r.data.success, false);
@@ -520,5 +547,83 @@ test("sendEmailChange: true when the (stubbed) transport sends, false when it fa
     assert.strictEqual(await emailLib.sendEmailChange("new@example.test", link), false);
     assert.ok(logs.length >= 1, "a failed send is logged");
     assert.ok(logs.every((l) => !l.includes("cd".repeat(32)) && !l.includes("/confirm/")), "never the link or the token");
+  });
+});
+
+// ── The email-change rate limit ──────────────────────────────────────────────
+
+// A throwaway app around the profile router with the fake mailer and the email-change limit `limit` (undefined: the real default).
+// fn gets call(userId)(method, path, body) -> { status, data, headers }.
+async function withProfileApp(limit, fn) {
+  const a = express();
+  a.use(express.json());
+  a.use(cookieParser());
+  a.use("/api/profile", profileRoutes);
+  a.set("emailChangeLimit", limit);
+  a.set("sendEmailChange", fakeSend);
+  const s = a.listen(0);
+  await new Promise((r) => s.once("listening", r));
+  const b = `http://localhost:${s.address().port}`;
+  const call = (userId) => async (method, p, body) => {
+    const res = await fetch(b + p, {
+      method, headers: { "content-type": "application/json", cookie: "rr_token=" + signToken({ userId }) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    let data = null; try { data = await res.json(); } catch { /* */ }
+    return { status: res.status, data, headers: res.headers };
+  };
+  try { await fn(call); } finally { s.close(); }
+}
+
+test("POST /email is limited per user: past the limit it is a 429 that sends nothing, and another user is unaffected", async () => {
+  const rita = addLoginUser(orgP, "lo", "rita@p.co");
+  const sam = addLoginUser(orgP, "lo", "sam@p.co");
+  await withProfileApp(2, async (call) => {
+    assert.equal((await call(rita)("POST", "/api/profile/email", { email: "rita.1@p.co" })).status, 200);
+    assert.equal((await call(rita)("POST", "/api/profile/email", { email: "rita.2@p.co" })).status, 200);
+    const kept = changeRow(rita);
+    const over = await call(rita)("POST", "/api/profile/email", { email: "rita.3@p.co" });
+    assert.equal(over.status, 429);
+    assert.equal(over.data.success, false);
+    assert.equal(sent.length, 2, "the third request sent nothing");
+    assert.deepStrictEqual(changeRow(rita), kept, "and changed nothing");
+    assert.equal((await call(rita)("POST", "/api/profile/email", { email: "rita.4@p.co" })).status, 429, "it stays refused");
+
+    // the count is per signed-in user, not per address: another user on the same IP is unaffected
+    assert.equal((await call(sam)("POST", "/api/profile/email", { email: "sam.new@p.co" })).status, 200);
+    assert.equal(sent.length, 3);
+
+    // only this route is limited
+    assert.equal((await call(rita)("GET", "/api/profile")).status, 200);
+    assert.equal((await call(rita)("PUT", "/api/profile/name", { firstName: "Rita", lastName: "Ray" })).status, 200);
+    assert.equal((await call(rita)("PUT", "/api/profile/career-stage", { stage: "new" })).status, 200);
+  });
+});
+
+test("POST /email: a refused request (a typo, a taken address) counts toward the limit too", async () => {
+  const uma = addLoginUser(orgP, "lo", "uma@p.co");
+  await withProfileApp(2, async (call) => {
+    assert.equal((await call(uma)("POST", "/api/profile/email", { email: "nope" })).status, 400);
+    assert.equal((await call(uma)("POST", "/api/profile/email", { email: "rita@p.co" })).status, 409);
+    assert.equal((await call(uma)("POST", "/api/profile/email", { email: "uma.new@p.co" })).status, 429);
+    assert.equal(sent.length, 0);
+  });
+});
+
+test("the router index.js mounts allows 5 email-change requests per user per hour", async () => {
+  const tom = addLoginUser(orgP, "lo", "tom@p.co");
+  const una = addLoginUser(orgP, "lo", "una@p.co");
+  await withProfileApp(undefined, async (call) => {
+    for (let i = 1; i <= 5; i++) {
+      const r = await call(tom)("POST", "/api/profile/email", { email: `tom.${i}@p.co` });
+      assert.equal(r.status, 200, "request " + i);
+    }
+    const over = await call(tom)("POST", "/api/profile/email", { email: "tom.6@p.co" });
+    assert.equal(over.status, 429);
+    assert.equal(over.headers.get("ratelimit-limit"), "5");
+    assert.match(over.headers.get("ratelimit-policy") || "", /w=3600\b/, "a one-hour window");
+    assert.equal(sent.length, 5);
+    assert.equal(changeRow(tom).new_email, "tom.5@p.co");
+    assert.equal((await call(una)("POST", "/api/profile/email", { email: "una.new@p.co" })).status, 200);
   });
 });
