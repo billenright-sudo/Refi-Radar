@@ -237,20 +237,24 @@ export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeS
         <div role="status" data-testid="profile-notice" style={{ color: C.mutedHi, fontSize: 13, marginBottom: "1rem" }}>{shownNotice}</div>
       )}
 
-      {!profile ? (
-        <div data-testid="profile-loading" style={{ color: loadError ? C.red : C.muted, fontSize: 13.5, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <span>{loadError || "Loading your profile…"}</span>
-          {loadError && <button type="button" data-testid="profile-retry" onClick={() => reread.current()} style={buttonStyle(C, true)}>Try again</button>}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <NameSection profile={profile} ui={ui} onSave={(first, last) => change(() => saveName(fetch, first, last))} />
-          <EmailSection profile={profile} ui={ui} onRequest={(email) => change(() => requestEmailChange(fetch, email))} />
-          <CalendarCard ui={ui} />
-          <StageSection profile={profile} ui={ui} onSave={(stage) => change(() => saveStage(fetch, stage))} />
-          <NmlsCard profile={profile} ui={ui} onSave={(which, value) => change(() => saveNmls(fetch, which, value), { refetch: true })} />
-        </div>
-      )}
+      {/* The Calendar card makes its own server call, so it is here whether or not the profile has loaded (a failed profile read must not
+          take Connect / Disconnect away). It keeps its slot, so it is not remounted when the profile arrives. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {profile ? (
+          <>
+            <NameSection profile={profile} ui={ui} onSave={(first, last) => change(() => saveName(fetch, first, last))} />
+            <EmailSection profile={profile} ui={ui} onRequest={(email) => change(() => requestEmailChange(fetch, email))} />
+          </>
+        ) : (
+          <div data-testid="profile-loading" style={{ color: loadError ? C.red : C.muted, fontSize: 13.5, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <span>{loadError || "Loading your profile…"}</span>
+            {loadError && <button type="button" data-testid="profile-retry" onClick={() => reread.current()} style={buttonStyle(C, true)}>Try again</button>}
+          </div>
+        )}
+        <CalendarCard ui={ui} />
+        {profile && <StageSection profile={profile} ui={ui} onSave={(stage) => change(() => saveStage(fetch, stage))} />}
+        {profile && <NmlsCard profile={profile} ui={ui} onSave={(which, value) => change(() => saveNmls(fetch, which, value), { refetch: true })} />}
+      </div>
     </div>
   );
 }

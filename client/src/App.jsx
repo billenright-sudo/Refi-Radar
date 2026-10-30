@@ -441,7 +441,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
       <div style={{ marginTop: "auto" }}>
         {user && (
           <div style={{ padding: "10px 8px", borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <button onClick={() => setView("profile")} title="Your profile" aria-label="Your profile" data-testid="sidebar-profile" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, margin: "-4px 0 -4px -4px", padding: 4, borderRadius: 9, background: view === "profile" ? C.surfaceHi : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: "inherit" }}>
+            <button onClick={() => setView("profile")} title="Your profile" aria-label={`Your profile, ${shortName}, ${user.role}`} data-testid="sidebar-profile" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, margin: "-4px 0 -4px -4px", padding: 4, borderRadius: 9, background: view === "profile" ? C.surfaceHi : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: "inherit" }}>
               <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.amber, color: "#000", fontWeight: 700, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: C.text, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shortName}</div>

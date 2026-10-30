@@ -58,12 +58,12 @@ const TOOK_TOO_LONG = "Sorry — that took longer than it should. Say that again
 
 // What Charli says, written by code, when the Google calendar is not usable: the model is not asked to put these into words.
 // The orchestrator returns the one that matches the `code` a calendar tool came back with.
-const GOOGLE_NOT_CONNECTED = "Your Google calendar isn't connected yet — connect it in the Charlie panel and I can read and book your calendar.";
-const GOOGLE_RECONNECT = "Your Google connection has expired — reconnect it in the Charlie panel, then ask me again.";
+const GOOGLE_NOT_CONNECTED = "Your Google calendar isn't connected yet — connect it on your Profile page and I can read and book your calendar.";
+const GOOGLE_RECONNECT = "Your Google connection has expired — reconnect it on your Profile page, then ask me again.";
 const GOOGLE_UNAVAILABLE = "I couldn't reach Google just now — try that again in a moment.";
 
 // Every client email carries the sender's NMLS ID, so with none saved there is no email to set up.
-const NMLS_NEEDED = "Before I write to clients, add your NMLS ID in the Charlie panel — it goes in every email signature.";
+const NMLS_NEEDED = "Before I write to clients, add your NMLS ID on your Profile page — it goes in every email signature.";
 // The client has no usable address on the record (a draft goes to the address on file and nowhere else). `name` is the client's name.
 const noEmailLine = (name) => `There's no email on file for ${name} — add one to their record and ask me again.`;
 // Charli never sends email (the broker sends it from their own mail app): what code says when the user asks her to send it, or
