@@ -634,3 +634,25 @@ test("charlie eval cases (live check L3): the three opinion cases, shaped like t
     assert.ok(typeof kase.why === "string" && kase.why.length > 0, id);
   }
 });
+
+test("charlie eval cases (live check round 2): opinion-super-bowl and chat-compliment, shaped like their neighbours", () => {
+  const byId = new Map(loadCases().map((c) => [c.id, c]));
+  const bowl = byId.get("opinion-super-bowl");
+  assert.ok(bowl, "opinion-super-bowl is missing");
+  assert.deepStrictEqual(Object.keys(bowl).sort(), ["expect", "id", "messages", "why"]);
+  assert.strictEqual(bowl.expect, "chat");
+  assert.deepStrictEqual(bowl.messages, [{ role: "user", content: "Who's gonna win the Super Bowl?" }]);
+  assert.ok(typeof bowl.why === "string" && bowl.why.length > 0);
+  // a prior joke of Charlie's, then the compliment Bill saw blocked
+  const praise = byId.get("chat-compliment");
+  assert.ok(praise, "chat-compliment is missing");
+  assert.deepStrictEqual(Object.keys(praise).sort(), ["expect", "id", "messages", "why"]);
+  assert.strictEqual(praise.expect, "chat");
+  assert.strictEqual(praise.messages.length, 3);
+  assert.deepStrictEqual(praise.messages.map((m) => m.role), ["user", "assistant", "user"]);
+  assert.match(praise.messages[1].content, /\?/, "the prior assistant line is a joke");
+  assert.doesNotMatch(praise.messages[1].content, /\d/, "with no number in it");
+  assert.strictEqual(praise.messages[2].content, "That was funny. Great job on that. I love your humor.");
+  assert.ok(typeof praise.why === "string" && praise.why.length > 0);
+  assert.deepStrictEqual(caseProblems(loadCases()), []);
+});
