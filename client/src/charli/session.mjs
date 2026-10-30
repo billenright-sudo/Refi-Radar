@@ -159,6 +159,37 @@ function cleanCompose(compose) {
   return { to, subject, body, links: kept };
 }
 
+// The morning briefing the greeting carries (/turn greeting's `briefing`): { kind, strip, followUp }. Kept only as the server documents
+// it: `kind` is "morning" or "catch_up" (anything else is no briefing); `strip` always has the six fields, each null unless it has
+// its documented type (a number, a string, or for nextEvent a { title, start } of strings), so nothing is guessed at; `followUp` is
+// { recId, clientId, name, source } when recId is a positive integer and name is text, else null. -> a fresh object, or null.
+const BRIEFING_KINDS = new Set(["morning", "catch_up"]);
+const numberOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const stringOrNull = (v) => (typeof v === "string" ? v : null);
+const plainObject = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
+function cleanBriefing(briefing) {
+  const b = plainObject(briefing);
+  if (!b || !BRIEFING_KINDS.has(b.kind)) return null;
+  const s = plainObject(b.strip) || {};
+  const event = plainObject(s.nextEvent);
+  const f = plainObject(b.followUp);
+  const followUp = f && Number.isInteger(f.recId) && f.recId > 0 && typeof f.name === "string" && f.name.trim()
+    ? { recId: f.recId, clientId: Number.isInteger(f.clientId) ? f.clientId : null, name: f.name, source: stringOrNull(f.source) }
+    : null;
+  return {
+    kind: b.kind,
+    strip: {
+      rate30: numberOrNull(s.rate30),
+      move30: numberOrNull(s.move30),
+      asOf: stringOrNull(s.asOf),
+      opportunities: numberOrNull(s.opportunities),
+      checkInsDue: numberOrNull(s.checkInsDue),
+      nextEvent: event && typeof event.title === "string" && typeof event.start === "string" ? { title: event.title, start: event.start } : null,
+    },
+    followUp,
+  };
+}
+
 // The rows to draw under a pending read-back (CharliView): the server's details, or none. Pure.
 export const pendingRows = (pending) => (pending && Array.isArray(pending.details) ? pending.details : []);
 
@@ -188,7 +219,7 @@ const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const localDateOf = (date) =>
   `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
-// createSession({ fetch, rates, localHour, localDate, user, onSpeak })
+// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting })
 //   fetch      the window fetch (injected so tests need no network)
 //   rates      today's rates, as App.jsx holds them (may be null at first: setRates() when they arrive)
 //   localHour  0-23 for the greeting; defaults to the clock
@@ -196,25 +227,39 @@ const localDateOf = (date) =>
 //   user       { careerStage } from /api/auth/me
 //   onSpeak    ({ text, turnId? }) called, in order, for every line Charli should say aloud (the line is
 //              already in the transcript when it is called)
+//   speakGreeting  true (the default) speaks the greeting on open(); false shows it, in the transcript and the history, but says
+//              nothing until briefMe() (the morning briefing is read, not played at the user). Applies to the greeting only.
 // Returns { getState, subscribe, setRates, open, leave, submit, heard, confirmPending, cancelPending, setStage,
-//           notice, dispose }.
+//           briefMe, notice, dispose }.
+//
+// briefMe() speaks the briefing turn's text through onSpeak, again if it was already spoken -> { ok: true }, or { ok: false, reason }
+// with "no-briefing" (the greeting has not come back, failed, or carried no briefing) or "closed" (away or disposed).
+//
+// The greeting's briefing is kept in getState().briefing and the briefing's follow-up question is answered by the FIRST /turn after
+// it: that turn alone carries `followUpRecId` (the follow-up's recId), so the server can read "skip it" as a skip. The id is used
+// up by that turn, or by a confirm, a cancel or a stage change, whichever comes first, and is never sent again.
 //
 // open() and leave() follow the Charli screen: the session outlives a visit to it (keep.mjs), so coming back shows the same
 // conversation and greets nobody twice. While away nothing is spoken and nothing new is sent; a request already out finishes and
 // its result is kept, but a change waiting for a yes is dropped. dispose() ends the session for good (sign-out, another user).
 //
-// getState() -> { turns, pending, busy, opening, hasRates, careerStage }
+// getState() -> { turns, pending, busy, opening, hasRates, careerStage, briefing }
 //   turns    [{ id, role, content, sources, turnId, kind: "message" | "unverified" | "error" | "notice", inHistory, compose? }]
 //            ("unverified": Charli's reply is exactly the can't-verify or guideline hand-off line; compose: the unsent client
 //            email the reply set up, { to, subject, body, links: { gmail, outlook, mailto } }, kept only when it checks out)
 //   pending  { sideEffect, readBack, details? } | null   (details: [{ label, value }] for the card, when the server sent them)
+//   briefing { kind: "morning" | "catch_up", strip: { rate30, move30, asOf, opportunities, checkInsDue, nextEvent }, followUp } | null
+//            (the greeting's briefing, for the home page; null until the greeting arrives, and when it failed or had none; each strip
+//            field is null when unknown, nextEvent is { title, start } | null, followUp is { recId, clientId, name, source } | null)
 // Only turns with inHistory are sent to /turn, as plain { role, content }.
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
-export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak } = {}) {
+export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true } = {}) {
   const doFetch = fetchFn || ((...args) => globalThis.fetch(...args));
   let currentRates = rates;
+  let briefingTurn = null;      // the transcript turn that holds the briefing, for briefMe()
+  let followUpRecId = null;     // the briefing's follow-up id until the first exchange after it uses it up
   let nextId = 1;
   let disposed = false;
   let away = false;   // the Charli screen is not showing (leave() until the next open())
@@ -231,6 +276,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     opening: false,
     hasRates: !!currentRates,
     careerStage: stageById(user && user.careerStage) ? user.careerStage : null,
+    briefing: null,
   };
   const listeners = new Set();
   const set = (patch) => {
@@ -319,13 +365,14 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     }
   }
 
-  // A reply from /turn, or the line for a failure, added to the transcript and spoken.
-  function showTurnResult(res) {
+  // A reply from /turn, or the line for a failure, added to the transcript and spoken (unless `say` is false). -> the reply's turn, or
+  // null when the line shown is a failure's.
+  function showTurnResult(res, { say = true } = {}) {
     const data = res.data;
     if (res.ok && data && typeof data.reply === "string" && data.reply.trim()) {
       const failed = data.error === true;
       const compose = failed ? null : cleanCompose(data.compose);
-      addTurn({
+      const turn = addTurn({
         role: "assistant", content: data.reply, sources: cleanSources(data.sources), turnId: data.turnId || null,
         kind: failed ? "error" : UNVERIFIED_REPLIES.has(data.reply.trim()) ? "unverified" : "message",
         ...(compose ? { compose } : {}),
@@ -334,13 +381,21 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
         const details = cleanDetails(data.details);
         set({ pending: details.length ? { sideEffect: data.sideEffect, readBack: data.reply, details } : { sideEffect: data.sideEffect, readBack: data.reply } });
       }
-      speak(data.reply, data.turnId);
-      return;
+      if (say) speak(data.reply, data.turnId);
+      return failed ? null : turn;
     }
     // a /turn that timed out says so in its own words (nothing was written; the user asks again), not as a lost connection
     const text = res.timedOut ? TOOK_TOO_LONG_CLIENT : failureText(res);
     addTurn({ role: "assistant", content: text, kind: "error" });
-    speak(text);
+    if (say) speak(text);
+    return null;
+  }
+
+  // The briefing's follow-up id for the one exchange that answers its question, or null; either way it is used up.
+  function takeFollowUp() {
+    const id = followUpRecId;
+    followUpRecId = null;
+    return id;
   }
 
   // The user's calendar day: the one handed to createSession when it is YYYY-MM-DD (tests pin it), else the device's own today.
@@ -352,13 +407,28 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     const date = todayLocal(now);
     const res = await request("POST", "/api/assistant/turn", { greeting: true, rates: currentRates, localHour: hour, localDate: date });
     if (res.ok && res.data && typeof res.data.reply === "string" && res.data.reply.trim()) {
-      showTurnResult(res);
+      // A greeting that failed on the server's side (error: true) carries no briefing; one that is missing or odd is none.
+      const briefing = res.data.error === true ? null : cleanBriefing(res.data.briefing);
+      const turn = showTurnResult(res, { say: speakGreeting !== false });
+      if (briefing && turn) {
+        briefingTurn = turn;
+        followUpRecId = briefing.followUp ? briefing.followUp.recId : null;
+        set({ briefing });
+      }
     } else {
       // No greeting is no history either: the first thing the user says starts the conversation.
       const text = failureText(res);
       addTurn({ role: "assistant", content: text, kind: "error", inHistory: false });
-      speak(text);
+      if (speakGreeting !== false) speak(text);
     }
+  }
+
+  // "Brief me": the briefing said aloud, again if it was already (the text is on screen either way).
+  async function briefMe() {
+    if (disposed || away) return { ok: false, reason: "closed" };
+    if (!briefingTurn || !state.briefing) return { ok: false, reason: "no-briefing" };
+    speak(briefingTurn.content, briefingTurn.turnId);
+    return { ok: true };
   }
 
   // Greets once rates are in. Safe to call more than once (it returns the same promise): coming back after leave() greets no one
@@ -384,11 +454,16 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
   async function runTurn(text) {
     addTurn({ role: "user", content: text });
     // (final review M-6) every turn says the user's date, so a lookup's "today" and "last night" are theirs, not UTC's
-    showTurnResult(await request("POST", "/api/assistant/turn", { messages: history(), rates: currentRates, localDate: todayLocal(new Date()) }));
+    const body = { messages: history(), rates: currentRates, localDate: todayLocal(new Date()) };
+    // the first turn after a briefing answers its closing question: it alone says which follow-up that was
+    const followUp = takeFollowUp();
+    if (followUp !== null) body.followUpRecId = followUp;
+    showTurnResult(await request("POST", "/api/assistant/turn", body));
   }
 
   // The pending change was declined, by voice or by the Cancel button.
   function leaveThat() {
+    takeFollowUp();
     set({ pending: null });
     addTurn({ role: "assistant", content: LEAVE_THAT });
     speak(LEAVE_THAT);
@@ -396,6 +471,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
 
   // POST /confirm with the sideEffect exactly as /turn returned it.
   async function doConfirm() {
+    takeFollowUp();
     const { sideEffect } = state.pending;
     const res = await request("POST", "/api/assistant/confirm", { sideEffect });
     if (res.ok && res.data && res.data.success === true) {
@@ -497,6 +573,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
   async function setStage(stageId) {
     if (!stageById(stageId)) return { ok: false, reason: "invalid" };
     return exclusive(async () => {
+      takeFollowUp();
       const res = await request("POST", "/api/assistant/confirm", { sideEffect: { type: "setCareerStage", stage: stageId } });
       if (res.ok && res.data && res.data.success === true) {
         const reply = typeof res.data.reply === "string" && res.data.reply.trim() ? res.data.reply : "Done.";
@@ -525,6 +602,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     confirmPending,
     cancelPending,
     setStage,
+    briefMe,
     notice: (text, opts) => { if (!away) addNotice(text, opts); },   // a line from the screen, which is gone while away
     dispose() { disposed = true; listeners.clear(); releaseRates(); },
   };

@@ -39,10 +39,10 @@ function fakeServer(routes) {
 const queue = (...replies) => { const rest = [...replies]; return () => rest.shift() || turnReply("(queue empty)"); };
 const me = (careerStage = null) => () => reply(200, { success: true, user: { id: 1, careerStage } });
 
-function setup({ routes = {}, rates = RATES, user = { careerStage: null } } = {}) {
+function setup({ routes = {}, rates = RATES, user = { careerStage: null }, options = {} } = {}) {
   const server = fakeServer({ "GET /api/auth/me": me(), ...routes });
   const spoken = [];
-  const session = createSession({ fetch: server.fetch, rates, localHour: 9, localDate: "2026-10-28", user, onSpeak: (s) => spoken.push(s) });
+  const session = createSession({ fetch: server.fetch, rates, localHour: 9, localDate: "2026-10-28", user, onSpeak: (s) => spoken.push(s), ...options });
   return { session, server, spoken };
 }
 
@@ -234,6 +234,217 @@ test("greeting that fails is shown, spoken, kept out of the history, and the ses
   assert.equal(spoken.length, 1);
   assert.deepEqual(await session.submit("what are rates today"), { ok: true, action: "turn" });
   assert.deepEqual(messagesOf(server.turns()[1]), [{ role: "user", content: "what are rates today" }]);
+});
+
+// ── the morning briefing (Task 9) ────────────────────────────────────────────
+
+const BRIEFING_TEXT = "Good morning, Ann. The 30-year is at 6.52%. Want to start with Lucy Tran?";
+const STRIP = { rate30: 6.52, move30: -0.08, asOf: "2026-10-27", opportunities: 2, checkInsDue: 1, nextEvent: { title: "Call with Lucy", start: "2026-10-28T10:00:00" } };
+const FOLLOW_UP = { recId: 7, clientId: 41, name: "Lucy Tran", source: "briefing" };
+const briefingOf = (extra = {}) => ({ kind: "morning", strip: { ...STRIP }, followUp: null, ...extra });
+const briefingReply = (briefing, extra = {}) => turnReply(BRIEFING_TEXT, { briefing, sources: ["live rates 2026-10-27"], turnId: "b1", ...extra });
+const briefingSetup = (briefing, { options = {}, routes = {}, more = [] } = {}) =>
+  setup({ options, routes: { "POST /api/assistant/turn": queue(briefingReply(briefing), ...more), ...routes } });
+
+test("briefing: speakGreeting:false shows the briefing turn in the transcript and the history, but never speaks it", async () => {
+  const { session, server, spoken } = briefingSetup(briefingOf(), { options: { speakGreeting: false }, more: [turnReply("Sure.", { turnId: "n1" })] });
+  await session.open();
+  assert.deepEqual(spoken, [], "nothing is spoken on open");
+  const t = lastTurn(session);
+  assert.equal(t.content, BRIEFING_TEXT);
+  assert.equal(t.kind, "message");
+  assert.equal(t.inHistory, true);
+  assert.equal(t.turnId, "b1");
+  assert.deepEqual(t.sources, ["live rates 2026-10-27"]);
+  const b = session.getState().briefing;
+  assert.equal(b.kind, "morning");
+  assert.equal(b.strip.rate30, 6.52);
+  assert.deepEqual(b.strip, STRIP);
+  assert.equal(b.followUp, null);
+  assert.equal(session.getState().busy, false);
+  assert.equal(session.getState().opening, false);
+
+  // the briefing is in the history sent on the next turn, and only the greeting is silent: the next reply is spoken
+  await session.submit("tell me more");
+  assert.deepEqual(messagesOf(server.turns()[1]), [{ role: "assistant", content: BRIEFING_TEXT }, { role: "user", content: "tell me more" }]);
+  assert.deepEqual(spoken, [{ text: "Sure.", turnId: "n1" }]);
+});
+
+test("briefing: by default the briefing is spoken on open, as the greeting always was, and the state carries it", async () => {
+  const { session, spoken } = briefingSetup(briefingOf({ kind: "catch_up" }));
+  await session.open();
+  assert.deepEqual(spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }]);
+  assert.equal(session.getState().briefing.kind, "catch_up");
+  assert.equal(session.getState().briefing.strip.rate30, 6.52);
+});
+
+test("briefing: a silent greeting speaks nothing when it fails either, and the failure is still shown", async () => {
+  const bodies = [
+    reply(500, { error: "boom" }),
+    reply(200, { reply: "Sorry — something went wrong.", error: true, sources: [], turnId: "e1" }),
+  ];
+  for (const body of bodies) {
+    const { session, spoken } = briefingSetup(null, { options: { speakGreeting: false }, routes: { "POST /api/assistant/turn": queue(body) } });
+    await session.open();
+    assert.deepEqual(spoken, []);
+    assert.equal(lastTurn(session).kind, "error");
+    assert.equal(session.getState().briefing, null);
+  }
+});
+
+test("briefing: briefMe() speaks the briefing text once through onSpeak, whether or not it was already spoken", async () => {
+  const quiet = briefingSetup(briefingOf(), { options: { speakGreeting: false } });
+  await quiet.session.open();
+  assert.deepEqual(await quiet.session.briefMe(), { ok: true });
+  assert.deepEqual(quiet.spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }]);
+  assert.equal(quiet.session.getState().turns.length, 1, "no second briefing turn is added");
+  assert.equal(quiet.server.turns().length, 1, "no request is made");
+
+  const loud = briefingSetup(briefingOf());
+  await loud.session.open();
+  assert.equal(loud.spoken.length, 1);
+  assert.deepEqual(await loud.session.briefMe(), { ok: true });
+  assert.deepEqual(loud.spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }, { text: BRIEFING_TEXT, turnId: "b1" }]);
+});
+
+test("briefing: briefMe() always speaks the briefing itself, not whatever was said last", async () => {
+  const { session, spoken } = briefingSetup(briefingOf(), { options: { speakGreeting: false }, more: [turnReply("The 30-year is 6.5%.", { turnId: "n1" })] });
+  await session.open();
+  await session.submit("what are rates today");
+  spoken.length = 0;
+  await session.briefMe();
+  assert.deepEqual(spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }]);
+});
+
+test("briefing: briefMe() with no briefing (not opened, an old server's plain greeting, a failed greeting) speaks nothing", async () => {
+  const early = briefingSetup(briefingOf());
+  assert.deepEqual(await early.session.briefMe(), { ok: false, reason: "no-briefing" });
+  assert.deepEqual(early.spoken, []);
+
+  const plain = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Good morning, Ann.")) } });
+  await plain.session.open();
+  assert.equal(plain.session.getState().briefing, null);
+  assert.deepEqual(await plain.session.briefMe(), { ok: false, reason: "no-briefing" });
+
+  const failed = setup({ routes: { "POST /api/assistant/turn": queue(reply(500, { error: "boom" })) } });
+  await failed.session.open();
+  failed.spoken.length = 0;
+  assert.deepEqual(await failed.session.briefMe(), { ok: false, reason: "no-briefing" });
+  assert.deepEqual(failed.spoken, []);
+});
+
+test("briefing: briefMe() is closed while the user is away or after dispose, like every other spoken line", async () => {
+  const { session, spoken } = briefingSetup(briefingOf(), { options: { speakGreeting: false } });
+  await session.open();
+  session.leave();
+  assert.deepEqual(await session.briefMe(), { ok: false, reason: "closed" });
+  session.open();
+  assert.deepEqual(await session.briefMe(), { ok: true });
+  assert.equal(spoken.length, 1);
+  session.dispose();
+  assert.deepEqual(await session.briefMe(), { ok: false, reason: "closed" });
+  assert.equal(spoken.length, 1);
+});
+
+test("briefing: the greeting body is still { greeting, rates, localHour, localDate } and nothing else", async () => {
+  const { session, server } = briefingSetup(briefingOf({ followUp: FOLLOW_UP }));
+  await session.open();
+  assert.deepEqual(server.turns()[0].body, { greeting: true, rates: RATES, localHour: 9, localDate: "2026-10-28" });
+});
+
+test("briefing: the first turn after a briefing with a follow-up carries followUpRecId, the turns after it do not", async () => {
+  const { session, server } = briefingSetup(briefingOf({ followUp: FOLLOW_UP }), {
+    more: [turnReply("One."), turnReply("Two."), turnReply("Three.")],
+  });
+  await session.open();
+  assert.deepEqual(session.getState().briefing.followUp, FOLLOW_UP);
+  await session.submit("yes");
+  await session.submit("what are rates today");
+  await session.submit("and the 15-year?");
+  const [, first, second, third] = server.turns().map((c) => c.body);
+  assert.equal(first.followUpRecId, 7);
+  assert.deepEqual(Object.keys(first).sort(), ["followUpRecId", "localDate", "messages", "rates"]);
+  assert.deepEqual(first.messages, [{ role: "assistant", content: BRIEFING_TEXT }, { role: "user", content: "yes" }]);
+  for (const body of [second, third]) {
+    assert.equal("followUpRecId" in body, false);
+    assert.deepEqual(Object.keys(body).sort(), ["localDate", "messages", "rates"]);
+  }
+});
+
+test("briefing: with no follow-up (or one that is not a positive integer id) no turn carries followUpRecId", async () => {
+  const bad = [null, { ...FOLLOW_UP, recId: 0 }, { ...FOLLOW_UP, recId: -3 }, { ...FOLLOW_UP, recId: 1.5 }, { ...FOLLOW_UP, recId: "7" }, { ...FOLLOW_UP, recId: null }, "Lucy Tran", []];
+  for (const followUp of bad) {
+    const { session, server } = briefingSetup(briefingOf({ followUp }), { more: [turnReply("One.")] });
+    await session.open();
+    assert.equal(session.getState().briefing.followUp, null, JSON.stringify(followUp));
+    await session.submit("yes");
+    assert.equal("followUpRecId" in server.turns()[1].body, false, JSON.stringify(followUp));
+  }
+});
+
+test("briefing: the follow-up id is used up by the first turn, so a later confirm or cancel and the turns after them never carry it", async () => {
+  for (const finish of ["confirm", "cancel"]) {
+    const { session, server } = setup({
+      routes: {
+        "POST /api/assistant/turn": queue(
+          briefingReply(briefingOf({ followUp: FOLLOW_UP })),
+          turnReply(READ_BACK, { sideEffect: SIDE_EFFECT, turnId: "rb" }),
+          turnReply("Next.", { turnId: "n1" }),
+        ),
+        "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }),
+      },
+    });
+    await session.open();
+    await session.submit("log a contact for Lucy");
+    assert.equal(server.turns()[1].body.followUpRecId, 7);
+    if (finish === "confirm") await session.confirmPending(); else await session.cancelPending();
+    await session.submit("what are rates today");
+    assert.equal("followUpRecId" in server.turns()[2].body, false, finish);
+  }
+});
+
+test("briefing: a stage change before any turn also uses the follow-up id up", async () => {
+  // a stage change from the selector is a confirm: the conversation has moved on from the briefing's closing question
+  const stage = setup({
+    routes: {
+      "POST /api/assistant/turn": queue(briefingReply(briefingOf({ followUp: FOLLOW_UP })), turnReply("Sure.")),
+      "POST /api/assistant/confirm": () => reply(200, { success: true, result: { stage: "veteran" }, reply: "Done." }),
+    },
+  });
+  await stage.session.open();
+  assert.equal((await stage.session.setStage("veteran")).ok, true);
+  await stage.session.submit("skip it");
+  assert.equal("followUpRecId" in stage.server.turns()[1].body, false);
+});
+
+test("briefing: a briefing that is missing, or only partly there, is read as null or as unknown, never invented", async () => {
+  // no briefing key at all (an older server, or the error shape { reply, error, sources, turnId })
+  const none = setup({ routes: { "POST /api/assistant/turn": queue(reply(200, { reply: "Good morning.", sources: [], turnId: "g1" })) } });
+  await none.session.open();
+  assert.equal(none.session.getState().briefing, null);
+
+  // an unknown kind is no briefing; a strip that is not an object is a strip of unknowns
+  const odd = briefingSetup({ kind: "weekly", strip: STRIP, followUp: null });
+  await odd.session.open();
+  assert.equal(odd.session.getState().briefing, null);
+  const bare = briefingSetup({ kind: "catch_up", strip: "6.52", followUp: null });
+  await bare.session.open();
+  assert.deepEqual(bare.session.getState().briefing, {
+    kind: "catch_up",
+    strip: { rate30: null, move30: null, asOf: null, opportunities: null, checkInsDue: null, nextEvent: null },
+    followUp: null,
+  });
+
+  // each field is kept only when it has the documented type; extra fields are dropped
+  const mixed = briefingSetup({
+    kind: "morning",
+    strip: { rate30: "6.52", move30: -0.08, asOf: 20261027, opportunities: 2, checkInsDue: NaN, nextEvent: { title: "Call", start: 5 }, extra: 1 },
+    followUp: null,
+  });
+  await mixed.session.open();
+  assert.deepEqual(mixed.session.getState().briefing.strip, {
+    rate30: null, move30: -0.08, asOf: null, opportunities: 2, checkInsDue: null, nextEvent: null,
+  });
 });
 
 // ── a normal turn ────────────────────────────────────────────────────────────
