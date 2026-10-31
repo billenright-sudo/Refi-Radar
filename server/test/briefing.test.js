@@ -263,6 +263,25 @@ test("clients reached in the last 7 days and clients recommended in the last 3 d
   assert.ok(!r.reply.includes("Owen Prescott could"), r.reply);
 });
 
+test("I4: a last_contact in the last 7 days alone (the Sweeps \"Log contact\" button, no contact_log row) leaves a client off", async () => {
+  seedBook();
+  const set = (name, lastContact) => db.prepare("UPDATE clients SET last_contact = ? WHERE name = ?").run(lastContact, name);
+  set("Lucy Tran", "2026-10-28 17:00:00");    // what the button writes (datetime('now')): two days ago
+  set("Owen Prescott", "2026-10-22 12:00:00"); // eight days ago: no longer recent
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contact_log").get().n, 0);
+  const r = await brief(annId);
+  assert.ok(!r.reply.includes("Lucy Tran"), r.reply);
+  assert.ok(r.reply.includes("Owen Prescott could tap about $"), r.reply);
+
+  // a date-only last_contact counts the same way; one in the future (a close date it was seeded from) is no contact at all
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  set("Lucy Tran", "2026-10-29");
+  set("Owen Prescott", "2026-12-15");
+  const again = await brief(annId);
+  assert.ok(!again.reply.includes("Lucy Tran"), again.reply);
+  assert.ok(again.reply.includes("Owen Prescott could tap about $"), again.reply);
+});
+
 test("\"Plus N more check-ins due\" when more of the user's own check-ins are due than the list names", async () => {
   seedBook();
   for (const name of ["Dee Lang", "Eli Moss", "Fay Nunez"]) addClient(annId, name, { lastContact: "2025-09-01" });

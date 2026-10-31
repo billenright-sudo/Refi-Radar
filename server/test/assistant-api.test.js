@@ -423,7 +423,9 @@ test("greeting: the strip's counts and the call list follow the user's own book"
 
   const mix = await greet(max, { localHour: 9 });
   assert.deepStrictEqual(stripCounts(mix), [2, 1]);
-  for (const name of ["Stale Refi", "Fresh Refi"]) assert.ok(mix.data.reply.includes(name), `${name}: ${mix.data.reply}`);
+  // F4 FLIP (was: both listed): Fresh Refi's last_contact is today, a logged contact in the last 7 days, so the list leaves them off
+  assert.ok(mix.data.reply.includes("Stale Refi"), mix.data.reply);
+  assert.ok(!mix.data.reply.includes("Fresh Refi"), mix.data.reply);
 });
 
 test("greeting: kind and the opener follow the browser's localHour (morning 4 to 11, catch-up otherwise)", async () => {

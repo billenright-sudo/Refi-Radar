@@ -195,7 +195,15 @@ function calendarSection({ date, events, nowMs }) {
 // -> { picks, line, moreLine }. Only `speakableRows` (the user's own clients whose names may be read) can be listed.
 function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, estimated, followUpClientIds }) {
   const carried = followups.carriedIds(db, userId, localDate);
-  const reached = followups.reachedSince(db, userId, sqliteUtc(nowMs - REACHED_WINDOW_MS));
+  // "A logged contact in the last 7 days" (spec 5.2): a reached call in contact_log, or a last_contact the client record has from
+  // then until now (the Sweeps page's Log contact writes it as SQLite UTC text, an import or a close date as YYYY-MM-DD; both
+  // compare as text). A last_contact later than now (a future close date it was seeded from) is no contact.
+  const since = sqliteUtc(nowMs - REACHED_WINDOW_MS);
+  const nowUtc = sqliteUtc(nowMs);
+  const reached = followups.reachedSince(db, userId, since);
+  for (const row of speakableRows) {
+    if (typeof row.last_contact === "string" && row.last_contact >= since && row.last_contact <= nowUtc) reached.add(row.id);
+  }
   const recent = followups.recentlyRecommended(db, userId, addDays(localDate, -RECENT_DAYS));
   // An earlier open today: its list stays the list (its clients are not "recently recommended" to it), and the carried clients
   // it listed, whose carry rows it consumed, are still carried today.

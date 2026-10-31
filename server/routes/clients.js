@@ -2,6 +2,7 @@
 const express = require("express");
 const db      = require("../db");
 const { requireAuth } = require("../middleware/auth");
+const followups = require("../lib/assistant/followups");   // called as followups.x(): tests can swap one
 
 const router = express.Router();
 router.use(requireAuth);
@@ -147,11 +148,24 @@ router.delete("/:id", (req, res) => {
   }
 });
 
-// POST /api/clients/:id/contact — log an outreach (sets last_contact = now).
-// Broker: any org client; LO: own clients only.
+// An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
+const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+
+// POST /api/clients/:id/contact — log an outreach (the Sweeps page's Log contact button; the broker's own click is the confirmation).
+// Broker: any org client; LO: own clients only. One transaction: last_contact = now, the call in contact_log as reached (no notes),
+// and the caller's open follow-ups of that client closed as reached, carry included, so Charlie's next briefing neither lists the
+// client nor asks whether they were reached.
 router.post("/:id/contact", (req, res) => {
+  const id = parseInt(req.params.id);
   try {
-    const result = logContactForUser(db, req.user, parseInt(req.params.id));
+    const result = db.transaction(() => {
+      const done = logContactForUser(db, req.user, id);
+      if (done.status !== 200) return done;
+      const nowUtc = sqliteUtc(Date.now());
+      followups.logCall(db, { userId: req.user.id, clientId: id, outcome: "reached", notes: "", nowUtc });
+      followups.resolveForClient(db, req.user.id, id, "reached", nowUtc, { includeCarry: true });
+      return done;
+    })();
     if (result.error) return res.status(result.status).json({ success: false, error: result.error });
     res.json({ success: true, client: result.client });
   } catch (err) {
