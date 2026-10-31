@@ -9,8 +9,9 @@
 //   2. the market line: the 30-year, its move since the previous FRED observation (named by its date) and "as of" the latest,
 //      then one clause each for a 15-year, FHA or jumbo move of 0.05 or more. A 30-year drop of DROP_THRESHOLD or more leads
 //      with "Rates dropped:" in the first briefing after that observation only. An estimated set says so and claims no move;
-//   3. the call list (callList.js) over the user's OWN clients, recorded as today's 'briefing' recommendations (a carried client
-//      it lists is no longer carried), and "Plus N more check-ins due." for the due clients it could have listed but did not;
+//   3. the call list (callList.js) over the user's OWN clients, less the ones its follow-ups ask about (unless carried), recorded
+//      as today's 'briefing' recommendations (a carried client it lists is no longer carried), and "Plus N more check-ins due." for
+//      the due clients it could have listed but did not;
 //   4. a broker's one count-only team line: their loan officers' open opportunities;
 //   5. today's calendar: the count and the first one or two events still ahead;
 //   6. open follow-ups (followups.js), at most two clients, after the calendar's calls have been matched (calendarFollowUps.js);
@@ -202,8 +203,10 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   const listedToday = new Set(earlier.map((r) => r.clientId));
   const carriedToday = earlier.filter((r) => r.reasonCode === "carry").map((r) => r.clientId);
   // Ruling R3: (reached ∪ recently recommended) − carried, so a carried client is never left off: neither one still carried nor
-  // one an earlier open today listed as carried (and consumed), so a reopen reads the same list.
-  const excludeIds = new Set([...reached, ...[...recent].filter((id) => !listedToday.has(id))]);
+  // one an earlier open today listed as carried (and consumed), so a reopen reads the same list. The clients this briefing's
+  // follow-ups ask about are left off too (unless carried): a reopen after noon asks about this morning's list, and must not also
+  // tell the broker to call the client it asks "were you able to reach them?" about.
+  const excludeIds = new Set([...reached, ...[...recent].filter((id) => !listedToday.has(id)), ...followUpClientIds]);
   for (const id of carried) excludeIds.delete(id);
   for (const id of carriedToday) excludeIds.delete(id);
 

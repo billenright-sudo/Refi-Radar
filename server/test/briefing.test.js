@@ -442,6 +442,35 @@ test("a first open after noon does not ask about the list it has just made", asy
   assert.ok(recRows("user_id = ?", annId).every((row) => row.ask_count === 0));
 });
 
+// The "Today's calls" sentence of a reply ("" when there is none). A reason can hold "6.50", so a sentence ends at ". " + a capital.
+const callListOf = (reply) => (/Today's calls?(?:, on estimated rates)?: .*?\.(?= [A-Z]|$)/.exec(reply) || [""])[0];
+
+test("I1: a reopen after noon never lists a client its follow-ups ask about (an 8 AM open, then 1 PM)", async () => {
+  const ids = seedBook();
+  const morning = await brief(annId);
+  for (const name of ["Lucy Tran", "Owen Prescott", "Grace Okafor"]) assert.ok(callListOf(morning.reply).includes(name), morning.reply);
+
+  const afternoon = await brief(annId, { localHour: 13, nowMs: at(TODAY, 13) });
+  // today's rows are due from noon: the first two listed (Owen, then Lucy) are the follow-ups, both counted as asked; Owen is asked
+  const asked = recRows("user_id = ? AND day = ? AND ask_count > 0", annId, TODAY).map((row) => row.client_id).sort();
+  assert.deepStrictEqual(asked, [ids.lucy, ids.owen].sort());
+  assert.equal(afternoon.followUp.clientId, ids.owen);
+  assert.ok(afternoon.reply.includes(COUPLE_OF_CALLS), afternoon.reply);
+  const list = callListOf(afternoon.reply);
+  assert.ok(!list.includes("Lucy Tran") && !list.includes("Owen Prescott"), `listed and asked about in one breath: ${afternoon.reply}`);
+  assert.ok(list.startsWith("Today's call: Grace Okafor"), afternoon.reply);
+  assert.equal(questionMarks(afternoon.reply), 1, afternoon.reply);
+});
+
+test("I1: a carried client is still listed though a follow-up is open for them", async () => {
+  const ids = seedBook();
+  fu.recordRecommendations(db, annId, "2026-10-28", [{ clientId: ids.grace, source: "briefing", reasonCode: "check_in" }]);
+  fu.addCarry(db, annId, ids.grace, YESTERDAY);
+  const r = await brief(annId);
+  assert.equal(r.followUp.clientId, ids.grace);
+  assert.ok(callListOf(r.reply).startsWith("Today's calls: Grace Okafor, who you put on today's list"), r.reply);
+});
+
 test("with two open follow-ups the briefing says it has a couple, asks only the first, and counts both as asked", async () => {
   const ids = seedBook();
   fu.recordRecommendations(db, annId, "2026-10-28", [{ clientId: ids.owen, source: "briefing", reasonCode: "cash_out" }]);
