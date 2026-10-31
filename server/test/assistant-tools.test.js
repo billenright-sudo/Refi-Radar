@@ -106,7 +106,7 @@ test("B3: getMarketUpdate gives no move against a snapshot from another provider
   recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, date: "2026-10-20", source: "Mortgage News Daily" }, day(1));
   let r = getMarketUpdate({}, brokerCtx);
   assert.deepStrictEqual([r.data.deltas, r.data.hasHistory, r.data.since, r.data.sinceDate], [null, false, null, null]);
-  // FRED yesterday and today: a move, no ARM entry, since yesterday
+  // FRED yesterday and today: a move, no ARM entry, since the previous observation's date
   db.prepare("DELETE FROM rate_snapshots").run();
   recordSnapshot({ rate_30yr_fixed: 6.6, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.4, date: "2026-10-20", source: "Optimal Blue lock data (x) · ARM via Bankrate" }, day(1));
   r = getMarketUpdate({}, brokerCtx);
@@ -114,13 +114,16 @@ test("B3: getMarketUpdate gives no move against a snapshot from another provider
   assert.equal(r.data.deltas.rate_30yr_fixed, -0.08);
   assert.equal("rate_5_1_arm" in r.data.deltas, false, "the ARM level is reported, its move never is");
   assert.equal(r.data.rates.rate_5_1_arm, RATES.rate_5_1_arm);
-  assert.equal(r.data.since, "yesterday");
+  assert.equal(r.data.since, "October 20th");   // F6 FLIP (was "yesterday"): the absolute date, as the briefing says it
   assert.equal(r.data.sinceDate, "2026-10-20");
   // the prompt and the tool description tell the model to use the label, never to work one out
   const { CHARLI_SYSTEM } = require("../lib/assistant/prompt");
   assert.ok(CHARLI_SYSTEM.includes("When you report how rates moved, say since when using getMarketUpdate's `since` label as given; never say \"since yesterday\" or name a day on your own."));
   const desc = TOOL_SCHEMA.find((t) => t.name === "getMarketUpdate").description;
   assert.match(desc, /`since` label exactly as given/);
+  // F6 FLIP (was "since Thursday"): the example is a date, as the label now always is
+  assert.match(desc, /\(for example "since October 28th"\)/);
+  assert.doesNotMatch(desc, /since (?:yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/);
   assert.match(desc, /The 5\/1 ARM has no change/);
 });
 

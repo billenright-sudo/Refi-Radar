@@ -55,18 +55,15 @@ function currentProvider(rates, provider) {
 // "30-year minus 0.10" estimate (routes/rates.js). Its level is still reported; its change never is.
 const NO_DELTA_KEYS = new Set(["rate_5_1_arm"]);
 
-// The spoken "since when" for an observation dated `day`, seen from the current observation's date `today` (both YYYY-MM-DD,
-// UTC days; getMovement passes the previous and current FRED observation dates): "yesterday" one day back, the weekday
-// ("Thursday") two to six days back, otherwise the date with an ordinal day ("October 18th", with the year when it is not this
-// year's), which toSpeech reads "October eighteenth" (a bare "October 18" is read "October eighteen"); the digits still ground
-// the model's "since October 18th". Code computes it so the model never has to (and never says "since yesterday" about an older
-// snapshot). `today` defaults to the current UTC day. Pure.
+// The spoken "since when" for an observation dated `day` (YYYY-MM-DD; getMovement passes the previous FRED observation's date): always
+// that date, with an ordinal day ("October 28th", with the year when it is not the year of `today`, the current observation's
+// date), the same words the briefing uses. Never a day relative to it: FRED runs a day behind, so "since yesterday" about an
+// Oct 28 -> 29 move, said on the 30th, names the wrong day (final review I6). toSpeech reads it "October twenty-eighth" (a bare
+// "October 28" is read "October twenty-eight"), and its digits still ground the model's "since October 28th". Code computes it
+// so the model never has to. `today` defaults to the current UTC day. Pure.
 function sinceLabel(day, today = dayKey()) {
   const then = new Date(`${day}T00:00:00Z`);
   const now = new Date(`${today}T00:00:00Z`);
-  const days = Math.round((now - then) / 86_400_000);
-  if (days === 1) return "yesterday";
-  if (days >= 2 && days <= 6) return WEEKDAYS[then.getUTCDay()];
   const date = `${MONTHS[then.getUTCMonth()]} ${ordinal(then.getUTCDate())}`;
   return then.getUTCFullYear() === now.getUTCFullYear() ? date : `${date}, ${then.getUTCFullYear()}`;
 }
@@ -94,7 +91,7 @@ const SCAN_ROWS = 400;
 // ("claude") sets must also carry the same, non-empty source label: the search can return a different publisher each day, and
 // two publishers' averages are no move either. The current set's provider is `provider` when given, else the one the route
 // stored today for this same set, else its label's (currentProvider). With a movement, `since` is the spoken label for the
-// previous observation's date, seen from the current one (sinceLabel), and `sinceDate` is that date.
+// previous observation's date ("October 28th", sinceLabel), and `sinceDate` is that date.
 function getMovement(rates, provider) {
   const none = { current: rates, previous: null, deltas: null, hasHistory: false, since: null, sinceDate: null };
   const nowDate = observationDate(rates);

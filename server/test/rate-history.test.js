@@ -112,7 +112,7 @@ test("B3: a move is computed only between snapshots from the same provider", () 
     assert.equal(m.hasHistory, moves, label);
     if (moves) {
       assert.ok(Math.abs(m.deltas.rate_30yr_fixed - -0.1) < 1e-9, label);
-      assert.equal(m.since, "yesterday", label);
+      assert.equal(m.since, "October 28th", label);   // F6 FLIP (was "yesterday"): the previous observation's own date
     } else {
       assert.deepStrictEqual([m.deltas, m.previous, m.since, m.sinceDate], [null, null, null, null], label);
     }
@@ -173,26 +173,28 @@ test("B3: the 5/1 ARM has no delta; its level is still the current one", () => {
   assert.equal(m.current.rate_5_1_arm, 7.1);
 });
 
-test("B3: since is 'yesterday' for one day, the weekday for two to six, the date beyond (with the year when it differs)", () => {
-  assert.equal(sinceLabel("2026-10-24", "2026-10-25"), "yesterday");
-  assert.equal(sinceLabel("2026-10-22", "2026-10-25"), "Thursday", "3 days");
-  assert.equal(sinceLabel("2026-10-23", "2026-10-25"), "Friday", "2 days");
-  assert.equal(sinceLabel("2026-10-19", "2026-10-25"), "Monday", "6 days");
+test("F6: since is always the previous observation's own date, never a day relative to it (with the year when it differs)", () => {
+  // F6 FLIP (final review I6; was "yesterday" for one day and the weekday for two to six): FRED runs a day behind, so a label
+  // relative to the observation ("since yesterday" about an Oct 28 -> 29 move, said on the 30th) named the wrong day. The briefing
+  // and Charlie's answers now name the same absolute date ("since October 28th, as of October 29th").
+  assert.equal(sinceLabel("2026-10-24", "2026-10-25"), "October 24th", "1 day");
+  assert.equal(sinceLabel("2026-10-22", "2026-10-25"), "October 22nd", "3 days");
+  assert.equal(sinceLabel("2026-10-23", "2026-10-26"), "October 23rd", "Friday to Monday");
+  assert.equal(sinceLabel("2026-10-19", "2026-10-25"), "October 19th", "6 days");
   // R2-3 FLIP: the date carries an ordinal day ("October 18th" is spoken "October eighteenth", "October 18" was "eighteen")
   assert.equal(sinceLabel("2026-10-15", "2026-10-25"), "October 15th", "10 days");
   assert.equal(sinceLabel("2026-10-18", "2026-10-25"), "October 18th", "7 days");
-  assert.equal(sinceLabel("2025-12-30", "2026-01-02"), "Tuesday", "across a year end, within six days");
+  assert.equal(sinceLabel("2025-12-30", "2026-01-02"), "December 30th, 2025", "across a year end");
   assert.equal(sinceLabel("2025-12-20", "2026-01-02"), "December 20th, 2025");
   // through getMovement, against today's real date
-  for (const [n, expected] of [[1, "yesterday"], [3, sinceLabel(daysAgo(3))], [10, sinceLabel(daysAgo(10))]]) {
+  for (const n of [1, 3, 10]) {
     db.prepare("DELETE FROM rate_snapshots").run();
     recordSnapshot({ rate_30yr_fixed: 7.5, date: daysAgo(n), source: FRED_SOURCE }, daysAgo(n));
     const m = getMovement({ rate_30yr_fixed: 7.4, date: daysAgo(0), source: FRED_SOURCE });
-    assert.equal(m.since, expected, `${n} days`);
+    assert.equal(m.since, sinceLabel(daysAgo(n), daysAgo(0)), `${n} days`);
+    assert.match(m.since, /^[A-Z][a-z]+ \d{1,2}(?:st|nd|rd|th)(?:, \d{4})?$/, `${n} days`);
     assert.equal(m.sinceDate, daysAgo(n));
   }
-  assert.match(sinceLabel(daysAgo(3)), /^(?:Sun|Mon|Tues|Wednes|Thurs|Fri|Satur)day$/);
-  assert.match(sinceLabel(daysAgo(10)), /^[A-Z][a-z]+ \d{1,2}(?:st|nd|rd|th)(?:, \d{4})?$/);
 });
 
 test("R2-3: the since date's ordinal suffix (st / nd / rd / th, 11th-13th), spoken as an ordinal, its digits still grounding", () => {
@@ -242,11 +244,11 @@ test("a re-fetch of the same observation shows no movement", () => {
   assert.deepStrictEqual([m.deltas, m.since, m.sinceDate], [null, null, null]);
 });
 
-test("since is labelled against the observation date", () => {
+test("since names the previous observation's date, whatever day it is said on", () => {
   // Friday's FRED print, Monday's FRED print: a weekend between them, three capture days or none
   recordSnapshot({ rate_30yr_fixed: 6.55, date: "2026-10-23", source: FRED_SOURCE }, daysAgo(1), "fred");
   const m = getMovement({ rate_30yr_fixed: 6.4, date: "2026-10-26", source: FRED_SOURCE }, "fred");
-  assert.equal(m.since, "Friday");
+  assert.equal(m.since, "October 23rd");   // F6 FLIP (was "Friday")
   assert.equal(m.sinceDate, "2026-10-23");
 });
 

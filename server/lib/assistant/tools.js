@@ -76,7 +76,8 @@ function getMarketUpdate(_args, ctx) {
     };
   }
   // deltas only against a prior snapshot from the same provider, never for the 5/1 ARM; `since` is the code-computed spoken
-  // label of that snapshot's day ("yesterday", "Thursday", "October 18") and `sinceDate` its date (lib/rateHistory.js)
+  // label of that snapshot's observation date, always the date itself ("October 18th"), and `sinceDate` that date
+  // (lib/rateHistory.js)
   const { current, deltas, hasHistory, since, sinceDate } = getMovement(rates);
   return {
     data: { rates: twoDecimals(current), deltas: twoDecimals(deltas), hasHistory, since, sinceDate },
@@ -730,7 +731,7 @@ const TOOL_SCHEMA = [
       "since the most recent prior-day snapshot. Use for any question about current rates or the market. " +
       "`deltas` is null when there is no comparable prior day: say there is no history, never guess a move. " +
       "Only report non-zero changes. When you report a change, say since when with the `since` label exactly as given " +
-      "(for example \"since Thursday\"). The 5/1 ARM has no change: its figure comes from a different source.",
+      "(for example \"since October 28th\"). The 5/1 ARM has no change: its figure comes from a different source.",
     input_schema: NO_ARGS,
   },
   {
