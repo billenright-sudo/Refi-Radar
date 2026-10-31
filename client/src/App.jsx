@@ -4,6 +4,7 @@ import { returnNotice } from "./charli/google.mjs";
 import { endKeptSession } from "./charli/keep.mjs";
 import { localDateOf } from "./charli/session.mjs";
 import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
+import { loadCalls } from "./calls.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
 
@@ -1238,6 +1239,38 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
           <div style={{ color: C.text, fontSize: 14 }}>{client.notes}</div>
         </div>
       )}
+
+      <ClientCalls clientId={client.id} />
+    </div>
+  );
+};
+
+// The calls logged for this client (Charlie's "with your notes" and the Sweeps page's Log contact), newest first. The notes are the
+// broker's own words, shown here and nowhere else (spec 5.4), as plain text.
+const ClientCalls = ({ clientId }) => {
+  const [state, setState] = useState({ calls: null, error: null });
+  useEffect(() => {
+    let live = true;
+    setState({ calls: null, error: null });
+    loadCalls(fetch, clientId).then((r) => { if (live) setState(r.ok ? { calls: r.calls, error: null } : { calls: [], error: r.error }); });
+    return () => { live = false; };
+  }, [clientId]);
+  const { calls, error } = state;
+  return (
+    <div data-testid="client-calls" style={{ ...card, marginTop: "1rem" }}>
+      <div style={{ fontSize: 11, color: C.amber, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Calls</div>
+      {calls === null ? <div style={{ color: C.muted, fontSize: 13 }}>Loading…</div>
+        : error ? <div style={{ color: C.red, fontSize: 13 }}>{error}</div>
+        : calls.length === 0 ? <div style={{ color: C.muted, fontSize: 13 }}>No calls logged yet.</div>
+        : calls.map((c, i) => (
+          <div key={c.key} style={{ padding: "8px 0", borderTop: i ? `1px solid ${C.border}` : "none" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "baseline", fontSize: 13 }}>
+              <span style={{ ...mono, color: C.muted }}>{c.date}</span>
+              <span style={{ color: c.outcome === "reached" ? C.green : C.amber, fontWeight: 600 }}>{c.label}</span>
+            </div>
+            {c.notes && <div style={{ color: C.text, fontSize: 14, marginTop: 4, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{c.notes}</div>}
+          </div>
+        ))}
     </div>
   );
 };

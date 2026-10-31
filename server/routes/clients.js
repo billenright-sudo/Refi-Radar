@@ -148,6 +148,25 @@ router.delete("/:id", (req, res) => {
   }
 });
 
+// GET /api/clients/:id/calls — the calls logged for a client (contact_log), newest first, at most CALLS_SHOWN:
+// { success, calls: [{ at, outcome, notes }] } (at: SQLite UTC text; outcome: 'reached' | 'not_reached'). Broker: any org client;
+// LO: own clients only (clientInReach's 404 / 403). For the client page only (spec 5.4): the notes are the broker's own words about
+// a borrower and never reach the model, so no assistant tool reads this route or these rows.
+const CALLS_SHOWN = 50;
+router.get("/:id/calls", (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const reach = clientInReach(db, req.user, id);
+    if (reach.status !== 200) return res.status(reach.status).json({ success: false, error: reach.error });
+    const calls = db.prepare("SELECT at, outcome, notes FROM contact_log WHERE client_id = ? ORDER BY at DESC, id DESC LIMIT ?")
+      .all(id, CALLS_SHOWN);
+    res.json({ success: true, calls });
+  } catch (err) {
+    console.error("GET /api/clients/:id/calls:", err.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+
 // An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
 const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
 

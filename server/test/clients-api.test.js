@@ -144,3 +144,75 @@ test("I4: Log contact keeps its ownership rules, and a refused one writes no cal
   assert.deepStrictEqual(callRows(louClient), [{ user_id: ann, outcome: "reached", notes: "" }]);
   assert.equal((await as(lou)("POST", `/api/clients/${louClient}/contact`)).status, 200);
 });
+
+// ── the client page's call log (final review I5, spec 5.4) ─────────────────
+
+const logAt = (clientId, userId, at, outcome, notes) => db.prepare(
+  "INSERT INTO contact_log (client_id, user_id, at, outcome, notes) VALUES (?, ?, ?, ?, ?)"
+).run(clientId, userId, at, outcome, notes);
+
+test("I5: GET /:id/calls returns the client's calls, newest first, as { at, outcome, notes } only", async () => {
+  const louClient = addClient(orgA, lou, "Lou's Client");
+  const other = addClient(orgA, lou, "Another Client");
+  logAt(louClient, lou, "2026-10-28 15:00:00", "reached", "She wants to wait until spring.");
+  logAt(louClient, lou, "2026-10-29 16:30:00", "not_reached", "");
+  logAt(louClient, ann, "2026-10-29 16:30:00", "reached", "Called back <b>later</b>");   // same instant: the later row first
+  logAt(other, lou, "2026-10-30 09:00:00", "reached", "not this client's");
+  const r = await as(lou)("GET", `/api/clients/${louClient}/calls`);
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual(r.data, {
+    success: true,
+    calls: [
+      { at: "2026-10-29 16:30:00", outcome: "reached", notes: "Called back <b>later</b>" },
+      { at: "2026-10-29 16:30:00", outcome: "not_reached", notes: "" },
+      { at: "2026-10-28 15:00:00", outcome: "reached", notes: "She wants to wait until spring." },
+    ],
+  });
+  const none = await as(lou)("GET", `/api/clients/${addClient(orgA, lou, "No Calls Yet")}/calls`);
+  assert.deepStrictEqual(none.data, { success: true, calls: [] });
+});
+
+test("I5: GET /:id/calls keeps the client ownership rules: own and a broker's org, never another LO's or another org's", async () => {
+  const annClient = addClient(orgA, ann, "Ann's Client");
+  const louClient = addClient(orgA, lou, "Lou's Client");
+  const beaClient = addClient(orgB, bea, "Bea's Client");
+  for (const id of [annClient, louClient, beaClient]) logAt(id, ann, "2026-10-29 10:00:00", "reached", "private notes");
+  assert.equal((await as(lou)("GET", `/api/clients/${louClient}/calls`)).status, 200, "an LO: their own client");
+  assert.equal((await as(ann)("GET", `/api/clients/${louClient}/calls`)).status, 200, "a broker: an LO's client in their org");
+  assert.equal((await as(ann)("GET", `/api/clients/${annClient}/calls`)).status, 200, "a broker: their own");
+  const otherLo = await as(lou)("GET", `/api/clients/${annClient}/calls`);
+  assert.deepStrictEqual([otherLo.status, otherLo.data], [403, { success: false, error: "Access denied" }], "an LO: not anyone else's");
+  const otherOrg = await as(ann)("GET", `/api/clients/${beaClient}/calls`);
+  assert.deepStrictEqual([otherOrg.status, otherOrg.data], [403, { success: false, error: "Access denied" }], "never another org's");
+  for (const id of ["99999999", "abc", "0", "-3"]) {
+    const r = await as(ann)("GET", `/api/clients/${id}/calls`);
+    assert.deepStrictEqual([r.status, r.data], [404, { success: false, error: "Client not found" }], id);
+  }
+  assert.equal((await as(null)("GET", `/api/clients/${louClient}/calls`)).status, 401);
+});
+
+test("I5: GET /:id/calls returns at most the 50 newest calls", async () => {
+  const id = addClient(orgA, ann, "Busy Client");
+  for (let i = 0; i < 55; i++) logAt(id, ann, `2026-10-${String(1 + Math.floor(i / 2)).padStart(2, "0")} ${String(10 + (i % 2)).padStart(2, "0")}:00:00`, "reached", `call ${i}`);
+  const r = await as(ann)("GET", `/api/clients/${id}/calls`);
+  assert.equal(r.data.calls.length, 50);
+  assert.equal(r.data.calls[0].notes, "call 54");
+  assert.equal(r.data.calls[49].notes, "call 5");
+});
+
+test("I5: saved call notes never reach the model: no assistant code reads contact_log's notes, and none calls /calls", () => {
+  const dir = path.join(__dirname, "..", "lib", "assistant");
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".js")).map((f) => path.join(dir, f));
+  files.push(path.join(__dirname, "..", "routes", "assistant.js"));
+  let reads = 0;
+  for (const file of files) {
+    const src = fs.readFileSync(file, "utf8");
+    // each SELECT's own column list (never reaching back past another FROM) that reads contact_log
+    for (const m of src.matchAll(/SELECT\s+((?:(?!\bFROM\b)[\s\S])*?)\s+FROM\s+contact_log\b/gi)) {
+      reads += 1;
+      assert.ok(!/\bnotes\b|\*/.test(m[1]), `${path.basename(file)} reads ${m[1]} from contact_log`);
+    }
+    assert.ok(!/\/calls\b/.test(src), `${path.basename(file)} mentions /calls`);
+  }
+  assert.ok(reads >= 1, "the check sees reachedSince's read (client ids only), so it would see one of the notes");
+});
