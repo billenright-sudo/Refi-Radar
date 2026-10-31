@@ -1,4 +1,5 @@
-// The words of the "Calendar & email" card, with no DOM and no React (the card is in ../profile/cards.jsx).
+// The words of the Profile page's Calendar card and its NMLS ID check, with no DOM and no React (the cards are in
+// ../profile/cards.jsx).
 //
 //   GET /api/google/status -> { configured, connected, status, googleEmail }
 //     status: "connected" | "reconnect" | null. `connected` only means a connection row exists, so an expired one

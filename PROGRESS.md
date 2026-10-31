@@ -18,8 +18,8 @@ _Last updated: 2026-10-27_
   `calendar.events` only (`gmail.compose` is restricted — see Key decisions). Per-user OAuth + PKCE
   with a browser-bound flow cookie, tokens AES-256-GCM-encrypted. New: `server/lib/google/{crypto,
   oauth,calendar,time,index}.js`, `server/lib/dateLabels.js`, `server/lib/assistant/outreach.js`,
-  `server/routes/{google,profile}.js`, `client/src/charli/google.mjs` + the panel's Calendar & email
-  card (Connect / Disconnect, NMLS fields, compose card). The orchestrator's guards now also cover
+  `server/routes/{google,profile}.js`, `client/src/charli/google.mjs` + the Calendar (Connect /
+  Disconnect) and NMLS ID cards, now on the Profile page, and the compose card. The orchestrator's guards now also cover
   calendar facts (day and time labels code-authored, grounded in the tool payload) and "I booked /
   I drafted" claims, including replies to an offer. Plan:
   `docs/superpowers/plans/2026-10-27-charli-google-calendar-gmail.md`. Whole-branch review and
@@ -120,6 +120,11 @@ _Last updated: 2026-10-27_
   **Before selling to other brokers:** Google app verification for the sensitive `calendar.events`
   scope (needs a public homepage, a privacy policy, a verified domain). The calendar 403 auth-reason
   mapping (`server/lib/google/calendar.js`) still has to be checked against a real account.
+- **Morning briefing deploy prerequisites (Bill's go):** `APP_URL` set on the service to its public
+  `https://` address (`--update-env-vars`). Without it, or with a localhost value, in production the
+  Profile page's email change answers "Email isn't set up yet" and sends nothing (invite links use the
+  same value). Keep `--max-instances 1`: the email-change limiter and the greeting's single-flight are
+  in memory.
 - **Accepted claim-guard residual (Plan B, Ruling 42 — a design decision for Bill):** a model that
   skips the tool and phrases a done-claim inside a clarifying question ("…since it's on your
   calendar now — which Chen?"), or paraphrases a done-claim after an ambiguous reply, can still
@@ -164,7 +169,7 @@ _Last updated: 2026-10-27_
 ## Next steps
 1. **Bill's live check of Plan B** (needs his own OAuth client in Google Cloud Console and his
    own Google sign-in; Claude never types his password): restart the API, sign in to Google from
-   the Charli panel, enter his NMLS ID, use a test client whose email is his own address; check
+   the Profile page (Calendar card), enter his NMLS ID there, use a test client whose email is his own address; check
    "what's on my calendar today?", book a follow-up (read-back → Confirm → one event, no guests;
    Confirm again → no second event), and "draft <client> a check-in" → Open in Gmail shows the
    prefilled email, unsent. Then delete the test event.

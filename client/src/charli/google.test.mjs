@@ -1,5 +1,5 @@
 // node --test src/charli/
-// The labels, notices and small decisions of the "Calendar & email" card (google.mjs): no DOM, no network.
+// The labels, notices and small decisions of the Profile page's Calendar and NMLS ID cards (google.mjs): no DOM, no network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { googleCard, returnNotice, validNmls, connectUrlOk, inputAfterReload, createCoalescer } from "./google.mjs";

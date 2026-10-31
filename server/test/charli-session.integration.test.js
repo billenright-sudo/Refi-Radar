@@ -86,7 +86,7 @@ after(() => {
   try { fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch { /* */ }
 });
 
-// A request to the real server as Ann, outside the session (the way the Calendar & email card saves an NMLS ID).
+// A request to the real server as Ann, outside the session (the way the Profile page's NMLS ID card saves an NMLS ID).
 const asAnn = async (method, url, body) => {
   const res = await fetch(base + url, {
     method, headers: { "content-type": "application/json", cookie }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
