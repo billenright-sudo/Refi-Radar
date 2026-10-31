@@ -236,10 +236,10 @@ const stillWorking = (res) => res.status === 409 && !!res.data && res.data.pendi
 // The device's own calendar day as YYYY-MM-DD (not UTC: Cloud Run's clock is, the user's is not). The greeting sends it so the
 // server can open with the day of the week, and every turn sends it so a live lookup's "today" is the user's (M-6).
 const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const localDateOf = (date) =>
+export const localDateOf = (date) =>
   `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
-// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting })
+// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting, now })
 //   fetch      the window fetch (injected so tests need no network)
 //   rates      today's rates, as App.jsx holds them (may be null at first: setRates() when they arrive)
 //   localHour  0-23 for the greeting; defaults to the clock
@@ -249,11 +249,17 @@ const localDateOf = (date) =>
 //              already in the transcript when it is called)
 //   speakGreeting  true (the default) speaks the greeting on open(); false shows it, in the transcript and the history, but says
 //              nothing until briefMe() (the morning briefing is read, not played at the user). Applies to the greeting only.
+//   now        () -> Date, the device clock (injected so tests can move it); defaults to new Date()
 // Returns { getState, subscribe, setRates, open, leave, submit, heard, confirmPending, cancelPending, setStage,
 //           briefMe, notice, dispose }.
 //
 // briefMe() speaks the briefing turn's text through onSpeak, again if it was already spoken -> { ok: true }, or { ok: false, reason }
-// with "no-briefing" (the greeting has not come back, failed, or carried no briefing) or "closed" (away or disposed).
+// with "no-briefing" (the greeting has not come back, failed, or carried no briefing), "closed" (away or disposed) or "stale".
+//
+// A briefing belongs to the local day its greeting was sent on. Once the device's day has moved on (a tab left open past midnight)
+// it is "stale": briefMe() and a typed or said brief request answer { ok: false, reason: "stale" }, and speak, add and send nothing,
+// so yesterday's calls, calendar and rates are never read out as today's. The screen then builds a fresh session (keep.mjs keeps one
+// per user and local day), whose greeting is the new day's briefing.
 //
 // The greeting's briefing is kept in getState().briefing and the briefing's follow-up question is answered by the FIRST /turn after
 // it: that turn alone carries `followUpRecId` (the follow-up's recId), so the server can read "skip it" as a skip. The id is used
@@ -275,14 +281,16 @@ const localDateOf = (date) =>
 // Only turns with inHistory are sent to /turn, as plain { role, content }.
 //
 // A typed or said request for the briefing again (isBriefRequest) is answered locally when there is a briefing: no /turn, the briefing's
-// text is added as a new turn (action: "brief") and spoken. With no briefing it is an ordinary turn.
+// text is added as a new turn (action: "brief") and spoken. With no briefing it is an ordinary turn; with a stale one it is refused.
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
-export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true } = {}) {
+export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true, now } = {}) {
   const doFetch = fetchFn || ((...args) => globalThis.fetch(...args));
+  const clock = typeof now === "function" ? now : () => new Date();
   let currentRates = rates;
   let briefingTurn = null;      // the transcript turn that holds the briefing, for briefMe()
+  let briefingDay = null;       // the local day the briefing's greeting was sent on
   let followUpRecId = null;     // the briefing's follow-up id until the first exchange after it uses it up
   let nextId = 1;
   let disposed = false;
@@ -425,10 +433,13 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
   // The user's calendar day: the one handed to createSession when it is YYYY-MM-DD (tests pin it), else the device's own today.
   const todayLocal = (now) => (typeof localDate === "string" && LOCAL_DATE_RE.test(localDate) ? localDate : localDateOf(now));
 
+  // Whether the briefing is from an earlier local day than the device's today.
+  const staleBriefing = () => briefingDay !== null && todayLocal(clock()) !== briefingDay;
+
   async function runGreeting() {
-    const now = new Date();
-    const hour = Number.isInteger(localHour) ? localHour : now.getHours();
-    const date = todayLocal(now);
+    const at = clock();
+    const hour = Number.isInteger(localHour) ? localHour : at.getHours();
+    const date = todayLocal(at);
     const res = await request("POST", "/api/assistant/turn", { greeting: true, rates: currentRates, localHour: hour, localDate: date });
     if (res.ok && res.data && typeof res.data.reply === "string" && res.data.reply.trim()) {
       // A greeting that failed on the server's side (error: true) carries no briefing; one that is missing or odd is none.
@@ -436,6 +447,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
       const turn = showTurnResult(res, { say: speakGreeting !== false });
       if (briefing && turn) {
         briefingTurn = turn;
+        briefingDay = date;
         followUpRecId = briefing.followUp ? briefing.followUp.recId : null;
         set({ briefing });
       }
@@ -451,6 +463,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
   async function briefMe() {
     if (disposed || away) return { ok: false, reason: "closed" };
     if (!briefingTurn || !state.briefing) return { ok: false, reason: "no-briefing" };
+    if (staleBriefing()) return { ok: false, reason: "stale" };
     speak(briefingTurn.content, briefingTurn.turnId);
     return { ok: true };
   }
@@ -478,7 +491,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
   async function runTurn(text) {
     addTurn({ role: "user", content: text });
     // (final review M-6) every turn says the user's date, so a lookup's "today" and "last night" are theirs, not UTC's
-    const body = { messages: history(), rates: currentRates, localDate: todayLocal(new Date()) };
+    const body = { messages: history(), rates: currentRates, localDate: todayLocal(clock()) };
     // the first turn after a briefing answers its closing question: it alone says which follow-up that was
     const followUp = takeFollowUp();
     if (followUp !== null) body.followUpRecId = followUp;
@@ -542,6 +555,8 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     if (!clean) return { ok: false, reason: "empty" };
     if (!currentRates) return { ok: false, reason: "no-rates" };
     if (state.opening) return { ok: false, reason: "not-ready" };
+    // yesterday's briefing asked for again: refused before anything is dropped, added or sent (the screen rebuilds the session)
+    if (!disposed && !away && briefingTurn && state.briefing && isBriefRequest(clean) && staleBriefing()) return { ok: false, reason: "stale" };
     return exclusive(async () => {
       if (state.pending) {
         const answer = classifyReply(clean);

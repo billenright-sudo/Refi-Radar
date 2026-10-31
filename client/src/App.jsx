@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useReducer } from "react";
 import CharliView from "./charli/CharliView.jsx";
 import { returnNotice } from "./charli/google.mjs";
 import { endKeptSession } from "./charli/keep.mjs";
+import { localDateOf } from "./charli/session.mjs";
 import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
@@ -2103,7 +2104,9 @@ export default function App() {
       .finally(() => setClientsLoading(false));
   }, [authState]);
 
+  const ratesAskedOn = useRef(null);   // the local day rates were last asked for (see the new-day check below)
   const fetchRates = useCallback(async () => {
+    ratesAskedOn.current = localDateOf(new Date());
     setRatesLoading(true);
     setRatesError(null);
     try {
@@ -2138,6 +2141,27 @@ export default function App() {
     fetchRates();
     fetchTreasury();
   }, [authState, fetchRates, fetchTreasury]);
+
+  // The device's local day, read on every render. A tab left open past midnight renders again when it comes back into view or takes
+  // focus (no timers that wake the device), or when Charlie finds its briefing is yesterday's (onStale). Charlie's screens are keyed
+  // by the day, so the new day's render builds a fresh session and briefing (keep.mjs keeps one per user and day), and Charlie gets
+  // only rates fetched today: until they are fetched again, once, the new day's briefing waits for them.
+  const today = localDateOf(new Date());
+  const [, renderAgain] = useReducer((n) => n + 1, 0);
+  const renderedDay = useRef(today);
+  renderedDay.current = today;
+  useEffect(() => {
+    const look = () => { if (localDateOf(new Date()) !== renderedDay.current) renderAgain(); };
+    document.addEventListener("visibilitychange", look);
+    window.addEventListener("focus", look);
+    return () => { document.removeEventListener("visibilitychange", look); window.removeEventListener("focus", look); };
+  }, []);
+  const ratesFetchedOn = lastFetched ? localDateOf(lastFetched) : null;
+  const charlieRates = ratesFetchedOn === today ? rates : null;
+  useEffect(() => {
+    if (authState !== "authenticated" || !ratesFetchedOn || ratesFetchedOn === today || ratesAskedOn.current === today) return;
+    fetchRates();
+  }, [authState, ratesFetchedOn, today, fetchRates]);
 
   const handleDeleteClient = useCallback((id) => {
     setClients(prev => prev.filter(c => c.id !== id));
@@ -2203,7 +2227,7 @@ export default function App() {
             <NotificationBell />
           </header>
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
-            {view === "home"          && <CharliView mode="home" rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} />}
+            {view === "home"          && <CharliView key={today} mode="home" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} onStale={renderAgain} />}
             {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
@@ -2231,7 +2255,7 @@ export default function App() {
           <Icon name="mic" size={16} color="#0f2040" />Charlie
         </button>
       )}
-      {view !== "home" && panelOpen && <CharliView mode="panel" rates={rates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} />}
+      {view !== "home" && panelOpen && <CharliView key={today} mode="panel" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} onStale={renderAgain} />}
     </div>
   );
 }

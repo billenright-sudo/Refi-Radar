@@ -346,6 +346,55 @@ test("briefing: briefMe() is closed while the user is away or after dispose, lik
   assert.equal(spoken.length, 1);
 });
 
+// ── a new local day (final review I3) ─────────────────────────────────────────
+
+// A session on an injected device clock (no localDate pinned), so its "today" is the clock's.
+function clockSetup({ more = [] } = {}) {
+  const clock = { at: new Date(2026, 10, 5, 21, 0) };   // 9 PM on Thursday 5 November, on this machine's clock
+  const out = briefingSetup(briefingOf(), { options: { speakGreeting: false, localDate: undefined, now: () => clock.at }, more });
+  return { ...out, clock };
+}
+
+test("a new day: the greeting carries the injected clock's local date", async () => {
+  const { session, server } = clockSetup();
+  await session.open();
+  assert.equal(server.turns()[0].body.localDate, "2026-11-05");
+});
+
+test("a new day: Brief me on a briefing from an earlier local day speaks nothing and says it is stale", async () => {
+  const { session, spoken, clock, server } = clockSetup();
+  await session.open();
+  assert.deepEqual(await session.briefMe(), { ok: true }, "the same evening it is read");
+  spoken.length = 0;
+  clock.at = new Date(2026, 10, 6, 0, 5);   // just past midnight: the briefing is yesterday's
+  assert.deepEqual(await session.briefMe(), { ok: false, reason: "stale" });
+  assert.deepEqual(spoken, [], "yesterday's briefing is never spoken as today's");
+  assert.equal(server.turns().length, 1);
+});
+
+test("a new day: a typed or said brief request on yesterday's briefing adds nothing, sends nothing, speaks nothing", async () => {
+  for (const phrase of ["brief me", "Give me my morning briefing.", "catch me up"]) {
+    const { session, spoken, clock, server } = clockSetup();
+    await session.open();
+    clock.at = new Date(2026, 10, 6, 7, 30);
+    const before = session.getState().turns.length;
+    assert.deepEqual(await session.submit(phrase), { ok: false, reason: "stale" }, phrase);
+    assert.deepEqual(await session.heard(phrase), { ok: false, reason: "stale" }, phrase);
+    assert.equal(session.getState().turns.length, before, phrase);
+    assert.equal(server.turns().length, 1, `${phrase}: no /turn`);
+    assert.deepEqual(spoken, [], phrase);
+    assert.equal(session.getState().busy, false);
+  }
+});
+
+test("a new day: an ordinary turn still goes to /turn, with the new day's localDate", async () => {
+  const { session, clock, server } = clockSetup({ more: [turnReply("Sure.", { turnId: "n1" })] });
+  await session.open();
+  clock.at = new Date(2026, 10, 6, 7, 30);
+  assert.deepEqual(await session.submit("what are rates today"), { ok: true, action: "turn" });
+  assert.equal(server.turns()[1].body.localDate, "2026-11-06");
+});
+
 test("briefing: the greeting body is still { greeting, rates, localHour, localDate } and nothing else", async () => {
   const { session, server } = briefingSetup(briefingOf({ followUp: FOLLOW_UP }));
   await session.open();

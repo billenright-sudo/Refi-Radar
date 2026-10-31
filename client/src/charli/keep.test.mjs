@@ -32,3 +32,18 @@ test("lines Charli says go to whichever screen is showing, and nowhere when none
   assert.deepEqual(heard, ["hi"]);
   endKeptSession();
 });
+
+test("final review I3: the conversation is kept per user AND per local day: past midnight a fresh one is built", () => {
+  let made = 0;
+  const disposed = [];
+  const make = () => { const id = ++made; return { id, dispose: () => disposed.push(id) }; };
+  const evening = new Date(2026, 10, 5, 21, 0);   // 9 PM on 5 November, on this machine's clock
+  const a = keptSession(1, make, evening);
+  assert.equal(keptSession(1, make, new Date(2026, 10, 5, 23, 59)).session, a.session, "later the same day: the same one");
+  const b = keptSession(1, make, new Date(2026, 10, 6, 0, 1));
+  assert.notEqual(b.session, a.session, "the next local day: a fresh one, so a fresh briefing");
+  assert.deepEqual(disposed, [1], "yesterday's is ended");
+  assert.equal(keptSession(1, make, new Date(2026, 10, 6, 9, 0)).session, b.session);
+  endKeptSession();
+  assert.deepEqual(disposed, [1, 2]);
+});

@@ -14,6 +14,9 @@ import { stripItems } from "./strip.mjs";
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
 //   onNavigate(viewId)  home: a strip item was tapped (App opens that page)
 //   onClose()           panel: the close button or Escape (App takes the drawer away)
+//   onStale()           Brief me (the button, or the request typed or said) found the briefing is from an earlier local day: App
+//                       renders again, and since it keys this screen by the day, a fresh session and briefing are built for today
+//                       (keep.mjs keeps one per user and day). Yesterday's briefing is never spoken.
 //
 // Only one of the two is on screen at a time, and both take the one kept session (keep.mjs), so the conversation carries over and
 // nobody is greeted twice. The briefing is shown but not spoken on its own (speakGreeting:false): Brief me speaks it, from a tap.
@@ -128,7 +131,7 @@ const Strip = ({ items, onOpen, ui: { C, mono } }) => items.length > 0 && (
 
 // ── the view ─────────────────────────────────────────────────────────────────
 
-export default function CharliView({ rates, user, ui, mode = "home", onNavigate, onClose }) {
+export default function CharliView({ rates, user, ui, mode = "home", onNavigate, onClose, onStale }) {
   const { C, card, mono, Icon } = ui;
   const panel = mode === "panel";
 
@@ -146,6 +149,10 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   pausedRef.current = paused;
   const speakingRef = useRef(false);   // whether she is mid-line right now (Pause keeps only a line it cuts off)
   const listenOnResume = useRef(false);   // the microphone was on when Pause was tapped: Resume turns it back on, never otherwise
+  const onStaleRef = useRef(onStale);
+  onStaleRef.current = onStale;
+  // A brief request refused because the briefing is yesterday's: App rebuilds this screen for today.
+  const rebuildIfStale = (result) => { if (result && result.reason === "stale" && onStaleRef.current) onStaleRef.current(); };
 
   // The conversation outlives a visit to this screen (keep.mjs): coming back shows it again, with no second greeting. The audio
   // is built once per visit.
@@ -167,7 +174,8 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
         const text = await transcribe(blob);
         if (pausedRef.current) return;   // paused while it was being transcribed: drop it
         const result = await session.heard(text, { pendingAtStart });
-        if (!result.ok && (result.reason === "busy" || result.reason === "not-ready")) {
+        if (!result.ok && result.reason === "stale") rebuildIfStale(result);
+        else if (!result.ok && (result.reason === "busy" || result.reason === "not-ready")) {
           session.notice("I was still working on your last message. Could you say that again?");
         }
       } catch (err) {
@@ -271,11 +279,12 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     audio.unlock();
     if (mic === "live") audio.stopMic(); else startListening();
   };
-  // Brief me: the briefing said aloud, from this tap (a tap is what lets the browser play audio). Said again if it was already.
+  // Brief me: the briefing said aloud, from this tap (a tap is what lets the browser play audio). Said again if it was already; a
+  // briefing from an earlier day is not said, and the screen is rebuilt for today instead.
   const briefMe = () => {
     audio.stopSpeaking();
     audio.unlock();
-    session.briefMe();
+    session.briefMe().then(rebuildIfStale);
   };
   const startCharlie = () => {
     setNeedsStart(false);
@@ -292,6 +301,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     audio.stopSpeaking();
     const result = await session.submit(draft);
     if (result.ok) setDraft("");
+    else rebuildIfStale(result);
   };
 
   // ── what to draw ──
