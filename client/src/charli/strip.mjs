@@ -25,7 +25,8 @@ function moveText(move) {
   return `${move < 0 ? "down" : "up"} ${size}`;
 }
 
-// stripItems(strip) -> [{ key, label, value, detail?, view? | href? }], in the order they are drawn. An item is there only when its
+// stripItems(strip) -> [{ key, label, value, detail?, view? | href? }], in the order they are drawn. An estimated rate set (`estimated: true`,
+// as the server marks it) is labelled "estimated" and shows no move or date, as the spoken briefing says it. An item is there only when its
 // fact is known. `view` is a nav id (nav.mjs) the item opens; `href` is an outside address (the calendar). [] when nothing is known.
 export function stripItems(strip) {
   const s = strip && typeof strip === "object" ? strip : {};
@@ -33,9 +34,13 @@ export function stripItems(strip) {
 
   if (isNumber(s.rate30)) {
     const parts = [];
-    if (isNumber(s.move30)) parts.push(moveText(s.move30));
-    const asOf = shortDate(s.asOf);
-    if (asOf) parts.push(`as of ${asOf}`);
+    if (s.estimated === true) {
+      parts.push("estimated");
+    } else {
+      if (isNumber(s.move30)) parts.push(moveText(s.move30));
+      const asOf = shortDate(s.asOf);
+      if (asOf) parts.push(`as of ${asOf}`);
+    }
     items.push({ key: "rate", label: "30-year fixed", value: `${s.rate30.toFixed(2)}%`, detail: parts.join(", "), view: "rates" });
   }
   if (isNumber(s.opportunities)) {

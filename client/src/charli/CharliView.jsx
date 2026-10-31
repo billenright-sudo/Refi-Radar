@@ -304,6 +304,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   else if (voiceDown) status = "Type below. Voice input isn't set up here";
   else if (mic === "live") { status = hearing ? "Listening… hearing you" : "Listening"; dot = C.green; }
   else if (mic === "starting") status = "Starting the microphone…";
+  else if (MIC_NOTES[mic]) status = "Type below. The microphone isn't available";   // denied | unavailable | error (the note below says why)
   else status = "Tap Talk to speak, or type below";
 
   const micNote = !paused && MIC_NOTES[mic];
@@ -322,7 +323,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     ? { ...ghost, ...talkSize, background: C.greenBg, color: C.green, border: `1px solid ${C.green}` }
     : { ...primary, ...talkSize };
   const talkButton = (
-    <button data-testid="charli-talk" type="button" aria-pressed={listening} disabled={mic === "starting" && !paused} onClick={talk} style={{ ...talkStyle, opacity: mic === "starting" && !paused ? 0.7 : 1 }}>
+    <button data-testid="charli-talk" type="button" disabled={mic === "starting" && !paused} onClick={talk} style={{ ...talkStyle, opacity: mic === "starting" && !paused ? 0.7 : 1 }}>
       <Icon name="mic" size={panel ? 15 : 20} color={listening ? C.green : "#0f2040"} />{talkLabel}
     </button>
   );

@@ -2081,6 +2081,7 @@ export default function App() {
     setAuthState("unauthenticated");
     setAuthView("login");
     setClients([]);
+    setRates(null);   // the next sign-in must not build its briefing from this session's rates: Home waits for fresh ones
   };
 
   // The Profile page saved something: App's copy of the user (the sidebar shows the name) follows it.

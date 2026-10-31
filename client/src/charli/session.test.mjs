@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
   CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE, STILL_WORKING,
-  LEFT_UNCONFIRMED, LEFT_UNFINISHED,
+  LEFT_UNCONFIRMED, LEFT_UNFINISHED, isBriefRequest,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -463,6 +463,17 @@ test("briefing: a briefing that is missing, or only partly there, is read as nul
   });
 });
 
+test("briefing: the strip's estimated flag (an estimated rate set) is kept only when it is exactly true", async () => {
+  const yes = briefingSetup(briefingOf({ strip: { ...STRIP, move30: null, asOf: null, estimated: true } }));
+  await yes.session.open();
+  assert.deepEqual(yes.session.getState().briefing.strip, { ...STRIP, move30: null, asOf: null, estimated: true });
+  for (const estimated of [false, "true", 1, null]) {
+    const { session } = briefingSetup(briefingOf({ strip: { ...STRIP, estimated } }));
+    await session.open();
+    assert.deepEqual(session.getState().briefing.strip, STRIP, `estimated: ${JSON.stringify(estimated)} is not kept`);
+  }
+});
+
 test("briefing: an all-day next event (start: null, as the server sends it) stays in the strip; only a non-text start is dropped", async () => {
   for (const [start, kept] of [[null, null], ["2026-10-28", "2026-10-28"], [5, null], [undefined, null]]) {
     const { session } = briefingSetup(briefingOf({ strip: { ...STRIP, nextEvent: { title: "Conference day", start } } }));
@@ -475,6 +486,122 @@ test("briefing: an all-day next event (start: null, as the server sends it) stay
     await session.open();
     assert.equal(session.getState().briefing.strip.nextEvent, null, JSON.stringify(nextEvent));
   }
+});
+
+// ── asking for the briefing again, typed or said (Ruling R22) ──────────────────
+
+const BRIEF_PHRASES = [
+  "brief me", "Brief me.", "brief me again", "Brief me again!", "  BRIEF ME  ", "brief me please",
+  "morning briefing", "Morning briefing.", "my briefing", "my morning briefing",
+  "give me my morning briefing", "Give me my morning briefing.", "give me my briefing", "give me the briefing", "give me the morning briefing",
+  "read me my briefing", "read me the morning briefing", "read my briefing", "read the briefing", "read the morning briefing",
+  "catch me up", "Catch me up.", "what's my briefing", "What's my briefing?", "what’s my briefing", "what is my briefing",
+];
+const NOT_BRIEF_PHRASES = [
+  "brief me on Lucy's loan", "what's the briefing schedule", "briefing schedule", "can you brief me on rates",
+  "give me a briefing on the Chens", "catch me up on Lucy", "morning briefing for tomorrow", "brief", "brief me, then log a call",
+  "what are rates today", "yes", "",
+];
+
+test("brief requests: the phrases that ask for the briefing again are recognised, others are not", () => {
+  for (const phrase of BRIEF_PHRASES) assert.equal(isBriefRequest(phrase), true, phrase);
+  for (const phrase of NOT_BRIEF_PHRASES) assert.equal(isBriefRequest(phrase), false, JSON.stringify(phrase));
+  assert.equal(isBriefRequest(null), false);
+  assert.equal(isBriefRequest(undefined), false);
+});
+
+test("brief requests: with a briefing, each phrase is answered here (no /turn), as a new turn with the briefing's text, and spoken", async () => {
+  for (const phrase of BRIEF_PHRASES) {
+    const { session, server, spoken } = briefingSetup(briefingOf(), { options: { speakGreeting: false } });
+    await session.open();
+    const before = session.getState().turns.length;
+    assert.deepEqual(await session.submit(phrase), { ok: true, action: "brief" }, phrase);
+    assert.equal(server.turns().length, 1, `${phrase}: only the greeting went to /turn`);
+    const turns = session.getState().turns;
+    assert.equal(turns.length, before + 2, phrase);
+    const [mine, hers] = turns.slice(-2);
+    assert.deepEqual([mine.role, mine.content, mine.inHistory], ["user", phrase.trim(), true], phrase);
+    assert.deepEqual([hers.role, hers.content, hers.kind, hers.inHistory, hers.turnId], ["assistant", BRIEFING_TEXT, "message", true, "b1"], phrase);
+    assert.deepEqual(hers.sources, ["live rates 2026-10-27"], phrase);
+    assert.deepEqual(spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }], phrase);
+    assert.equal(session.getState().busy, false);
+  }
+});
+
+test("brief requests: the exchange is in the history the next turn sends, and the briefing in the state stays", async () => {
+  const { session, server } = briefingSetup(briefingOf(), { options: { speakGreeting: false }, more: [turnReply("Sure.", { turnId: "n1" })] });
+  await session.open();
+  const briefing = session.getState().briefing;
+  await session.submit("give me my morning briefing");
+  await session.submit("thanks");
+  assert.deepEqual(messagesOf(server.turns()[1]), [
+    { role: "assistant", content: BRIEFING_TEXT },
+    { role: "user", content: "give me my morning briefing" },
+    { role: "assistant", content: BRIEFING_TEXT },
+    { role: "user", content: "thanks" },
+  ]);
+  assert.equal(session.getState().briefing, briefing);
+});
+
+test("brief requests: they do not use up the briefing's follow-up id; the next real turn still carries it", async () => {
+  const { session, server } = briefingSetup(briefingOf({ followUp: FOLLOW_UP }), { options: { speakGreeting: false }, more: [turnReply("Okay.", { turnId: "n1" })] });
+  await session.open();
+  await session.submit("brief me");
+  await session.submit("brief me again");
+  assert.equal(server.turns().length, 1);
+  await session.submit("yes, I reached them");
+  assert.equal(server.turns()[1].body.followUpRecId, 7);
+});
+
+test("brief requests: the words around a request make it a normal turn, sent to /turn", async () => {
+  for (const phrase of NOT_BRIEF_PHRASES.filter(Boolean)) {
+    if (classifyReply(phrase) !== "other") continue;   // a bare yes is a yes / no answer, not this
+    const { session, server } = briefingSetup(briefingOf(), { options: { speakGreeting: false }, more: [turnReply("Here you go.", { turnId: "n1" })] });
+    await session.open();
+    assert.deepEqual(await session.submit(phrase), { ok: true, action: "turn" }, phrase);
+    assert.equal(server.turns().length, 2, `${phrase}: it went to /turn`);
+    assert.equal(lastTurn(session).content, "Here you go.", phrase);
+  }
+});
+
+test("brief requests: with no briefing (a failed greeting, an older server's plain one) the request goes to /turn as before", async () => {
+  const failed = setup({ routes: { "POST /api/assistant/turn": queue(reply(500, { error: "boom" }), turnReply("Here you go.", { turnId: "n1" })) } });
+  await failed.session.open();
+  assert.equal(failed.session.getState().briefing, null);
+  assert.deepEqual(await failed.session.submit("brief me"), { ok: true, action: "turn" });
+  assert.equal(failed.server.turns().length, 2);
+  assert.deepEqual(messagesOf(failed.server.turns()[1]), [{ role: "user", content: "brief me" }]);
+
+  const plain = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Good morning, Ann."), turnReply("Here you go.", { turnId: "n2" })) } });
+  await plain.session.open();
+  assert.deepEqual(await plain.session.submit("catch me up"), { ok: true, action: "turn" });
+  assert.equal(plain.server.turns().length, 2);
+});
+
+test("brief requests: a change waiting for a yes is dropped first, as for any other new request, then the briefing is read", async () => {
+  const { session, server, spoken } = briefingSetup(briefingOf(), {
+    options: { speakGreeting: false },
+    more: [turnReply(READ_BACK, { sideEffect: SIDE_EFFECT, turnId: "r1" })],
+  });
+  await session.open();
+  await session.submit("log a call with the Chens");
+  assert.notEqual(session.getState().pending, null);
+  spoken.length = 0;
+  assert.deepEqual(await session.submit("brief me"), { ok: true, action: "brief" });
+  assert.equal(session.getState().pending, null);
+  assert.equal(server.confirms().length, 0, "nothing was confirmed");
+  assert.equal(server.turns().length, 2);
+  assert.deepEqual(spoken, [{ text: LEAVE_THAT, turnId: undefined }, { text: BRIEFING_TEXT, turnId: "b1" }]);
+});
+
+test("brief requests: while away or busy they are refused like any other submit, and nothing is added", async () => {
+  const away = briefingSetup(briefingOf(), { options: { speakGreeting: false } });
+  await away.session.open();
+  away.session.leave();
+  const n = away.session.getState().turns.length;
+  assert.deepEqual(await away.session.submit("brief me"), { ok: false, reason: "closed" });
+  assert.equal(away.session.getState().turns.length, n);
+  assert.deepEqual(away.spoken, []);
 });
 
 // ── a normal turn ────────────────────────────────────────────────────────────

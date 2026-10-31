@@ -226,7 +226,14 @@ test("an estimated rate set says estimated and claims no move, even with a store
   assert.ok(r.reply.includes("Today's calls, on estimated rates:"), r.reply);
   assert.equal(r.strip.move30, null);
   assert.equal(r.strip.asOf, null);
+  assert.equal(r.strip.estimated, true, "the strip says it too, so the screen can label the rate as the briefing does");
   assert.ok(r.sources.includes("estimated rates 2026-10-30"), r.sources.join(" | "));
+});
+
+test("a live rate set's strip never says estimated", async () => {
+  const r = await brief(nellId);
+  assert.ok(!("estimated" in r.strip) || r.strip.estimated === false, JSON.stringify(r.strip));
+  assert.equal(r.strip.rate30, 6.52);
 });
 
 // ── the call list ────────────────────────────────────────────────────────────

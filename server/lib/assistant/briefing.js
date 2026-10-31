@@ -113,7 +113,8 @@ const attempt = (section, fn) => Promise.resolve().then(fn).catch((err) => { ski
 
 // ── the sections ─────────────────────────────────────────────────────────────
 
-// -> { line, source, strip: { rate30, move30, asOf } } or null when there are no usable rates.
+// -> { line, source, strip: { rate30, move30, asOf } } (an estimated set: strip also has estimated: true, so the screen can label the rate
+// as the briefing does) or null when there are no usable rates.
 function marketSection({ ctx, db, userId, localDate }) {
   const market = assistantTools.getMarketUpdate({}, ctx);
   const data = market && isCitation(market.source) && market.data;
@@ -121,7 +122,7 @@ function marketSection({ ctx, db, userId, localDate }) {
   const rate30 = rates && rates.rate_30yr_fixed;
   if (!Number.isFinite(rate30)) return null;
   if (data.estimated) {
-    return { line: `The 30-year is at an estimated ${rate30}%.`, source: market.source, strip: { rate30, move30: null, asOf: null } };
+    return { line: `The 30-year is at an estimated ${rate30}%.`, source: market.source, strip: { rate30, move30: null, asOf: null, estimated: true } };
   }
   const asOf = realDay(rates.date) ? rates.date : null;
   const asOfText = asOf ? `, as of ${spokenDate(asOf, localDate)}` : "";

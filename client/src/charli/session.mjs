@@ -129,6 +129,22 @@ export function voiceNoteFor(status, body = "") {
   return "Charlie's voice isn't coming through right now, so her answers are in text.";
 }
 
+// ── Asking for the briefing again ────────────────────────────────────────────
+
+// Whether a typed or said line is just a request for the morning briefing again ("brief me", "give me my morning briefing", "catch me
+// up", "what's my briefing"). Such a line is answered here with the briefing already on screen, never sent to the model (it would only
+// say it cannot verify it). Compared as normalize() leaves it (case, punctuation and audio-event tags gone), and the WHOLE line must be
+// the request: "brief me on Lucy's loan" and "what's the briefing schedule" are ordinary turns.
+const BRIEF_REQUEST_RE = new RegExp(
+  "^(?:please )?(?:" + [
+    "brief me(?: again)?",
+    "(?:(?:give me|read me|read) )?(?:(?:my|the) )?(?:morning )?briefing",
+    "catch me up",
+    "what(?:'s| is) (?:my|the) (?:morning )?briefing",
+  ].join("|") + ")(?: please)?$"
+);
+export const isBriefRequest = (text) => BRIEF_REQUEST_RE.test(normalize(text));
+
 // ── The session ──────────────────────────────────────────────────────────────
 
 const cleanSources = (sources) =>
@@ -162,7 +178,8 @@ function cleanCompose(compose) {
 // The morning briefing the greeting carries (/turn greeting's `briefing`): { kind, strip, followUp }. Kept only as the server documents
 // it: `kind` is "morning" or "catch_up" (anything else is no briefing); `strip` always has the six fields, each null unless it has
 // its documented type (a number, a string, or for nextEvent a { title, start } with a text title and a text start, or null for an
-// all-day event), so nothing is guessed at; `followUp` is
+// all-day event), so nothing is guessed at (`estimated: true`, the server's mark of an estimated rate set, is kept only when it is exactly
+// true, and the key is absent otherwise); `followUp` is
 // { recId, clientId, name, source } when recId is a positive integer and name is text, else null. -> a fresh object, or null.
 const BRIEFING_KINDS = new Set(["morning", "catch_up"]);
 const numberOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -187,6 +204,7 @@ function cleanBriefing(briefing) {
       checkInsDue: numberOrNull(s.checkInsDue),
       // an all-day event has start: null (the server's own shape), and is still the next event
       nextEvent: event && typeof event.title === "string" ? { title: event.title, start: stringOrNull(event.start) } : null,
+      ...(s.estimated === true ? { estimated: true } : {}),
     },
     followUp,
   };
@@ -251,10 +269,13 @@ const localDateOf = (date) =>
 //            ("unverified": Charli's reply is exactly the can't-verify or guideline hand-off line; compose: the unsent client
 //            email the reply set up, { to, subject, body, links: { gmail, outlook, mailto } }, kept only when it checks out)
 //   pending  { sideEffect, readBack, details? } | null   (details: [{ label, value }] for the card, when the server sent them)
-//   briefing { kind: "morning" | "catch_up", strip: { rate30, move30, asOf, opportunities, checkInsDue, nextEvent }, followUp } | null
+//   briefing { kind: "morning" | "catch_up", strip: { rate30, move30, asOf, opportunities, checkInsDue, nextEvent, estimated? }, followUp } | null
 //            (the greeting's briefing, for the home page; null until the greeting arrives, and when it failed or had none; each strip
 //            field is null when unknown, nextEvent is { title, start } | null, followUp is { recId, clientId, name, source } | null)
 // Only turns with inHistory are sent to /turn, as plain { role, content }.
+//
+// A typed or said request for the briefing again (isBriefRequest) is answered locally when there is a briefing: no /turn, the briefing's
+// text is added as a new turn (action: "brief") and spoken. With no briefing it is an ordinary turn.
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
@@ -464,6 +485,17 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     showTurnResult(await request("POST", "/api/assistant/turn", body));
   }
 
+  // "Brief me" typed or said: the briefing again, with no request. The exchange is in the transcript and the history like any other (the
+  // user's line, then the briefing's own text, sources and turn id), and it is spoken. It is not an answer to the briefing's question, so
+  // the follow-up id is left for the first real turn.
+  function runBriefAgain(text) {
+    addTurn({ role: "user", content: text });
+    const turn = addTurn({
+      role: "assistant", content: briefingTurn.content, sources: [...briefingTurn.sources], turnId: briefingTurn.turnId, kind: "message",
+    });
+    speak(turn.content, turn.turnId);
+  }
+
   // The pending change was declined, by voice or by the Cancel button.
   function leaveThat() {
     set({ pending: null });
@@ -520,6 +552,10 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
           return { ok: true, action: answer === "yes" ? "confirm" : "cancel" };
         }
         leaveThat();   // anything else: drop the change, then handle what was said as a new request
+      }
+      if (briefingTurn && state.briefing && isBriefRequest(clean)) {
+        runBriefAgain(clean);
+        return { ok: true, action: "brief" };
       }
       await runTurn(clean);
       return { ok: true, action: "turn" };

@@ -31,10 +31,25 @@ test("a rise says up; no change says unchanged; an unknown move says nothing abo
   assert.equal(byKey(stripItems({ ...full, move30: null }), "rate").detail, "as of Oct 29");
 });
 
-test("an estimated rate set (no move, no date) shows the rate alone", () => {
+test("a live rate with no move and no date known shows the rate alone", () => {
   const rate = byKey(stripItems({ ...full, rate30: 6.5, move30: null, asOf: null }), "rate");
   assert.equal(rate.value, "6.50%");
   assert.equal(rate.detail, "");
+});
+
+test("an estimated rate set is labelled estimated, as the spoken briefing says it, and claims no move or date", () => {
+  const rate = byKey(stripItems({ ...full, rate30: 6.87, move30: null, asOf: null, estimated: true }), "rate");
+  assert.equal(rate.value, "6.87%");
+  assert.equal(rate.detail, "estimated");
+  assert.equal(rate.view, "rates");
+  // even if a move or a date came along with it, an estimate never shows one
+  assert.equal(byKey(stripItems({ ...full, estimated: true }), "rate").detail, "estimated");
+});
+
+test("only an estimated flag that is exactly true labels the rate", () => {
+  for (const estimated of [false, undefined, null, "true", 1, "yes"]) {
+    assert.equal(byKey(stripItems({ ...full, estimated }), "rate").detail, "down 0.14, as of Oct 29", String(estimated));
+  }
 });
 
 test("no rate, no rate item, and a move or date alone never stands in for it", () => {

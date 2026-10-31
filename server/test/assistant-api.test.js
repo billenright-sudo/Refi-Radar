@@ -609,7 +609,7 @@ test("greeting: estimated rates say so, claim no move, and cite the estimated so
   assert.match(r.data.reply, /The 30-year is at an estimated 6\.52%\./);
   assert.match(r.data.reply, /Today's call, on estimated rates: Only Refi/);
   assert.deepStrictEqual(r.data.sources, ["estimated rates 2026-10-21", "sweep engine (estimated rates 2026-10-21)"]);
-  assert.deepStrictEqual(r.data.briefing.strip, { rate30: 6.52, move30: null, asOf: null, opportunities: 1, checkInsDue: 1, nextEvent: null });
+  assert.deepStrictEqual(r.data.briefing.strip, { rate30: 6.52, move30: null, asOf: null, opportunities: 1, checkInsDue: 1, nextEvent: null, estimated: true });
 });
 
 test("greeting: a failed sweep, a failed market tool or both leave their part out and still ask one question", async () => {
