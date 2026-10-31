@@ -552,6 +552,29 @@ const NOT_BRIEF_PHRASES = [
   "what are rates today", "yes", "",
 ];
 
+// M12: the same requests with her name, or a "hey" / "please", around them (how a request is said aloud)
+const VOCATIVE_BRIEF_PHRASES = [
+  "Charlie, brief me", "Charlie brief me", "Give me my morning briefing, Charlie", "Give me my morning briefing, Charlie.",
+  "Hey Charlie, brief me", "hey charlie brief me please", "Charlie, please brief me", "Brief me please, Charlie.",
+  "brief me, Charlie, please", "Charli, catch me up", "Hey, brief me", "hey catch me up", "Please, Charlie, brief me",
+  "What's my briefing, Charlie?", "Hey Charlie, what's my morning briefing?",
+];
+const NOT_VOCATIVE_BRIEF_PHRASES = [
+  "Charlie, brief me on Lucy's loan", "Charlie", "hey Charlie", "hey", "please", "Charlie Brown, brief me", "brief me, Charlie Brown",
+  "brief me on Charlie", "Charlie, what are rates today", "hey Charlie, catch me up on Lucy", "Charlie Charlie brief me",
+];
+
+test("M12: a brief request with \"Charlie\" before or after it, and an optional \"hey\" or \"please\", is still one", async () => {
+  for (const phrase of VOCATIVE_BRIEF_PHRASES) assert.equal(isBriefRequest(phrase), true, phrase);
+  for (const phrase of NOT_VOCATIVE_BRIEF_PHRASES) assert.equal(isBriefRequest(phrase), false, phrase);
+  // and it is answered here with the briefing, not sent to the model
+  const { session, server, spoken } = briefingSetup(briefingOf(), { options: { speakGreeting: false } });
+  await session.open();
+  assert.deepEqual(await session.submit("Charlie, brief me"), { ok: true, action: "brief" });
+  assert.equal(server.turns().length, 1);
+  assert.deepEqual(spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }]);
+});
+
 test("brief requests: the phrases that ask for the briefing again are recognised, others are not", () => {
   for (const phrase of BRIEF_PHRASES) assert.equal(isBriefRequest(phrase), true, phrase);
   for (const phrase of NOT_BRIEF_PHRASES) assert.equal(isBriefRequest(phrase), false, JSON.stringify(phrase));

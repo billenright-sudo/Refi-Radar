@@ -224,6 +224,8 @@ test("an estimated rate set says estimated and claims no move, even with a store
   assert.ok(r.reply.includes("The 30-year is at an estimated 6.52%."), r.reply);
   assert.ok(!/since October|since yesterday|dropped|down 0|up 0|as of/.test(r.reply), r.reply);
   assert.ok(r.reply.includes("Today's calls, on estimated rates:"), r.reply);
+  // M3: the broker's team line is a rate-derived count too, so it says estimated as well
+  assert.ok(r.reply.includes("Your loan officers have 1 opportunity open, on estimated rates."), r.reply);
   assert.equal(r.strip.move30, null);
   assert.equal(r.strip.asOf, null);
   assert.equal(r.strip.estimated, true, "the strip says it too, so the screen can label the rate as the briefing does");

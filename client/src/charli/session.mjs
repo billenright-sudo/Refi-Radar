@@ -134,14 +134,16 @@ export function voiceNoteFor(status, body = "") {
 // Whether a typed or said line is just a request for the morning briefing again ("brief me", "give me my morning briefing", "catch me
 // up", "what's my briefing"). Such a line is answered here with the briefing already on screen, never sent to the model (it would only
 // say it cannot verify it). Compared as normalize() leaves it (case, punctuation and audio-event tags gone), and the WHOLE line must be
-// the request: "brief me on Lucy's loan" and "what's the briefing schedule" are ordinary turns.
+// the request: "brief me on Lucy's loan" and "what's the briefing schedule" are ordinary turns. Her name may come before or after it,
+// with a "hey" and a "please" (M12: "Charlie, brief me", "Hey Charlie, brief me", "Give me my morning briefing, Charlie").
+const CHARLIE = "charl(?:ie|i)";
 const BRIEF_REQUEST_RE = new RegExp(
-  "^(?:please )?(?:" + [
+  `^(?:hey )?(?:please )?(?:${CHARLIE} )?(?:please )?(?:` + [
     "brief me(?: again)?",
     "(?:(?:give me|read me|read) )?(?:(?:my|the) )?(?:morning )?briefing",
     "catch me up",
     "what(?:'s| is) (?:my|the) (?:morning )?briefing",
-  ].join("|") + ")(?: please)?$"
+  ].join("|") + `)(?: please)?(?: ${CHARLIE})?(?: please)?$`
 );
 export const isBriefRequest = (text) => BRIEF_REQUEST_RE.test(normalize(text));
 

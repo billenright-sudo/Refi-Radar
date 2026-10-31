@@ -160,7 +160,8 @@ function sweepOf(rows, rates, nowMs) {
   return { result, source };
 }
 
-// A broker's team line: their loan officers' clients (the org's, not their own) with an opportunity, as a count only.
+// A broker's team line: their loan officers' clients (the org's, not their own) with an opportunity, as a count only. A count from
+// an estimated rate set says so, as the call list does.
 function teamSection({ user, ctx, db, nowMs }) {
   if (user.role !== "broker" || !hasRates(ctx.rates)) return null;
   const rows = db.prepare("SELECT * FROM clients WHERE org_id = ? AND user_id != ? ORDER BY name ASC").all(user.org_id, user.id);
@@ -168,7 +169,8 @@ function teamSection({ user, ctx, db, nowMs }) {
   const { result, source } = sweepOf(rows, ctx.rates, nowMs);
   const n = result && result.counts && result.counts.withOpportunity;
   if (!Number.isInteger(n) || n <= 0) return null;
-  return { line: `Your loan officers have ${plural(n, "opportunity", "opportunities")} open.`, source };
+  const estimated = isEstimated(ctx.rates) ? ", on estimated rates" : "";
+  return { line: `Your loan officers have ${plural(n, "opportunity", "opportunities")} open${estimated}.`, source };
 }
 
 // What a calendar title is read as: the title when speakable() passes it, else "an event".

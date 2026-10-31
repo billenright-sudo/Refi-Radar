@@ -2106,6 +2106,7 @@ export default function App() {
     setGoogleNotice(null);   // a Google result from before this sign-in is stale
     setEmailNotice(null);    // and so is the line about the emailed link: they have signed in
     endKeptSession();        // and so is any Charli conversation: a sign-in starts a fresh one
+    setRates(null);          // and the rates (a session that expired, then a sign-in, too): Home waits for this sign-in's own
   };
 
   const handleLogout = async () => {
