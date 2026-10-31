@@ -415,12 +415,14 @@ test("an open follow-up for Lucy from yesterday is the closing question, and fol
   assert.ok(!r.reply.includes("Lucy Tran could"), "recommended yesterday and still open: not on today's list");
 });
 
-test("the follow-up question: \"This morning\" for today's row after noon, \"Earlier\" for an older one, and a calendar call", async () => {
+test("the follow-up question: \"Earlier today\" for today's row after noon, \"Earlier\" for an older one, and a calendar call", async () => {
   const ids = seedBook();
-  // a briefing at 8 AM recorded today's list; at 1 PM the same day it is asked about
+  // F2 FLIP (was "This morning"): a briefing at 8 AM recorded today's list; at 1 PM the same day it is asked about. The table has
+  // no creation time, so the part of the day is never guessed
   await brief(annId);
   const afternoon = await brief(annId, { localHour: 13, nowMs: at(TODAY, 13) });
-  assert.match(afternoon.reply, /This morning I suggested calling (Lucy Tran|Owen Prescott|Grace Okafor)\. Were you able to reach them\?$/);
+  assert.ok(afternoon.reply.endsWith("Earlier today I suggested calling Owen Prescott. Were you able to reach them?"), afternoon.reply);
+  assert.ok(!afternoon.reply.includes("This morning"), afternoon.reply);
 
   db.prepare("DELETE FROM charlie_recommendations").run();
   fu.recordRecommendations(db, annId, "2026-10-26", [{ clientId: ids.owen, source: "sweep", reasonCode: "cash_out" }]);
@@ -431,6 +433,14 @@ test("the follow-up question: \"This morning\" for today's row after noon, \"Ear
   const cal = await brief(annId);
   assert.ok(cal.reply.endsWith("How did the call with Grace Okafor go?"), cal.reply);
   assert.equal(cal.followUp.source, "calendar");
+});
+
+test("I2: a list first made in the evening is \"Earlier today\" on a reopen that evening, never \"This morning\"", async () => {
+  seedBook();
+  await brief(annId, { localHour: 19, nowMs: at(TODAY, 19) });
+  const reopen = await brief(annId, { localHour: 20, nowMs: at(TODAY, 20) });
+  assert.match(reopen.reply, /Earlier today I suggested calling (Lucy Tran|Owen Prescott|Grace Okafor)\. Were you able to reach them\?$/);
+  assert.ok(!reopen.reply.includes("This morning"), reopen.reply);
 });
 
 test("a first open after noon does not ask about the list it has just made", async () => {

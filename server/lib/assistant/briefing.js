@@ -204,7 +204,7 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   const carriedToday = earlier.filter((r) => r.reasonCode === "carry").map((r) => r.clientId);
   // Ruling R3: (reached ∪ recently recommended) − carried, so a carried client is never left off: neither one still carried nor
   // one an earlier open today listed as carried (and consumed), so a reopen reads the same list. The clients this briefing's
-  // follow-ups ask about are left off too (unless carried): a reopen after noon asks about this morning's list, and must not also
+  // follow-ups ask about are left off too (unless carried): a reopen after noon asks about today's earlier list, and must not also
   // tell the broker to call the client it asks "were you able to reach them?" about.
   const excludeIds = new Set([...reached, ...[...recent].filter((id) => !listedToday.has(id)), ...followUpClientIds]);
   for (const id of carried) excludeIds.delete(id);
@@ -255,10 +255,11 @@ function pickFollowUps(rows) {
   return { shown: chosen.map((c) => c.first), rowIds: chosen.flatMap((c) => c.ids) };
 }
 
-// The one question about a follow-up (its name already speakable).
+// The one question about a follow-up (its name already speakable). A row from today is "Earlier today": the table keeps no time of
+// day, and a list first made at 2 or 7 PM is no "this morning".
 function followUpQuestion(row, localDate) {
   if (row.source === "calendar") return `How did the call with ${row.name} go?`;
-  const when = row.day === localDate ? "This morning" : row.day === addDays(localDate, -1) ? "Yesterday" : "Earlier";
+  const when = row.day === localDate ? "Earlier today" : row.day === addDays(localDate, -1) ? "Yesterday" : "Earlier";
   return `${when} I suggested calling ${row.name}. Were you able to reach them?`;
 }
 
