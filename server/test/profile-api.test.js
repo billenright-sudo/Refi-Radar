@@ -375,6 +375,32 @@ test("POST /email with no mailer injected uses email.sendEmailChange, which decl
   }
 });
 
+test("I7: in production with APP_URL unset or pointing at this machine, POST /email is a 503 that sends nothing and keeps no link", async () => {
+  const id = addLoginUser(orgP, "lo", "iris@p.co");
+  const NOT_SET_UP = { success: false, error: "Email isn't set up yet" };
+  try {
+    for (const APP_URL of [undefined, "", "  ", "http://localhost:8080", "http://LOCALHOST", "https://app.localhost", "http://127.0.0.1:8080",
+      "http://127.1.2.3", "http://[::1]:8080", "http://0.0.0.0:8080", "not a url"]) {
+      app.set("profileEnv", { NODE_ENV: "production", ...(APP_URL === undefined ? {} : { APP_URL }) });
+      const r = await as(id)("POST", "/api/profile/email", { email: "iris.new@p.co" });
+      assert.deepStrictEqual([r.status, r.data], [503, NOT_SET_UP], String(APP_URL));
+      assert.equal(changeRow(id), undefined, `${APP_URL}: no link stays live`);
+    }
+    assert.equal(sent.length, 0, "nothing was mailed");
+
+    // a real address in production, or any setting outside production (dev, tests), mails the link as before
+    for (const env of [{ NODE_ENV: "production", APP_URL: "https://broker-radar.example.com" }, { NODE_ENV: "development" }, {}]) {
+      app.set("profileEnv", env);
+      sent = [];
+      const r = await as(id)("POST", "/api/profile/email", { email: "iris.new@p.co" });
+      assert.equal(r.status, 200, JSON.stringify(env));
+      assert.equal(sent.length, 1, JSON.stringify(env));
+    }
+  } finally {
+    app.set("profileEnv", undefined);
+  }
+});
+
 test("a second request replaces the first: one pending change per user, and the old link dies", async () => {
   const id = addLoginUser(orgP, "lo", "ivy@p.co");
   await as(id)("POST", "/api/profile/email", { email: "ivy.one@p.co" });

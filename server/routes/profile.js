@@ -4,7 +4,7 @@
 //   GET  /api/profile                       -> { firstName, lastName, email, pendingEmail, careerStage, nmlsId, orgNmlsId, canEditOrg }
 //   PUT  /api/profile/name        { firstName, lastName }  letters, spaces, ' and - only (a curly ' is stored as '); firstName 1-50, lastName 0-50 -> the profile
 //   PUT  /api/profile/career-stage { stage }               new / developing / established / veteran                     -> the profile
-//   POST /api/profile/email       { email }   mails a confirmation link to the NEW address -> { pendingEmail }; 400, 409 (taken), 429 (5 an hour), 503 (mail not set up)
+//   POST /api/profile/email       { email }   mails a confirmation link to the NEW address -> { pendingEmail }; 400, 409 (taken), 429 (5 an hour), 503 (mail not set up; in production also APP_URL unset or local)
 //   GET  /api/profile/email/confirm/:token    the emailed link: NO session needed; sets the login email, then 302s to /?emailChanged=1 (or =0)
 //   GET  /api/profile/nmls      -> { nmlsId, orgNmlsId, canEditOrg }   (canEditOrg: only a broker can set the company's)
 //   PUT  /api/profile/nmls      { nmlsId }  sets the caller's OWN ID      -> the same shape as GET /nmls
@@ -144,6 +144,20 @@ router.put("/career-stage", (req, res) => {
   }
 });
 
+// Whether a link mailed from here can be opened by the person it goes to. In production APP_URL must be set, and must not name this
+// machine: email.js falls back to http://localhost:8080, so without it every link would open nothing (and the page would still
+// say "check your inbox"). Outside production (development, tests) any value goes. `env` is process.env, or the "profileEnv" app
+// seam in tests. Pure.
+const LOCAL_HOST_RE = /^(?:localhost|.+\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\])$/i;
+function emailLinksWork(env) {
+  if (!env || env.NODE_ENV !== "production") return true;
+  const base = typeof env.APP_URL === "string" ? env.APP_URL.trim() : "";
+  if (!base) return false;
+  let host;
+  try { host = new URL(base).hostname; } catch { return false; }
+  return !LOCAL_HOST_RE.test(host);
+}
+
 // Asking to change the login email does not change it: a one-time link goes to the NEW address, and users.email changes only
 // when that link is opened. One pending change per user (a second request replaces the first, and the old link dies).
 router.post("/email", emailChangeLimiter, async (req, res) => {
@@ -154,6 +168,10 @@ router.post("/email", emailChangeLimiter, async (req, res) => {
   }
   if (newEmail === String(req.user.email).toLowerCase()) {
     return res.status(400).json({ success: false, error: "That is already your email address" });
+  }
+  // a link that would open localhost is no link: nothing is stored or sent (final review I7)
+  if (!emailLinksWork(req.app.get("profileEnv") || process.env)) {
+    return res.status(503).json({ success: false, error: "Email isn't set up yet" });
   }
   const token = crypto.randomBytes(32).toString("hex");
   try {
