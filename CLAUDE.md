@@ -132,7 +132,7 @@ files** (a repo-wide grep once echoed a key into a review transcript).
 - **Prod-like:** `cd client && npx vite build --outDir ../server/client/build --emptyOutDir`, then run the server (single URL on 8080).
 - **Seed demo:** `node scripts/seed-demo.js http://localhost:8080` → `demo@refiradar.com` / `DemoPass123!`.
 - **Tests:** `cd server && npm test` and `cd client && npm test` (node:test, **Node 20**); plus `node scripts/check-scoring.js`.
-- **Charli locally:** needs the `ELEVENLABS_*` vars in `server/.env` for audio (text-only otherwise); open the **Charli** nav item. The calendar needs the four `GOOGLE_*` vars (names in `.env.example`); never read or print `server/.env`.
+- **Charli locally:** needs the `ELEVENLABS_*` vars in `server/.env` for audio (text-only otherwise); Charlie is the **Home** page (the morning briefing), with a corner Charlie button on every other page. The calendar needs the four `GOOGLE_*` vars (names in `.env.example`); never read or print `server/.env`.
 - **Logs:** `gcloud run services logs read refi-radar --region us-central1 --project refi-radar-496318 --limit N`.
 - Always prepend portable Node 20 to PATH locally:
   `$env:Path = "C:\Users\bille\dev\node20;" + $env:Path`.
@@ -165,7 +165,7 @@ files** (a repo-wide grep once echoed a key into a review transcript).
   a confirmed side effect like any other: code-authored read-back, then `/api/assistant/confirm`,
   idempotent under the Google event id `"br" + confirmId`.
 - **Every email carries the sender's NMLS ID** (and the company's when set) in the signature;
-  **no NMLS ID on the user → no email** (set in the Charli panel, `/api/profile/nmls`).
+  **no NMLS ID on the user → no email** (set on the **Profile** page, `/api/profile/nmls`).
 - **Google scopes, exactly:** `openid`, `email`, `calendar.events`. **Not** `gmail.compose`:
   Google classifies it as a restricted scope (restricted-scope verification + a paid
   third-party security assessment for outside customers), and Broker Radar is sold to other
