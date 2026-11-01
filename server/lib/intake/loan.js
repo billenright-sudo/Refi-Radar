@@ -112,6 +112,18 @@ function believableTerm(months) {
   return months !== null && months >= MIN_TERM_MONTHS && months <= MAX_TERM_MONTHS ? months : null;
 }
 
+// Only this much of the amortization text is read (see AMORTIZATION_TEXT_MAX); anything that is not text is left as it is.
+function amortizationSaid(amortization) {
+  return typeof amortization === "string" ? amortization.slice(0, AMORTIZATION_TEXT_MAX) : amortization;
+}
+
+// The loan's term in months, if the row gives a believable one (12 to 600): the term column, else a term read from the
+// amortization text ("30 Yr Fixed"), else null. The balance estimate and the loan type both go by this, so a product that only
+// says "30 Yr Fixed" gets an estimated balance as well as a loan type. An ARM's "5/1" is not read as a term.
+function termOf({ termMonths, amortization } = {}) {
+  return believableTerm(pos(termMonths) ? termMonths : null) ?? believableTerm(termFromText(amortizationSaid(amortization)));
+}
+
 // Which priced loan type a loan is, whether the row actually said, and what had to be rounded to get there.
 //   loanType - "5_1_arm" for any ARM; else "15yr_fixed" for a term of 180 months or fewer; else "30yr_fixed" (also when no
 //              term is known).
@@ -124,14 +136,14 @@ function believableTerm(months) {
 // The term column wins over a term in the text; a term column that is not believable (under 12 or over 600 months) is passed
 // over for the text. An ARM's term is ignored: it is priced as a 5/1 whatever the term is.
 function mapLoanType({ termMonths, amortization } = {}) {
-  const said = typeof amortization === "string" ? amortization.slice(0, AMORTIZATION_TEXT_MAX) : amortization;
+  const said = amortizationSaid(amortization);
   const text = typeof said === "string" ? said : "";
   if (ARM_RE.test(text)) {
     const ratio = ARM_RATIO_RE.exec(text);
     const flag = ratio && Number(ratio[1]) !== 5 ? `${Number(ratio[1])}/${Number(ratio[2])} ARM priced as a 5/1` : null;
     return { loanType: "5_1_arm", given: true, flag };
   }
-  const term = believableTerm(pos(termMonths) ? termMonths : null) ?? believableTerm(termFromText(said));
+  const term = termOf({ termMonths, amortization });
   const loanType = term !== null && term <= FIFTEEN_YEAR_MONTHS ? "15yr_fixed" : "30yr_fixed";
   const given = term !== null;
   let flag = null;
@@ -141,4 +153,4 @@ function mapLoanType({ termMonths, amortization } = {}) {
   return { loanType, given, flag };
 }
 
-module.exports = { firstPaymentFromClosing, paymentsMade, estimateBalance, mapLoanType };
+module.exports = { firstPaymentFromClosing, paymentsMade, estimateBalance, termOf, mapLoanType };

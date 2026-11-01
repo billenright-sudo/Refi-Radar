@@ -5,7 +5,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { firstPaymentFromClosing, paymentsMade, estimateBalance, mapLoanType } = require("../lib/intake/loan");
+const { firstPaymentFromClosing, paymentsMade, estimateBalance, termOf, mapLoanType } = require("../lib/intake/loan");
 
 test("firstPaymentFromClosing: 3/14 → 5/1, across a year end", () => {
   assert.equal(firstPaymentFromClosing("2024-03-14"), "2024-05-01");
@@ -124,4 +124,11 @@ test("mapLoanType: long runs of spaces in the text are read quickly and give no 
   // A number followed by a long gap: this used to take 0.4 to 1 second. Only the speed is asserted; the text is cut to its
   // first 200 characters, so what it reads as is not the point.
   for (const amortization of [`5${spaces}!`, `30${spaces}`, `15${spaces}year`, `${"1 ".repeat(15000)}x`]) timed(amortization);
+});
+test("termOf: the term column when it is believable, else a term read from the product text, else null", () => {
+  assert.equal(termOf({ termMonths: 360, amortization: "15 Yr Fixed" }), 360);
+  assert.equal(termOf({ termMonths: null, amortization: "30 Yr Fixed" }), 360);
+  assert.equal(termOf({ termMonths: 6, amortization: "15 Year" }), 180);
+  assert.equal(termOf({ termMonths: 360, amortization: "5/1 ARM" }), 360);
+  for (const v of [{}, { amortization: "Fixed" }, { termMonths: null, amortization: "5/1 ARM" }, { termMonths: 2024 }, undefined]) assert.equal(termOf(v), null);
 });
