@@ -85,7 +85,43 @@ test("mapLoanType: an ARM's x/y is never read as a term; the term column beats t
   assert.deepStrictEqual(t({ amortization: "Fixed 15 Year" }), { loanType: "15yr_fixed", given: true, flag: null });
   assert.deepStrictEqual(t({ amortization: "FHA 30-Year Fixed Rate" }), { loanType: "30yr_fixed", given: true, flag: null });
   assert.deepStrictEqual(t({ amortization: "20 Yr Fixed" }), { loanType: "30yr_fixed", given: true, flag: "20-year fixed priced as a 30-year" });
-  assert.deepStrictEqual(t({ amortization: "Fixed" }), { loanType: "30yr_fixed", given: true, flag: null });
   assert.deepStrictEqual(t({ termMonths: 0, amortization: "" }), { loanType: "30yr_fixed", given: false, flag: null });
   assert.deepStrictEqual(t({ termMonths: null, amortization: null }), { loanType: "30yr_fixed", given: false, flag: null });
+});
+test("mapLoanType: 'given' means the row names the priced type (an ARM or a term); a bare 'Fixed' is only the default", () => {
+  // An update writes loan_type only when given (R5), so "Fixed" with no term must never turn a stored 15-year into a 30-year.
+  for (const amortization of ["Fixed", "Fixed Rate", "Conventional Fixed", "fixed"]) {
+    assert.deepStrictEqual(mapLoanType({ amortization }), { loanType: "30yr_fixed", given: false, flag: null });
+  }
+  assert.deepStrictEqual(mapLoanType({ termMonths: 180, amortization: "Fixed" }), { loanType: "15yr_fixed", given: true, flag: null });
+});
+test("mapLoanType: a term outside 12-600 months is no term at all (not given, no flag)", () => {
+  const none = { loanType: "30yr_fixed", given: false, flag: null };
+  assert.deepStrictEqual(mapLoanType({ termMonths: 5 }), none);
+  assert.deepStrictEqual(mapLoanType({ termMonths: 601 }), none);
+  assert.deepStrictEqual(mapLoanType({ amortization: "2024" }), none);
+  assert.deepStrictEqual(mapLoanType({ amortization: "Fixed 2024 months" }), none);
+  assert.deepStrictEqual(mapLoanType({ amortization: "3 Yr Fixed" }), { loanType: "15yr_fixed", given: true, flag: "3-year fixed priced as a 15-year" });
+  // The edges are in: 12 and 600 months are terms.
+  assert.deepStrictEqual(mapLoanType({ termMonths: 12 }), { loanType: "15yr_fixed", given: true, flag: "1-year fixed priced as a 15-year" });
+  assert.deepStrictEqual(mapLoanType({ termMonths: 600 }), { loanType: "30yr_fixed", given: true, flag: "50-year fixed priced as a 30-year" });
+  // A term column that is out of range doesn't hide a good term in the text.
+  assert.deepStrictEqual(mapLoanType({ termMonths: 5, amortization: "15 Year Fixed" }), { loanType: "15yr_fixed", given: true, flag: null });
+});
+test("mapLoanType: long runs of spaces in the text are read quickly and give no term", () => {
+  const spaces = " ".repeat(30000);
+  const none = { loanType: "30yr_fixed", given: false, flag: null };
+  const timed = (amortization) => {
+    const start = process.hrtime.bigint();
+    const got = mapLoanType({ amortization });
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.ok(ms < 50, `took ${ms} ms`);
+    return got;
+  };
+  assert.deepStrictEqual(timed(spaces), none);
+  assert.deepStrictEqual(timed(`Fixed${spaces}`), none);
+  assert.deepStrictEqual(timed(`${"x ".repeat(15000)}`), none);
+  // A number followed by a long gap: this used to take 0.4 to 1 second. Only the speed is asserted; the text is cut to its
+  // first 200 characters, so what it reads as is not the point.
+  for (const amortization of [`5${spaces}!`, `30${spaces}`, `15${spaces}year`, `${"1 ".repeat(15000)}x`]) timed(amortization);
 });

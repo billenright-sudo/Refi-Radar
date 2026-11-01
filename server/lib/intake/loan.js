@@ -16,10 +16,16 @@ const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 // A 5/1 ARM is the only ARM the pricing engine has. Any ARM, adjustable or variable rate (or a "7/1" style ratio) maps to it.
 const ARM_RE = /\barm\b|adjustable|variable|\b\d{1,2}\s*\/\s*\d{1,2}\b/i;
 const ARM_RATIO_RE = /\b(\d{1,2})\s*\/\s*(\d{1,2})\b/;
-const FIXED_RE = /fixed/i;
 // A term written inside other words ("Fixed 15 Year", "FHA 30-Year Fixed Rate", "20 Yr"). The unit has to be there, so a bare
-// number in the text is never taken for a term and an ARM's "5/1" cannot be (and an ARM never gets this far anyway).
-const TERM_IN_TEXT_RE = /\b\d+(?:\.\d+)?\s*-?\s*(?:years?|yrs?|y|months?|mos?|mo)\b/i;
+// number in the text is never taken for a term and an ARM's "5/1" cannot be (and an ARM never gets this far anyway). The gap
+// between number and unit is at most 3 characters ("30 - Year"), so a long run of spaces cannot make the match crawl.
+const TERM_IN_TEXT_RE = /\b\d+(?:\.\d+)?[\s-]{0,3}(?:years?|yrs?|y|months?|mos?|mo)\b/i;
+// Only this much of the amortization text is read. A real product name is a few words; a pathological cell must not be able
+// to make the matching slow.
+const AMORTIZATION_TEXT_MAX = 200;
+// A loan term is 1 to 50 years. Anything outside that (a year like "2024" read as months, a stray 5) is not a term.
+const MIN_TERM_MONTHS = 12;
+const MAX_TERM_MONTHS = 600;
 // Priced as a 15-year at 180 months or fewer, as a 30-year for anything longer.
 const FIFTEEN_YEAR_MONTHS = 180;
 const THIRTY_YEAR_MONTHS = 360;
@@ -101,24 +107,33 @@ function termFromText(v) {
   return parseTermMonths(v);
 }
 
+// A term in months only if it is a believable one (12 to 600), else null.
+function believableTerm(months) {
+  return months !== null && months >= MIN_TERM_MONTHS && months <= MAX_TERM_MONTHS ? months : null;
+}
+
 // Which priced loan type a loan is, whether the row actually said, and what had to be rounded to get there.
 //   loanType - "5_1_arm" for any ARM; else "15yr_fixed" for a term of 180 months or fewer; else "30yr_fixed" (also when no
 //              term is known).
-//   given    - true when an ARM or a term was found, or the text says "fixed". False means this is only the default, so an
-//              update must not overwrite a loan type already on file with it.
+//   given    - true only when the row says which priced type it is: an ARM was found, or a term was found. A bare "Fixed" or
+//              "Conventional Fixed" says nothing about the term, so it is not given. False means this is only the default, so
+//              an update must not overwrite a loan type already on file with it (a stored 15-year must never become a
+//              30-year because a column says "Fixed").
 //   flag     - a plain-English note when the loan is priced as something it is not ("20-year fixed priced as a 30-year",
 //              "7/1 ARM priced as a 5/1"), else null.
-// The term column wins over a term in the text. An ARM's term is ignored: it is priced as a 5/1 whatever the term is.
+// The term column wins over a term in the text; a term column that is not believable (under 12 or over 600 months) is passed
+// over for the text. An ARM's term is ignored: it is priced as a 5/1 whatever the term is.
 function mapLoanType({ termMonths, amortization } = {}) {
-  const text = typeof amortization === "string" ? amortization : "";
+  const said = typeof amortization === "string" ? amortization.slice(0, AMORTIZATION_TEXT_MAX) : amortization;
+  const text = typeof said === "string" ? said : "";
   if (ARM_RE.test(text)) {
     const ratio = ARM_RATIO_RE.exec(text);
     const flag = ratio && Number(ratio[1]) !== 5 ? `${Number(ratio[1])}/${Number(ratio[2])} ARM priced as a 5/1` : null;
     return { loanType: "5_1_arm", given: true, flag };
   }
-  const term = pos(termMonths) ? termMonths : termFromText(amortization);
+  const term = believableTerm(pos(termMonths) ? termMonths : null) ?? believableTerm(termFromText(said));
   const loanType = term !== null && term <= FIFTEEN_YEAR_MONTHS ? "15yr_fixed" : "30yr_fixed";
-  const given = term !== null || FIXED_RE.test(text);
+  const given = term !== null;
   let flag = null;
   if (term !== null && term !== FIFTEEN_YEAR_MONTHS && term !== THIRTY_YEAR_MONTHS) {
     flag = `${Math.round(term / 12)}-year fixed priced as a ${loanType === "15yr_fixed" ? "15" : "30"}-year`;
