@@ -1,6 +1,6 @@
 # Getting a broker's book in: a smarter file import, and a live ARIVE feed through Zapier
 
-Date: 2026-11-01. Owner: Bill. Status: DRAFT for Bill's review.
+Date: 2026-11-01. Owner: Bill. Status: APPROVED by Bill 2026-11-01.
 Repo: `C:\Users\bille\dev\refi-radar`, base branch `feature/accurate-refi-scoring` @ f64f860.
 
 ## 1. Intent: why we're building this
@@ -32,6 +32,8 @@ and from then on every funded loan appears in Broker Radar with no re-import.
   rate alerts v2, not to clients.
 - **2026-11-01:** "just draft the design". Everything below that is not in the list above is **my call**, marked "(my call)",
   for Bill to accept or change while reading.
+- **2026-11-01, after reading the draft:** "move them to Lou, approved". A client moves to the loan officer on their new loan
+  (A6a), and the design is approved as written.
 
 ## 3. Goals, non-goals, anti-goals
 
@@ -152,7 +154,7 @@ engine's limit today, made visible instead of silent (my call).
 
 **Where it looks (my call):** the whole organisation, not just the book the row is routed to (A7). A refinance often funds
 under a different loan officer than the one who has the client. Matching only one book would make a second client and leave
-the old-rate one being pitched a refi they already did. Who keeps a matched client is **OPEN for Bill (section 10)**.
+the old-rate one being pitched a refi they already did. Who keeps a matched client: **A6a** (Bill's decision).
 
 **How it matches**, in this order:
 1. **Same loan number** (when both have one).
@@ -186,6 +188,29 @@ showing how many clients it matched, so the broker can fix it by hand (my call).
 **Repeats within one file:** two rows that match each other (a refinance listed beside the old loan) are handled oldest first,
 so the newer loan ends up on the client.
 
+### A6a. A new loan under a different loan officer (Bill, 2026-11-01)
+
+The client belongs to the loan officer on their current loan. When a matched row names a loan officer other than the one who
+has the client, the client **moves to the named loan officer**:
+- **"Names a loan officer"** means the row was routed to a user by A7 (the loan officer column's email or full name) or by B2
+  (an LO's own key, or the `loan_officer_email` a broker's key sends). A row that fell back to the importing broker's own book
+  never moves anyone (my call): otherwise a file with no loan officer column would pull every matched client into the
+  broker's book.
+- **When:** the same loan (the LOS reassigned it) or a refinance. Never for "older loan: unchanged" (that loan isn't their
+  current one), "ambiguous" or skipped rows. A second property is a new client in the named loan officer's book, and the
+  original stays where it is.
+- **What goes with them:** the client record, with its notes. The call history follows on its own, because it is read by
+  client, and each call still shows who made it.
+- **The old loan officer's open follow-ups** for that client (Charlie's open recommendations and carries) are closed as
+  expired. The new loan officer starts with none.
+- **Who is told:**
+  - the review row says "moves from Ann Lee to Lou Park", and the summary counts the moves;
+  - the webhook's answer adds `moved_from` with the old loan officer's name;
+  - the old loan officer gets an in-app notification: "<client> moved to Lou Park's book: their new loan came in under Lou."
+    (my call). It is in-app only, never an email, and skipped when the old loan officer is the user who ran the import or
+    owns the key.
+- **Outcome:** a move is a change, so a same-loan row that would otherwise be "unchanged" is "updated" (my call).
+
 ### A7. Which book a row goes into
 
 - With no loan officer column, every row goes into the importing broker's own book, as today.
@@ -195,7 +220,7 @@ so the newer loan ends up on the client.
 
 ### A8. The review step (before anything is saved)
 
-- **Summary counts:** new, updated, unchanged, skipped, and how many rows are going to each loan officer.
+- **Summary counts:** new, updated, unchanged, skipped, moved (A6a), and how many rows are going to each loan officer.
 - **The rows** with their outcome and flags (balance estimated / original amount, loan type mapped, routed to the broker), with
   skip reasons. A long file is shown a page at a time; every row is reviewable, not just the first 5 as today.
 - **Nothing is written until "Import"**, and the import applies exactly what the review showed. The file is re-checked on
@@ -258,7 +283,7 @@ It is the same whitelist, validation, balance estimate, loan-type mapping, match
 
 **Answers** (shown in Zapier's task history, so the broker can see what happened):
 - `200 { result: "created" | "updated" | "unchanged" | "ambiguous" }`; "ambiguous" means it matched several clients, so
-  nothing was written.
+  nothing was written. An "updated" that moved the client (A6a) adds `moved_from` with the old loan officer's name.
 - `200 { result: "ignored", reason }` when the loan isn't funded: no closing date, or one in the future. Status isn't trusted
   alone, because ARIVE's status names vary by company.
 - `400 { error }` naming the missing or invalid field, never echoing the value.
@@ -304,6 +329,9 @@ on.
 5. A Zap that fires on every status change of one loan: one "created" when it funds, then "unchanged" or "updated"; nothing
    before it funds.
 6. A file with SSN and income columns: never offered, never read, never stored.
+7. Ann has the Smiths, and Lou's file row or Lou's Zap brings their refinance: the Smiths move to Lou with their notes and call
+   history, Ann's open follow-ups for them are closed, and she gets an in-app note. A broker's file with no loan officer
+   column moves nobody.
 
 ## 8. What Bill needs to do (when we get there)
 
@@ -333,11 +361,8 @@ Calyx Point: the same ask, one report export, if a Calyx broker is handy.
 - the loan program / MI fields;
 - a monthly balance refresh.
 
-## 10. Open for Bill
+## 10. Decided after the draft
 
-**Who keeps a client when a new loan for them comes in under a different loan officer?** For example, Ann has the Smiths, and
-Lou refinances them, or Lou's ARIVE Zap sends their new loan. Matching (A6) finds the Smiths in Ann's book either way.
-- **Recommendation: they move to the loan officer on the new loan (Lou).** Their notes, history and follow-ups go with them,
-  the review row and the webhook's answer say "moved from Ann", and Ann's open follow-ups for them are closed. The borrower's
-  current relationship is with whoever did their latest loan, and that's who should get the next refi call.
-- **The other way:** they stay with Ann, the loan fields still update, and Lou's import or Zap only refreshes the loan.
+**Who keeps a client when a new loan for them comes in under a different loan officer?** Bill, 2026-11-01: they move to the
+loan officer on the new loan, as set out in A6a. The borrower's current relationship is with whoever did their latest loan,
+and that's who should get the next refi call.
