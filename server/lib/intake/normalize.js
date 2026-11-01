@@ -24,7 +24,9 @@ const EMAIL_MAX = 254;
 const NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
 const SLASH_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/;
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/;
-const TERM_UNIT_RE = /^(\d+(?:\.\d+)?)\s*-?\s*([a-z]+)/;
+// A number, spaces, one optional dash with its own trailing spaces, then the unit word. It reads the same strings as
+// "\s*-?\s*" would, but cannot backtrack quadratically on a long run of spaces (a cell of 30,000 blanks after a number).
+const TERM_UNIT_RE = /^(\d+(?:\.\d+)?)\s*(?:-\s*)?([a-z]+)/;
 const MONTH_WORDS = new Set(["mo", "mos", "month", "months"]);
 const YEAR_WORDS = new Set(["y", "yr", "yrs", "year", "years"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

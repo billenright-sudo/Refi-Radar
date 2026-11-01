@@ -139,3 +139,17 @@ test("isProtectedHeader reads the header key, so spacing, case and punctuation d
   for (const h of ["S.S.N.", "ssn", "Co-Borrower DOB", "Gross_Income", "Emp loyer", "Acct. Account #", "﻿Social"]) assert.equal(isProtectedHeader(h), true, h);
   assert.equal(isProtectedHeader(null), false);
 });
+test("parseTermMonths: a long run of spaces after a number is read quickly and is not a term", () => {
+  const spaces = " ".repeat(30000);
+  for (const v of [`5${spaces}!`, `30${spaces}-${spaces}!`]) {
+    const start = process.hrtime.bigint();
+    const got = parseTermMonths(v);
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.equal(got, null);
+    assert.ok(ms < 50, `took ${ms} ms`);
+  }
+  // The spacing that was read before is still read: spaces, one optional dash, spaces.
+  assert.equal(parseTermMonths("15    years"), 180);
+  assert.equal(parseTermMonths("30 - year"), 360);
+  assert.equal(parseTermMonths("30-  yr"), 360);
+});
