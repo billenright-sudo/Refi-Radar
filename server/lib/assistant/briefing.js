@@ -197,12 +197,13 @@ function calendarSection({ date, events, nowMs }) {
 }
 
 // Today's carried clients: `carried`, still carried from an earlier day, and `carriedToday`, the ones an earlier open today
-// listed as carried (it consumed their carry rows, and they are still today's) and the broker has not reached since: a reached
-// call closes their row, and they are then dealt with like any client reached today. `earlier` is that open's list.
+// listed as carried (it consumed their carry rows, and they are still today's) and the broker has not reached since that list
+// (followups.reachedSinceCarried): one reached since is dealt with like any client reached today. `earlier` is that open's list.
 function carriesOn(db, userId, localDate) {
   const carried = followups.carriedIds(db, userId, localDate);
   const earlier = followups.recommendedOn(db, userId, localDate, "briefing");
-  const carriedToday = earlier.filter((r) => r.reasonCode === "carry" && r.status !== "reached").map((r) => r.clientId);
+  const reachedSince = followups.reachedSinceCarried(db, userId, localDate);
+  const carriedToday = earlier.filter((r) => r.reasonCode === "carry" && !reachedSince.has(r.clientId)).map((r) => r.clientId);
   return { carried, earlier, carriedToday };
 }
 
@@ -263,8 +264,8 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
 // one open row (a briefing row and a calendar row the same day): that is one call, asked about by its first row, and every one
 // of its rows counts as asked. A client whose name may not be read out is skipped, never asked. So is a client in `carriedIds`
 // (F-2): today's list carries them, and the list is where they go; their rows stay open for a day they are not carried. The one
-// exception is a call booked with them today that has ended: they are asked "How did the call go?" (that row is their question)
-// instead of being listed again.
+// exception is a call booked with them today that has ended: when they come first they are asked "How did the call go?" (that
+// row is their question) instead of being listed again. Second, they would go unnamed ("a couple of calls"), so they stay listed.
 function pickFollowUps(rows, carriedIds = new Set(), localDate = null) {
   const callEnded = new Set(rows.filter((r) => r.source === "calendar" && r.day === localDate && carriedIds.has(r.clientId))
     .map((r) => r.clientId));
@@ -277,7 +278,8 @@ function pickFollowUps(rows, carriedIds = new Set(), localDate = null) {
     if (callEnded.has(row.clientId) && row.source === "calendar" && entry.first.source !== "calendar") entry.first = { ...row, name };
     entry.ids.push(row.id);
   }
-  const chosen = [...byClient.values()].slice(0, MAX_FOLLOW_UPS);
+  const chosen = [...byClient].filter(([clientId], i) => i === 0 || !callEnded.has(clientId)).slice(0, MAX_FOLLOW_UPS)
+    .map(([, c]) => c);
   return { shown: chosen.map((c) => c.first), rowIds: chosen.flatMap((c) => c.ids) };
 }
 

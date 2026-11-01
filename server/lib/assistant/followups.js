@@ -168,13 +168,13 @@ function consumeCarries(db, userId, clientIds, nowUtc, beforeDay) {
 }
 
 // What was recorded for this user on `day` from `source` ('briefing', 'sweep', 'calendar' or 'carry'), whatever became of it,
-// in the order it was recorded: [{ clientId, reasonCode, status }]. The briefing reads its own earlier list for the day from here.
+// in the order it was recorded: [{ clientId, reasonCode }]. The briefing reads its own earlier list for the day from here.
 const SOURCES = ["briefing", "sweep", "calendar", "carry"];
 function recommendedOn(db, userId, day, source) {
   assertDay(day, "day");
   if (!SOURCES.includes(source)) throw new TypeError(`source must be one of ${SOURCES.join(", ")}, got ${JSON.stringify(source)}`);
   return db.prepare(`
-    SELECT client_id AS clientId, reason_code AS reasonCode, status FROM charlie_recommendations
+    SELECT client_id AS clientId, reason_code AS reasonCode FROM charlie_recommendations
     WHERE user_id = ? AND day = ? AND source = ? ORDER BY id
   `).all(userId, day, source);
 }
@@ -193,6 +193,23 @@ function reachedSince(db, userId, sinceUtc) {
   assertUtc(sinceUtc, "sinceUtc");
   const rows = db.prepare("SELECT DISTINCT client_id FROM contact_log WHERE user_id = ? AND outcome = 'reached' AND at >= ?")
     .all(userId, sinceUtc);
+  return new Set(rows.map((r) => r.client_id));
+}
+
+// The ids of the clients this user reached after a list last carried them: a reached call at or after the latest moment a carry
+// of theirs dated before `localDate` was used up (consumeCarries stamps it; nothing else expires a carry with a time). Read from
+// the contact log, so a not-reached call or a new carry in between changes nothing.
+function reachedSinceCarried(db, userId, localDate) {
+  assertDay(localDate, "localDate");
+  const rows = db.prepare(`
+    SELECT c.client_id FROM (
+      SELECT client_id, MAX(resolved_at) AS carried_at FROM charlie_recommendations
+      WHERE user_id = @userId AND source = 'carry' AND status = 'expired' AND day < @localDate AND resolved_at IS NOT NULL
+      GROUP BY client_id
+    ) c
+    WHERE EXISTS (SELECT 1 FROM contact_log l
+                  WHERE l.user_id = @userId AND l.client_id = c.client_id AND l.outcome = 'reached' AND l.at >= c.carried_at)
+  `).all({ userId, localDate });
   return new Set(rows.map((r) => r.client_id));
 }
 
@@ -236,6 +253,7 @@ module.exports = {
   recommendedOn,
   logCall,
   reachedSince,
+  reachedSinceCarried,
   recentlyRecommended,
   dropAlreadyLed,
   markDropLed,

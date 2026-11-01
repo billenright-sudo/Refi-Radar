@@ -547,6 +547,45 @@ test("a client carried onto this morning's list and reached since is off the lis
   assert.equal(questionMarks(afternoon.reply), 1, afternoon.reply);
 });
 
+test("a client carried onto this morning's list is off it after noon when reached after a not-reached call, or after a re-carry", async () => {
+  seedBook();
+  const eve = addClient(annId, "Eve Larsen", { lastContact: "2026-10-01" });
+  const finn = addClient(annId, "Finn Ochoa", { lastContact: "2026-10-01" });
+  fu.addCarry(db, annId, eve, YESTERDAY);
+  fu.addCarry(db, annId, finn, YESTERDAY);
+  const morning = await brief(annId);
+  for (const name of ["Eve Larsen", "Finn Ochoa"]) assert.ok(callListOf(morning.reply).includes(name), morning.reply);
+
+  // Eve: not reached at 10 AM, reached at 11. Finn: put on tomorrow's list at 10 AM (the addToCallList route's writes), reached at 11
+  const tenAm = "2026-10-30 17:00:00";
+  const elevenAm = "2026-10-30 18:00:00";
+  fu.logCall(db, { userId: annId, clientId: eve, outcome: "not_reached", nowUtc: tenAm });
+  fu.resolveForClient(db, annId, eve, "not_reached", tenAm, { includeCarry: false });
+  fu.addCarry(db, annId, finn, TODAY);
+  fu.resolveForClient(db, annId, finn, "expired", tenAm, { includeCarry: false });
+  for (const id of [eve, finn]) {
+    fu.logCall(db, { userId: annId, clientId: id, outcome: "reached", nowUtc: elevenAm });
+    fu.resolveForClient(db, annId, id, "reached", elevenAm, { includeCarry: true });
+  }
+
+  const afternoon = await brief(annId, { localHour: 13, nowMs: at(TODAY, 13) });
+  assert.ok(!afternoon.reply.includes("Eve Larsen"), `reached after a not-reached call: ${afternoon.reply}`);
+  assert.ok(!afternoon.reply.includes("Finn Ochoa"), `reached after a re-carry: ${afternoon.reply}`);
+});
+
+test("a carried client whose call today has ended is never the unnamed second follow-up: they stay listed, not counted as asked", async () => {
+  const ids = seedBook();
+  fu.recordRecommendations(db, annId, YESTERDAY, [{ clientId: ids.lucy, source: "briefing", reasonCode: "rate_term" }]);
+  const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  const google = fakeGoogle({ byDate: { [TODAY]: [event("Call with Cara Mendez", "11:30 AM", TODAY, 12)] } });
+  const r = await brief(annId, { google, localHour: 13, nowMs: at(TODAY, 13) });
+  assert.ok(r.reply.endsWith("Yesterday I suggested calling Lucy Tran. Were you able to reach them?"), r.reply);
+  assert.ok(!r.reply.includes(COUPLE_OF_CALLS), r.reply);
+  assert.ok(callListOf(r.reply).includes("Cara Mendez"), `carried, and not the question: still listed: ${r.reply}`);
+  assert.equal(recRows("client_id = ? AND source = 'calendar'", cara)[0].ask_count, 0);
+});
+
 test("a carried client whose call booked today has ended is asked how it went, and is left off the list", async () => {
   seedBook();
   const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
