@@ -197,6 +197,15 @@ test("a mapped closing date is required of every row; unmapped, none is", async 
   assert.equal(unmapped.data.counts.created, 2);
 });
 
+test("a closing date with a time of day is read as that day; one that cannot be read says so", async () => {
+  const withTime = [...JOHN];
+  withTime[11] = "3/14/2024 0:00";
+  const tbd = [...PAT];
+  tbd[11] = "TBD";
+  const { data } = await uploadAs(ann, Buffer.from(csvOf(ARIVE, [withTime, tbd])));
+  assert.deepStrictEqual(data.results.map((r) => [r.row, r.outcome, r.reason]), [[2, "created", null], [3, "skipped", "closing date not readable"]]);
+});
+
 // ── confirm ─────────────────────────────────────────────────────────────────
 
 test("confirm writes what the review showed; the same confirm again is all unchanged", async () => {

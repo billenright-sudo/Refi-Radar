@@ -54,6 +54,14 @@ test("a failure is only { ok: false, code }, and every code has a reason", () =>
   assert.deepStrictEqual(Object.keys(REASONS).sort(), ["bad_closing_date", "bad_rate", "future_closing_date", "no_balance", "no_closing_date", "no_name", "no_value"]);
   assert.equal(REASONS.bad_rate, "no note rate between 0 and 20");
   assert.equal(REASONS.future_closing_date, "not funded yet");
+  assert.equal(REASONS.no_closing_date, "not funded yet");
+  // a date that is there but cannot be read is the file's problem, not the loan's
+  assert.equal(REASONS.bad_closing_date, "closing date not readable");
+});
+test("a closing date with a time of day is that day, so the row is funded", () => {
+  const r = toRecord({ ...ROW, closingDate: "3/14/2024 0:00" }, { today: TODAY, requireClosingDate: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.record.closeDate, "2024-03-14");
 });
 test("the checks run in order: name, rate, balance, value, then the closing date", () => {
   const bad = { firstName: "", lastName: "", noteRate: "", loanAmount: "", appraisedValue: "", closingDate: "2030-01-01" };

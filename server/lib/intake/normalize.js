@@ -25,8 +25,11 @@ const NUMBER_MAX = 32;
 
 // The fraction part is one optional group, so a long run of digits that ends in junk fails in one pass, not one per digit.
 const NUMBER_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
-const SLASH_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/;
-const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T.*| \d{2}:\d{2}:\d{2})?$/;
+// M/D/Y, then optionally a time of day: H:MM, H:MM:SS or H:MM:SS.fff, with or without AM/PM ("3/14/2024 0:00" is how Excel saves
+// a datetime cell to CSV). Each part after the date starts with a character the part before it cannot hold, so nothing backtracks.
+const SLASH_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})(?:\s+\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s*[ap]m)?)?$/i;
+// YYYY-MM-DD, then optionally anything after a "T" or a space (an ISO or SQL timestamp: "2024-03-14 00:00:00.000").
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/;
 // A number, spaces, one optional dash with its own trailing spaces, then the unit word. It reads the same strings as
 // "\s*-?\s*" would, but cannot backtrack quadratically on a long run of spaces (a cell of 30,000 blanks after a number).
 const TERM_UNIT_RE = /^(\d+(?:\.\d+)?)\s*(?:-\s*)?([a-z]+)/;
@@ -89,7 +92,8 @@ function fromSerial(n) {
 }
 
 // A date as "YYYY-MM-DD": an Excel serial (number or digit string), M/D/YYYY, M/D/YY (YY under 70 is 20YY, else 19YY), or
-// YYYY-MM-DD with an optional "T..." time or SQLite's " HH:MM:SS". The date is the one written; no timezone shift is applied.
+// YYYY-MM-DD, each with an optional time of day after it. The date is the one written: the time is dropped and no timezone
+// shift is applied.
 function parseDate(v) {
   if (typeof v === "number") return Number.isFinite(v) ? fromSerial(v) : null;
   if (typeof v !== "string") return null;

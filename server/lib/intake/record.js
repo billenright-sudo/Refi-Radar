@@ -20,15 +20,15 @@ const MAX_RATE = 20;
 const MIN_CREDIT_SCORE = 300;
 const MAX_CREDIT_SCORE = 850;
 
-// What a failed row is called on the review page. A closing date that is missing, unreadable or in the future all mean the loan
-// has not funded.
+// What a failed row is called on the review page. A closing date that is missing or in the future means the loan has not funded;
+// one that is there but cannot be read is said plainly, so the broker fixes the column rather than wait on the loan.
 const REASONS = Object.freeze({
   no_name: "no name",
   bad_rate: "no note rate between 0 and 20",
   no_balance: "no balance or loan amount",
   no_value: "no property value",
   no_closing_date: "not funded yet",
-  bad_closing_date: "not funded yet",
+  bad_closing_date: "closing date not readable",
   future_closing_date: "not funded yet",
 });
 

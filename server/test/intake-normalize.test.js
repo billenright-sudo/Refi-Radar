@@ -85,6 +85,25 @@ test("parseDate: two-digit years pivot at 70, a serial may carry a time of day, 
   assert.equal(parseDate(20000), "1954-10-03");
   for (const v of [19999, 80001, "19999", "20240314", "3/14", "3-14-2024", "2024-3-14", true, {}, []]) assert.equal(parseDate(v), null, String(v));
 });
+test("parseDate: a date with a time of day after it reads as that day (Excel's CSV datetimes, SQL timestamps)", () => {
+  for (const v of ["3/14/2024 0:00", "3/14/2024 12:00:00 AM", "2024-03-14 00:00", "2024-03-14 00:00:00.000"]) {
+    assert.equal(parseDate(v), "2024-03-14", v);
+  }
+  for (const v of ["3/14/24 0:00", "03/14/2024 17:45", "3/14/2024 5:45 pm", "3/14/2024 05:45:09.123 PM", "3/14/2024  0:00:00"]) {
+    assert.equal(parseDate(v), "2024-03-14", v);
+  }
+  // the date part still has to be a real day, and the time has to look like one
+  for (const v of ["2/30/2024 0:00", "13/1/2024 0:00", "2024-02-30 00:00", "3/14/2024 noon", "3/14/2024 0", "3/14/2024 0:0", "3/14/20240:00"]) {
+    assert.equal(parseDate(v), null, v);
+  }
+  // a long run of spaces or digits after a date is read quickly
+  for (const v of [`3/14/2024${" ".repeat(30000)}x`, `3/14/2024 1:00${"0".repeat(30000)}x`, `2024-03-14${" ".repeat(30000)}`]) {
+    const start = process.hrtime.bigint();
+    parseDate(v);
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.ok(ms < 50, `took ${ms} ms`);
+  }
+});
 test("parseTermMonths: units win over the size rule; unknown words and shapes are null", () => {
   assert.equal(parseTermMonths("30yr"), 360);
   assert.equal(parseTermMonths("30-year fixed"), 360);
