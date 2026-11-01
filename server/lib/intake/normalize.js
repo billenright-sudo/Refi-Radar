@@ -7,8 +7,9 @@
 // that is not wholly a number, or a type we do not read (an object, an array, a boolean) all come back as missing, so a
 // loan with no rate never looks like a loan at 0%. Only a string or a finite number is ever read; anything else is missing.
 //
-// The last two helpers (headerKey, isProtectedHeader) are the import's privacy guard: a column that looks like SSN, date of
-// birth, income, assets, employer or an account number is never offered to the broker and never read.
+// Two helpers (headerKey, isProtectedHeader) are the import's privacy guard: a column that looks like SSN, date of birth,
+// income, assets, employer or an account number is never offered to the broker and never read. The last two (isDeadStatus,
+// looksFunded) read a loan status the same way for the file import and the ARIVE feed.
 
 const MS_PER_DAY = 86400000;
 // Excel counts days from 1899-12-30 (it treats 1900 as a leap year, so this epoch makes every date after Feb 1900 line up).
@@ -41,6 +42,11 @@ const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "v", "md"]);
 const NAME_TAILS = new Set([...NAME_SUFFIXES, "llc", "inc", "trust", "ltd", "lp", "llp", "corp", "co"]);
 // Checked against headerKey(), so spacing, case and punctuation cannot hide a column ("S.S.N.", "Date of Birth", "Gross_Income").
 const PROTECTED_HEADER_RE = /ssn|social|dob|birth|income|salary|asset|employ|account/;
+// A loan status that means the loan will never fund.
+const DEAD_STATUS_RE = /denied|withdrawn|cancel|adverse|archiv/i;
+// A status that sounds funded, and the words that turn one around ("Not Funded", "Unfunded", "Closed - Not Funded").
+const FUNDED_STATUS_RE = /funded|closed|completed|purchased/i;
+const NEGATED_STATUS_RE = /\b(?:not|non|never)\b|\b(?:un|non)(?:funded|closed)/i;
 
 // The text of a value we read: a string as it is, a finite number as its digits, anything else as nothing.
 function text(v) {
@@ -191,7 +197,21 @@ function isProtectedHeader(h) {
   return PROTECTED_HEADER_RE.test(headerKey(h));
 }
 
+// True for a status that means the loan will never fund: denied, withdrawn, cancelled, adverse action, archived. The ARIVE feed
+// ignores such a loan, and the file import never ticks one as funded.
+function isDeadStatus(v) {
+  return DEAD_STATUS_RE.test(text(v));
+}
+
+// True for a status the file import ticks as funded until the broker ticks their own (A4: funded only): it says funded, closed,
+// completed or purchased, nothing turns that around ("Not Funded", "Unfunded", "Never Closed"), and it is not a dead status
+// ("Closed (Cancelled)").
+function looksFunded(v) {
+  const s = text(v);
+  return FUNDED_STATUS_RE.test(s) && !NEGATED_STATUS_RE.test(s) && !isDeadStatus(s);
+}
+
 module.exports = {
   parseNumber, parseRate, parseMoney, parseDate, parseTermMonths,
-  fullName, nameKey, phoneDigits, cleanEmail, cleanText, headerKey, isProtectedHeader,
+  fullName, nameKey, phoneDigits, cleanEmail, cleanText, headerKey, isProtectedHeader, isDeadStatus, looksFunded,
 };

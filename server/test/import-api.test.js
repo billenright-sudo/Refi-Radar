@@ -186,6 +186,24 @@ test("review re-runs with the broker's picks and ticked statuses", async () => {
   assert.equal(clientCount(), 0);
 });
 
+test("only a funded-sounding status is ticked to start with: never a 'not', 'un-' or dead one", async () => {
+  const statuses = ["Funded", "Closed", "Not Funded", "Unfunded", "Closed - Not Funded", "Withdrawn - not closed", "Non-Funded", "Closed (Cancelled)"];
+  const rows = statuses.map((status, i) => {
+    const r = [...JOHN];
+    r[0] = `S${i}`;
+    r[3] = `s${i}@x.test`;
+    r[12] = status;
+    return r;
+  });
+  const { data } = await uploadAs(ann, Buffer.from(csvOf(ARIVE, rows)));
+  assert.deepStrictEqual(data.statuses.map((s) => [s.label, s.funded]), statuses.map((s, i) => [s, i < 2]));
+  assert.equal(data.counts.skipped, statuses.length - 2);
+
+  // the broker's own ticks still decide: a ticked "Not Funded" counts
+  const ticked = await as(ann)("POST", "/api/import/review", reviewBody(data, { fundedStatuses: ["not funded"] }));
+  assert.deepStrictEqual(ticked.data.statuses.filter((s) => s.funded).map((s) => s.label), ["Not Funded"]);
+});
+
 test("a mapped closing date is required of every row; unmapped, none is", async () => {
   const noDate = [...PAT];
   noDate[11] = "";

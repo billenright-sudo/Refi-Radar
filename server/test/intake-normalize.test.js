@@ -7,7 +7,7 @@ const assert = require("node:assert");
 
 const {
   parseNumber, parseRate, parseMoney, parseDate, parseTermMonths,
-  fullName, nameKey, phoneDigits, cleanEmail, cleanText, headerKey, isProtectedHeader,
+  fullName, nameKey, phoneDigits, cleanEmail, cleanText, headerKey, isProtectedHeader, isDeadStatus, looksFunded,
 } = require("../lib/intake/normalize");
 
 test("parseRate reads 6.5, '6.500%', '0.065' and 0.065 as 6.5; blanks, N/A and junk are null", () => {
@@ -205,4 +205,15 @@ test("parseNumber, parseRate, parseMoney: a million-digit cell is read quickly a
     assert.equal(parseNumber(v), n, v);
   }
   for (const v of ["1.2.3", ".", "+", "-.", "1..2"]) assert.equal(parseNumber(v), null, v);
+});
+test("isDeadStatus and looksFunded: the status words both front doors share", () => {
+  for (const v of ["Denied", "Withdrawn", "Cancelled", "Canceled", "Adverse Action", "Archived", "application denied"]) {
+    assert.equal(isDeadStatus(v), true, v);
+    assert.equal(looksFunded(v), false, v);
+  }
+  for (const v of ["Funded", "funded", "Closed", "Completed", "Purchased", "Loan Funded", "Closed/Funded"]) assert.equal(looksFunded(v), true, v);
+  for (const v of ["Not Funded", "Unfunded", "Closed - Not Funded", "Withdrawn - not closed", "Non-Funded", "Nonfunded", "Never Closed", "Unclosed", "Closed (Cancelled)", "In Process", "", null, 7]) {
+    assert.equal(looksFunded(v), false, String(v));
+  }
+  for (const v of ["Funded", "In Process", "", null, {}]) assert.equal(isDeadStatus(v), false, String(v));
 });

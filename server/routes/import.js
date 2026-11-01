@@ -24,14 +24,14 @@ const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
 const { FIELDS, detectMapping, offeredHeaders, cleanMapping, readFields } = require("../lib/intake/fields");
 const { ingest } = require("../lib/intake/ingest");
+// What counts as funded until the broker ticks their own statuses (shared with the ARIVE feed's dead statuses).
+const { looksFunded } = require("../lib/intake/normalize");
 
 const router = express.Router();
 router.use(requireAuth, requireBroker);
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_ROWS = 5000;
-// What counts as funded until the broker ticks their own statuses.
-const FUNDED_RE = /funded|closed|completed|purchased/;
 const BLANK_STATUS = "(blank)";
 
 const MSG = Object.freeze({
@@ -121,7 +121,7 @@ function planRows(sheet, mapping, fundedStatuses) {
   const ticked = Array.isArray(fundedStatuses)
     ? new Set(fundedStatuses.filter((s) => typeof s === "string").map((s) => s.trim().toLowerCase()))
     : null;
-  const countsAsFunded = (value) => (ticked ? ticked.has(value) : FUNDED_RE.test(value));
+  const countsAsFunded = (value) => (ticked ? ticked.has(value) : looksFunded(value));
 
   const seen = new Map();
   const items = sheet.rows.map(({ row, cells }) => {

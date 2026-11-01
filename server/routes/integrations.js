@@ -33,14 +33,14 @@ const { requireAuth } = require("../middleware/auth");
 const { APP_URL } = require("../email");   // the one constant: nothing in this file sends mail
 const { toRecord } = require("../lib/intake/record");
 const { ingest } = require("../lib/intake/ingest");
+// A status that means the loan will never fund, so the Zap has nothing to import (the file import never ticks one as funded).
+const { isDeadStatus } = require("../lib/intake/normalize");
 
 const MAX_BODY = "32kb";
 const MAX_LOAN_ID = 64;
 const PER_MINUTE = 60;
 const KEY_RE = /^br_[0-9a-f]{64}$/;
 const BEARER_RE = /^Bearer +(\S+)$/i;
-// A status that means the loan will never fund, so the Zap has nothing to import.
-const DEAD_STATUS_RE = /denied|withdrawn|cancel|adverse|archiv/i;
 
 const MSG = Object.freeze({
   unauthorized: "Unauthorized",
@@ -234,7 +234,7 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
       if (String(fields.loanNumber).trim().length > MAX_LOAN_ID) return res.status(400).json({ error: MSG.longLoanId });
 
       const status = given(body.status);
-      if (status !== undefined && DEAD_STATUS_RE.test(String(status))) {
+      if (status !== undefined && isDeadStatus(status)) {
         return res.json({ result: "ignored", reason: "status is not funded" });
       }
 
