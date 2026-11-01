@@ -14,6 +14,10 @@
 // "Álvarez Ortiz" are one name; SQLite's own lower() only folds ASCII), phones through phoneDigits on both sides
 // ("(555) 123-4567" is "5551234567"), emails lower-cased. The only thing put on the DB handle is the name-key function below,
 // which lives on that connection and changes no data.
+//
+// findMatch(db, orgId, record) asks the DB at each step. A run over a whole file passes a match index instead
+// (createMatchIndex): the company's clients read once, held by the very keys those queries compare, and kept current by the run
+// as it writes. Asking it gives the same answer as asking the DB, without a scan of every client for every row.
 
 const { nameKey, phoneDigits, parseDate } = require("./normalize");
 
@@ -41,23 +45,102 @@ function verdict(rows) {
   return { kind: "ambiguous", count: rows.length };
 }
 
-function findMatch(db, orgId, record) {
+// The three lookups the steps make, straight from the DB: the company's clients (by id) whose stored loan number, trimmed
+// lower-case email, or name key is the one given.
+function dbLookups(db, orgId) {
+  return {
+    byLoanNumber: (loan) => db.prepare("SELECT * FROM clients WHERE org_id = ? AND loan_number = ? ORDER BY id").all(orgId, loan),
+    byEmail: (email) => db.prepare("SELECT * FROM clients WHERE org_id = ? AND lower(trim(email)) = ? ORDER BY id").all(orgId, email),
+    byName: (key) => {
+      ensureNameKey(db);
+      return db.prepare(`SELECT * FROM clients WHERE org_id = ? AND ${NAME_KEY_FN}(name) = ? ORDER BY id`).all(orgId, key);
+    },
+  };
+}
+
+// The same three lookups from memory, for one company over one run. The index holds only each client's id under its three
+// keys, worked out by SQLite with the very expressions dbLookups compares (the loan number as stored, lower(trim(email)), the
+// name key), so the two can never disagree: SQLite's lower() folds only ASCII and trim() drops only spaces, and so does this.
+// A client found is read from the DB by its id, so it is always the row as it stands. An empty key is never asked for
+// (findMatch skips a blank field), so none is held. The run calls refresh(id) after each client it creates or updates, which
+// files the client again under the keys it now has.
+const KEYS = `SELECT id, loan_number AS loan, lower(trim(email)) AS email, ${NAME_KEY_FN}(name) AS name FROM clients`;
+
+function createMatchIndex(db, orgId) {
+  ensureNameKey(db);
+  const everyone = db.prepare(`${KEYS} WHERE org_id = ?`);
+  const oneKeys = db.prepare(`${KEYS} WHERE org_id = ? AND id = ?`);
+  const clientRow = db.prepare("SELECT * FROM clients WHERE org_id = ? AND id = ?");
+  const buckets = { loan: new Map(), email: new Map(), name: new Map() };   // key -> client ids, ascending
+  const held = new Map();   // client id -> the keys it is filed under
+
+  // Each bucket stays in id order, as the queries' ORDER BY id would give it.
+  const file = (bucket, key, id) => {
+    if (typeof key !== "string" || key === "") return;
+    const ids = bucket.get(key) || [];
+    let at = ids.length;
+    while (at > 0 && ids[at - 1] > id) at -= 1;
+    ids.splice(at, 0, id);
+    bucket.set(key, ids);
+  };
+  const unfile = (bucket, key, id) => {
+    const ids = bucket.get(key);
+    if (!ids) return;
+    const at = ids.indexOf(id);
+    if (at >= 0) ids.splice(at, 1);
+    if (ids.length === 0) bucket.delete(key);
+  };
+
+  const add = (keys) => {
+    file(buckets.loan, keys.loan, keys.id);
+    file(buckets.email, keys.email, keys.id);
+    file(buckets.name, keys.name, keys.id);
+    held.set(keys.id, keys);
+  };
+  const remove = (id) => {
+    const keys = held.get(id);
+    if (!keys) return;
+    unfile(buckets.loan, keys.loan, id);
+    unfile(buckets.email, keys.email, id);
+    unfile(buckets.name, keys.name, id);
+    held.delete(id);
+  };
+
+  for (const keys of everyone.all(orgId)) add(keys);
+  const found = (bucket, key) => (bucket.get(key) || []).map((id) => clientRow.get(orgId, id)).filter(Boolean);
+  return {
+    orgId,
+    byLoanNumber: (loan) => found(buckets.loan, loan),
+    byEmail: (email) => found(buckets.email, email),
+    byName: (key) => found(buckets.name, key),
+    refresh(id) {
+      remove(id);
+      const keys = oneKeys.get(orgId, id);
+      if (keys) add(keys);
+    },
+  };
+}
+
+// `index` (optional) is a createMatchIndex for the same company; without one each step asks the DB.
+function findMatch(db, orgId, record, index = null) {
+  if (index && index.orgId !== orgId) throw new TypeError("findMatch: the match index is for another company");
+  const look = index || dbLookups(db, orgId);
+
   const loan = trimmed(record.loanNumber).toUpperCase();
   if (loan) {
-    const found = verdict(db.prepare("SELECT * FROM clients WHERE org_id = ? AND loan_number = ? ORDER BY id").all(orgId, loan));
+    const found = verdict(look.byLoanNumber(loan));
     if (found) return found;
   }
 
   const email = trimmed(record.email).toLowerCase();
   if (email) {
-    const found = verdict(db.prepare("SELECT * FROM clients WHERE org_id = ? AND lower(trim(email)) = ? ORDER BY id").all(orgId, email));
+    const found = verdict(look.byEmail(email));
     if (found) return found;
   }
 
   const key = nameKey(record.name);
   if (!key) return NONE;
-  ensureNameKey(db);
-  const named = db.prepare(`SELECT * FROM clients WHERE org_id = ? AND ${NAME_KEY_FN}(name) = ? ORDER BY id`).all(orgId, key);
+  const named = look.byName(key);
 
   const phone = phoneDigits(record.phone);
   if (phone) {
@@ -96,4 +179,4 @@ function relation(client, record) {
   return record.purpose === "purchase" ? "second_property" : "refinance";
 }
 
-module.exports = { findMatch, relation };
+module.exports = { findMatch, createMatchIndex, relation };

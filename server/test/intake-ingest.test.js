@@ -238,6 +238,37 @@ test("the same loan listed twice in one export: one client, the second row uncha
   assert.equal(allClients().length, 1);
 });
 
+test("a client this run created or changed is matched by later rows as the run left it: by email, and by a bare name", () => {
+  // by email alone: a refinance under another spelling of the name, with a new loan number and no phone
+  const byEmail = run([item(2), item(3, { ...REFI, firstName: "Johnny", phone: "" })]);
+  assert.deepStrictEqual(outcomes(byEmail), [[2, "created"], [3, "updated"]]);
+  assert.deepStrictEqual(allClients().map((c) => [c.name, c.loan_number]), [["John Smith", "B200"]]);
+
+  db.prepare("DELETE FROM clients").run();
+  const bare = { firstName: "Bea", lastName: "Bare", email: "", phone: "", loanNumber: "", loanOfficer: "", closingDate: "1/5/2024" };
+  const r = run([
+    item(2, bare),
+    item(3, { ...bare, noteRate: "6.25" }),                         // the bare client, by name alone
+    item(4, { ...bare, noteRate: "6.25", email: "bea@bare.test" }),  // by name alone again, and fills the blank email
+    item(5, { ...bare, firstName: "B.", email: "bea@bare.test" }),   // by the email row 4 gave her
+    item(6, bare),                                                   // she has an email now, so the name alone is somebody else
+  ]);
+  assert.deepStrictEqual(outcomes(r), [[2, "created"], [3, "updated"], [4, "updated"], [5, "updated"], [6, "created"]]);
+  assert.deepStrictEqual(allClients().map((c) => [c.name, c.email, c.current_rate]), [["Bea Bare", "bea@bare.test", 6.5], ["Bea Bare", "", 6.5]]);
+});
+
+test("a 5,000-row first import (every row new) is reviewed in under 3 seconds", () => {
+  const items = Array.from({ length: 5000 }, (_, i) => item(i + 2, {
+    firstName: `Person${i}`, lastName: `Number${i}`, email: `p${i}@x.test`, phone: `555${String(i).padStart(7, "0")}`, loanNumber: `N${i}`,
+  }));
+  const start = process.hrtime.bigint();
+  const r = run(items, { dryRun: true });
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.equal(r.counts.created, 5000);
+  assert.equal(allClients().length, 0);
+  assert.ok(ms < 3000, `took ${Math.round(ms)} ms`);
+});
+
 test("ambiguous rows write nothing; front-door skips and record failures are skipped with their reason", () => {
   addClient(lou, { loan_number: "" });
   addClient(lia, { loan_number: "" });

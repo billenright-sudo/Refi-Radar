@@ -15,7 +15,7 @@ const { execFileSync } = require("child_process");
 const Database = require("better-sqlite3");
 
 const db = require("../db");
-const { findMatch, relation } = require("../lib/intake/match");
+const { findMatch, createMatchIndex, relation } = require("../lib/intake/match");
 const { resolveOwner } = require("../lib/intake/owner");
 
 after(() => {
@@ -219,6 +219,50 @@ test("findMatch: two at the first step that finds any is ambiguous; two same-nam
   addClient(orgA, ann, "Kay Ito", { phone: "555-333-4444" });
   addClient(orgA, lou, "Kay Ito", { phone: "(555) 333-4444" });
   assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Kay Ito", phone: "5553334444" })), { kind: "ambiguous", count: 2 });
+});
+
+test("findMatch with a match index answers exactly what the DB does, and refresh() keeps it current", () => {
+  // Stored values that SQLite and JavaScript would read differently: SQL trim() drops spaces only and lower() folds only ASCII.
+  addClient(orgA, ann, "Idx Mixed", { email: "  MIXED@Case.Test " });
+  addClient(orgA, ann, "Idx Accent", { email: "JOSÉ@X.TEST" });
+  addClient(orgA, ann, "Idx Tab", { email: "\ttab@x.test" });
+  addClient(orgA, ann, "Idx Lower Loan", { loan_number: "z100x" });
+  addClient(orgA, lou, "Idx  Twin");
+  addClient(orgA, lia, "idx twin", { phone: "555-777-8888" });
+
+  // Every record the tests above used, and the edge cases just added, for both companies (the DB holds every earlier test's clients).
+  const records = [
+    {}, { name: "" }, { loanNumber: "A100", name: "Someone Else" }, { email: "JOHN@X.COM", name: "Another Name" }, { email: "john@x.com" },
+    { name: "phone  owner", phone: "5551234567" }, { name: "Phone Owner", phone: "+1 555 123 4567" }, { name: "Phone Owner" },
+    { name: "Phone Owner", phone: "5559999999" }, { name: "mary  jones" }, { name: "Mary Jones With Phone" }, { loanNumber: "ZZZ" },
+    { name: "Mary Jones" }, { name: "Nobody Atall" }, { name: "ÁLVAREZ  ORTIZ" }, { name: "Alvarez Ortiz" }, { name: "José Garcia", phone: "5552223333" },
+    { name: "José Garcia" }, { name: "dee fox" }, { name: "ZOË QUINN" }, { loanNumber: "C300", email: "step@two.com", name: "Step Two" },
+    { loanNumber: "B200" }, { email: "same@mail.com" }, { name: "Pat Kim" }, { name: "Pat Kim", email: "pat@kim.com" }, { name: "Lee Wong" },
+    { name: "Kay Ito", phone: "5553334444" }, { email: "mixed@case.test" }, { email: "josé@x.test" }, { email: "JOSÉ@X.TEST" },
+    { email: "tab@x.test", name: "Idx Tab" }, { loanNumber: "Z100X" }, { loanNumber: " z100x ", name: "Idx Lower Loan" },
+    { name: "IDX TWIN" }, { name: "idx twin", phone: "5557778888" },
+  ].map(rec);
+  for (const orgId of [orgA, orgB]) {
+    const index = createMatchIndex(db, orgId);
+    for (const r of records) assert.deepStrictEqual(findMatch(db, orgId, r, index), findMatch(db, orgId, r), `${orgId} ${JSON.stringify(r)}`);
+  }
+
+  // A client written after the index was made is found once the run refreshes it, as the DB now holds it.
+  const index = createMatchIndex(db, orgA);
+  const late = addClient(orgA, ann, "Idx Late", { email: "late@x.test" });
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ email: "late@x.test" }), index), { kind: "none" });
+  index.refresh(late);
+  assert.strictEqual(findMatch(db, orgA, rec({ email: "late@x.test" }), index).client.id, late);
+  db.prepare("UPDATE clients SET email = 'later@x.test', phone = '5550001111' WHERE id = ?").run(late);
+  index.refresh(late);
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ email: "late@x.test", name: "Nobody" }), index), { kind: "none" });
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ email: "later@x.test" }), index), findMatch(db, orgA, rec({ email: "later@x.test" })));
+  assert.strictEqual(findMatch(db, orgA, rec({ name: "idx late", phone: "555-000-1111" }), index).client.phone, "5550001111");
+  // another company's client is never filed, and an index is only ever used for its own company
+  const theirs = addClient(orgB, bea, "Idx Late", { email: "late2@x.test" });
+  index.refresh(theirs);
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ email: "late2@x.test" }), index), { kind: "none" });
+  assert.throws(() => findMatch(db, orgB, rec({ email: "late2@x.test" }), index), TypeError);
 });
 
 test("relation: same, refinance, second property, older, and the one-sided loan number rule", () => {

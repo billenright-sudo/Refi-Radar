@@ -26,7 +26,7 @@
 
 const crypto = require("crypto");
 const { toRecord, REASONS, BALANCE_FLAGS } = require("./record");
-const { findMatch, relation } = require("./match");
+const { findMatch, createMatchIndex, relation } = require("./match");
 const { resolveOwner } = require("./owner");
 const { fullName, parseDate } = require("./normalize");
 // Called as followups.resolveForClient(...) so a test can stand in for it.
@@ -148,6 +148,11 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
   };
   const bookOf = (id) => ({ id, name: person(id).name });
 
+  // The company's clients' match keys, read once when the run starts (match.js's createMatchIndex). Every client the run
+  // creates or updates is filed again straight after the write, so each row is matched against the clients exactly as the rows
+  // before it left them, the same as asking the DB row by row, without scanning every client for every row.
+  let index = null;
+
   // The clients this run created. One a later row hands to another loan officer was nobody's before the run, so that is not a
   // move: no one loses a client, so no follow-ups close and no one is told.
   const createdThisRun = new Set();
@@ -158,7 +163,9 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
       close_date: record.closeDate, credit_score: record.creditScore ?? DEFAULT_CREDIT_SCORE, notes: record.notes,
       loan_number: record.loanNumber, source,
     });
-    createdThisRun.add(Number(info.lastInsertRowid));
+    const id = Number(info.lastInsertRowid);
+    createdThisRun.add(id);
+    index.refresh(id);
   };
 
   function ingestOne({ row, record, flags }) {
@@ -171,7 +178,7 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
     const base = { name: record.name, flags: balanceKept };
     const createdIn = { owner: bookOf(owner.id), flags: owner.flag ? [...flags, owner.flag] : [...flags] };
 
-    const match = findMatch(db, actor.org_id, record);
+    const match = findMatch(db, actor.org_id, record, index);
     if (match.kind === "ambiguous") return result(row, "ambiguous", { ...base, reason: `matched ${match.count} clients` });
     if (match.kind === "none") {
       create(record, owner);
@@ -197,6 +204,7 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
     // The column names are this module's own, never the row's.
     db.prepare(`UPDATE clients SET ${columns.map((c) => `${c} = @${c}`).join(", ")}, updated_at = datetime('now') WHERE id = @id`)
       .run({ ...changes, id: client.id });
+    index.refresh(client.id);
     const updated = { ...base, flags: "loan_balance" in changes ? [...flags] : balanceKept };
     if (!reassigns) return result(row, "updated", { ...updated, owner: bookOf(client.user_id) });
     if (createdThisRun.has(client.id)) return result(row, "updated", { ...updated, owner: bookOf(owner.id) });
@@ -215,6 +223,8 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
   // still rolls back and reaches the caller.
   const rollback = new Error("ingest dry run: roll back");
   const write = db.transaction(() => {
+    // Read inside the transaction, so the index and the writes see one and the same DB.
+    if (loans.length > 0) index = createMatchIndex(db, actor.org_id);
     for (const loan of loans) results.push(ingestOne(loan));
     if (dryRun) throw rollback;
   });
