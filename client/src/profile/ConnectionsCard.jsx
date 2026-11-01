@@ -31,7 +31,8 @@ const FIELDS = [
   "borrower_name, or borrower_first_name and borrower_last_name (required)",
   "email; phone",
   "note_rate (required)",
-  "current_balance; loan_amount; term_months; amortization_type; first_payment_date",
+  "current_balance or loan_amount (one required)",
+  "term_months; amortization_type; first_payment_date",
   "property_value, appraised_value or purchase_price (one required)",
   "closing_date or funding_date (required)",
   "credit_score; loan_officer_email; loan_purpose; status",
@@ -159,15 +160,19 @@ export function ConnectionsCard({ ui, isBroker }) {
         </div>
       )}
 
+      {/* The address is shown connected or not (it is no secret), so step 4 of the guide always has a URL above it. */}
+      {known && conn.webhookUrl && (
+        <CopyRow label="Webhook URL" value={conn.webhookUrl} testId="connections-url" copied={copied === "url"} onCopy={() => copy("url", conn.webhookUrl)} ui={ui} />
+      )}
+
       {known && !connected && (
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 12 }}>
           <button type="button" data-testid="connections-connect" disabled={busy} onClick={makeKey} style={button(C, { primary: true, busy })}>Connect ARIVE</button>
         </div>
       )}
 
       {connected && (
         <>
-          <CopyRow label="Webhook URL" value={conn.webhookUrl} testId="connections-url" copied={copied === "url"} onCopy={() => copy("url", conn.webhookUrl)} ui={ui} />
           {fresh && (
             <>
               <CopyRow label="Key" value={fresh.key} testId="connections-key" copied={copied === "key"} onCopy={() => copy("key", fresh.key)} ui={ui} />
