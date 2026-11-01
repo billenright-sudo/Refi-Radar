@@ -102,6 +102,25 @@ test("fullName: a comma only flips when there is exactly one with text on both s
   assert.equal(fullName({ first: " Ann ", last: " Lee " }), "Ann Lee");
   assert.equal(fullName(), "");
 });
+test("fullName: a name suffix or an entity word after the comma is part of the name, not a first name", () => {
+  assert.equal(fullName({ name: "John Smith, Jr" }), "John Smith, Jr");
+  assert.equal(fullName({ name: "Acme Realty, LLC" }), "Acme Realty, LLC");
+  assert.equal(fullName({ name: "Smith, John" }), "John Smith");
+  for (const word of ["Jr", "Jr.", "Sr", "Sr.", "II", "III", "IV", "V", "MD", "LLC", "L.L.C.", "Inc", "Inc.", "Trust", "Ltd", "LP", "LLP", "Corp", "Co"]) {
+    for (const w of [word, word.toLowerCase(), word.toUpperCase()]) assert.equal(fullName({ name: `Jones Holdings, ${w}` }), `Jones Holdings, ${w}`, w);
+  }
+  // Only the whole part after the comma counts: a real first name that merely starts with or contains such a word still flips.
+  assert.equal(fullName({ name: "Smith, Trustee" }), "Trustee Smith");
+  assert.equal(fullName({ name: "Smith, Vincent" }), "Vincent Smith");
+  assert.equal(fullName({ name: "Lee, Cory" }), "Cory Lee");
+});
+test("parseRate: a value written with a % sign is already a percent, never a fraction", () => {
+  assert.equal(parseRate("0.5%"), 0.5);
+  assert.equal(parseRate(" 0.065 % "), 0.065);
+  assert.equal(parseRate("6.500%"), 6.5);
+  assert.equal(parseRate("0.065"), 6.5);
+  assert.equal(parseRate(0.065), 6.5);
+});
 test("phoneDigits and cleanEmail: only a leading country-code 1 on 11 digits drops; an email must look like x@y.z", () => {
   assert.equal(phoneDigits("1-555-123-4567"), "5551234567");
   assert.equal(phoneDigits("25551234567"), "25551234567");
