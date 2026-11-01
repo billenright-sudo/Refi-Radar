@@ -10,13 +10,25 @@
 // The name alone is the weakest evidence, so it only counts for a client who is bare (no email, phone or loan number to
 // disagree with). Two or more clients at a step is `ambiguous`: the caller skips the row rather than guess or add a duplicate.
 //
-// Stored text is compared the way it is read: names through lower(trim(name)) against normalize's nameKey, phones through
-// phoneDigits on both sides ("(555) 123-4567" is "5551234567"), emails lower-cased. Nothing here writes to the DB.
+// Stored text is compared the way it is read: names through normalize's nameKey on both sides (so "ÁLVAREZ  ORTIZ" and
+// "Álvarez Ortiz" are one name; SQLite's own lower() only folds ASCII), phones through phoneDigits on both sides
+// ("(555) 123-4567" is "5551234567"), emails lower-cased. The only thing put on the DB handle is the name-key function below,
+// which lives on that connection and changes no data.
 
 const { nameKey, phoneDigits } = require("./normalize");
 
 const NONE = Object.freeze({ kind: "none" });
-const ISO_DATE_RE = /^(\d{4}-\d{2}-\d{2})/;
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+// The SQL function that gives a stored name its nameKey, registered once on each connection we are handed.
+const NAME_KEY_FN = "intake_name_key";
+const withNameKey = new WeakSet();
+function ensureNameKey(db) {
+  if (withNameKey.has(db)) return;
+  // nameKey reads anything that is not a string or a finite number as "", so a NULL name is safe.
+  db.function(NAME_KEY_FN, { deterministic: true }, (name) => nameKey(name));
+  withNameKey.add(db);
+}
 
 const trimmed = (v) => (typeof v === "string" ? v.trim() : "");
 
@@ -45,7 +57,8 @@ function findMatch(db, orgId, record) {
 
   const key = nameKey(record.name);
   if (!key) return NONE;
-  const named = db.prepare("SELECT * FROM clients WHERE org_id = ? AND lower(trim(name)) = ? ORDER BY id").all(orgId, key);
+  ensureNameKey(db);
+  const named = db.prepare(`SELECT * FROM clients WHERE org_id = ? AND ${NAME_KEY_FN}(name) = ? ORDER BY id`).all(orgId, key);
 
   const phone = phoneDigits(record.phone);
   if (phone) {
@@ -60,10 +73,15 @@ function findMatch(db, orgId, record) {
   return NONE;
 }
 
-// A closing date as YYYY-MM-DD, or "" when there is none or it is not written that way (a hand-typed "last spring" is no date).
+// A closing date as YYYY-MM-DD, or "" when there is none or it is not a real day. A stored close_date is free text, so a
+// hand-typed "last spring" is no date, and neither is "2021-13-45" or "2021-02-30": the date is read back from a UTC date and
+// must come out the same (the Date constructor would roll Feb 30 over to Mar 2).
 const dateOf = (v) => {
   const m = ISO_DATE_RE.exec(trimmed(v));
-  return m ? m[1] : "";
+  if (!m) return "";
+  const t = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  const day = Number.isNaN(t.getTime()) ? "" : t.toISOString().slice(0, 10);
+  return day === m[0] ? day : "";
 };
 
 // How an incoming loan relates to the stored client it matched:

@@ -144,6 +144,48 @@ test("findMatch: loan number, then email, then name + phone, then a bare name; n
   assert.strictEqual(findMatch(db, orgA, rec({ name: "Nobody Atall" })).kind, "none");
 });
 
+test("findMatch: names compare through nameKey on both sides (accents, case, inner spacing)", () => {
+  const accented = addClient(orgA, ann, "Álvarez Ortiz");
+  const shouting = addClient(orgA, ann, "JOSÉ GARCIA", { phone: "(555) 222-3333" });
+  const spaced = addClient(orgA, lou, "  Dee   Fox ");
+  addClient(orgB, bea, "Zoë Quinn");
+
+  // step 4: a bare stored name, matched whatever the accent's case or the spacing
+  const bare = findMatch(db, orgA, rec({ name: "ÁLVAREZ  ORTIZ" }));
+  assert.strictEqual(bare.kind, "one");
+  assert.strictEqual(bare.client.id, accented);
+  assert.strictEqual(findMatch(db, orgA, rec({ name: "álvarez ortiz" })).client.id, accented);
+  // a different accent is a different name
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Alvarez Ortiz" })), { kind: "none" });
+
+  // step 3: the stored name is upper-case with an accent, the incoming one is not; the phone digits agree
+  const withPhone = findMatch(db, orgA, rec({ name: "José Garcia", phone: "5552223333" }));
+  assert.strictEqual(withPhone.kind, "one");
+  assert.strictEqual(withPhone.client.id, shouting);
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "José Garcia" })), { kind: "none" });
+
+  // a stored name with extra spaces inside and around it
+  const found = findMatch(db, orgA, rec({ name: "dee fox" }));
+  assert.strictEqual(found.kind, "one");
+  assert.strictEqual(found.client.id, spaced);
+
+  // still only the importer's own company
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "ZOË QUINN" })), { kind: "none" });
+  assert.strictEqual(findMatch(db, orgB, rec({ name: "ZOË QUINN" })).kind, "one");
+});
+
+test("findMatch: the name function is registered once per connection and works on any connection it is given", () => {
+  const other = new Database(":memory:");
+  try {
+    other.exec("CREATE TABLE clients (id INTEGER PRIMARY KEY, org_id INTEGER, name TEXT, email TEXT, phone TEXT, loan_number TEXT, close_date TEXT)");
+    other.prepare("INSERT INTO clients (org_id, name, email, phone, loan_number) VALUES (1, 'ÉLODIE  Roy', '', '', '')").run();
+    for (let i = 0; i < 2; i++) assert.strictEqual(findMatch(other, 1, rec({ name: "élodie roy" })).kind, "one");
+    assert.strictEqual(findMatch(other, 2, rec({ name: "élodie roy" })).kind, "none");
+  } finally {
+    other.close();
+  }
+});
+
 test("findMatch: the first step that finds any client decides, even when a later step would find another", () => {
   const byLoan = addClient(orgA, ann, "Step One", { loan_number: "C300" });
   addClient(orgA, ann, "Step Two", { email: "step@two.com" });
@@ -207,8 +249,16 @@ test("relation: same, refinance, second property, older, and the one-sided loan 
   assert.strictEqual(relation(stored("A100", "2021-05-01"), inc("B1", "")), "refinance");
   assert.strictEqual(relation(stored("A100", ""), inc("B1", "2021-05-01")), "refinance");
   assert.strictEqual(relation(stored("A100", ""), inc("B1", "", "purchase")), "second_property");
-  // a stored date that is not a calendar date counts as missing, never as earlier or later
+  // a stored date that is not a calendar date counts as missing, never as earlier or later (read by shape alone, "2021-13-45"
+  // would sort after the incoming date and "2021-02-30" before it)
   assert.strictEqual(relation(stored("A100", "last spring"), inc("B1", "2021-05-01")), "refinance");
+  assert.strictEqual(relation(stored("A100", "2021-13-45"), inc("B1", "2021-05-01")), "refinance");
+  assert.strictEqual(relation(stored("A100", "2021-02-30"), inc("B1", "2021-01-15")), "refinance");
+  assert.strictEqual(relation(stored("A100", "2021-02-30"), inc("B1", "2021-01-15", "purchase")), "second_property");
+  // ... so with one loan number missing the other side's date cannot show a difference, and it is the same loan
+  assert.strictEqual(relation(stored("", "2021-13-45"), inc("B1", "2024-02-01")), "same");
+  // a real stored date with a time on the end still reads as that day
+  assert.strictEqual(relation(stored("A100", "2024-02-29T00:00:00"), inc("B1", "2021-05-01")), "older");
 });
 
 test("resolveOwner: email, unique full name, fallback with a flag, other org, LO actor", () => {
