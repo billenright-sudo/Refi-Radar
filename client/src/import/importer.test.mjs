@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
 import {
-  uploadFile, reviewAgain, confirmImport, fundedStatusesOf, withMapping, withStatus, outcomeText, summaryText, pageOf,
+  uploadFile, reviewAgain, confirmImport, fundedStatusesOf, withMapping, withStatus, outcomeText, bookText, summaryText, pageOf,
 } from "./importer.mjs";
 
 const reply = (status, body) => ({ status, body });
@@ -209,8 +209,28 @@ test("outcomeText for every outcome and note", () => {
   // The other reasons the server gives, and a row with none.
   assert.equal(outcomeText(row("skipped", { reason: "not funded" })), "Skipped: not funded");
   assert.equal(outcomeText(row("skipped", { reason: "no name" })), "Skipped: no name");
+  assert.equal(outcomeText(row("skipped", { reason: "closing date not readable" })), "Skipped: closing date not readable");
   assert.equal(outcomeText(row("skipped")), "Skipped");
   assert.equal(outcomeText(row("ambiguous")), "Ambiguous: skipped");
+});
+
+test("bookText names the book a written or matched row lands in, once", () => {
+  const lou = { id: 3, name: "Lou Park" };
+  const row = (outcome, more = {}) => ({ row: 2, outcome, name: "Ann Lee", reason: null, note: null, flags: [], owner: lou, movedFrom: null, ...more });
+
+  assert.equal(bookText(row("created")), "→ Lou Park");
+  assert.equal(bookText(row("created", { note: "second property" })), "→ Lou Park");
+  assert.equal(bookText(row("updated")), "→ Lou Park");
+  assert.equal(bookText(row("unchanged")), "→ Lou Park");
+  assert.equal(bookText(row("unchanged", { note: "older loan" })), "→ Lou Park");
+  // a move already names the new book in its outcome line
+  assert.equal(bookText(row("updated", { movedFrom: "Lia Chen" })), "");
+  // a row that goes nowhere has no book
+  assert.equal(bookText(row("skipped", { owner: null })), "");
+  assert.equal(bookText(row("ambiguous", { owner: null })), "");
+  assert.equal(bookText(row("skipped")), "");
+  assert.equal(bookText(row("created", { owner: null })), "");
+  assert.equal(bookText(row("created", { owner: { id: 4, name: "" } })), "");
 });
 
 test("summaryText counts ambiguous as skipped and shows moved only when > 0", () => {

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { uploadFile, reviewAgain, confirmImport, withMapping, withStatus, outcomeText, summaryText, pageOf } from "./importer.mjs";
+import { uploadFile, reviewAgain, confirmImport, withMapping, withStatus, outcomeText, bookText, summaryText, pageOf } from "./importer.mjs";
 
 // The Import page: a broker uploads a CSV or Excel export, looks at what it will do, then imports it. Four steps:
 //   upload -> review (pick the columns, tick the funded statuses, read the summary and the rows) -> import -> result.
@@ -141,7 +141,7 @@ const ColumnPicks = ({ review, busy, ui: { C, card }, onPick }) => {
   );
 };
 
-// A "counts as funded" box per loan status found in the file. A row whose status is not ticked is skipped.
+// A "counts as funded" box per loan status found in the file; a ticked one says so. A row whose status is not ticked is skipped.
 const StatusPicks = ({ statuses, busy, ui: { C, card, mono }, onTick }) => (
   <section style={{ ...card, padding: "1.1rem", marginBottom: "1.25rem" }}>
     <Heading title="Loan status" hint="Only funded loans are imported. Tick the statuses that count as funded." C={C} />
@@ -156,13 +156,13 @@ const StatusPicks = ({ statuses, busy, ui: { C, card, mono }, onTick }) => (
         />
         <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{s.label}</span>
         <span style={{ color: C.muted, fontSize: 12 }}><span style={mono}>{s.count}</span> {s.count === 1 ? "row" : "rows"}</span>
-        <span style={{ color: C.mutedHi, fontSize: 12 }}>· counts as funded</span>
+        {s.funded && <span style={{ color: C.mutedHi, fontSize: 12 }}>· counts as funded</span>}
       </label>
     ))}
   </section>
 );
 
-// The rows, 50 a page: what the import will do with each, the name and the flags.
+// The rows, 50 a page: what the import will do with each (and the book it lands in), the name and the flags.
 const RowsTable = ({ results, page, onPage, ui: { C, card, mono } }) => {
   const shown = pageOf(results, page);
   const first = (shown.page - 1) * 50;
@@ -196,7 +196,10 @@ const RowsTable = ({ results, page, onPage, ui: { C, card, mono } }) => {
                 <tr key={r.row} data-testid="import-row" style={{ borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "transparent" : `${C.surfaceHi}44`, verticalAlign: "top" }}>
                   <td style={{ padding: "10px 14px", ...mono, color: C.muted, fontSize: 12 }}>{r.row}</td>
                   <td style={{ padding: "10px 14px", color: C.text, fontSize: 13 }}>{r.name || "—"}</td>
-                  <td style={{ padding: "10px 14px", color: outcomeColor(C, r.outcome), fontSize: 13 }}>{outcomeText(r)}</td>
+                  <td style={{ padding: "10px 14px", color: outcomeColor(C, r.outcome), fontSize: 13 }}>
+                    {outcomeText(r)}
+                    {bookText(r) && <span data-testid="import-row-book" style={{ color: C.muted }}>{` ${bookText(r)}`}</span>}
+                  </td>
                   <td style={{ padding: "10px 14px", color: C.mutedHi, fontSize: 12.5 }}>
                     {r.flags.length === 0 ? "—" : r.flags.map((flag) => <div key={flag}>{flag}</div>)}
                   </td>
@@ -316,7 +319,7 @@ export default function ImportView({ ui, onImported, onDone }) {
   return (
     <div style={{ animation: "fadeIn 0.35s ease", maxWidth: step === "result" ? 600 : 900 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 6 }}>Import Clients</h1>
-      <div style={{ color: C.muted, fontSize: 14, marginBottom: "1.5rem" }}>Upload a CSV or Excel file exported from your CRM</div>
+      <div style={{ color: C.muted, fontSize: 14, marginBottom: "1.5rem" }}>Upload a CSV or Excel export from ARIVE, Calyx Point or your CRM</div>
 
       <ErrorLine text={error} ui={ui} />
 

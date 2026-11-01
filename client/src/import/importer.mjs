@@ -128,6 +128,14 @@ export function outcomeText(result) {
   }
 }
 
+// The book a row lands in, for beside its outcome line: "→ Lou Park" for a row that creates, updates or matches a client, "" for
+// a row that goes nowhere (skipped, ambiguous) and for a move, whose outcome line already names the new book.
+export function bookText(result) {
+  const { outcome, owner, movedFrom } = result;
+  if (!["created", "updated", "unchanged"].includes(outcome) || movedFrom) return "";
+  return owner && owner.name ? `→ ${owner.name}` : "";
+}
+
 // "3 new · 1 updated · 2 unchanged · 1 skipped", with " · 1 moved" added when a client moved to another loan officer. A row that
 // matched more than one client is not imported, so it counts as skipped here (R11); the server keeps "ambiguous" apart.
 export function summaryText(counts) {
