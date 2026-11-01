@@ -137,6 +137,19 @@ test("fullName: a name suffix or an entity word after the comma is part of the n
   assert.equal(fullName({ name: "Smith, Vincent" }), "Vincent Smith");
   assert.equal(fullName({ name: "Lee, Cory" }), "Cory Lee");
 });
+test("fullName: 'Last, First Suffix' keeps the suffix at the end", () => {
+  assert.equal(fullName({ name: "Smith, John Jr" }), "John Smith Jr");
+  assert.equal(fullName({ name: "Smith, John A. Jr." }), "John A. Smith Jr.");
+  assert.equal(fullName({ name: "Smith,  John   III " }), "John Smith III");
+  for (const w of ["Jr", "jr.", "SR", "Sr.", "II", "iii", "IV", "V", "MD", "M.D."]) assert.equal(fullName({ name: `Smith, John ${w}` }), `John Smith ${w}`, w);
+  // a suffix that is the whole part after the comma, and an entity word, are still left as written
+  assert.equal(fullName({ name: "John Smith, Jr" }), "John Smith, Jr");
+  assert.equal(fullName({ name: "Acme Realty, LLC" }), "Acme Realty, LLC");
+  // only a person's suffix moves; an entity word at the end, or a first name that merely ends in such letters, flips as before
+  assert.equal(fullName({ name: "Realty, Acme LLC" }), "Acme LLC Realty");
+  assert.equal(fullName({ name: "Smith, Junior" }), "Junior Smith");
+  assert.equal(fullName({ name: "Smith, Mary Kay" }), "Mary Kay Smith");
+});
 test("parseRate: a value written with a % sign is already a percent, never a fraction", () => {
   assert.equal(parseRate("0.5%"), 0.5);
   assert.equal(parseRate(" 0.065 % "), 0.065);

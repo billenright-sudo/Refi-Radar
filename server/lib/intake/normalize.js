@@ -37,7 +37,8 @@ const MONTH_WORDS = new Set(["mo", "mos", "month", "months"]);
 const YEAR_WORDS = new Set(["y", "yr", "yrs", "year", "years"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // What can follow the comma in a name that is not "Last, First": a person's suffix, or the end of an entity's name.
-const NAME_TAILS = new Set(["jr", "sr", "ii", "iii", "iv", "v", "md", "llc", "inc", "trust", "ltd", "lp", "llp", "corp", "co"]);
+const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "v", "md"]);
+const NAME_TAILS = new Set([...NAME_SUFFIXES, "llc", "inc", "trust", "ltd", "lp", "llp", "corp", "co"]);
 // Checked against headerKey(), so spacing, case and punctuation cannot hide a column ("S.S.N.", "Date of Birth", "Gross_Income").
 const PROTECTED_HEADER_RE = /ssn|social|dob|birth|income|salary|asset|employ|account/;
 
@@ -127,10 +128,22 @@ function parseTermMonths(v) {
   return months > 0 ? months : null;
 }
 
+// A word as the suffix and tail sets hold it: case and periods do not matter ("L.L.C." is "llc", "Jr." is "jr").
+const tailWord = (s) => s.toLowerCase().replace(/\./g, "").trim();
+
 // True when the text after a comma is a name suffix or an entity word on its own ("John Smith, Jr", "Acme Realty, LLC"), so
-// the comma is not "Last, First". Case and periods do not matter ("L.L.C." is "llc").
+// the comma is not "Last, First".
 function isNameTail(s) {
-  return NAME_TAILS.has(s.toLowerCase().replace(/\./g, "").trim());
+  return NAME_TAILS.has(tailWord(s));
+}
+
+// "Last, First" with the first part turned around: "Smith", "John" -> "John Smith". A person's suffix at the end of the first
+// part stays at the end of the name: "Smith", "John A. Jr." -> "John A. Smith Jr.", never "John A. Jr. Smith".
+function flipped(last, first) {
+  const words = collapse(first).split(" ");
+  const end = words[words.length - 1];
+  if (words.length > 1 && NAME_SUFFIXES.has(tailWord(end))) return collapse(`${words.slice(0, -1).join(" ")} ${last} ${end}`);
+  return collapse(`${first} ${last}`);
 }
 
 // A borrower's display name from a whole-name cell, or from first + last cells when there is no whole name. Exactly one
@@ -140,7 +153,7 @@ function fullName({ name, first, last } = {}) {
   let out = collapse(text(name));
   if (out) {
     const parts = out.split(",");
-    if (parts.length === 2 && parts[0].trim() && parts[1].trim() && !isNameTail(parts[1])) out = collapse(`${parts[1]} ${parts[0]}`);
+    if (parts.length === 2 && parts[0].trim() && parts[1].trim() && !isNameTail(parts[1])) out = flipped(parts[0], parts[1]);
   } else {
     out = collapse(`${text(first)} ${text(last)}`);
   }
