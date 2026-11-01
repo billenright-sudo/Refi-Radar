@@ -226,6 +226,10 @@ function refreshTokenOf(db, userId) {
 //                                                          tokens); worth trying again later
 // Never throws. A key that cannot open the tokens writes nothing to the connection (Ruling 57): it is the server's
 // configuration that is wrong, and once the key is fixed the same connection works again with no new sign-in.
+//
+// One refresh per user at a time: a caller that finds one in flight waits for it and gets its answer, so two refreshes never
+// race (when Google rotates the refresh token, the loser's invalid_grant would flag a working connection 'reconnect'). The lock
+// is in-process, which is enough while the service runs one instance (--max-instances 1).
 async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.now()) {
   const unavailable = { code: "unavailable" };
   try {
@@ -243,6 +247,32 @@ async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.no
       }
     }
 
+    return { ...(await refreshOnce(db, userId, () => refresh(db, userId, row, who, fetchFn, now))) };
+  } catch (err) {
+    console.error("google accessToken failed:", errName(err));
+    return unavailable;
+  }
+}
+
+// The refresh in flight for each user, per database handle (tests open their own): db -> Map(userId -> Promise).
+const refreshing = new WeakMap();
+
+// run() for this user, or the answer of the run already in flight for them. The entry is set before anything can await, and goes
+// when its run settles, whatever it answered.
+function refreshOnce(db, userId, run) {
+  let byUser = refreshing.get(db);
+  if (!byUser) refreshing.set(db, (byUser = new Map()));
+  const pending = byUser.get(userId);
+  if (pending) return pending;
+  const flight = run().finally(() => { if (byUser.get(userId) === flight) byUser.delete(userId); });
+  byUser.set(userId, flight);
+  return flight;
+}
+
+// Trades the stored refresh token for a new access token and saves it. accessToken's answers; never throws.
+async function refresh(db, userId, row, who, fetchFn, now) {
+  const unavailable = { code: "unavailable" };
+  try {
     let refreshToken;
     try {
       refreshToken = decrypt(row.refresh_token_enc);
@@ -283,7 +313,7 @@ async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.no
     `).run(encrypt(body.access_token), expiresAt, encrypt(newRefresh), userId, row.refresh_token_enc);
     return { token: body.access_token, ...who };
   } catch (err) {
-    console.error("google accessToken failed:", errName(err));
+    console.error("google token refresh failed:", errName(err));
     return unavailable;
   }
 }

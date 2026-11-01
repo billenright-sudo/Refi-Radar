@@ -440,6 +440,57 @@ test("accessToken: a thrown fetch, a 5xx, a non-grant 4xx or an unreadable body 
   }
 });
 
+// A token endpoint held open until release(): every refresh it is sent is recorded, and the first is answered with `first`, any
+// later one with `later`.
+function gatedTokenFetch(first, later) {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let n = 0;
+  const fetchFn = fakeFetch({ [TOKEN_URL]: async () => (n++ === 0 ? (await gate, json(first)) : json(later.body, later.status)) });
+  return { fetchFn, release };
+}
+
+test("accessToken: two refreshes for one user at once make ONE call to Google, and both get its token", async () => {
+  const now = 1_000_000;
+  seedConnection(ann, { expiresAt: now });
+  // Google rotates the refresh token on the first refresh, so a second one sent with the old token would be invalid_grant
+  const { fetchFn, release } = gatedTokenFetch(
+    { access_token: ACCESS_2, refresh_token: "1//rotated", expires_in: 3599 },
+    { body: { error: "invalid_grant" }, status: 400 },
+  );
+  const a = oauth.accessToken(db, ann, fetchFn, now);
+  const b = oauth.accessToken(db, ann, fetchFn, now);
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const [first, second] = await Promise.all([a, b]);
+  assert.strictEqual(fetchFn.calls.filter((c) => c.url === TOKEN_URL).length, 1, "one refresh, not two racing");
+  assert.strictEqual(first.token, ACCESS_2);
+  assert.strictEqual(second.token, ACCESS_2);
+  const row = connectionRow(ann);
+  assert.strictEqual(row.status, "connected", "a working connection is never flagged 'reconnect' by a racing refresh");
+  assert.strictEqual(gcrypto.decrypt(row.refresh_token_enc), "1//rotated");
+});
+
+test("accessToken: the refresh lock is per user and lasts only while the refresh is in flight, whatever it answered", async () => {
+  const now = 1_000_000;
+  seedConnection(ann, { expiresAt: now });
+  seedConnection(lou, { expiresAt: now });
+  const { fetchFn, release } = gatedTokenFetch({ access_token: ACCESS_2, expires_in: 3599 }, { body: { access_token: ACCESS_2, expires_in: 3599 }, status: 200 });
+  const annCall = oauth.accessToken(db, ann, fetchFn, now);
+  const louCall = oauth.accessToken(db, lou, fetchFn, now);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(fetchFn.calls.length, 2, "Lou's refresh does not wait on Ann's");
+  release();
+  await Promise.all([annCall, louCall]);
+
+  // a failed refresh frees the lock too: the next call tries again
+  seedConnection(ann, { expiresAt: now });
+  const failing = fakeFetch({ [TOKEN_URL]: () => json({ error: "backendError" }, 503) });
+  assert.deepStrictEqual(await oauth.accessToken(db, ann, failing, now), { code: "unavailable" });
+  assert.deepStrictEqual(await oauth.accessToken(db, ann, failing, now), { code: "unavailable" });
+  assert.strictEqual(failing.calls.length, 2);
+});
+
 test("accessToken: no row is 'not_connected', and a user only ever gets their own token", async () => {
   const now = 1_000_000;
   const fetchFn = fakeFetch({});
