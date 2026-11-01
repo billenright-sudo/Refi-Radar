@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validName, cleanName, validEmail, loadProfile, saveName, requestEmailChange, saveStage, saveNmls, emailChangedNotice,
+  loadConnection, connectArive, disconnectArive, utcTextToDate,
   BAD_NAME, TOO_MANY,
 } from "./profile.mjs";
 
@@ -192,6 +193,81 @@ test("saveNmls: a 400 comes back with the server's message, and an unknown field
   assert.equal(server.calls.length, 1);
   const wrongShape = fakeServer({ "PUT /api/profile/nmls": () => reply(200, { success: true }) });
   assert.deepEqual(await saveNmls(wrongShape.fetch, "own", "1"), { ok: false, error: "That didn't save. Try again." });
+});
+
+// ── the ARIVE connection (server/routes/integrations.js) ──
+
+const KEY_URL = "/api/integrations/key";
+const WEBHOOK = "https://app.example.com/api/integrations/loans";
+const NEW_KEY = `br_${"ab12".repeat(16)}`;
+
+test("loadConnection reads the key status", async () => {
+  const status = { success: true, connected: true, createdAt: "2026-11-01 14:05:09", lastUsedAt: null, webhookUrl: WEBHOOK };
+  const server = fakeServer({ [`GET ${KEY_URL}`]: () => reply(200, status) });
+  assert.deepEqual(await loadConnection(server.fetch), { ok: true, data: status });
+  assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["GET", KEY_URL, undefined]]);
+  // not connected is an answer too
+  const none = { success: true, connected: false, createdAt: null, lastUsedAt: null, webhookUrl: WEBHOOK };
+  const quiet = fakeServer({ [`GET ${KEY_URL}`]: () => reply(200, none) });
+  assert.deepEqual(await loadConnection(quiet.fetch), { ok: true, data: none });
+});
+
+test("connectArive returns the new key once", async () => {
+  const made = { success: true, key: NEW_KEY, webhookUrl: WEBHOOK, createdAt: "2026-11-01 14:06:00" };
+  const server = fakeServer({ [`POST ${KEY_URL}`]: () => reply(200, made) });
+  const res = await connectArive(server.fetch);
+  assert.deepEqual(res, { ok: true, data: made });
+  assert.equal(res.data.key, NEW_KEY);
+  assert.equal(res.data.webhookUrl, WEBHOOK);
+  assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["POST", KEY_URL, undefined]]);
+});
+
+test("disconnectArive deletes the key", async () => {
+  const server = fakeServer({ [`DELETE ${KEY_URL}`]: () => reply(200, { success: true, connected: false }) });
+  assert.deepEqual(await disconnectArive(server.fetch), { ok: true, data: { success: true, connected: false } });
+  assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["DELETE", KEY_URL, undefined]]);
+});
+
+test("connection calls map a 401 to the session-ended message and a network throw to the no-server message", async () => {
+  const calls = [
+    ["GET", loadConnection], ["POST", connectArive], ["DELETE", disconnectArive],
+  ];
+  for (const [method, call] of calls) {
+    const signedOut = fakeServer({ [`${method} ${KEY_URL}`]: () => reply(401, { success: false, error: "Not authenticated" }) });
+    assert.deepEqual(await call(signedOut.fetch), { ok: false, error: "Your session has ended. Sign in again." }, method);
+    const offline = fakeServer({ [`${method} ${KEY_URL}`]: () => { throw new Error("offline"); } });
+    assert.deepEqual(await call(offline.fetch), { ok: false, error: "Couldn't reach the server. Check your connection and try again." }, method);
+  }
+});
+
+test("connection calls show a plain line for a server error or an answer of the wrong shape, never the raw one", async () => {
+  const calls = [
+    ["GET", loadConnection, "Couldn't check your ARIVE connection. Try again."],
+    ["POST", connectArive, "Couldn't make a key. Try again."],
+    ["DELETE", disconnectArive, "Couldn't disconnect ARIVE. Try again."],
+  ];
+  for (const [method, call, error] of calls) {
+    for (const handler of [
+      () => reply(500, { success: false, error: "Database error" }),
+      () => reply(200, { success: true }),            // no key / no connected flag
+      () => reply(200, "not json"),
+      () => reply(200, null),
+    ]) {
+      const server = fakeServer({ [`${method} ${KEY_URL}`]: handler });
+      assert.deepEqual(await call(server.fetch), { ok: false, error }, method);
+    }
+  }
+  // a key is only worth showing with the address to send it to
+  const noUrl = fakeServer({ [`POST ${KEY_URL}`]: () => reply(200, { success: true, key: NEW_KEY }) });
+  assert.equal((await connectArive(noUrl.fetch)).ok, false);
+});
+
+test("utcTextToDate reads the SQLite UTC text as UTC; anything else is null", () => {
+  assert.equal(utcTextToDate("2026-11-01 14:05:09").toISOString(), "2026-11-01T14:05:09.000Z");
+  assert.equal(utcTextToDate("2026-11-01T14:05:09.250Z").toISOString(), "2026-11-01T14:05:09.250Z");   // an ISO stamp is the same instant
+  for (const bad of [null, undefined, "", "   ", "yesterday", "2026-13-45 99:99:99", 5, {}]) {
+    assert.equal(utcTextToDate(bad), null, JSON.stringify(bad));
+  }
 });
 
 // ── the notice for the emailed confirm link ──

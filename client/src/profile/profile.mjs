@@ -10,6 +10,10 @@
 //   PUT  /api/profile/nmls             { nmlsId }               -> { nmlsId, orgNmlsId, canEditOrg } (NOT the whole profile)
 //   PUT  /api/profile/org-nmls         { nmlsId }               -> the same (a broker only)
 //   The emailed confirm link sends the browser to /?emailChanged=1 (done) or /?emailChanged=0 (did not work).
+// And the ARIVE key (server/routes/integrations.js), for the Connections card:
+//   GET    /api/integrations/key       -> { connected, createdAt, lastUsedAt, webhookUrl }   (times are SQLite UTC text, "YYYY-MM-DD HH:MM:SS")
+//   POST   /api/integrations/key       -> { key, webhookUrl, createdAt }   a NEW key (it replaces any old one); the key is shown once
+//   DELETE /api/integrations/key       -> { success: true, connected: false }
 
 export const BAD_NAME = "Use letters only in your name";
 export const TOO_MANY = "Too many tries. Please wait a bit and try again.";
@@ -110,6 +114,39 @@ export async function saveNmls(fetchFn, which, value) {
   const url = which === "own" ? "/api/profile/nmls" : which === "org" ? "/api/profile/org-nmls" : null;
   if (!url) return { ok: false, error: NOT_SAVED };
   return answer(await send(fetchFn, "PUT", url, { nmlsId: typeof value === "string" ? value.trim() : value }), { accept: isNmls, fallback: NOT_SAVED });
+}
+
+// ── the ARIVE connection (a key for the Zapier webhook; the card is ConnectionsCard.jsx) ──
+
+const isStatus = (data) => isObject(data) && typeof data.connected === "boolean" && typeof data.webhookUrl === "string";
+// A key is only worth showing with the address to send it to.
+const isNewKey = (data) => isObject(data) && typeof data.key === "string" && data.key !== "" && typeof data.webhookUrl === "string";
+const isGone = (data) => isObject(data) && data.success === true && data.connected === false;
+
+// -> { ok: true, data: { connected, createdAt, lastUsedAt, webhookUrl } }. The key itself is never sent back, only whether there is one.
+export async function loadConnection(fetchFn) {
+  return answer(await send(fetchFn, "GET", "/api/integrations/key"), { accept: isStatus, fallback: "Couldn't check your ARIVE connection. Try again." });
+}
+
+// Connect and Regenerate are the same call: the server makes a new key and drops the old one. -> { ok: true, data: { key, webhookUrl, createdAt } }
+// The key is in this answer and nowhere else, so the caller shows it now or it is gone.
+export async function connectArive(fetchFn) {
+  return answer(await send(fetchFn, "POST", "/api/integrations/key"), { accept: isNewKey, fallback: "Couldn't make a key. Try again." });
+}
+
+// -> { ok: true, data: { success: true, connected: false } }. The Zap's next call is refused.
+export async function disconnectArive(fetchFn) {
+  return answer(await send(fetchFn, "DELETE", "/api/integrations/key"), { accept: isGone, fallback: "Couldn't disconnect ARIVE. Try again." });
+}
+
+// The server's times are SQLite UTC text with no zone mark, which a browser would read as local time. This reads them as UTC (an ISO
+// stamp is accepted too) so the page can show them in the viewer's own time. -> Date | null (anything that is not a time).
+export function utcTextToDate(text) {
+  if (typeof text !== "string") return null;
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?Z?$/.exec(text.trim());
+  if (!m) return null;
+  const date = new Date(`${m[1]}T${m[2]}${m[3] || ""}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 // ── where the emailed confirm link sends the browser ──

@@ -2,9 +2,11 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createCoalescer, inputAfterReload } from "../charli/google.mjs";
 import { cleanName, validName, validEmail, loadProfile, saveName, requestEmailChange, saveStage, saveNmls } from "./profile.mjs";
 import { CalendarCard, NmlsCard, StageCard } from "./cards.jsx";
+import ConnectionsCard from "./ConnectionsCard.jsx";
 
-// The Profile page: each user sets up their name, login email, Google calendar, tenure as a loan officer and NMLS IDs in one place.
-// The logic and every server call are in profile.mjs; the Google card, the tenure card and the NMLS card are in cards.jsx.
+// The Profile page: each user sets up their name, login email, Google calendar, tenure as a loan officer, NMLS IDs and ARIVE connection
+// in one place. The logic and every server call are in profile.mjs; the Google card, the tenure card and the NMLS card are in cards.jsx,
+// and the Connections card is in ConnectionsCard.jsx.
 //
 // Props: user (from /api/auth/me), ui = { C, card, mono, Icon } (App's design tokens), onUserChanged(patch) (called with
 // { firstName, lastName, email, careerStage } whenever the profile is taken from the server, so App's copy of the user follows),
@@ -237,8 +239,8 @@ export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeS
         <div role="status" data-testid="profile-notice" style={{ color: C.mutedHi, fontSize: 13, marginBottom: "1rem" }}>{shownNotice}</div>
       )}
 
-      {/* The Calendar card makes its own server call, so it is here whether or not the profile has loaded (a failed profile read must not
-          take Connect / Disconnect away). It keeps its slot, so it is not remounted when the profile arrives. */}
+      {/* The Calendar and Connections cards make their own server calls, so they are here whether or not the profile has loaded (a failed
+          profile read must not take Connect / Disconnect away). Each keeps its slot, so neither is remounted when the profile arrives. */}
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {profile ? (
           <>
@@ -254,6 +256,7 @@ export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeS
         <CalendarCard ui={ui} />
         {profile && <StageSection profile={profile} ui={ui} onSave={(stage) => change(() => saveStage(fetch, stage))} />}
         {profile && <NmlsCard profile={profile} ui={ui} onSave={(which, value) => change(() => saveNmls(fetch, which, value), { refetch: true })} />}
+        <ConnectionsCard ui={ui} isBroker={user && user.role === "broker"} />
       </div>
     </div>
   );
