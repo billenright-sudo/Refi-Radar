@@ -223,7 +223,8 @@ function refreshTokenOf(db, userId) {
 //   { code: "reconnect" }                                  Google refused the refresh token: only a new sign-in fixes it
 //   { code: "unavailable" }                                Google or the network failed, or the server is not set up (a
 //                                                          missing GOOGLE_TOKEN_KEY, or one that cannot open the stored
-//                                                          tokens); worth trying again later
+//                                                          tokens), or the connection was redone or removed while it
+//                                                          was being refreshed; worth trying again later
 // Never throws. A key that cannot open the tokens writes nothing to the connection (Ruling 57): it is the server's
 // configuration that is wrong, and once the key is fixed the same connection works again with no new sign-in.
 //
@@ -306,11 +307,14 @@ async function refresh(db, userId, row, who, fetchFn, now) {
 
     // Google sometimes issues a new refresh token with the refresh; when it does, that one is the one to keep.
     const newRefresh = nonEmpty(body.refresh_token) ? body.refresh_token : refreshToken;
-    db.prepare(`
+    const saved = db.prepare(`
       UPDATE google_connections
          SET access_token_enc = ?, access_expires_at = ?, refresh_token_enc = ?, updated_at = datetime('now')
        WHERE user_id = ? AND refresh_token_enc = ?
     `).run(encrypt(body.access_token), expiresAt, encrypt(newRefresh), userId, row.refresh_token_enc);
+    // No row matched: the user signed in again or disconnected while this refresh was out. Its token is the old grant's, and a
+    // Calendar call refused with it would flag the new connection 'reconnect'; this one read goes without instead.
+    if (saved.changes === 0) return unavailable;
     return { token: body.access_token, ...who };
   } catch (err) {
     console.error("google token refresh failed:", errName(err));

@@ -491,6 +491,29 @@ test("accessToken: the refresh lock is per user and lasts only while the refresh
   assert.strictEqual(failing.calls.length, 2);
 });
 
+test("accessToken: a refresh that lands after the connection was redone or removed saves nothing and is 'unavailable'", async () => {
+  const now = 1_000_000;
+  for (const change of ["redone", "removed"]) {
+    seedConnection(ann, { expiresAt: now });
+    const { fetchFn, release } = gatedTokenFetch({ access_token: ACCESS_2, expires_in: 3599 }, { body: {}, status: 500 });
+    const call = oauth.accessToken(db, ann, fetchFn, now);
+    await new Promise((resolve) => setImmediate(resolve));
+    // mid-refresh the user signs in again (a new grant) or disconnects
+    if (change === "redone") seedConnection(ann, { accessToken: "ya29.new-grant", refreshToken: "1//new-grant", expiresAt: now + 60 * MIN });
+    else db.prepare("DELETE FROM google_connections WHERE user_id = ?").run(ann);
+    release();
+    assert.deepStrictEqual(await call, { code: "unavailable" }, `${change}: the old grant's token is not handed out`);
+    const row = connectionRow(ann);
+    if (change === "redone") {
+      assert.strictEqual(gcrypto.decrypt(row.access_token_enc), "ya29.new-grant");
+      assert.strictEqual(gcrypto.decrypt(row.refresh_token_enc), "1//new-grant");
+      assert.strictEqual(row.status, "connected");
+    } else {
+      assert.strictEqual(row, undefined);
+    }
+  }
+});
+
 test("accessToken: no row is 'not_connected', and a user only ever gets their own token", async () => {
   const now = 1_000_000;
   const fetchFn = fakeFetch({});
