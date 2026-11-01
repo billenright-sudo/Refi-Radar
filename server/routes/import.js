@@ -77,14 +77,31 @@ function isWorkbook(b) {
   return (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) || (b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0);
 }
 
+// A CSV's text when its bytes are valid UTF-8 (a byte-order mark, if any, is dropped), else null. Without a BOM the xlsx reader
+// takes the bytes for Windows-1252, so "José" would come out "JosÃ©" and never match the client again.
+function utf8Text(buffer) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    return null;
+  }
+}
+
 // The first sheet as { headers, rows: [{ row, cells }] }. `row` is the file's own line number (the header is 1), kept when blank
-// lines are dropped. A CSV is read as plain text (R8), so a loan number like 000123 keeps its zeros and a date stays as typed.
+// lines are dropped. A CSV is read as plain text (R8), so a loan number like 000123 keeps its zeros and a date stays as typed:
+// as UTF-8 when it is valid UTF-8, else as the bytes they were (an older Excel's Windows-1252 file).
 function readSheet(buffer) {
   if (buffer.length === 0) throw new Refusal(MSG.empty);
   if (buffer.length > MAX_BYTES) throw new Refusal(MSG.tooBig);
   let table;
   try {
-    const wb = XLSX.read(buffer, isWorkbook(buffer) ? { type: "buffer" } : { type: "buffer", raw: true });
+    let wb;
+    if (isWorkbook(buffer)) {
+      wb = XLSX.read(buffer, { type: "buffer" });
+    } else {
+      const text = utf8Text(buffer);
+      wb = text === null ? XLSX.read(buffer, { type: "buffer", raw: true }) : XLSX.read(text, { type: "string", raw: true });
+    }
     table = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
   } catch {
     throw new Refusal(MSG.unreadable);

@@ -293,6 +293,29 @@ test("a CSV in UTF-8 keeps its accents, and blank lines are dropped but the row 
   assert.deepStrictEqual(data.results.map((r) => [r.row, r.name]), [[2, "John Smith"], [5, "José Álvarez"]]);
 });
 
+test("a UTF-8 CSV with no byte-order mark keeps its accents and its leading zeros; a Windows-1252 one still imports", async () => {
+  const pena = [...PAT];
+  pena.splice(1, 2, "José", "Peña");
+  const csv = Buffer.from(csvOf(ARIVE, [pena]), "utf8");
+  assert.notEqual(csv[0], 0xef, "no BOM");
+  const { data } = await uploadAs(ann, csv);
+  assert.deepStrictEqual(data.results.map((r) => [r.row, r.outcome, r.name]), [[2, "created", "José Peña"]]);
+  const confirm = await as(ann)("POST", "/api/import/confirm", reviewBody(data, { reviewHash: data.reviewHash }));
+  assert.equal(confirm.status, 200);
+  assert.deepStrictEqual(db.prepare("SELECT name, loan_number FROM clients").all(), [{ name: "José Peña", loan_number: "000123" }]);
+
+  // é saved by an older Excel as the single byte 0xE9 is not UTF-8, so the file is read the way it was before
+  db.prepare("DELETE FROM clients").run();
+  const legacy = Buffer.from(csvOf(ARIVE, [pena]), "latin1");
+  assert.ok(legacy.includes(0xe9) && !legacy.includes(Buffer.from("é", "utf8")));
+  const old = await uploadAs(ann, legacy);
+  assert.equal(old.status, 200);
+  assert.deepStrictEqual(old.data.results.map((r) => [r.row, r.outcome, r.name]), [[2, "created", "José Peña"]]);
+  const oldConfirm = await as(ann)("POST", "/api/import/confirm", reviewBody(old.data, { reviewHash: old.data.reviewHash }));
+  assert.equal(oldConfirm.status, 200);
+  assert.equal(db.prepare("SELECT loan_number FROM clients").get().loan_number, "000123");
+});
+
 // ── limits and bad requests ─────────────────────────────────────────────────
 
 test("limits: empty, over 5,000 rows, over 10 MB, unreadable", async () => {
