@@ -7,6 +7,7 @@ import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import { loadCalls } from "./calls.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
+import ImportView from "./import/ImportView.jsx";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1741,168 +1742,6 @@ const LOPortal = ({ lo, rates, setView }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Import Clients view
-// ---------------------------------------------------------------------------
-const ImportClients = ({ setView, setClients }) => {
-  const [step, setStep] = useState(1);
-  const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState("");
-  const [preview, setPreview] = useState(null);
-  const [confirming, setConfirming] = useState(false);
-  const [result, setResult] = useState(null);
-  const fileRef = useRef(null);
-
-  const handleFile = async (file) => {
-    if (!file) return;
-    const ext = file.name.split(".").pop().toLowerCase();
-    if (!["csv", "xls", "xlsx"].includes(ext)) { setUploadError("Please upload a CSV or Excel file (.csv, .xls, .xlsx)"); return; }
-    setUploading(true);
-    setUploadError("");
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/import/preview", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) { setUploadError(data.message || data.error || "Upload failed"); return; }
-      setPreview(data);
-      setStep(2);
-    } catch {
-      setUploadError("Network error — please try again");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragging(false);
-    const file = e.dataTransfer.files[0];
-    handleFile(file);
-  };
-
-  const confirmImport = async () => {
-    setConfirming(true);
-    try {
-      const res = await fetch("/api/import/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileData: preview.fileData, mimetype: preview.mimetype, columnMap: preview.columnMap }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setUploadError(data.message || "Import failed"); return; }
-      setResult(data);
-      // Refresh clients list
-      fetch("/api/clients").then(r => r.json()).then(d => { if (d.success) setClients(d.clients); }).catch(() => {});
-    } catch {
-      setUploadError("Network error — please try again");
-    } finally {
-      setConfirming(false);
-    }
-  };
-
-  if (result) {
-    return (
-      <div style={{ animation: "fadeIn 0.35s ease", maxWidth: 600 }}>
-        <div style={{ ...card, background: C.greenBg, borderColor: "#0f4a25", marginBottom: "1.5rem" }}>
-          <div style={{ color: C.green, fontSize: 20, fontWeight: 700, marginBottom: 8 }}>✓ Import Complete</div>
-          <div style={{ color: C.mutedHi, fontSize: 14, marginBottom: 4 }}>Successfully imported <strong style={{ color: C.green }}>{result.imported}</strong> clients.</div>
-          {result.skipped > 0 && <div style={{ color: C.muted, fontSize: 13 }}>{result.skipped} rows skipped.</div>}
-        </div>
-        <button onClick={() => setView("clients")} style={{ ...btnPrimary }}>Go to All Clients</button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ animation: "fadeIn 0.35s ease", maxWidth: 700 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 6 }}>Import Clients</h1>
-      <div style={{ color: C.muted, fontSize: 14, marginBottom: "1.5rem" }}>Upload a CSV or Excel file exported from your CRM</div>
-
-      {uploadError && (
-        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "10px 14px", color: C.red, fontSize: 13, marginBottom: "1rem", display: "flex", gap: 8, alignItems: "center" }}>
-          <Icon name="alert" size={14} color={C.red} /> {uploadError}
-        </div>
-      )}
-
-      {step === 1 && (
-        <>
-          <div
-            onDragOver={e => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => fileRef.current?.click()}
-            style={{ border: `2px dashed ${dragging ? C.amber : C.border}`, borderRadius: 14, padding: "4rem 2rem", textAlign: "center", cursor: "pointer", background: dragging ? C.amberBg : C.surfaceHi, transition: "all 0.2s", marginBottom: "1.25rem" }}
-          >
-            <Icon name="upload" size={36} color={dragging ? C.amber : C.muted} />
-            <div style={{ color: dragging ? C.amber : C.muted, fontSize: 16, fontWeight: 600, marginTop: 16, marginBottom: 8 }}>
-              {uploading ? "Uploading…" : "Drop your file here, or click to browse"}
-            </div>
-            <div style={{ color: C.muted, fontSize: 13 }}>Accepts .csv, .xls, .xlsx</div>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".csv,.xls,.xlsx"
-              style={{ display: "none" }}
-              onChange={e => handleFile(e.target.files[0])}
-            />
-          </div>
-          <div style={{ ...card, background: C.surfaceHi, borderColor: C.border }}>
-            <div style={{ color: C.muted, fontSize: 13 }}>
-              <strong style={{ color: C.mutedHi }}>Tip:</strong> We'll automatically detect columns for: name, email, phone, current rate, loan balance, property value, close date, credit score, notes
-            </div>
-          </div>
-        </>
-      )}
-
-      {step === 2 && preview && (
-        <div>
-          <h2 style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: "1rem" }}>Preview — {preview.totalRows} clients found</h2>
-          <div style={{ ...card, padding: 0, overflow: "hidden", marginBottom: "1.25rem" }}>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                    {["Name", "Email", "Current Rate", "Balance", "Property Value", "Loan Type"].map(h => (
-                      <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: C.muted, fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(preview.preview || []).slice(0, 5).map((row, i) => (
-                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "transparent" : `${C.surfaceHi}44` }}>
-                      <td style={{ padding: "10px 14px", color: C.text, fontSize: 13 }}>{row.name || "—"}</td>
-                      <td style={{ padding: "10px 14px", color: C.mutedHi, fontSize: 13 }}>{row.email || "—"}</td>
-                      <td style={{ padding: "10px 14px", ...mono, color: C.red, fontSize: 13 }}>{row.currentRate ? `${row.currentRate}%` : "—"}</td>
-                      <td style={{ padding: "10px 14px", ...mono, color: C.text, fontSize: 13 }}>{row.loanBalance ? $c(row.loanBalance) : "—"}</td>
-                      <td style={{ padding: "10px 14px", ...mono, color: C.text, fontSize: 13 }}>{row.propertyValue ? $c(row.propertyValue) : "—"}</td>
-                      <td style={{ padding: "10px 14px", color: C.mutedHi, fontSize: 13 }}>{LOAN_LABELS[row.loanType] || row.loanType || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div style={{ color: C.muted, fontSize: 13, marginBottom: "1.5rem" }}>
-            <strong style={{ color: C.text }}>{preview.totalRows}</strong> clients will be imported.
-            {preview.skipped > 0 && <> <strong style={{ color: C.amber }}>{preview.skipped}</strong> rows will be skipped.</>}
-          </div>
-
-          <div style={{ display: "flex", gap: "1rem" }}>
-            <button onClick={confirmImport} disabled={confirming} style={{ ...btnPrimary, display: "flex", alignItems: "center", gap: 8, opacity: confirming ? 0.6 : 1 }}>
-              <Icon name="check" size={14} color="#000" />
-              {confirming ? "Importing…" : "Import All Clients"}
-            </button>
-            <button onClick={() => { setStep(1); setPreview(null); setUploadError(""); }} style={btnGhost}>Start Over</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
 // App root
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -2272,7 +2111,7 @@ export default function App() {
             {view === "edit"          && selected && <EditClient client={selected} setClients={setClients} setSelected={setSelected} setView={setView} />}
             {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} />}
             {view === "lo-portal"     && selectedLO && user?.role === "broker" && <LOPortal lo={selectedLO} rates={rates} setView={setView} />}
-            {view === "import"        && <ImportClients setView={setView} setClients={setClients} />}
+            {view === "import"        && <ImportView ui={{ C, card, mono, Icon, $c }} onImported={() => fetch("/api/clients").then(r => r.json()).then(d => { if (d.success) setClients(d.clients); }).catch(() => {})} onDone={() => setView("clients")} />}
           </main>
         </div>
       </div>
