@@ -9,12 +9,13 @@
 //   2. the market line: the 30-year, its move since the previous FRED observation (named by its date) and "as of" the latest,
 //      then one clause each for a 15-year, FHA or jumbo move of 0.05 or more. A 30-year drop of DROP_THRESHOLD or more leads
 //      with "Rates dropped:" in the first briefing after that observation only. An estimated set says so and claims no move;
-//   3. the call list (callList.js) over the user's OWN clients, less the ones its follow-ups ask about (unless carried), recorded
+//   3. the call list (callList.js) over the user's OWN clients, less the ones its follow-ups ask about, recorded
 //      as today's 'briefing' recommendations (a carried client it lists is no longer carried), and "Plus N more check-ins due." for
 //      the due clients it could have listed but did not;
 //   4. a broker's one count-only team line: their loan officers' open opportunities;
 //   5. today's calendar: the count and the first one or two events still ahead;
-//   6. open follow-ups (followups.js), at most two clients, after the calendar's calls have been matched (calendarFollowUps.js);
+//   6. open follow-ups (followups.js), at most two clients and none that today's list carries, after the calendar's calls have
+//      been matched (calendarFollowUps.js);
 //   7. exactly one question: the first follow-up's, else the career question for a user with no stage, else the close
 //      (CLOSE_QUESTION offers to book the list's calls; with no list, CLOSE_NO_CALLS does not).
 //
@@ -194,9 +195,18 @@ function calendarSection({ date, events, nowMs }) {
   return { line, source, nextEvent: shown[0] || null };
 }
 
+// Today's carried clients: `carried`, still carried from an earlier day, and `carriedToday`, the ones an earlier open today
+// listed as carried (it consumed their carry rows, and they are still today's). `earlier` is that open's list.
+function carriesOn(db, userId, localDate) {
+  const carried = followups.carriedIds(db, userId, localDate);
+  const earlier = followups.recommendedOn(db, userId, localDate, "briefing");
+  const carriedToday = earlier.filter((r) => r.reasonCode === "carry").map((r) => r.clientId);
+  return { carried, earlier, carriedToday };
+}
+
 // -> { picks, line, moreLine }. Only `speakableRows` (the user's own clients whose names may be read) can be listed.
 function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, estimated, followUpClientIds }) {
-  const carried = followups.carriedIds(db, userId, localDate);
+  const { carried, earlier, carriedToday } = carriesOn(db, userId, localDate);
   // "A logged contact in the last 7 days" (spec 5.2): a reached call in contact_log, or a last_contact the client record has from
   // then until now (the Sweeps page's Log contact writes it as SQLite UTC text, an import or a close date as YYYY-MM-DD; both
   // compare as text). A last_contact later than now (a future close date it was seeded from) is no contact.
@@ -207,15 +217,13 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
     if (typeof row.last_contact === "string" && row.last_contact >= since && row.last_contact <= nowUtc) reached.add(row.id);
   }
   const recent = followups.recentlyRecommended(db, userId, addDays(localDate, -RECENT_DAYS));
-  // An earlier open today: its list stays the list (its clients are not "recently recommended" to it), and the carried clients
-  // it listed, whose carry rows it consumed, are still carried today.
-  const earlier = followups.recommendedOn(db, userId, localDate, "briefing");
+  // An earlier open today: its list stays the list (its clients are not "recently recommended" to it).
   const listedToday = new Set(earlier.map((r) => r.clientId));
-  const carriedToday = earlier.filter((r) => r.reasonCode === "carry").map((r) => r.clientId);
   // Ruling R3: (reached ∪ recently recommended) − carried, so a carried client is never left off: neither one still carried nor
   // one an earlier open today listed as carried (and consumed), so a reopen reads the same list. The clients this briefing's
-  // follow-ups ask about are left off too (unless carried): a reopen after noon asks about today's earlier list, and must not also
-  // tell the broker to call the client it asks "were you able to reach them?" about.
+  // follow-ups ask about are left off too: a reopen after noon asks about today's earlier list, and must not also tell the broker
+  // to call the client it asks "were you able to reach them?" about. The follow-ups never ask about a carried client (F-2), so
+  // the two never meet.
   const excludeIds = new Set([...reached, ...[...recent].filter((id) => !listedToday.has(id)), ...followUpClientIds]);
   for (const id of carried) excludeIds.delete(id);
   for (const id of carriedToday) excludeIds.delete(id);
@@ -252,12 +260,13 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
 
 // Open follow-ups as at most MAX_FOLLOW_UPS clients: { shown: [{ ...first row, name }], rowIds }. A client can have more than
 // one open row (a briefing row and a calendar row the same day): that is one call, asked about by its first row, and every one
-// of its rows counts as asked. A client whose name may not be read out is skipped, never asked.
-function pickFollowUps(rows) {
+// of its rows counts as asked. A client whose name may not be read out is skipped, never asked. So is a client in `carriedIds`
+// (F-2): today's list carries them, and the list is where they go; their rows stay open for a day they are not carried.
+function pickFollowUps(rows, carriedIds = new Set()) {
   const byClient = new Map();
   for (const row of rows) {
     const name = speakable(row.name);
-    if (!name) continue;
+    if (!name || carriedIds.has(row.clientId)) continue;
     if (!byClient.has(row.clientId)) byClient.set(row.clientId, { first: { ...row, name }, ids: [] });
     byClient.get(row.clientId).ids.push(row.id);
   }
@@ -339,7 +348,9 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   // 6. open follow-ups, read before today's list is recorded (a list made now is not yet something to ask about)
   let followUps = { shown: [], rowIds: [] };
   try {
-    followUps = pickFollowUps(followups.openFollowUps(db, userId, { localDate: today, localHour: hour, nowUtc }));
+    const { carried, carriedToday } = carriesOn(db, userId, today);
+    followUps = pickFollowUps(followups.openFollowUps(db, userId, { localDate: today, localHour: hour, nowUtc }),
+      new Set([...carried, ...carriedToday]));
   } catch (err) { skip("follow-ups", err); }
   const shown = followUps.shown;
 

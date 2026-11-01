@@ -493,13 +493,36 @@ test("I1: a reopen after noon never lists a client its follow-ups ask about (an 
   assert.equal(questionMarks(afternoon.reply), 1, afternoon.reply);
 });
 
-test("I1: a carried client is still listed though a follow-up is open for them", async () => {
+// F-2 FLIP (was I1: listed AND asked about): a carried client is listed, and her open follow-up waits for a day she is not carried
+test("F-2: a carried client is still listed though a follow-up is open for them, and is not also asked about", async () => {
   const ids = seedBook();
   fu.recordRecommendations(db, annId, "2026-10-28", [{ clientId: ids.grace, source: "briefing", reasonCode: "check_in" }]);
   fu.addCarry(db, annId, ids.grace, YESTERDAY);
   const r = await brief(annId);
-  assert.equal(r.followUp.clientId, ids.grace);
   assert.ok(callListOf(r.reply).startsWith("Today's calls: Grace Okafor, who you put on today's list"), r.reply);
+  assert.notEqual(r.followUp && r.followUp.clientId, ids.grace, r.reply);
+  assert.ok(!r.reply.includes("suggested calling Grace Okafor"), r.reply);
+  assert.equal(recRows("client_id = ? AND source = 'briefing' AND day = ?", ids.grace, "2026-10-28")[0].ask_count, 0, "not counted as asked");
+});
+
+test("F-2: a client carried onto this morning's list is listed again after noon, not asked about, and asked about tomorrow", async () => {
+  seedBook();
+  const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  const morning = await brief(annId);
+  assert.ok(callListOf(morning.reply).includes("Cara Mendez"), morning.reply);
+
+  const afternoon = await brief(annId, { localHour: 13, nowMs: at(TODAY, 13) });
+  assert.ok(callListOf(afternoon.reply).includes("Cara Mendez"), `still today's list: ${afternoon.reply}`);
+  assert.notEqual(afternoon.followUp && afternoon.followUp.clientId, cara, afternoon.reply);
+  assert.ok(!afternoon.reply.includes("suggested calling Cara Mendez"), `listed and asked about in one breath: ${afternoon.reply}`);
+  assert.equal(questionMarks(afternoon.reply), 1, afternoon.reply);
+
+  const TOMORROW = "2026-10-31";
+  const tomorrow = await brief(annId, { localDate: TOMORROW, nowMs: at(TOMORROW, 8) });
+  assert.equal(tomorrow.followUp.clientId, cara, tomorrow.reply);
+  assert.ok(tomorrow.reply.endsWith("Yesterday I suggested calling Cara Mendez. Were you able to reach them?"), tomorrow.reply);
+  assert.ok(!callListOf(tomorrow.reply).includes("Cara Mendez"), tomorrow.reply);
 });
 
 test("with two open follow-ups the briefing says it has a couple, asks only the first, and counts both as asked", async () => {
