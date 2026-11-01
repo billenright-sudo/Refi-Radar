@@ -76,6 +76,29 @@ if (!clientCols.some((c) => c.name === "last_contact")) {
   db.exec("UPDATE clients SET last_contact = close_date WHERE (last_contact IS NULL OR last_contact = '') AND close_date <> ''");
 }
 
+// What the client import and the ARIVE feed need (lib/intake/). loan_number is the lender's loan number, uppercased, '' when
+// a client has none; it is the first thing an incoming loan is matched on. source says how the client got here ('manual' for
+// one typed in, anything else for an import or the feed). Clients already stored get '' and 'manual'.
+if (!clientCols.some((c) => c.name === "loan_number")) {
+  db.exec("ALTER TABLE clients ADD COLUMN loan_number TEXT NOT NULL DEFAULT ''");
+}
+if (!clientCols.some((c) => c.name === "source")) {
+  db.exec("ALTER TABLE clients ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+}
+// Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
+db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
+
+// integration_keys: one key per user for the ARIVE (Zapier) feed. Only a hash of the key is stored, so a key can be checked
+// but never read back; last_used_at shows whether the feed is still running. The key goes when its user does.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS integration_keys (
+    user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    key_hash     TEXT    NOT NULL UNIQUE,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+  );
+`);
+
 // How Charli coaches a user: new / developing / established / veteran (lib/assistant/coaching.js). NULL until the
 // user answers the greeting's question or their broker sets it; nothing assumes a stage.
 const userCols = db.prepare("PRAGMA table_info(users)").all();
