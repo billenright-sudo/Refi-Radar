@@ -15,9 +15,10 @@
 //        stamped, and a key gets 60 calls a minute (429)
 //   413  body over 32 KB    400  not a JSON object
 //   400  loan_id missing or over 64 characters
-//   200  { result: "ignored", reason }  a dead status (denied, withdrawn, cancelled, adverse, archived), no closing date (R7),
-//        or a closing date in the future
-//   400  a missing name, note rate, balance or property value, or a closing date that is not a date (R7)
+//   200  { result: "ignored", reason }  a dead status (denied, withdrawn, cancelled, adverse, archived)
+//   200  { result: "ignored", reason }  no closing date, or a closing date in the future (R7)
+//   400  a closing date that is not a date (R7)
+//   400  a missing name, note rate, balance or property value
 //   200  { result: "created" | "updated" | "unchanged" | "ambiguous" }, plus moved_from (the old loan officer's name) when an
 //        update moved the client to the loan officer the loan names (A6a)
 //   500  { error: "Server error" }
@@ -34,7 +35,7 @@ const { APP_URL } = require("../email");   // the one constant: nothing in this 
 const { toRecord } = require("../lib/intake/record");
 const { ingest } = require("../lib/intake/ingest");
 // A status that means the loan will never fund, so the Zap has nothing to import (the file import never ticks one as funded).
-const { isDeadStatus } = require("../lib/intake/normalize");
+const { isDeadStatus, parseDate } = require("../lib/intake/normalize");
 
 const MAX_BODY = "32kb";
 const MAX_LOAN_ID = 64;
@@ -52,7 +53,8 @@ const MSG = Object.freeze({
   failed: "Server error",
 });
 
-// toRecord()'s codes that are the Zap's mistake (400) and the two that only mean "not funded yet" (200 ignored).
+// toRecord()'s codes that are the Zap's mistake (400) and the two that only mean "not funded yet" (200 ignored). The /loans route
+// checks the closing date itself before toRecord() runs, with these same words.
 const BAD_FIELD = Object.freeze({
   no_name: "borrower_name (or borrower_first_name and borrower_last_name) is required",
   bad_rate: "note_rate is missing or not between 0 and 20",
@@ -238,7 +240,14 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
         return res.json({ result: "ignored", reason: "status is not funded" });
       }
 
+      // The closing date before the loan's other fields (R7): a Zap that fires on a loan still in the pipeline usually lacks a
+      // field or two as well, and that loan is "not funded yet", not a mistake. toRecord() reads the date the same way.
       const { today, nowUtc } = req.now;
+      if (fields.closingDate === undefined) return res.json({ result: "ignored", reason: NOT_FUNDED.no_closing_date });
+      const closeDate = parseDate(fields.closingDate);
+      if (closeDate === null) return res.status(400).json({ error: BAD_FIELD.bad_closing_date });
+      if (closeDate > today) return res.json({ result: "ignored", reason: NOT_FUNDED.future_closing_date });
+
       const read = toRecord(fields, { today, requireClosingDate: true });
       if (!read.ok) {
         if (NOT_FUNDED[read.code]) return res.json({ result: "ignored", reason: NOT_FUNDED[read.code] });

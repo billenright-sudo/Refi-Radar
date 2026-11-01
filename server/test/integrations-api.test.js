@@ -329,6 +329,24 @@ test("ignored: no closing date, a future one, a dead status", async () => {
   assert.strictEqual(clientRows().length, 1, "only the funded loan was written");
 });
 
+test("the closing date is checked before the loan's other fields, so a pipeline loan missing them is ignored, not a 400", async () => {
+  const key = giveKey(ann);
+  const tomorrow = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+  const answer = async (body) => { const r = await post(key, body); return [r.status, r.data]; };
+
+  assert.deepStrictEqual(await answer(without(BODY, "note_rate", "closing_date")), [200, { result: "ignored", reason: "no closing date" }]);
+  assert.deepStrictEqual(await answer({ loan_id: "L6" }), [200, { result: "ignored", reason: "no closing date" }]);
+  assert.deepStrictEqual(await answer({ ...without(BODY, "borrower_name", "property_value"), closing_date: tomorrow }),
+    [200, { result: "ignored", reason: "closing date is in the future" }]);
+  // a date that is there but cannot be read is the Zap's mistake, and it is named before the other fields
+  assert.deepStrictEqual(await answer({ ...without(BODY, "note_rate"), closing_date: "garbage99" }), [400, { error: "closing_date is not a date" }]);
+  // with a funded date, the other fields are checked as before
+  assert.deepStrictEqual(await answer(without(BODY, "note_rate")), [400, { error: "note_rate is missing or not between 0 and 20" }]);
+  // a closing date with a time of day is that day
+  assert.deepStrictEqual(await answer({ ...BODY, closing_date: "2026-03-02 00:00:00.000" }), [200, { result: "created" }]);
+  assert.strictEqual(clientRows().length, 1);
+});
+
 test("400s name the field and never echo the value", async () => {
   const key = giveKey(ann);
   const cases = [
