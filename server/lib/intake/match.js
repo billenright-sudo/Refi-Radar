@@ -15,10 +15,9 @@
 // ("(555) 123-4567" is "5551234567"), emails lower-cased. The only thing put on the DB handle is the name-key function below,
 // which lives on that connection and changes no data.
 
-const { nameKey, phoneDigits } = require("./normalize");
+const { nameKey, phoneDigits, parseDate } = require("./normalize");
 
 const NONE = Object.freeze({ kind: "none" });
-const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})/;
 
 // The SQL function that gives a stored name its nameKey, registered once on each connection we are handed.
 const NAME_KEY_FN = "intake_name_key";
@@ -73,17 +72,6 @@ function findMatch(db, orgId, record) {
   return NONE;
 }
 
-// A closing date as YYYY-MM-DD, or "" when there is none or it is not a real day. A stored close_date is free text, so a
-// hand-typed "last spring" is no date, and neither is "2021-13-45" or "2021-02-30": the date is read back from a UTC date and
-// must come out the same (the Date constructor would roll Feb 30 over to Mar 2).
-const dateOf = (v) => {
-  const m = ISO_DATE_RE.exec(trimmed(v));
-  if (!m) return "";
-  const t = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  const day = Number.isNaN(t.getTime()) ? "" : t.toISOString().slice(0, 10);
-  return day === m[0] ? day : "";
-};
-
 // How an incoming loan relates to the stored client it matched:
 //   same            the very same loan (an update of what we hold)
 //   refinance       a newer loan on the same client
@@ -92,11 +80,14 @@ const dateOf = (v) => {
 // The loan numbers decide first. Both equal, or neither given, is the same loan. With only one side numbered it is still the
 // same loan unless both closing dates are known and differ (R3); then, like two different numbers, the dates say which is newer.
 // A date missing on either side can't say the incoming loan is older, so it counts as a refinance (or a second property).
+// The stored close_date is free text (the old importer kept the cell as typed: "3/14/2024", an Excel serial "45365"), so it is
+// read with the same parser as an imported row; a hand-typed "last spring", "2021-13-45" or "2021-02-30" is no date at all.
+// The record's closeDate is already "YYYY-MM-DD" or "" (record.js read it).
 function relation(client, record) {
   const stored = trimmed(client.loan_number).toUpperCase();
   const incoming = trimmed(record.loanNumber).toUpperCase();
-  const storedDate = dateOf(client.close_date);
-  const incomingDate = dateOf(record.closeDate);
+  const storedDate = parseDate(client.close_date) || "";
+  const incomingDate = trimmed(record.closeDate);
 
   if (stored === incoming) return "same";
   if ((!stored || !incoming) && (!storedDate || !incomingDate || storedDate === incomingDate)) return "same";

@@ -259,6 +259,11 @@ test("relation: same, refinance, second property, older, and the one-sided loan 
   assert.strictEqual(relation(stored("", "2021-13-45"), inc("B1", "2024-02-01")), "same");
   // a real stored date with a time on the end still reads as that day
   assert.strictEqual(relation(stored("A100", "2024-02-29T00:00:00"), inc("B1", "2021-05-01")), "older");
+  // a stored date the old importer kept as typed is read the way an imported row is: "3/14/2024" or the Excel serial 45365
+  assert.strictEqual(relation(stored("", "3/14/2024"), inc("B1", "2024-03-14")), "same");
+  assert.strictEqual(relation(stored("", "3/14/2024"), inc("B1", "2024-05-01")), "refinance");
+  assert.strictEqual(relation(stored("A1", "3/14/2024"), inc("B1", "2021-01-01")), "older");
+  assert.strictEqual(relation(stored("A1", "45365"), inc("B1", "2021-01-01")), "older");
 });
 
 test("resolveOwner: email, unique full name, fallback with a flag, other org, LO actor", () => {

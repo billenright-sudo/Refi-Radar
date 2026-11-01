@@ -153,20 +153,23 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
 
   function ingestOne({ row, record, flags }) {
     const owner = resolveOwner(db, actor, record.loanOfficer);
-    const base = { name: record.name, flags: owner.flag ? [...flags, owner.flag] : [...flags] };
+    const base = { name: record.name, flags: [...flags] };
+    // The routing flag ("routed to your book: ...") only goes on a row that creates a client. A matched row stays in its
+    // client's book (or moves to the loan officer it named), so the importer's book is not where it went.
+    const createdIn = { owner: bookOf(owner.id), flags: owner.flag ? [...flags, owner.flag] : [...flags] };
 
     const match = findMatch(db, actor.org_id, record);
     if (match.kind === "ambiguous") return result(row, "ambiguous", { ...base, reason: `matched ${match.count} clients` });
     if (match.kind === "none") {
       create(record, owner);
-      return result(row, "created", { ...base, owner: bookOf(owner.id) });
+      return result(row, "created", { ...base, ...createdIn });
     }
 
     const client = match.client;
     const rel = relation(client, record);
     if (rel === "second_property") {
       create(record, owner);
-      return result(row, "created", { ...base, note: "second property", owner: bookOf(owner.id) });
+      return result(row, "created", { ...base, ...createdIn, note: "second property" });
     }
     if (rel === "older") return result(row, "unchanged", { ...base, note: "older loan", owner: bookOf(client.user_id) });
 

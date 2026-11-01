@@ -259,6 +259,28 @@ test("ambiguous rows write nothing; front-door skips and record failures are ski
   assert.deepStrictEqual(r.counts, { created: 0, updated: 0, unchanged: 0, ambiguous: 1, skipped: 3, moved: 0, byOwner: [] });
 });
 
+test("the routed-to-your-book flag goes only on a row that creates a client in the broker's book", () => {
+  const routed = 'routed to your book: no loan officer in your company matches "Nobody"';
+  const id = addClient(lia);
+  addClient(lou, { name: "Kim Wu", email: "kim@x.com", loan_number: "" });
+  addClient(lia, { name: "Kim Wu", email: "kim@x.com", loan_number: "" });
+  const r = run([
+    item(2, { loanOfficer: "Nobody" }),
+    item(3, { loanOfficer: "Nobody", currentBalance: "379,500" }),
+    item(4, { firstName: "Jane", lastName: "Doe", email: "jane@x.com", loanNumber: "a200", loanOfficer: "Nobody" }),
+    item(5, { loanNumber: "C300", closingDate: "2026-04-01", purpose: "Purchase", loanOfficer: "Nobody" }),
+    item(6, { firstName: "Kim", lastName: "Wu", email: "kim@x.com", loanNumber: "", loanOfficer: "Nobody" }),
+  ]);
+  assert.deepStrictEqual(r.results.map((x) => [x.row, x.outcome, x.note, x.owner, x.flags]), [
+    [2, "unchanged", null, { id: lia, name: "Lia Chen" }, [ESTIMATED]],
+    [3, "updated", null, { id: lia, name: "Lia Chen" }, []],
+    [4, "created", null, { id: ann, name: "Ann Lee" }, [ESTIMATED, routed]],
+    [5, "created", "second property", { id: ann, name: "Ann Lee" }, [ESTIMATED, routed]],
+    [6, "ambiguous", null, null, [ESTIMATED]],
+  ]);
+  assert.equal(clientRow(id).user_id, lia);
+});
+
 test("a dry run returns exactly what the real run does, with the same reviewHash, and writes nothing", () => {
   const id = addClient(lia, { close_date: "2021-05-01", current_rate: 3.0, loan_balance: 350000 });
   addRec(lia, id, "briefing", "2026-10-30");
