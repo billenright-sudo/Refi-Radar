@@ -36,8 +36,8 @@ async function collectCalendarFollowUps(ctx, { localDate, db, userId } = {}) {
     if (own.length === 0) return 0;
 
     // The days are read one at a time, yesterday first, and both before any recording: a day that cannot be read is not guessed
-    // at, and the other is left for the next try. Not in parallel: each read fetches its own token, and two that find it expired
-    // would both refresh it (googleFor has no single-flight), which can leave the connection flagged 'reconnect'.
+    // at, and the other is left for the next try. Not in parallel: one Calendar request at a time per user (a token refresh is
+    // single-flight in lib/google/oauth.js either way).
     const days = [addDays(localDate, -1), localDate];
     const listed = [];
     for (const date of days) {

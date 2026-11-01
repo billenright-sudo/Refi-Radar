@@ -28,7 +28,8 @@
 // wrong is replaced by the UTC date or hour of nowMs, so no section is lost to it. Figures are digits from tool data; there
 // are no figure words and no "?" before the last sentence.
 //
-// Google is only ever called one request at a time (two token refreshes racing can flag the connection 'reconnect'): today's
+// Google is only ever called one request at a time (a token refresh is single-flight per user in lib/google/oauth.js; this keeps
+// the briefing to one Calendar request at a time as well): today's
 // events first, then the calendar follow-ups, and neither is waited on past CALENDAR_WAIT_MS in total. A read given up on is
 // left to finish on its own (the follow-ups' upsert simply lands for the next open), and nothing else is started beside it; a
 // read is never started once the wait is used up.
@@ -348,9 +349,12 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   // 6. open follow-ups, read before today's list is recorded (a list made now is not yet something to ask about)
   let followUps = { shown: [], rowIds: [] };
   try {
-    const { carried, carriedToday } = carriesOn(db, userId, today);
-    followUps = pickFollowUps(followups.openFollowUps(db, userId, { localDate: today, localHour: hour, nowUtc }),
-      new Set([...carried, ...carriedToday]));
+    let carriedNow = new Set();
+    try {
+      const { carried, carriedToday } = carriesOn(db, userId, today);
+      carriedNow = new Set([...carried, ...carriedToday]);
+    } catch (err) { skip("carries", err); }   // the follow-ups still go: with no carries read, none are skipped
+    followUps = pickFollowUps(followups.openFollowUps(db, userId, { localDate: today, localHour: hour, nowUtc }), carriedNow);
   } catch (err) { skip("follow-ups", err); }
   const shown = followUps.shown;
 

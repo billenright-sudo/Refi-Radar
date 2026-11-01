@@ -254,7 +254,7 @@ async function accessToken(db, userId, fetchFn = globalThis.fetch, now = Date.no
   }
 }
 
-// The refresh in flight for each user, per database handle (tests open their own): db -> Map(userId -> Promise).
+// The refresh in flight for each user, per database handle: db -> Map(userId -> Promise).
 const refreshing = new WeakMap();
 
 // run() for this user, or the answer of the run already in flight for them. The entry is set before anything can await, and goes
