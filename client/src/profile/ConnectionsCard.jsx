@@ -37,6 +37,9 @@ const FIELDS = [
   "closing_date or funding_date (required)",
   "credit_score; loan_officer_email; loan_purpose; status",
 ];
+// Without this, a Zap loan whose loan_id or date differs from the file's reads as a refinance, and the next import flips it back.
+const SAME_LOAN = "Send the same loan number your import file uses as loan_id, and ARIVE's funded date as closing_date, so a loan from "
+  + "the Zap and the same loan in a file match.";
 
 const ROUTING_BROKER = "Each loan goes to the loan officer whose email is in loan_officer_email. Anything else comes to your book. "
   + "Bring in your existing book first with Import Clients: the Zap only sends loans that change from now on.";
@@ -197,6 +200,7 @@ export function ConnectionsCard({ ui, isBroker }) {
         <ul style={{ ...mono, margin: "6px 0 0", paddingLeft: 20, fontSize: 12 }}>
           {FIELDS.map((line) => <li key={line} style={{ marginBottom: 2, overflowWrap: "anywhere" }}>{line}</li>)}
         </ul>
+        <div data-testid="connections-same-loan" style={{ marginTop: 8 }}>{SAME_LOAN}</div>
         <div data-testid="connections-routing" style={{ marginTop: 12 }}>{isBroker ? ROUTING_BROKER : ROUTING_LO}</div>
       </div>
     </div>
