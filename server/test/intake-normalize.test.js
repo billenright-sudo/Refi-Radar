@@ -26,7 +26,11 @@ test("parseDate: Excel serials, M/D/YYYY, M/D/YY, ISO dates and timestamps; impo
   assert.equal(parseDate("03/14/24"), "2024-03-14");
   assert.equal(parseDate("2024-03-14"), "2024-03-14");
   assert.equal(parseDate("2024-03-14T00:00:00Z"), "2024-03-14");
-  for (const v of ["", "TBD", "2/30/2024", "13/01/2024", "2024-02-30", 12, null]) assert.equal(parseDate(v), null);
+  assert.equal(parseDate("2024-03-14 00:00:00"), "2024-03-14");
+  assert.equal(parseDate(" 2024-03-14 17:45:09 "), "2024-03-14");
+  for (const v of ["", "TBD", "2/30/2024", "13/01/2024", "2024-02-30", "2024-02-30 00:00:00", "2024-13-01 12:00:00", 12, null]) {
+    assert.equal(parseDate(v), null);
+  }
 });
 test("parseTermMonths: 360, '30', '30 yr', '30 Years', '180 months', '15'", () => {
   for (const [v, m] of [[360, 360], ["360", 360], ["30", 360], ["30 yr", 360], ["30 Years", 360], ["180 months", 180], ["15", 180]]) assert.equal(parseTermMonths(v), m);

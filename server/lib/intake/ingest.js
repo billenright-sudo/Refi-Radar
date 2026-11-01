@@ -20,11 +20,12 @@
 //
 // A6a: when a row that names a loan officer brings the same loan or a refinance for a client in somebody else's book, the
 // client moves to the named loan officer. The old owner's open follow-ups for the client close as expired, and the old owner
-// gets an in-app notification unless they are the one who ran the import (or own the key). Nothing here sends an email or any
-// other message (A1), and the call log is never touched: it is read by client, so it follows the client on its own.
+// gets an in-app notification unless they are the one who ran the import (or own the key). A client this same run created is
+// only handed over, since nobody had them before the run (no follow-ups close, no one is told). Nothing here sends an email or
+// any other message (A1), and the call log is never touched: it is read by client, so it follows the client on its own.
 
 const crypto = require("crypto");
-const { toRecord, REASONS } = require("./record");
+const { toRecord, REASONS, BALANCE_FLAGS } = require("./record");
 const { findMatch, relation } = require("./match");
 const { resolveOwner } = require("./owner");
 const { fullName, parseDate } = require("./normalize");
@@ -58,7 +59,10 @@ function loanChanges(client, record, rel) {
   if (record.loanTypeGiven) text("loan_type", record.loanType);
   if (record.closeDate) text("close_date", record.closeDate);
   if (record.creditScore !== null) number("credit_score", record.creditScore);
-  if (record.loanNumber) text("loan_number", record.loanNumber);
+  // A refinance replaces the loan, number and all: an unnumbered new loan clears the old number, which belongs to the loan it
+  // paid off (kept, it would match that old loan as "same" on the next import and roll the client back to it). The same loan
+  // keeps its number when the row gives none.
+  if (record.loanNumber || rel === "refinance") text("loan_number", record.loanNumber);
 
   // The stored closing date is free text (the old importer kept the cell as typed), so it is read with the same parser as the
   // row's before the two are compared: "3/14/2024" and "2024-03-14" are the same day, not a changed loan.
@@ -144,18 +148,27 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
   };
   const bookOf = (id) => ({ id, name: person(id).name });
 
-  const create = (record, owner) => insertClient.run({
-    org_id: actor.org_id, user_id: owner.id, name: record.name, email: record.email, phone: record.phone,
-    loan_type: record.loanType, current_rate: record.rate, loan_balance: record.balance, property_value: record.propertyValue,
-    close_date: record.closeDate, credit_score: record.creditScore ?? DEFAULT_CREDIT_SCORE, notes: record.notes,
-    loan_number: record.loanNumber, source,
-  });
+  // The clients this run created. One a later row hands to another loan officer was nobody's before the run, so that is not a
+  // move: no one loses a client, so no follow-ups close and no one is told.
+  const createdThisRun = new Set();
+  const create = (record, owner) => {
+    const info = insertClient.run({
+      org_id: actor.org_id, user_id: owner.id, name: record.name, email: record.email, phone: record.phone,
+      loan_type: record.loanType, current_rate: record.rate, loan_balance: record.balance, property_value: record.propertyValue,
+      close_date: record.closeDate, credit_score: record.creditScore ?? DEFAULT_CREDIT_SCORE, notes: record.notes,
+      loan_number: record.loanNumber, source,
+    });
+    createdThisRun.add(Number(info.lastInsertRowid));
+  };
 
   function ingestOne({ row, record, flags }) {
     const owner = resolveOwner(db, actor, record.loanOfficer);
-    const base = { name: record.name, flags: [...flags] };
-    // The routing flag ("routed to your book: ...") only goes on a row that creates a client. A matched row stays in its
-    // client's book (or moves to the loan officer it named), so the importer's book is not where it went.
+    // A row's flags say what was done with it. The balance flags (estimated / original amount) only go on a row whose balance
+    // was written, and the routing flag ("routed to your book: ...") only on a row that creates a client: a matched row stays
+    // in its client's book (or moves to the loan officer it named), so the importer's book is not where it went. A loan type
+    // flag is about the row itself, so it stays on every row.
+    const balanceKept = flags.filter((f) => !BALANCE_FLAGS.includes(f));
+    const base = { name: record.name, flags: balanceKept };
     const createdIn = { owner: bookOf(owner.id), flags: owner.flag ? [...flags, owner.flag] : [...flags] };
 
     const match = findMatch(db, actor.org_id, record);
@@ -176,15 +189,17 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
     // The same loan or a refinance. A row that named its loan officer takes the client to them (A6a); a row that only fell
     // back to the importer's own book never moves anyone.
     const changes = loanChanges(client, record, rel);
-    const moves = owner.named && owner.id !== client.user_id;
-    if (moves) changes.user_id = owner.id;
+    const reassigns = owner.named && owner.id !== client.user_id;
+    if (reassigns) changes.user_id = owner.id;
     const columns = Object.keys(changes);
     if (columns.length === 0) return result(row, "unchanged", { ...base, owner: bookOf(client.user_id) });
 
     // The column names are this module's own, never the row's.
     db.prepare(`UPDATE clients SET ${columns.map((c) => `${c} = @${c}`).join(", ")}, updated_at = datetime('now') WHERE id = @id`)
       .run({ ...changes, id: client.id });
-    if (!moves) return result(row, "updated", { ...base, owner: bookOf(client.user_id) });
+    const updated = { ...base, flags: "loan_balance" in changes ? [...flags] : balanceKept };
+    if (!reassigns) return result(row, "updated", { ...updated, owner: bookOf(client.user_id) });
+    if (createdThisRun.has(client.id)) return result(row, "updated", { ...updated, owner: bookOf(owner.id) });
 
     const from = person(client.user_id);
     const to = person(owner.id);
@@ -193,7 +208,7 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
       notify.run(actor.org_id, actor.id, from.id, client.id,
         `${client.name} moved to ${to.name}'s book: their new loan came in under ${to.first}.`);
     }
-    return result(row, "updated", { ...base, owner: bookOf(owner.id), movedFrom: from.name });
+    return result(row, "updated", { ...updated, owner: bookOf(owner.id), movedFrom: from.name });
   }
 
   // A dry run does everything, then throws this (and only this is caught) so the transaction rolls back. Any other error

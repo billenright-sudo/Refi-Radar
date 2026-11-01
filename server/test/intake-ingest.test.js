@@ -250,7 +250,7 @@ test("ambiguous rows write nothing; front-door skips and record failures are ski
   ]);
   const blank = { note: null, flags: [], owner: null, movedFrom: null };
   assert.deepStrictEqual(r.results, [
-    { row: 2, outcome: "ambiguous", name: "John Smith", reason: "matched 2 clients", note: null, flags: [ESTIMATED], owner: null, movedFrom: null },
+    { row: 2, outcome: "ambiguous", name: "John Smith", reason: "matched 2 clients", ...blank },
     { row: 3, outcome: "skipped", name: "John Smith", reason: "not funded", ...blank },
     { row: 4, outcome: "skipped", name: "John Smith", reason: "no note rate between 0 and 20", ...blank },
     { row: 5, outcome: "skipped", name: "John Smith", reason: "not funded yet", ...blank },
@@ -272,13 +272,65 @@ test("the routed-to-your-book flag goes only on a row that creates a client in t
     item(6, { firstName: "Kim", lastName: "Wu", email: "kim@x.com", loanNumber: "", loanOfficer: "Nobody" }),
   ]);
   assert.deepStrictEqual(r.results.map((x) => [x.row, x.outcome, x.note, x.owner, x.flags]), [
-    [2, "unchanged", null, { id: lia, name: "Lia Chen" }, [ESTIMATED]],
+    [2, "unchanged", null, { id: lia, name: "Lia Chen" }, []],
     [3, "updated", null, { id: lia, name: "Lia Chen" }, []],
     [4, "created", null, { id: ann, name: "Ann Lee" }, [ESTIMATED, routed]],
     [5, "created", "second property", { id: ann, name: "Ann Lee" }, [ESTIMATED, routed]],
-    [6, "ambiguous", null, null, [ESTIMATED]],
+    [6, "ambiguous", null, null, []],
   ]);
   assert.equal(clientRow(id).user_id, lia);
+});
+
+test("a balance flag is shown only when the balance was written; a loan type flag always is", () => {
+  const ORIGINAL = "balance = original loan amount (no rate/term/date to estimate from)";
+  const TWENTY = "20-year fixed priced as a 30-year";
+  const flagsOf = (r) => r.results.map((x) => [x.row, x.outcome, x.flags]);
+  const id = addClient(lou, { loan_balance: 380000, phone: "" });
+
+  // An update that keeps the stored balance (only the phone is filled) carries no balance flag.
+  assert.deepStrictEqual(flagsOf(run([item(2)])), [[2, "updated", []]]);
+  assert.equal(clientRow(id).loan_balance, 380000);
+  // Unchanged: no balance flag, but a 20-year term is still flagged as priced as a 30-year.
+  assert.deepStrictEqual(flagsOf(run([item(2, { term: "240" })])), [[2, "unchanged", [TWENTY]]]);
+  // A new rate is a changed loan, so the estimate is written, and flagged.
+  assert.deepStrictEqual(flagsOf(run([item(2, { noteRate: "6.0" })])), [[2, "updated", [ESTIMATED]]]);
+  assert.notEqual(clientRow(id).loan_balance, 380000);
+  // A created client always shows how its balance was found.
+  assert.deepStrictEqual(flagsOf(run([item(3, { firstName: "Jane", lastName: "Doe", email: "jane@x.com", loanNumber: "a200", term: "", amortization: "" })])),
+    [[3, "created", [ORIGINAL]]]);
+});
+
+test("a refinance with no loan number clears the old number, so the old loan never rolls the client back", () => {
+  const file = [
+    item(2, { loanNumber: "A100", closingDate: "2020-01-01", noteRate: "3.0" }),
+    item(3, { loanNumber: "", closingDate: "2024-02-01", noteRate: "6.0" }),
+  ];
+  assert.deepStrictEqual(outcomes(run(file)), [[2, "created"], [3, "updated"]]);
+  const [c] = allClients();
+  assert.equal(c.loan_number, "");
+  assert.equal(c.current_rate, 6.0);
+  assert.equal(c.close_date, "2024-02-01");
+
+  assert.deepStrictEqual(outcomes(run(file)), [[2, "unchanged"], [3, "unchanged"]]);
+  const old = run([file[0]]);
+  assert.deepStrictEqual(old.results.map((x) => [x.outcome, x.note]), [["unchanged", "older loan"]]);
+  assert.deepStrictEqual(allClients(), [c]);
+});
+
+test("a client this run created and a later row hands to another loan officer is not a move", () => {
+  const r = run([
+    item(2, { loanNumber: "B200", closingDate: "2024-02-01", noteRate: "6.0", loanOfficer: "lou@a.test" }),
+    item(3, { loanNumber: "A100", closingDate: "2020-01-01", noteRate: "3.0", loanOfficer: "lia@a.test" }),
+  ]);
+  assert.deepStrictEqual(r.results.map((x) => [x.row, x.outcome, x.owner, x.movedFrom]), [
+    [2, "updated", { id: lou, name: "Lou Park" }, null],
+    [3, "created", { id: lia, name: "Lia Chen" }, null],
+  ]);
+  assert.equal(r.counts.moved, 0);
+  const [c] = allClients();
+  assert.equal(c.user_id, lou);
+  assert.equal(c.loan_number, "B200");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications").get().n, 0);
 });
 
 test("a dry run returns exactly what the real run does, with the same reviewHash, and writes nothing", () => {

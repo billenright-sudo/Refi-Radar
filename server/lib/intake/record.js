@@ -34,6 +34,8 @@ const REASONS = Object.freeze({
 
 const FLAG_ESTIMATED = "balance estimated from the loan schedule";
 const FLAG_ORIGINAL = "balance = original loan amount (no rate/term/date to estimate from)";
+// The flags that are about the balance; the import only shows them on a row whose balance it wrote.
+const BALANCE_FLAGS = Object.freeze([FLAG_ESTIMATED, FLAG_ORIGINAL]);
 
 const utcToday = () => new Date().toISOString().slice(0, 10);
 
@@ -120,4 +122,4 @@ function toRecord(fields, { today = utcToday(), requireClosingDate = false } = {
   };
 }
 
-module.exports = { toRecord, REASONS };
+module.exports = { toRecord, REASONS, BALANCE_FLAGS };
