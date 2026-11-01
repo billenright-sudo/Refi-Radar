@@ -168,13 +168,13 @@ function consumeCarries(db, userId, clientIds, nowUtc, beforeDay) {
 }
 
 // What was recorded for this user on `day` from `source` ('briefing', 'sweep', 'calendar' or 'carry'), whatever became of it,
-// in the order it was recorded: [{ clientId, reasonCode }]. The briefing reads its own earlier list for the day from here.
+// in the order it was recorded: [{ clientId, reasonCode, status }]. The briefing reads its own earlier list for the day from here.
 const SOURCES = ["briefing", "sweep", "calendar", "carry"];
 function recommendedOn(db, userId, day, source) {
   assertDay(day, "day");
   if (!SOURCES.includes(source)) throw new TypeError(`source must be one of ${SOURCES.join(", ")}, got ${JSON.stringify(source)}`);
   return db.prepare(`
-    SELECT client_id AS clientId, reason_code AS reasonCode FROM charlie_recommendations
+    SELECT client_id AS clientId, reason_code AS reasonCode, status FROM charlie_recommendations
     WHERE user_id = ? AND day = ? AND source = ? ORDER BY id
   `).all(userId, day, source);
 }

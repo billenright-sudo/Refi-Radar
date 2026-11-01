@@ -525,6 +525,63 @@ test("F-2: a client carried onto this morning's list is listed again after noon,
   assert.ok(!callListOf(tomorrow.reply).includes("Cara Mendez"), tomorrow.reply);
 });
 
+test("a client carried onto this morning's list and reached since is off the list after noon; one not reached stays on", async () => {
+  seedBook();
+  const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
+  const dina = addClient(annId, "Dina Ruiz", { lastContact: "2026-10-01" });
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  fu.addCarry(db, annId, dina, YESTERDAY);
+  const morning = await brief(annId);
+  for (const name of ["Cara Mendez", "Dina Ruiz"]) assert.ok(callListOf(morning.reply).includes(name), morning.reply);
+
+  // 10 AM: Cara reached, Dina not (logged the way the routes log a call)
+  const tenAm = "2026-10-30 17:00:00";
+  fu.logCall(db, { userId: annId, clientId: cara, outcome: "reached", nowUtc: tenAm });
+  fu.resolveForClient(db, annId, cara, "reached", tenAm, { includeCarry: true });
+  fu.logCall(db, { userId: annId, clientId: dina, outcome: "not_reached", nowUtc: tenAm });
+  fu.resolveForClient(db, annId, dina, "not_reached", tenAm, { includeCarry: false });
+
+  const afternoon = await brief(annId, { localHour: 13, nowMs: at(TODAY, 13) });
+  assert.ok(!afternoon.reply.includes("Cara Mendez"), `reached today, so neither listed nor asked about: ${afternoon.reply}`);
+  assert.ok(callListOf(afternoon.reply).includes("Dina Ruiz"), `not reached, still today's list: ${afternoon.reply}`);
+  assert.equal(questionMarks(afternoon.reply), 1, afternoon.reply);
+});
+
+test("a carried client whose call booked today has ended is asked how it went, and is left off the list", async () => {
+  seedBook();
+  const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  const morning = await brief(annId);
+  assert.ok(callListOf(morning.reply).includes("Cara Mendez"), morning.reply);
+
+  // the call is booked after the morning open (so its row comes after today's list row) and ends at noon
+  const google = fakeGoogle({ byDate: { [TODAY]: [event("Call with Cara Mendez", "11:30 AM", TODAY, 12)] } });
+  const afternoon = await brief(annId, { google, localHour: 13, nowMs: at(TODAY, 13) });
+  assert.ok(afternoon.reply.endsWith("How did the call with Cara Mendez go?"), afternoon.reply);
+  assert.equal(afternoon.followUp.clientId, cara);
+  assert.equal(afternoon.followUp.source, "calendar");
+  assert.ok(!callListOf(afternoon.reply).includes("Cara Mendez"), `asked about and listed in one breath: ${afternoon.reply}`);
+  assert.equal(questionMarks(afternoon.reply), 1, afternoon.reply);
+
+  // the first open of a day comes after the call: asked about, not listed, and her carry is kept (not used up by a list)
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  const late = await brief(annId, { google, localHour: 13, nowMs: at(TODAY, 13) });
+  assert.ok(late.reply.endsWith("How did the call with Cara Mendez go?"), late.reply);
+  assert.ok(!callListOf(late.reply).includes("Cara Mendez"), late.reply);
+  assert.equal(recRows("client_id = ? AND source = 'carry'", cara)[0].status, "open");
+});
+
+test("F-2: a carried client's call from yesterday still waits: they are listed and not asked about it", async () => {
+  seedBook();
+  const cara = addClient(annId, "Cara Mendez", { lastContact: "2026-10-01" });
+  fu.recordRecommendations(db, annId, YESTERDAY, [{ clientId: cara, source: "calendar", reasonCode: "calendar", dueAt: "2026-10-29 18:00:00" }]);
+  fu.addCarry(db, annId, cara, YESTERDAY);
+  const r = await brief(annId);
+  assert.ok(callListOf(r.reply).includes("Cara Mendez"), r.reply);
+  assert.notEqual(r.followUp && r.followUp.clientId, cara, r.reply);
+});
+
 test("with two open follow-ups the briefing says it has a couple, asks only the first, and counts both as asked", async () => {
   const ids = seedBook();
   fu.recordRecommendations(db, annId, "2026-10-28", [{ clientId: ids.owen, source: "briefing", reasonCode: "cash_out" }]);
