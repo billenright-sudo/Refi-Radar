@@ -157,3 +157,20 @@ test("parseTermMonths: a long run of spaces after a number is read quickly and i
   assert.equal(parseTermMonths("30 - year"), 360);
   assert.equal(parseTermMonths("30-  yr"), 360);
 });
+test("parseNumber, parseRate, parseMoney: a million-digit cell is read quickly and is not a number", () => {
+  const digits = "1".repeat(1_000_000);
+  for (const parse of [parseNumber, parseRate, parseMoney]) {
+    for (const v of [digits + "x", digits]) {
+      const start = process.hrtime.bigint();
+      const got = parse(v);
+      const ms = Number(process.hrtime.bigint() - start) / 1e6;
+      assert.equal(got, null, `${parse.name} on ${v.length} chars`);
+      assert.ok(ms < 50, `${parse.name} on ${v.length} chars took ${ms} ms`);
+    }
+  }
+  // The shapes read before are still read, and the ones refused are still refused.
+  for (const [v, n] of [["6.5", 6.5], ["6.", 6], [".5", 0.5], ["-1", -1], ["+2.25", 2.25], ["$1,234,567,890.12", 1234567890.12]]) {
+    assert.equal(parseNumber(v), n, v);
+  }
+  for (const v of ["1.2.3", ".", "+", "-.", "1..2"]) assert.equal(parseNumber(v), null, v);
+});

@@ -20,8 +20,11 @@ const SERIAL_MAX = 80000;
 const MAX_TERM_YEARS = 50;
 const NAME_MAX = 120;
 const EMAIL_MAX = 254;
+// No amount, rate or score needs more characters than this once "$", "," and spaces are gone; a longer cell is not a number.
+const NUMBER_MAX = 32;
 
-const NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+// The fraction part is one optional group, so a long run of digits that ends in junk fails in one pass, not one per digit.
+const NUMBER_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const SLASH_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/;
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T.*| \d{2}:\d{2}:\d{2})?$/;
 // A number, spaces, one optional dash with its own trailing spaces, then the unit word. It reads the same strings as
@@ -44,12 +47,13 @@ function text(v) {
 
 const collapse = (s) => s.replace(/\s+/g, " ").trim();
 
-// "$412,500.00 " -> 412500, "6.5 %" -> 6.5. Blank, "N/A", "none", "-" and "(1,000)" are not numbers, so they are null.
+// "$412,500.00 " -> 412500, "6.5 %" -> 6.5. Blank, "N/A", "none", "-" and "(1,000)" are not numbers, so they are null, and
+// so is anything over NUMBER_MAX characters once cleaned (a million "1"s is a pasted mistake, not a loan amount).
 function parseNumber(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   if (typeof v !== "string") return null;
   const s = v.replace(/[$,%\s]/g, "");
-  return NUMBER_RE.test(s) ? Number(s) : null;
+  return s.length <= NUMBER_MAX && NUMBER_RE.test(s) ? Number(s) : null;
 }
 
 // An interest rate as a percent. A sheet may hold 6.5, "6.500%" or the fraction 0.065 (a percent-formatted Excel cell); an
