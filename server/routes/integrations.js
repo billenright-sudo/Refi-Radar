@@ -257,8 +257,10 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
       const { results } = ingest(db, {
         actor: req.keyUser, source: "arive", items: [{ row: 1, fields }], today, nowUtc, requireClosingDate: true, dryRun: false,
       });
-      const { outcome, movedFrom } = results[0];
-      res.json(movedFrom ? { result: outcome, moved_from: movedFrom } : { result: outcome });
+      const { outcome, movedFrom, reason } = results[0];
+      if (movedFrom) return res.json({ result: outcome, moved_from: movedFrom });
+      // The only row ingest skips here is another loan officer's client sent with a loan officer's own key (Bill, 2026-11-03).
+      res.json(outcome === "skipped" ? { result: outcome, reason } : { result: outcome });
     } catch (err) {
       loansFailed(res, err);
     }

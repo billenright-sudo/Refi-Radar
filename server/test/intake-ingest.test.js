@@ -251,10 +251,10 @@ test("a client this run created or changed is matched by later rows as the run l
     item(3, { ...bare, noteRate: "6.25" }),                         // the bare client, by name alone
     item(4, { ...bare, noteRate: "6.25", email: "bea@bare.test" }),  // by name alone again, and fills the blank email
     item(5, { ...bare, firstName: "B.", email: "bea@bare.test" }),   // by the email row 4 gave her
-    item(6, bare),                                                   // she has an email now, so the name alone is somebody else
+    item(6, { ...bare, noteRate: "6.25" }),                          // she has an email now, but row 6 gives none to disagree (Bill 11/3)
   ]);
-  assert.deepStrictEqual(outcomes(r), [[2, "created"], [3, "updated"], [4, "updated"], [5, "updated"], [6, "created"]]);
-  assert.deepStrictEqual(allClients().map((c) => [c.name, c.email, c.current_rate]), [["Bea Bare", "bea@bare.test", 6.5], ["Bea Bare", "", 6.5]]);
+  assert.deepStrictEqual(outcomes(r), [[2, "created"], [3, "updated"], [4, "updated"], [5, "updated"], [6, "updated"]]);
+  assert.deepStrictEqual(allClients().map((c) => [c.name, c.email, c.current_rate]), [["Bea Bare", "bea@bare.test", 6.25]]);
 });
 
 test("a 5,000-row first import (every row new) is reviewed in under 3 seconds", () => {
@@ -480,14 +480,109 @@ test("A6a: no move on a fallback, an older loan, or a second property; a same-lo
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE client_id = ?").get(janeId).n, 0);
 });
 
-test("A6a: an LO actor (their own key) takes their refinance over from another LO", () => {
+// ── Bill's rulings, 2026-11-03 ──────────────────────────────────────────────────────────────────────────────────────────
+const NAME_ONLY = "matched by name only: check it's the same person";
+const handEdited = (id, marks) => db.prepare("UPDATE clients SET edited_by_hand = ? WHERE id = ?").run(marks, id);
+
+test("Bill 11/3: a file of names and loan numbers lists a refinance beside its original: one client, flagged as a name match", () => {
+  const plain = { email: "", phone: "", loanOfficer: "" };
+  const r = run([
+    item(2, { ...plain, loanNumber: "A100", closingDate: "2020-01-01", noteRate: "3.0" }),
+    item(3, { ...plain, loanNumber: "B200", closingDate: "2024-02-01", noteRate: "6.0" }),
+  ]);
+  assert.deepStrictEqual(outcomes(r), [[2, "created"], [3, "updated"]]);
+  assert.deepStrictEqual(allClients().map((c) => [c.name, c.loan_number, c.current_rate]), [["John Smith", "B200", 6.0]]);
+  assert.ok(r.results[1].flags.includes(NAME_ONLY), r.results[1].flags.join(" | "));
+  assert.ok(!r.results[0].flags.includes(NAME_ONLY));
+});
+
+test("Bill 11/3: a client typed in with a phone and no email is found by a row with an email and no phone; a different email is not", () => {
+  const id = addClient(lou, { email: "", loan_number: "" });
+  const r = run([item(2, { phone: "" })]);
+  assert.deepStrictEqual(outcomes(r), [[2, "updated"]]);
+  assert.deepStrictEqual(r.results[0].flags, [NAME_ONLY]);
+  assert.equal(allClients().length, 1);
+  assert.equal(clientRow(id).email.toLowerCase(), "john@x.com");
+  assert.equal(clientRow(id).loan_number, "A100");
+
+  db.prepare("DELETE FROM clients").run();
+  addClient(lou, { email: "other@x.com", loan_number: "", phone: "" });
+  const other = run([item(2, { phone: "" })]);
+  assert.deepStrictEqual(outcomes(other), [[2, "created"]]);
+  assert.ok(!other.results[0].flags.includes(NAME_ONLY));
+  assert.equal(allClients().length, 2);
+});
+
+test("Bill 11/3: the same loan keeps a rate, property value or credit score edited by hand, and the row says so", () => {
+  const id = addClient(lou, { current_rate: 6.125, property_value: 560000, credit_score: 760, loan_balance: 380000 });
+  handEdited(id, "current_rate,property_value");
+  const r = run([item(2)]);
+  assert.deepStrictEqual(r.results.map((x) => [x.outcome, x.flags]), [["updated", ["kept hand-edited rate, property value"]]]);
+  let c = clientRow(id);
+  // the marked two are kept, the unmarked score is the row's, and a kept rate is not a changed loan, so the balance stays
+  assert.deepStrictEqual([c.current_rate, c.property_value, c.credit_score, c.loan_balance], [6.125, 560000, 742, 380000]);
+  assert.equal(c.edited_by_hand, "current_rate,property_value");
+
+  // the same row again: only the kept values differ, so nothing is written, and the row still says why
+  const again = run([item(2)]);
+  assert.deepStrictEqual(again.results.map((x) => [x.outcome, x.flags]), [["unchanged", ["kept hand-edited rate, property value"]]]);
+
+  // unmarked, the rate and value are the row's again (a new rate is a changed loan, so the balance is re-estimated), and a
+  // marked value the row agrees with is not reported as kept
+  handEdited(id, "credit_score");
+  assert.deepStrictEqual(run([item(2)]).results.map((x) => [x.outcome, x.flags]), [["updated", [ESTIMATED]]]);
+  c = clientRow(id);
+  assert.deepStrictEqual([c.current_rate, c.property_value, c.credit_score], [6.5, 520000, 742]);
+});
+
+test("Bill 11/3: a refinance is a new loan, so it replaces hand-edited values and clears their marks; one it doesn't bring stays marked", () => {
+  const id = addClient(lou, { close_date: "2021-05-01", current_rate: 3.0, property_value: 600000, credit_score: 790 });
+  handEdited(id, "current_rate,property_value,credit_score");
+  const r = run([item(2, { ...REFI, creditScore: "" })]);
+  assert.deepStrictEqual(outcomes(r), [[2, "updated"]]);
+  assert.ok(!r.results[0].flags.some((f) => f.startsWith("kept hand-edited")), r.results[0].flags.join(" | "));
+  const c = clientRow(id);
+  assert.deepStrictEqual([c.current_rate, c.property_value, c.credit_score, c.edited_by_hand], [6.25, 520000, 790, "credit_score"]);
+});
+
+test("Bill 11/3: an LO's own key changes only their own clients; another LO's is skipped, and told when it is a newer loan", () => {
   const id = addClient(lia, { close_date: "2021-05-01", current_rate: 3.0 });
-  const r = run([item(2, { ...REFI, loanOfficer: "" })], { actor: userRow(lou), source: "arive" });
-  assert.deepStrictEqual(r.results.map((x) => [x.outcome, x.owner, x.movedFrom]), [["updated", { id: lou, name: "Lou Park" }, "Lia Chen"]]);
-  assert.equal(clientRow(id).user_id, lou);
-  assert.equal(clientRow(id).source, "manual");
-  const notes = db.prepare("SELECT from_user, to_user, client_id, message FROM notifications").all();
-  assert.deepStrictEqual(notes, [{
-    from_user: lou, to_user: lia, client_id: id, message: "John Smith moved to Lou Park's book: their new loan came in under Lou.",
+  const before = clientRow(id);
+  const asLou = { actor: userRow(lou), source: "arive" };
+  const lias = "in Lia Chen's book: a loan officer's feed only changes their own clients";
+
+  const refi = run([item(2, { ...REFI, loanOfficer: "" })], asLou);
+  assert.deepStrictEqual(refi.results, [{
+    row: 2, outcome: "skipped", name: "John Smith", reason: lias, note: null, flags: [],
+    owner: { id: lia, name: "Lia Chen" }, movedFrom: null,
   }]);
+  assert.deepStrictEqual(clientRow(id), before);
+  const told = [{
+    from_user: lou, to_user: lia, client_id: id,
+    message: "Lou Park's ARIVE feed sent a newer loan for John Smith (closed 2026-03-02). Nothing was changed, and John Smith stays in your book.",
+  }];
+  assert.deepStrictEqual(db.prepare("SELECT from_user, to_user, client_id, message FROM notifications").all(), told);
+  // the Zap replayed: skipped again, and Lia is not told twice
+  assert.deepStrictEqual(outcomes(run([item(2, { ...REFI, loanOfficer: "" })], asLou)), [[2, "skipped"]]);
+  assert.deepStrictEqual(db.prepare("SELECT from_user, to_user, client_id, message FROM notifications").all(), told);
+
+  // the same loan from Lou's key is skipped too, and nobody is told
+  db.prepare("DELETE FROM notifications").run();
+  const same = run([item(2, { loanOfficer: "" })], asLou);
+  assert.deepStrictEqual(same.results.map((x) => [x.outcome, x.reason]), [["skipped", lias]]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications").get().n, 0);
+
+  // an older loan is unchanged, and a newer purchase is a new client in Lou's own book; Lia's client never moves
+  const older = run([item(2, { loanNumber: "Z1", closingDate: "2019-01-01", loanOfficer: "" })], asLou);
+  assert.deepStrictEqual(outcomes(older), [[2, "unchanged"]]);
+  const purchase = run([item(2, { loanNumber: "P9", closingDate: "2026-06-01", purpose: "Purchase", loanOfficer: "" })], asLou);
+  assert.deepStrictEqual(purchase.results.map((x) => [x.outcome, x.note, x.owner]), [["created", "second property", { id: lou, name: "Lou Park" }]]);
+  assert.deepStrictEqual(clientRow(id), before);
+
+  // Lou's own client takes the refinance as before
+  db.prepare("DELETE FROM clients").run();
+  const mine = addClient(lou, { close_date: "2021-05-01", current_rate: 3.0 });
+  const own = run([item(2, { ...REFI, loanOfficer: "" })], asLou);
+  assert.deepStrictEqual(own.results.map((x) => [x.outcome, x.movedFrom]), [["updated", null]]);
+  assert.equal(clientRow(mine).current_rate, 6.25);
 });

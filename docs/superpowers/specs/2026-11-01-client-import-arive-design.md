@@ -160,8 +160,8 @@ the old-rate one being pitched a refi they already did. Who keeps a matched clie
 1. **Same loan number** (when both have one).
 2. **Same email** (case-insensitive, when both have one).
 3. **Same name and same phone digits.**
-4. **Same name alone (my call)**, only when exactly one client in the organisation has that name and that client has no email,
-   phone or loan number. That catches clients the old importer brought in bare, without guessing between two.
+4. **Same name alone** (changed by Bill 2026-11-03, see §11): a client with the name counts unless their own email or phone
+   disagrees with the row's. One such client is the match, flagged "matched by name only"; two or more are ambiguous.
 
 **When more than one client matches** at the first step that finds any, nothing is updated. The row is "ambiguous: skipped",
 showing how many clients it matched, so the broker can fix it by hand (my call).
@@ -175,7 +175,8 @@ showing how many clients it matched, so the broker can fix it by hand (my call).
   - the incoming loan is older than the one Broker Radar holds: **"older loan: unchanged"**, and nothing is written.
 
 **What an update writes:**
-- **Loan fields:** rate, property value, loan type, closing date, credit score (when given) and loan number.
+- **Loan fields:** rate, property value, loan type, closing date, credit score (when given) and loan number. For the same
+  loan, a rate, property value or credit score changed by hand on the client form is kept (§11).
 - **The balance only when** the row gives a real current balance, or the loan itself changed (a refinance, or a different
   rate or closing date). An *estimated* balance never overwrites a stored one for the same loan. That keeps an exact or
   hand-corrected balance safe, and makes a replayed Zap "unchanged" in any month (my call).
@@ -193,7 +194,7 @@ so the newer loan ends up on the client.
 The client belongs to the loan officer on their current loan. When a matched row names a loan officer other than the one who
 has the client, the client **moves to the named loan officer**:
 - **"Names a loan officer"** means the row was routed to a user by A7 (the loan officer column's email or full name) or by B2
-  (an LO's own key, or the `loan_officer_email` a broker's key sends). A row that fell back to the importing broker's own book
+  (the `loan_officer_email` a broker's key sends). An LO's own key never moves anyone (§11). A row that fell back to the importing broker's own book
   never moves anyone (my call): otherwise a file with no loan officer column would pull every matched client into the
   broker's book.
 - **When:** the same loan (the LOS reassigned it) or a refinance. Never for "older loan: unchanged" (that loan isn't their
@@ -366,3 +367,21 @@ Calyx Point: the same ask, one report export, if a Calyx broker is handy.
 **Who keeps a client when a new loan for them comes in under a different loan officer?** Bill, 2026-11-01: they move to the
 loan officer on the new loan, as set out in A6a. The borrower's current relationship is with whoever did their latest loan,
 and that's who should get the next refi call.
+
+## 11. Bill's rulings after the build (2026-11-03)
+
+The final review left three behaviours for Bill to judge. He said yes to all three:
+
+1. **Name-only matches no longer make duplicates.** Step 4 of A6 used to count the name alone only for a bare client, so a
+   file of names and loan numbers that listed a refinance beside its original made two clients, and a client typed in with a
+   phone was duplicated by a row with an email. Now a same-name client counts unless their own email or phone disagrees with
+   the row's (a loan number never disagrees: a refinance brings a new one). The row is flagged "matched by name only: check
+   it's the same person", and two or more such clients are ambiguous.
+2. **Hand edits are kept.** A save on the client form that changes the rate, property value or credit score marks that field
+   (`clients.edited_by_hand`). For the same loan, an import or the feed keeps a marked value and the row is flagged "kept
+   hand-edited …". A refinance is a new loan, so it writes over marked values, and each mark it writes over is cleared.
+3. **An LO's own key changes only their own clients.** The same loan or a refinance for somebody else's client is skipped:
+   "in <name>'s book: a loan officer's feed only changes their own clients", and the webhook answers `skipped` with that
+   reason. For a refinance, the client's loan officer gets an in-app notification (never an email, and once per loan even if
+   the Zap replays) so they don't pitch a refi the client already has (my call). An older loan stays "unchanged", and a newer purchase is still a new client in the LO's
+   own book. A broker's key and the file import still move clients as A6a says.

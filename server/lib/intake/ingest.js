@@ -17,17 +17,24 @@
 // client's last contact is left empty. The balance is kept unless the row gives a current balance or the loan itself changed
 // (a refinance, another rate, another closing date), so an estimate never overwrites a stored or hand-corrected balance for the
 // same loan. Email and phone are only filled where the client has none, and the loan type only when the row said it (R5).
+// For the same loan, a rate, property value or credit score a person changed by hand (handEdits.js) is kept, and the row says
+// so; a refinance is a new loan, so it replaces them and their marks go (Bill, 2026-11-03). A client found by the name alone
+// is flagged, so the broker can check it is the same person.
 //
 // A6a: when a row that names a loan officer brings the same loan or a refinance for a client in somebody else's book, the
 // client moves to the named loan officer. The old owner's open follow-ups for the client close as expired, and the old owner
 // gets an in-app notification unless they are the one who ran the import (or own the key). A client this same run created is
-// only handed over, since nobody had them before the run (no follow-ups close, no one is told). Nothing here sends an email or
-// any other message (A1), and the call log is never touched: it is read by client, so it follows the client on its own.
+// only handed over, since nobody had them before the run (no follow-ups close, no one is told). A loan officer's own key is
+// the exception (Bill, 2026-11-03): it only changes that loan officer's own clients, so the same loan or a refinance for
+// somebody else's client is skipped and nothing about the client changes; for a refinance the client's loan officer is told
+// in the app, so they don't pitch a refi the client already has. Nothing here sends an email or any other message (A1), and
+// the call log is never touched: it is read by client, so it follows the client on its own.
 
 const crypto = require("crypto");
 const { toRecord, REASONS, BALANCE_FLAGS } = require("./record");
 const { findMatch, createMatchIndex, relation } = require("./match");
 const { resolveOwner } = require("./owner");
+const { LABELS, readMarks, writeMarks } = require("./handEdits");
 const { fullName, parseDate } = require("./normalize");
 // Called as followups.resolveForClient(...) so a test can stand in for it.
 const followups = require("../assistant/followups");
@@ -48,10 +55,22 @@ const result = (row, outcome, fields) => ({
   row, outcome, name: "", reason: null, note: null, flags: [], owner: null, movedFrom: null, ...fields,
 });
 
-// The columns an update of a matched client would change, as { column: new value }. `rel` is "same" or "refinance".
+// The flag on a row whose client was found by the name alone (match.js step 4).
+const NAME_ONLY = "matched by name only: check it's the same person";
+
+// What an update of a matched client would do: `changes`, the columns it would change as { column: new value }, and `held`,
+// the hand-edited columns whose different value from the row it keeps. `rel` is "same" or "refinance". Only the same loan
+// keeps hand edits; a refinance writes over them, and each mark it writes over goes.
 function loanChanges(client, record, rel) {
   const changes = {};
-  const number = (col, value) => { if (!sameNumber(client[col], value)) changes[col] = value; };
+  const held = [];
+  const marks = readMarks(client.edited_by_hand);
+  const kept = rel === "same" ? marks : new Set();
+  const number = (col, value) => {
+    if (sameNumber(client[col], value)) return;
+    if (kept.has(col)) held.push(col);
+    else changes[col] = value;
+  };
   const text = (col, value) => { if ((client[col] ?? "") !== value) changes[col] = value; };
 
   number("current_rate", record.rate);
@@ -65,15 +84,19 @@ function loanChanges(client, record, rel) {
   if (record.loanNumber || rel === "refinance") text("loan_number", record.loanNumber);
 
   // The stored closing date is free text (the old importer kept the cell as typed), so it is read with the same parser as the
-  // row's before the two are compared: "3/14/2024" and "2024-03-14" are the same day, not a changed loan.
+  // row's before the two are compared: "3/14/2024" and "2024-03-14" are the same day, not a changed loan. A rate that differs
+  // only because it was edited by hand is not a changed loan either.
   const storedDate = parseDate(client.close_date);
-  const loanChanged = rel === "refinance" || !sameNumber(client.current_rate, record.rate)
+  const loanChanged = rel === "refinance" || (!kept.has("current_rate") && !sameNumber(client.current_rate, record.rate))
     || Boolean(storedDate && record.closeDate && storedDate !== record.closeDate);
   if (record.balanceBasis === "current" || loanChanged) number("loan_balance", record.balance);
 
   if (blank(client.email) && record.email) changes.email = record.email;
   if (blank(client.phone) && record.phone) changes.phone = record.phone;
-  return changes;
+
+  const left = new Set([...marks].filter((col) => !(col in changes)));
+  if (left.size !== marks.size) changes.edited_by_hand = writeMarks(left);
+  return { changes, held };
 }
 
 function countsOf(results) {
@@ -135,6 +158,7 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
             @credit_score, @notes, @loan_number, @source)
   `);
   const notify = db.prepare("INSERT INTO notifications (org_id, from_user, to_user, client_id, message) VALUES (?, ?, ?, ?, ?)");
+  const alreadyTold = db.prepare("SELECT 1 FROM notifications WHERE to_user = ? AND client_id = ? AND message = ?");
   const userOf = db.prepare("SELECT first_name, last_name FROM users WHERE id = ?");
 
   // { id, name, first } for a user, looked up once per run.
@@ -186,26 +210,47 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
     }
 
     const client = match.client;
+    const byName = match.by === "name" ? [NAME_ONLY] : [];
+    const matched = { ...base, flags: [...base.flags, ...byName] };
     const rel = relation(client, record);
     if (rel === "second_property") {
       create(record, owner);
-      return result(row, "created", { ...base, ...createdIn, note: "second property" });
+      return result(row, "created", { ...base, ...createdIn, flags: [...createdIn.flags, ...byName], note: "second property" });
     }
-    if (rel === "older") return result(row, "unchanged", { ...base, note: "older loan", owner: bookOf(client.user_id) });
+    if (rel === "older") return result(row, "unchanged", { ...matched, note: "older loan", owner: bookOf(client.user_id) });
+
+    // A loan officer's own key changes only their own clients (Bill, 2026-11-03).
+    if (actor.role === "lo" && client.user_id !== actor.id) {
+      const holder = person(client.user_id);
+      if (rel === "refinance") {
+        const via = source === "arive" ? "ARIVE feed" : "import";
+        const closed = record.closeDate ? ` (closed ${record.closeDate})` : "";
+        const message = `${person(actor.id).name}'s ${via} sent a newer loan for ${client.name}${closed}. `
+          + `Nothing was changed, and ${client.name} stays in your book.`;
+        // A replayed Zap sends the same loan again; its loan officer is told once.
+        if (!alreadyTold.get(holder.id, client.id, message)) notify.run(actor.org_id, actor.id, holder.id, client.id, message);
+      }
+      return result(row, "skipped", {
+        ...matched, reason: `in ${holder.name}'s book: a loan officer's feed only changes their own clients`, owner: bookOf(holder.id),
+      });
+    }
 
     // The same loan or a refinance. A row that named its loan officer takes the client to them (A6a); a row that only fell
     // back to the importer's own book never moves anyone.
-    const changes = loanChanges(client, record, rel);
+    const { changes, held } = loanChanges(client, record, rel);
+    const keptFlag = held.length ? [`kept hand-edited ${held.map((col) => LABELS[col]).join(", ")}`] : [];
     const reassigns = owner.named && owner.id !== client.user_id;
     if (reassigns) changes.user_id = owner.id;
     const columns = Object.keys(changes);
-    if (columns.length === 0) return result(row, "unchanged", { ...base, owner: bookOf(client.user_id) });
+    if (columns.length === 0) {
+      return result(row, "unchanged", { ...matched, flags: [...matched.flags, ...keptFlag], owner: bookOf(client.user_id) });
+    }
 
     // The column names are this module's own, never the row's.
     db.prepare(`UPDATE clients SET ${columns.map((c) => `${c} = @${c}`).join(", ")}, updated_at = datetime('now') WHERE id = @id`)
       .run({ ...changes, id: client.id });
     index.refresh(client.id);
-    const updated = { ...base, flags: "loan_balance" in changes ? [...flags] : balanceKept };
+    const updated = { ...base, flags: [...("loan_balance" in changes ? flags : balanceKept), ...byName, ...keptFlag] };
     if (!reassigns) return result(row, "updated", { ...updated, owner: bookOf(client.user_id) });
     if (createdThisRun.has(client.id)) return result(row, "updated", { ...updated, owner: bookOf(owner.id) });
 

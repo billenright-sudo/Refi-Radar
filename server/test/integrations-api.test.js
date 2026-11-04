@@ -526,3 +526,13 @@ test("index.js mounts /api/integrations before the app-wide JSON parser", () => 
   assert.ok(mount < parser, "the 32 KB parser in the router must run before the 20 MB one");
   assert.ok(text.indexOf('require("./routes/integrations")') !== -1);
 });
+
+test("Bill 11/3: a loan officer's own key skips another loan officer's client and says why", async () => {
+  assert.deepStrictEqual((await post(giveKey(lia), BODY)).data, { result: "created" });
+  const r = await post(giveKey(lou), { ...BODY, note_rate: 6.5 });
+  assert.deepStrictEqual([r.status, r.data], [200, {
+    result: "skipped", reason: "in Lia Chen's book: a loan officer's feed only changes their own clients",
+  }]);
+  const [client] = clientRows();
+  assert.deepStrictEqual([client.user_id, client.current_rate], [lia, 7.25]);
+});

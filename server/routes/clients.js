@@ -3,6 +3,7 @@ const express = require("express");
 const db      = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const followups = require("../lib/assistant/followups");   // called as followups.x(): tests can swap one
+const { HAND_KEPT, readMarks, writeMarks } = require("../lib/intake/handEdits");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -112,18 +113,22 @@ router.put("/:id", (req, res) => {
   const errors = validateClient(req.body);
   if (Object.keys(errors).length) return res.status(400).json({ success: false, errors });
   try {
-    db.prepare(`
-      UPDATE clients SET name=@name, email=@email, phone=@phone, loan_type=@loan_type,
-        current_rate=@current_rate, loan_balance=@loan_balance, property_value=@property_value,
-        close_date=@close_date, credit_score=@credit_score, notes=@notes, updated_at=datetime('now')
-      WHERE id=@id
-    `).run({
+    const values = {
       id, name: req.body.name.trim(), email: (req.body.email||"").trim(),
       phone: (req.body.phone||"").trim(), loan_type: req.body.loanType,
       current_rate: parseFloat(req.body.currentRate), loan_balance: parseFloat(req.body.loanBalance),
       property_value: parseFloat(req.body.propertyValue), close_date: req.body.closeDate||"",
       credit_score: parseInt(req.body.creditScore)||700, notes: (req.body.notes||"").trim(),
-    });
+    };
+    // A rate, property value or credit score this save changes is marked as edited by hand, so the import keeps it.
+    const marks = readMarks(existing.edited_by_hand);
+    for (const col of HAND_KEPT) if (values[col] !== existing[col]) marks.add(col);
+    db.prepare(`
+      UPDATE clients SET name=@name, email=@email, phone=@phone, loan_type=@loan_type,
+        current_rate=@current_rate, loan_balance=@loan_balance, property_value=@property_value,
+        close_date=@close_date, credit_score=@credit_score, notes=@notes, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
+      WHERE id=@id
+    `).run({ ...values, edited_by_hand: writeMarks(marks) });
     const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
     res.json({ success: true, client: toClient(row) });
   } catch (err) {

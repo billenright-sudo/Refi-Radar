@@ -216,3 +216,23 @@ test("I5: saved call notes never reach the model: no assistant code reads contac
   }
   assert.ok(reads >= 1, "the check sees reachedSince's read (client ids only), so it would see one of the notes");
 });
+
+test("Bill 11/3: a save that changes the rate, property value or credit score marks it as edited by hand, for the import to keep", async () => {
+  const id = addClient(orgA, lou, "Hand Edit");
+  const form = { name: "Hand Edit", loanType: "30yr_fixed", currentRate: "7.5", loanBalance: "400000", propertyValue: "500000", creditScore: "760" };
+  const save = (who, patch) => as(who)("PUT", `/api/clients/${id}`, { ...form, ...patch });
+
+  // a save that changes none of the three (here only the notes and the balance) marks nothing
+  assert.strictEqual((await save(lou, { notes: "called", loanBalance: "398000" })).status, 200);
+  assert.strictEqual(clientRow(id).edited_by_hand, "");
+  // the property value changed: it alone is marked
+  await save(lou, { propertyValue: "560000" });
+  assert.strictEqual(clientRow(id).edited_by_hand, "property_value");
+  // the broker then changes the rate and the score: the marks add up, always in the same order
+  await save(ann, { propertyValue: "560000", currentRate: "6.875", creditScore: "781" });
+  assert.strictEqual(clientRow(id).edited_by_hand, "current_rate,property_value,credit_score");
+  // a refused save marks nothing
+  const other = addClient(orgA, ann, "Not Lou's");
+  assert.strictEqual((await as(lou)("PUT", `/api/clients/${other}`, { ...form, name: "Not Lou's", currentRate: "5" })).status, 403);
+  assert.strictEqual(clientRow(other).edited_by_hand, "");
+});

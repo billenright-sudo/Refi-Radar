@@ -85,6 +85,11 @@ if (!clientCols.some((c) => c.name === "loan_number")) {
 if (!clientCols.some((c) => c.name === "source")) {
   db.exec("ALTER TABLE clients ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
 }
+// edited_by_hand: which of the rate, property value and credit score a person changed on the client form
+// (lib/intake/handEdits.js), so an import of the same loan keeps them. Clients already stored get '' (none).
+if (!clientCols.some((c) => c.name === "edited_by_hand")) {
+  db.exec("ALTER TABLE clients ADD COLUMN edited_by_hand TEXT NOT NULL DEFAULT ''");
+}
 // Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
 db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
 

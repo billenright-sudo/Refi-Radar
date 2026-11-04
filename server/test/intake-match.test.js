@@ -51,13 +51,14 @@ const rec = (patch = {}) => ({
   loanOfficer: "", notes: "", ...patch,
 });
 
-test("migrations add loan_number ('') and source ('manual'), the org/loan index and integration_keys", () => {
+test("migrations add loan_number (''), source ('manual') and edited_by_hand (''), the org/loan index and integration_keys", () => {
   const id = Number(db.prepare(
     "INSERT INTO clients (org_id, user_id, name, current_rate, loan_balance, property_value) VALUES (?, ?, 'Plain Client', 6, 1, 1)"
   ).run(orgA, ann).lastInsertRowid);
   const row = clientRow(id);
   assert.strictEqual(row.loan_number, "");
   assert.strictEqual(row.source, "manual");
+  assert.strictEqual(row.edited_by_hand, "");
 
   const indexes = db.prepare("PRAGMA index_list(clients)").all().map((i) => i.name);
   assert.ok(indexes.includes("idx_clients_org_loan"), `indexes: ${indexes.join(", ")}`);
@@ -86,7 +87,7 @@ test("migrations upgrade an older database in place and a second start changes n
     legacy.close();
     const script = `
       const db = require(${JSON.stringify(path.join(__dirname, "..", "db.js"))});
-      const row = db.prepare("SELECT loan_number, source FROM clients").get();
+      const row = db.prepare("SELECT loan_number, source, edited_by_hand FROM clients").get();
       const idx = db.prepare("PRAGMA index_list(clients)").all().filter((i) => i.name === "idx_clients_org_loan").length;
       const keys = db.prepare("PRAGMA table_info(integration_keys)").all().length;
       process.stdout.write(JSON.stringify({ row, idx, keys }));
@@ -94,7 +95,7 @@ test("migrations upgrade an older database in place and a second start changes n
     const run = () => JSON.parse(execFileSync(process.execPath, ["-e", script], {
       env: { ...process.env, DATA_DIR: dir }, encoding: "utf8",
     }));
-    const expected = { row: { loan_number: "", source: "manual" }, idx: 1, keys: 4 };
+    const expected = { row: { loan_number: "", source: "manual", edited_by_hand: "" }, idx: 1, keys: 4 };
     assert.deepStrictEqual(run(), expected);
     assert.deepStrictEqual(run(), expected);
   } finally {
@@ -102,7 +103,7 @@ test("migrations upgrade an older database in place and a second start changes n
   }
 });
 
-test("findMatch: loan number, then email, then name + phone, then a bare name; never another org", () => {
+test("findMatch: loan number, then email, then name + phone, then the name alone; never another org", () => {
   const byLoan = addClient(orgA, ann, "Loan Owner", { loan_number: "A100" });
   const byEmail = addClient(orgA, ann, "Email Owner", { email: "john@x.com" });
   addClient(orgB, bea, "John Smith", { email: "john@x.com", loan_number: "A100" });
@@ -127,19 +128,21 @@ test("findMatch: loan number, then email, then name + phone, then a bare name; n
   assert.strictEqual(phone.kind, "one");
   assert.strictEqual(phone.client.id, byPhone);
   assert.strictEqual(findMatch(db, orgA, rec({ name: "Phone Owner", phone: "+1 555 123 4567" })).client.id, byPhone);
-  // the name alone is not enough for a stored client that has a phone, and the wrong phone is not a match
-  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Phone Owner" })), { kind: "none" });
+  // a match before step 4 does not say how it was found; the wrong phone is somebody else
+  assert.strictEqual(phone.by, undefined);
   assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Phone Owner", phone: "5559999999" })), { kind: "none" });
 
-  // 4. a bare stored client matches on the name alone, spacing and case aside
+  // 4. the name alone, spacing and case aside, and the result says it was the name alone
   const name = findMatch(db, orgA, rec({ name: "mary  jones" }));
   assert.strictEqual(name.kind, "one");
   assert.strictEqual(name.client.id, bare);
-  // a stored "Mary Jones" that has a phone is not matched by name alone
-  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Mary Jones With Phone" })), { kind: "none" });
+  assert.strictEqual(name.by, "name");
+  // (Bill, 2026-11-03) a stored client with a phone is found by the name alone when the record has no phone to disagree
+  const noPhone = findMatch(db, orgA, rec({ name: "Phone Owner" }));
+  assert.deepStrictEqual([noPhone.kind, noPhone.client.id, noPhone.by], ["one", byPhone, "name"]);
 
   // another org's client is never found, by loan number, email or name
-  assert.deepStrictEqual(findMatch(db, orgB, rec({ loanNumber: "ZZZ" })), { kind: "none" });
+  assert.deepStrictEqual(findMatch(db, orgB, rec({ name: "Nobody Here", loanNumber: "ZZZ" })), { kind: "none" });
   assert.deepStrictEqual(findMatch(db, orgB, rec({ name: "Mary Jones" })), { kind: "none" });
   assert.strictEqual(findMatch(db, orgA, rec({ name: "Nobody Atall" })).kind, "none");
 });
@@ -162,7 +165,8 @@ test("findMatch: names compare through nameKey on both sides (accents, case, inn
   const withPhone = findMatch(db, orgA, rec({ name: "José Garcia", phone: "5552223333" }));
   assert.strictEqual(withPhone.kind, "one");
   assert.strictEqual(withPhone.client.id, shouting);
-  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "José Garcia" })), { kind: "none" });
+  // step 4: with no phone in the record nothing disagrees, so the name alone finds the same client
+  assert.strictEqual(findMatch(db, orgA, rec({ name: "José Garcia" })).client.id, shouting);
 
   // a stored name with extra spaces inside and around it
   const found = findMatch(db, orgA, rec({ name: "dee fox" }));
@@ -196,7 +200,7 @@ test("findMatch: the first step that finds any client decides, even when a later
   assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "" })), { kind: "none" });
 });
 
-test("findMatch: two at the first step that finds any is ambiguous; two same-name clients with one bare is ambiguous", () => {
+test("findMatch: two at the first step that finds any is ambiguous; so are two same-name clients the record can't tell apart", () => {
   addClient(orgA, ann, "Dup One", { loan_number: "B200" });
   addClient(orgA, lou, "Dup Two", { loan_number: "B200" });
   assert.deepStrictEqual(findMatch(db, orgA, rec({ loanNumber: "B200" })), { kind: "ambiguous", count: 2 });
@@ -211,14 +215,43 @@ test("findMatch: two at the first step that finds any is ambiguous; two same-nam
   // the same two, but the record's own email picks the one who has it (step 2 decides before the name is looked at)
   assert.strictEqual(findMatch(db, orgA, rec({ name: "Pat Kim", email: "pat@kim.com" })).kind, "one");
 
-  // two same-name clients and neither bare: the name alone finds nothing
+  // two same-name clients, neither bare, and nothing in the record that disagrees with either: ambiguous
   addClient(orgA, ann, "Lee Wong", { phone: "555-111-2222" });
   addClient(orgA, lou, "Lee Wong", { email: "lee@wong.com" });
-  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Lee Wong" })), { kind: "none" });
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Lee Wong" })), { kind: "ambiguous", count: 2 });
   // two with the same name and the same phone are ambiguous at step 3
   addClient(orgA, ann, "Kay Ito", { phone: "555-333-4444" });
   addClient(orgA, lou, "Kay Ito", { phone: "(555) 333-4444" });
   assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Kay Ito", phone: "5553334444" })), { kind: "ambiguous", count: 2 });
+});
+
+test("findMatch step 4 (Bill, 2026-11-03): the name alone finds a client unless their own email or phone disagrees", () => {
+  // a refinance in a file of names and loan numbers: the client has the old loan's number, the record a new one
+  const numbered = addClient(orgA, ann, "Nia Ross", { loan_number: "N100", close_date: "2020-01-01" });
+  const refi = findMatch(db, orgA, rec({ name: "Nia Ross", loanNumber: "N200" }));
+  assert.deepStrictEqual([refi.kind, refi.client.id, refi.by], ["one", numbered, "name"]);
+
+  // a client typed in with a phone and no email, and a record with an email and no phone
+  const typed = addClient(orgA, lou, "Omar Diaz", { phone: "555-444-1000" });
+  const byName = findMatch(db, orgA, rec({ name: "Omar Diaz", email: "omar@diaz.test" }));
+  assert.deepStrictEqual([byName.kind, byName.client.id, byName.by], ["one", typed, "name"]);
+  // a different phone in the record says it is somebody else
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Omar Diaz", phone: "555-444-2000" })), { kind: "none" });
+
+  // a different email on the stored client says it is somebody else
+  addClient(orgA, ann, "Ida Park", { email: "ida@one.test" });
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Ida Park", email: "ida@two.test" })), { kind: "none" });
+
+  // of two same-name clients, the one whose email disagrees drops out and the other is the match
+  addClient(orgA, ann, "Ray Holt", { email: "ray@old.test" });
+  const ray = addClient(orgA, lou, "Ray Holt", { phone: "555-777-0000" });
+  const one = findMatch(db, orgA, rec({ name: "Ray Holt", email: "ray@new.test" }));
+  assert.deepStrictEqual([one.kind, one.client.id, one.by], ["one", ray, "name"]);
+
+  // a match index gives the same answers
+  const index = createMatchIndex(db, orgA);
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Ray Holt", email: "ray@new.test" }), index), one);
+  assert.deepStrictEqual(findMatch(db, orgA, rec({ name: "Ida Park", email: "ida@two.test" }), index), { kind: "none" });
 });
 
 test("findMatch with a match index answers exactly what the DB does, and refresh() keeps it current", () => {

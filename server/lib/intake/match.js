@@ -7,8 +7,10 @@
 // pinned to org_id. The steps run in a fixed order and the first step that finds any client decides, so a loan number that
 // finds one client is never second-guessed by an email that would have found another:
 //   1. loan number   2. email   3. name and phone together   4. the name alone
-// The name alone is the weakest evidence, so it only counts for a client who is bare (no email, phone or loan number to
-// disagree with). Two or more clients at a step is `ambiguous`: the caller skips the row rather than guess or add a duplicate.
+// The name alone is the weakest evidence, so it only counts for a client whose own email or phone does not disagree with the
+// record's (Bill, 2026-11-03); a loan number never disagrees, since a refinance brings a new one. A match by the name alone
+// says so (`by: "name"`), so the import can flag it. Two or more clients at a step is `ambiguous`: the caller skips the row
+// rather than guess or add a duplicate.
 //
 // Stored text is compared the way it is read: names through normalize's nameKey on both sides (so "ÁLVAREZ  ORTIZ" and
 // "Álvarez Ortiz" are one name; SQLite's own lower() only folds ASCII), phones through phoneDigits on both sides
@@ -34,9 +36,6 @@ function ensureNameKey(db) {
 }
 
 const trimmed = (v) => (typeof v === "string" ? v.trim() : "");
-
-// A stored client with nothing but a name: no email, phone or loan number that could say it is a different person.
-const isBare = (c) => !trimmed(c.email) && !trimmed(c.phone) && !trimmed(c.loan_number);
 
 // What a step found: nothing (null, so the next step runs), one client, or several.
 function verdict(rows) {
@@ -148,10 +147,16 @@ function findMatch(db, orgId, record, index = null) {
     if (found) return found;
   }
 
-  // The name alone: one candidate who is bare is the client; several with any one of them bare cannot be told apart (R4).
-  // A candidate who has an email, phone or loan number of their own that did not match above is somebody else.
-  if (named.length === 1) return isBare(named[0]) ? { kind: "one", client: named[0] } : NONE;
-  if (named.length > 1 && named.some(isBare)) return { kind: "ambiguous", count: named.length };
+  // The name alone: a candidate is somebody else only when they and the record both have an email, or both a phone, that
+  // differ. One candidate left is the client; several cannot be told apart.
+  const agrees = (c) => {
+    const theirEmail = trimmed(c.email).toLowerCase();
+    const theirPhone = phoneDigits(c.phone);
+    return (!email || !theirEmail || theirEmail === email) && (!phone || !theirPhone || theirPhone === phone);
+  };
+  const left = named.filter(agrees);
+  if (left.length === 1) return { kind: "one", client: left[0], by: "name" };
+  if (left.length > 1) return { kind: "ambiguous", count: left.length };
   return NONE;
 }
 
