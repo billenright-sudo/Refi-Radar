@@ -21,12 +21,12 @@ async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
   }
   const link = `${APP_URL}/accept-invite?token=${token}`;
   await createTransport().sendMail({
-    from: `"RefiRadar" <${FROM}>`,
+    from: `"Broker Radar" <${FROM}>`,
     to: toEmail,
-    subject: `${fromName} invited you to join ${orgName} on RefiRadar`,
+    subject: `${fromName} invited you to join ${orgName} on Broker Radar`,
     html: `
-      <h2>You've been invited to RefiRadar</h2>
-      <p><strong>${fromName}</strong> has invited you to join <strong>${orgName}</strong> as a Loan Officer on RefiRadar — the broker intelligence platform.</p>
+      <h2>You've been invited to Broker Radar</h2>
+      <p><strong>${fromName}</strong> has invited you to join <strong>${orgName}</strong> as a Loan Officer on Broker Radar — the broker intelligence platform.</p>
       <p><a href="${link}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Accept Invitation</a></p>
       <p style="color:#666;font-size:12px">This link expires in 48 hours. If you didn't expect this invitation, you can ignore this email.</p>
     `,
@@ -39,15 +39,15 @@ async function sendRefiAlert({ toEmail, toName, clientName, brokerName, monthlyS
     return;
   }
   await createTransport().sendMail({
-    from: `"RefiRadar" <${FROM}>`,
+    from: `"Broker Radar" <${FROM}>`,
     to: toEmail,
     subject: `Action needed: ${clientName} is ready to refinance`,
     html: `
       <h2>Refi Opportunity Alert</h2>
       <p>Hi ${toName},</p>
       <p>Your broker <strong>${brokerName}</strong> has flagged <strong>${clientName}</strong> as a high-priority refinance opportunity, with potential savings of <strong>$${Math.round(monthlySavings)}/month</strong>.</p>
-      <p>Log in to RefiRadar to review this client's analysis and follow up.</p>
-      <p><a href="${APP_URL}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">View in RefiRadar</a></p>
+      <p>Log in to Broker Radar to review this client's analysis and follow up.</p>
+      <p><a href="${APP_URL}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">View in Broker Radar</a></p>
     `,
   });
 }
@@ -62,12 +62,12 @@ async function sendEmailChange(to, link) {
   }
   try {
     await createTransport().sendMail({
-      from: `"RefiRadar" <${FROM}>`,
+      from: `"Broker Radar" <${FROM}>`,
       to,
-      subject: "Confirm your new RefiRadar login email",
+      subject: "Confirm your new Broker Radar login email",
       html: `
       <h2>Confirm your new login email</h2>
-      <p>You asked to use this address to sign in to RefiRadar. Confirm it to finish the change.</p>
+      <p>You asked to use this address to sign in to Broker Radar. Confirm it to finish the change.</p>
       <p><a href="${link}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Confirm new email</a></p>
       <p style="color:#666;font-size:12px">This link expires in 48 hours. Until you confirm, you keep signing in with your current email. If you didn't ask for this, you can ignore this email.</p>
     `,

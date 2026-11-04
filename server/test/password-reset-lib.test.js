@@ -164,3 +164,11 @@ test("the senders answer false, and send nothing, when mail isn't set up", async
   assert.strictEqual(warn.mock.callCount(), 2);
   assert.ok(!warn.mock.calls.some((c) => c.arguments.join(" ").includes("secret")), "the link is never logged");
 });
+
+test("the invite, alert and email-change emails say Broker Radar, not RefiRadar", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "email.js"), "utf8");
+  assert.ok(!src.includes("RefiRadar"), "email.js still says RefiRadar");
+  // three old senders plus the shared password sender (deliverPasswordMail) all use the Broker Radar From line
+  const fromLine = '"Broker Radar" <${FROM}>';
+  assert.strictEqual(src.split(fromLine).length - 1, 4);
+});
