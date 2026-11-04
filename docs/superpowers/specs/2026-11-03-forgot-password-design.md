@@ -1,7 +1,9 @@
 # Forgot password: design
 
-Status: DRAFT for Bill (2026-11-03). Bill asked for the design without the question round ("just draft the design"), so
-every decision below is my call unless it says otherwise. The two items in §9 are his.
+Status: APPROVED by Bill, 2026-11-03 ("approved, use a new Google account"). Bill asked for the design without the question
+round ("just draft the design"), so every decision below is my call unless it says otherwise. The two items in §9 are his,
+and he has settled both: the emails come from a new Google account made for Broker Radar, and the §7 wording is approved as
+written.
 
 ## 1. Why
 
