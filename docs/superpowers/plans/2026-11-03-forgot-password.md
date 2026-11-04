@@ -199,6 +199,10 @@ Expected: all pass.
 
 ### Task 3: The routes
 
+> **Changed during execution (controller rulings R3, R6):** the emailed link is `${APP_URL}/#reset=<token>`, and
+> `GET /api/auth/reset/:token` became `POST /api/auth/reset/check { token }` with the same answers, so the token never
+> reaches a URL the server logs. `/forgot` answers before any account-dependent work. The text below is the original plan.
+
 **Files:**
 - Modify: `server/routes/auth.js`.
 - Test (create): `server/test/password-reset-api.test.js`. The test app sets `app.set("trust proxy", true)`, and each test
@@ -294,11 +298,13 @@ Expected: all pass.
   - a `goForgot` prop and link on `LoginPage`;
   - new `ForgotPasswordPage` and `ResetPasswordPage` beside `AcceptInvitePage`;
   - the `authView` wiring in `App`;
-  - the `?reset=` read in the load effect, before the invite `token` check.
+  - the `#reset=` read in the load effect, before the invite `token` check.
 
 **Interfaces:**
 - Produces, from `reset.mjs`:
-  - `resetTokenFrom(search: string) -> string | null`: the `reset` query value when it is 64 lowercase hex, else `null`.
+  - `resetTokenFrom(hash: string) -> string | null`: the `reset` value in a `location.hash` like `#reset=<token>` when it
+    is 64 lowercase hex, else `null`. (Ruling R3: the token travels in the URL fragment, which the browser never sends to
+    the server, so Cloud Run's request log never records it.)
   - `newPasswordProblem(password: string, confirm: string) -> string | null`. It returns
     `"Password must be at least 8 characters"` first, then `"Passwords don't match"`, else `null`.
   - `forgotSentText(email: string) -> string`. It returns exactly: `If there's a Broker Radar account for ${email}, we've
@@ -314,9 +320,10 @@ Expected: all pass.
   - an expired link: the 410 message and a "Send a new link" button that opens the request page.
 - **Wiring:**
   - `authView` gains `"forgot"` and `"reset"`.
-  - A `?reset=` token sets `authView = "reset"` and `authState = "unauthenticated"`, and is removed from the address with
+  - A `#reset=` token sets `authView = "reset"` and `authState = "unauthenticated"`, and is removed from the address with
     `history.replaceState`, so the token doesn't stay in the address bar or browser history.
-  - `ResetPasswordPage({ token, onDone, goForgot })` GETs the token on mount and POSTs on save.
+  - `ResetPasswordPage({ token, onDone, goForgot })` checks the token on mount with `POST /api/auth/reset/check { token }`
+    (200 `{ success, email }` or 410), and saves with `POST /api/auth/reset { token, password }`.
   - `onDone(user)` runs `handleLogin(user)`, then `setEmailNotice({ text: PASSWORD_CHANGED_NOTICE, bad: false })`. It must
     run in that order, because `handleLogin` clears the notice.
   - `ForgotPasswordPage({ goLogin })` shows `forgotSentText(email)` on 200, and `data.error` in the red box on 400, 429 or
@@ -325,8 +332,9 @@ Expected: all pass.
 - [ ] **Step 1: Write the failing tests** in `client/src/auth/reset.test.mjs`:
 
 ```js
-test("resetTokenFrom reads only a 64-hex reset value", () => {
-  // "?reset=" + "a".repeat(64) -> that; "?reset=abc", "?token=" + "a".repeat(64), "", "?reset=" + "A".repeat(64) -> null
+test("resetTokenFrom reads only a 64-hex reset value from the fragment", () => {
+  // "#reset=" + "a".repeat(64) -> that; "#reset=abc", "#token=" + "a".repeat(64), "", "#reset=" + "A".repeat(64),
+  // "?reset=" + "a".repeat(64) -> null
 });
 test("newPasswordProblem: length first, then match", () => {
   // ("short", "short") -> "Password must be at least 8 characters"; ("longenough", "different") -> "Passwords don't match"
@@ -360,7 +368,7 @@ Expected: all pass; the build is clean.
   - send a request and screenshot the "sent" message. With no local mailbox this shows the 503 message, which is correct;
   - make a reset token for the demo user with a one-off script calling `issueReset`, keeping it in a scratch file and never
     printing it;
-  - open `/?reset=<token>`, and screenshot "Choose a new password" and the expired-link view.
+  - open `/#reset=<token>`, and screenshot "Choose a new password" and the expired-link view.
 - Claude doesn't type passwords. Bill may finish the form himself; Task 3's tests already cover the save.
 - Send Bill the screenshots.
 
