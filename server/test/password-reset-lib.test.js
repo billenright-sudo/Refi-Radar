@@ -4,6 +4,7 @@
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "br-pwreset-lib-"));
 process.env.JWT_SECRET = "test-secret-" + Math.random().toString(16).slice(2);
 process.env.NODE_ENV = "test";
@@ -91,6 +92,32 @@ test("completeReset changes nothing for an expired, malformed or replaced token"
   assert.strictEqual(row.password_hash, "old-hash");
   assert.strictEqual(row.session_version, 0);
   assert.ok(resetRow(uid), "a refused attempt leaves the live link in place");
+});
+
+// A reset proves the person holds the inbox and chose a new password, so a login-email change someone started before it (from a
+// stolen session, say) must not survive it: the pending row goes in the same transaction, and a refused reset leaves it alone.
+const addEmailChange = (id, to = "pending-new@x.test") => db.prepare(
+  "INSERT INTO email_changes (user_id, new_email, token, expires_at) VALUES (?, ?, ?, ?)"
+).run(id, to, crypto.randomBytes(32).toString("hex"), NOW + 48 * 60 * 60 * 1000);
+const changeRowOf = (id) => db.prepare("SELECT * FROM email_changes WHERE user_id = ?").get(id);
+
+test("completeReset also cancels a pending login-email change; a refused reset leaves it", () => {
+  const uid = addUser("pendingchange@x.test");
+  const t = issueReset(db, uid, NOW);
+  addEmailChange(uid);
+  assert.strictEqual(completeReset(db, "nope", "bad-hash", NOW), null);                   // malformed: refused
+  assert.strictEqual(completeReset(db, t, "bad-hash", NOW + RESET_TTL_MS), null);         // expired: refused
+  assert.ok(changeRowOf(uid), "a refused reset leaves the pending change in place");
+
+  assert.strictEqual(completeReset(db, t, "new-hash", NOW + 1000).id, uid);
+  assert.strictEqual(changeRowOf(uid), undefined, "a completed reset cancels the pending change");
+
+  // someone else's pending change is none of its business
+  const other = addUser("otherchange@x.test");
+  addEmailChange(other, "other-new@x.test");
+  const t2 = issueReset(db, uid, NOW);
+  assert.ok(completeReset(db, t2, "newer-hash", NOW + 1000));
+  assert.ok(changeRowOf(other));
 });
 
 test("createSendCounter allows 3 an hour per key", () => {

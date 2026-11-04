@@ -47,7 +47,8 @@ const emailChangeLimiter = rateLimit({
 
 // The emailed link is opened from an inbox, with no session, so it is registered before requireAuth. The token IS the
 // credential: it is single-use, and the change is applied to the account it was issued to. Any failure (a malformed or unknown
-// token, an expired one, a taken address) is the same redirect, and a token that has been tried is spent.
+// token, an expired one, a taken address) is the same redirect, and a token that has been tried is spent. When the login email
+// really changes, a password-reset link already mailed to the OLD address is deleted too: that inbox no longer belongs to the account.
 function confirmEmailChange(token) {
   return db.transaction(() => {
     const row = db.prepare("SELECT user_id, new_email, expires_at FROM email_changes WHERE token = ?").get(token);
@@ -55,7 +56,9 @@ function confirmEmailChange(token) {
     db.prepare("DELETE FROM email_changes WHERE user_id = ?").run(row.user_id);
     if (row.expires_at <= Date.now()) return false;
     if (db.prepare("SELECT 1 FROM users WHERE email = ? AND id <> ?").get(row.new_email, row.user_id)) return false;
-    return db.prepare("UPDATE users SET email = ? WHERE id = ?").run(row.new_email, row.user_id).changes === 1;
+    if (db.prepare("UPDATE users SET email = ? WHERE id = ?").run(row.new_email, row.user_id).changes !== 1) return false;
+    db.prepare("DELETE FROM password_resets WHERE user_id = ?").run(row.user_id);
+    return true;
   })();
 }
 

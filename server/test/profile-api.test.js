@@ -21,6 +21,7 @@ const { signToken } = require("../middleware/auth");
 const profileRoutes = require("../routes/profile");
 const authRoutes = require("../routes/auth");
 const emailLib = require("../email");
+const { issueReset, userForReset } = require("../lib/passwordReset");
 
 const addOrg = (name) => Number(db.prepare("INSERT INTO organizations (name) VALUES (?)").run(name).lastInsertRowid);
 const addUser = (orgId, role, email) => Number(db.prepare(
@@ -433,6 +434,29 @@ test("GET /email/confirm/:token with no session sets the new login email once, t
   // reused
   assert.deepStrictEqual(await raw(p), { status: 302, location: "/?emailChanged=0" });
   assert.equal(userRow(id).email, "jon.new@p.co");
+});
+
+// A reset link is mailed to the address the account has NOW. Once the login email moves, a link still sitting in the old inbox
+// must not open the account, so the change removes it; a change that is refused leaves the account (and its link) as they were.
+test("confirming a new login email removes a reset link mailed to the old address; a refused confirm leaves it", async () => {
+  const id = addLoginUser(orgP, "lo", "ola@p.co");
+  const resetToken = issueReset(db, id, Date.now());
+  assert.ok(userForReset(db, resetToken, Date.now()));
+  await as(id)("POST", "/api/profile/email", { email: "ola.new@p.co" });
+  addLoginUser(orgP, "lo", "ola.new@p.co");   // taken in the meantime: the confirm below is refused
+  assert.deepStrictEqual(await raw(pathOf(sent[0].link)), { status: 302, location: "/?emailChanged=0" });
+  assert.ok(userForReset(db, resetToken, Date.now()), "a refused change leaves the reset link working");
+
+  const id2 = addLoginUser(orgP, "lo", "ole@p.co");
+  const resetToken2 = issueReset(db, id2, Date.now());
+  const bystander = addLoginUser(orgP, "lo", "oly@p.co");
+  const bystanderToken = issueReset(db, bystander, Date.now());
+  await as(id2)("POST", "/api/profile/email", { email: "ole.new@p.co" });
+  assert.deepStrictEqual(await raw(pathOf(sent[1].link)), { status: 302, location: "/?emailChanged=1" });
+  assert.equal(userRow(id2).email, "ole.new@p.co");
+  assert.equal(userForReset(db, resetToken2, Date.now()), null, "the link mailed to the old address is gone");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(id2).n, 0);
+  assert.ok(userForReset(db, bystanderToken, Date.now()), "someone else's link is untouched");
 });
 
 test("the confirm link is refused when the token is bad, unknown, or expired", async () => {

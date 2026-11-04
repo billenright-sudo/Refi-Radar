@@ -35,15 +35,18 @@ function userForReset(db, token, nowMs) {
   `).get(hashToken(token), nowMs) || null;
 }
 
-// Uses the link up: new password, every older session ended (session_version + 1, which requireAuth compares), and the link
-// deleted, all in one transaction so a failure part-way leaves the old password and the live link as they were. Returns the
-// users row as it is AFTER the update, because the caller signs the new session from it; null if the token isn't valid.
+// Uses the link up: new password, every older session ended (session_version + 1, which requireAuth compares), the link
+// deleted, and any login-email change still waiting for its confirmation cancelled (it may have been started by whoever was
+// signed in before, and the new password is meant to shut them out). All in one transaction so a failure part-way leaves the
+// old password, the live link and the pending change as they were. Returns the users row as it is AFTER the update, because the
+// caller signs the new session from it; null if the token isn't valid.
 function completeReset(db, token, passwordHash, nowMs) {
   return db.transaction(() => {
     const user = userForReset(db, token, nowMs);
     if (!user) return null;
     db.prepare("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?").run(passwordHash, user.id);
     db.prepare("DELETE FROM password_resets WHERE user_id = ?").run(user.id);
+    db.prepare("DELETE FROM email_changes WHERE user_id = ?").run(user.id);
     return db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
   })();
 }
