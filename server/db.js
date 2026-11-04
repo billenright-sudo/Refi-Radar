@@ -116,6 +116,11 @@ if (!userCols.some((c) => c.name === "career_stage")) {
 if (!userCols.some((c) => c.name === "nmls_id")) {
   db.exec("ALTER TABLE users ADD COLUMN nmls_id TEXT");
 }
+// Which "generation" of login an account is on. Every session token carries the number it was signed with; raising it (a
+// password reset does) makes every older token fail, so a stolen or forgotten session ends when the password changes.
+if (!userCols.some((c) => c.name === "session_version")) {
+  db.exec("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0");
+}
 const orgCols = db.prepare("PRAGMA table_info(organizations)").all();
 if (!orgCols.some((c) => c.name === "nmls_id")) {
   db.exec("ALTER TABLE organizations ADD COLUMN nmls_id TEXT");

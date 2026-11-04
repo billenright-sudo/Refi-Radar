@@ -4,7 +4,7 @@ const bcrypt     = require("bcryptjs");
 const crypto     = require("crypto");
 const rateLimit  = require("express-rate-limit");
 const db         = require("../db");
-const { signToken, requireAuth } = require("../middleware/auth");
+const { sessionTokenFor, requireAuth } = require("../middleware/auth");
 const { sendInvite } = require("../email");
 const { stageById } = require("../lib/assistant/coaching");
 
@@ -24,6 +24,11 @@ function safeUser(u) {
     id: u.id, orgId: u.org_id, role: u.role, firstName: u.first_name, lastName: u.last_name, email: u.email,
     careerStage: stageById(u.career_stage)?.id ?? null,   // null until set, and for a stored value that is not a stage id
   };
+}
+
+// Log the user in: set the session cookie, carrying their current session version so a later bump ends this session.
+function setSession(res, user) {
+  res.cookie("rr_token", sessionTokenFor(user), { httpOnly: true, sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, secure: process.env.NODE_ENV === "production" });
 }
 
 // POST /api/auth/register — broker registers their shop
@@ -51,8 +56,7 @@ router.post("/register", (req, res) => {
 
   try {
     const user = register();
-    const token = signToken({ userId: user.id });
-    res.cookie("rr_token", token, { httpOnly: true, sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, secure: process.env.NODE_ENV === "production" });
+    setSession(res, user);
     res.status(201).json({ success: true, user: safeUser(user) });
   } catch (err) {
     console.error("Register error:", err.message);
@@ -70,8 +74,7 @@ router.post("/login", loginLimiter, (req, res) => {
     return res.status(401).json({ success: false, error: "Invalid email or password" });
   }
 
-  const token = signToken({ userId: user.id });
-  res.cookie("rr_token", token, { httpOnly: true, sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, secure: process.env.NODE_ENV === "production" });
+  setSession(res, user);
   res.json({ success: true, user: safeUser(user) });
 });
 
@@ -146,8 +149,7 @@ router.post("/accept-invite", (req, res) => {
   db.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL, invite_accepted = 1 WHERE id = ?").run(hash, user.id);
 
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
-  const jwtToken = signToken({ userId: updated.id });
-  res.cookie("rr_token", jwtToken, { httpOnly: true, sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, secure: process.env.NODE_ENV === "production" });
+  setSession(res, updated);
   res.json({ success: true, user: safeUser(updated) });
 });
 
