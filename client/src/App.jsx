@@ -7,6 +7,7 @@ import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import { loadCalls } from "./calls.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
+import { resetTokenFrom, newPasswordProblem, forgotSentText, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import ImportView from "./import/ImportView.jsx";
 
 // ---------------------------------------------------------------------------
@@ -505,7 +506,7 @@ const AuthField = ({ label, type = "text", value, onChange, placeholder, disable
   </div>
 );
 
-const LoginPage = ({ onLogin, goRegister }) => {
+const LoginPage = ({ onLogin, goRegister, goForgot }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -542,6 +543,12 @@ const LoginPage = ({ onLogin, goRegister }) => {
       <form onSubmit={submit}>
         <AuthField label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" disabled={loading} />
         <AuthField label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" disabled={loading} />
+        {/* type="button": this sits inside the form, and a plain button would submit it */}
+        <div style={{ textAlign: "right", marginTop: -8 }}>
+          <button type="button" onClick={goForgot} disabled={loading} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>
+            Forgot password?
+          </button>
+        </div>
         <button type="submit" disabled={loading} style={{ ...btnPrimary, width: "100%", marginTop: 8, opacity: loading ? 0.6 : 1 }}>
           {loading ? "Signing in…" : "Sign In"}
         </button>
@@ -708,10 +715,165 @@ const AcceptInvitePage = ({ token, onLogin }) => {
   );
 };
 
+// "Reset your password": opened from Sign In's "Forgot password?". Every 200 shows the same words, which say "if there's an account",
+// so the page never tells whether the address has one. The words after sending come from reset.mjs.
+const ForgotPasswordPage = ({ goLogin }) => {
+  const [email, setEmail] = useState("");
+  const [sentTo, setSentTo] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    const asked = email.trim();   // the server matches the trimmed address, so the page shows that one
+    try {
+      const res = await fetch("/api/auth/forgot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: asked }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || "Something went wrong — please try again"); return; }
+      setSentTo(asked);
+    } catch {
+      setError("Network error — please try again");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AuthCard>
+      <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "1.5rem", textAlign: "center" }}>Reset your password</h2>
+      {error && (
+        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "10px 14px", color: C.red, fontSize: 13, marginBottom: "1rem", display: "flex", gap: 8, alignItems: "center" }}>
+          <Icon name="alert" size={14} color={C.red} /> {error}
+        </div>
+      )}
+      {sentTo !== null ? (
+        <div role="status" style={{ color: C.text, fontSize: 14, lineHeight: 1.6 }}>{forgotSentText(sentTo)}</div>
+      ) : (
+        <>
+          <div style={{ color: C.muted, fontSize: 14, lineHeight: 1.5, marginBottom: "1.25rem", textAlign: "center" }}>
+            Enter the email you sign in with and we'll send you a link.
+          </div>
+          <form onSubmit={submit}>
+            <AuthField label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" disabled={loading} />
+            <button type="submit" disabled={loading} style={{ ...btnPrimary, width: "100%", marginTop: 8, opacity: loading ? 0.6 : 1 }}>
+              {loading ? "Sending…" : "Send reset link"}
+            </button>
+          </form>
+        </>
+      )}
+      <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: 13, color: C.muted }}>
+        <button onClick={goLogin} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>
+          Back to sign in
+        </button>
+      </div>
+    </AuthCard>
+  );
+};
+
+// "Choose a new password": opened by the emailed link, whose token App read from the address. Opening it only checks the token (an
+// email scanner may open it first), so the link is used up only by saving. A good save signs this device in (onDone gets the user).
+const ResetPasswordPage = ({ token, onDone, goForgot }) => {
+  const [email, setEmail] = useState(null);          // the account's address, once the token checks out
+  const [loadingInfo, setLoadingInfo] = useState(true);
+  const [linkError, setLinkError] = useState("");    // the link is no good (expired, used, replaced) or could not be checked
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetch("/api/auth/reset/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        const data = await res.json();
+        if (!res.ok) { setLinkError(data.error || "This link has expired or was already used."); return; }
+        setEmail(data.email);
+      } catch {
+        setLinkError("Network error — please try again");
+      } finally {
+        setLoadingInfo(false);
+      }
+    };
+    load();
+  }, [token]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const problem = newPasswordProblem(password, confirm);
+    if (problem) { setSubmitError(problem); return; }
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      const res = await fetch("/api/auth/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, password }),
+      });
+      const data = await res.json();
+      if (res.status === 410) { setLinkError(data.error || "This link has expired or was already used."); return; }   // used or replaced since the page opened
+      if (!res.ok) { setSubmitError(data.error || "Couldn't save the new password — please try again"); return; }
+      onDone(data.user);
+    } catch {
+      setSubmitError("Network error — please try again");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loadingInfo) {
+    return (
+      <AuthCard>
+        <div style={{ textAlign: "center", color: C.muted, padding: "2rem" }}>Checking your link…</div>
+      </AuthCard>
+    );
+  }
+
+  if (linkError) {
+    return (
+      <AuthCard>
+        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "1rem", color: C.red, textAlign: "center", marginBottom: "1.25rem" }}>
+          <Icon name="alert" size={16} color={C.red} />
+          <div style={{ marginTop: 8 }}>{linkError}</div>
+        </div>
+        <button onClick={goForgot} style={{ ...btnPrimary, width: "100%" }}>Send a new link</button>
+      </AuthCard>
+    );
+  }
+
+  return (
+    <AuthCard>
+      <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 8, textAlign: "center" }}>Choose a new password</h2>
+      <div style={{ color: C.muted, fontSize: 14, marginBottom: "1.5rem", textAlign: "center" }}>{email}</div>
+      {submitError && (
+        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "10px 14px", color: C.red, fontSize: 13, marginBottom: "1rem" }}>
+          {submitError}
+        </div>
+      )}
+      <form onSubmit={submit}>
+        <AuthField label="New password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 8 characters" disabled={submitting} />
+        <AuthField label="Confirm new password" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Repeat password" disabled={submitting} />
+        <button type="submit" disabled={submitting} style={{ ...btnPrimary, width: "100%", marginTop: 8, opacity: submitting ? 0.6 : 1 }}>
+          {submitting ? "Saving…" : "Save new password"}
+        </button>
+      </form>
+    </AuthCard>
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
-const StatCard = ({ label, value, sub, accent }) => (
+const StatCard =({ label, value, sub, accent }) => (
   <div style={{ ...card, flex: 1 }}>
     <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
     <div style={{ ...mono, fontSize: 28, fontWeight: 700, color: accent || C.text, marginBottom: 4 }}>{value}</div>
@@ -1868,8 +2030,9 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
 export default function App() {
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
-  const [authView, setAuthView] = useState("login"); // "login" | "register" | "accept-invite"
+  const [authView, setAuthView] = useState("login"); // "login" | "register" | "accept-invite" | "forgot" | "reset"
   const [inviteToken, setInviteToken] = useState(null);
+  const [resetToken, setResetToken] = useState(null);   // from the emailed link's #reset= fragment
 
   const [view, setView] = useState(DEFAULT_VIEW);
   const [panelOpen, setPanelOpen] = useState(false);       // the corner Charlie panel, on every page but Home
@@ -1908,8 +2071,19 @@ export default function App() {
     if (found) setEmailNotice(found);
   }, []);
 
-  // Check for accept-invite token in URL first
+  // Check for a password-reset link first, then an accept-invite token. The reset link is <site>/#reset=<token>: the token is in the
+  // fragment so it never reaches the server's request log. It is taken out of the address at once, so it does not stay in the address
+  // bar or the browser history; the page keeps it in state. Someone already signed in who opens the link still gets the reset page
+  // (it is for whoever has the link), and a good save signs them in as that account.
   useEffect(() => {
+    const resetFound = resetTokenFrom(window.location.hash);
+    if (resetFound) {
+      window.history.replaceState({}, "", window.location.pathname + window.location.search);
+      setResetToken(resetFound);
+      setAuthView("reset");
+      setAuthState("unauthenticated");
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
     if (token) {
@@ -1946,6 +2120,13 @@ export default function App() {
     setEmailNotice(null);    // and so is the line about the emailed link: they have signed in
     endKeptSession();        // and so is any Charli conversation: a sign-in starts a fresh one
     setRates(null);          // and the rates (a session that expired, then a sign-in, too): Home waits for this sign-in's own
+  };
+
+  // A reset saved: sign in on this device, THEN show the one-time note (handleLogin clears any older note, so the order matters).
+  const handleResetDone = (userData) => {
+    handleLogin(userData);
+    setEmailNotice({ text: PASSWORD_CHANGED_NOTICE, bad: false });
+    setResetToken(null);
   };
 
   const handleLogout = async () => {
@@ -2079,9 +2260,13 @@ export default function App() {
         <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
         {authView === "accept-invite" && inviteToken
           ? <AcceptInvitePage token={inviteToken} onLogin={handleLogin} />
+          : authView === "reset" && resetToken
+          ? <ResetPasswordPage token={resetToken} onDone={handleResetDone} goForgot={() => setAuthView("forgot")} />
+          : authView === "forgot"
+          ? <ForgotPasswordPage goLogin={() => setAuthView("login")} />
           : authView === "register"
           ? <RegisterPage onLogin={handleLogin} goLogin={() => setAuthView("login")} />
-          : <LoginPage onLogin={handleLogin} goRegister={() => setAuthView("register")} />
+          : <LoginPage onLogin={handleLogin} goRegister={() => setAuthView("register")} goForgot={() => setAuthView("forgot")} />
         }
       </div>
     );
