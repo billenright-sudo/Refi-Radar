@@ -39,6 +39,16 @@ const resetLimiter = rateLimit({
   message: { success: false, error: "Too many attempts — please try again in 15 minutes" },
 });
 
+// An invitation makes the app's own mail account write to an address the broker typed, and anyone can register as a broker, so
+// invitations are limited per IP. A refused request counts too. Placed after requireAuth, so a stranger can't use up an office's tries.
+const inviteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many invitations — please try again in an hour" },
+});
+
 // At most 3 reset emails an hour for one account, however many IPs ask. In memory (one instance runs, and a restart that forgets
 // the count is harmless). app.set("resetSendCounter", ...) swaps in a fresh one (tests).
 const moduleCounter = createSendCounter();
@@ -132,13 +142,20 @@ router.get("/me", requireAuth, (req, res) => {
 });
 
 // POST /api/auth/invite — broker invites an LO
-router.post("/invite", requireAuth, async (req, res) => {
+router.post("/invite", requireAuth, inviteLimiter, async (req, res) => {
   if (req.user.role !== "broker") return res.status(403).json({ success: false, error: "Only brokers can invite LOs" });
 
-  const { firstName, lastName, email } = req.body;
-  if (!firstName || !lastName || !email) return res.status(400).json({ success: false, error: "First name, last name, and email required" });
+  const { firstName, lastName, email: rawEmail } = req.body ?? {};
+  if (!firstName || !lastName) return res.status(400).json({ success: false, error: "First name, last name, and email required" });
 
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email.toLowerCase().trim());
+  // The mail goes to exactly the address that is stored. A "," or ";" would make the mail library send it to several people, and
+  // whitespace is never in an address, so any of them is refused (the same message /forgot gives).
+  const to = typeof rawEmail === "string" ? rawEmail.trim().toLowerCase() : "";
+  if (!to || to.length > EMAIL_MAX || !to.includes("@") || /[,;\s]/.test(to)) {
+    return res.status(400).json({ success: false, error: "Enter a valid email address" });
+  }
+
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(to);
   if (existing) return res.status(409).json({ success: false, error: "Email already registered" });
 
   const token   = crypto.randomBytes(32).toString("hex");
@@ -148,18 +165,19 @@ router.post("/invite", requireAuth, async (req, res) => {
     db.prepare(`
       INSERT INTO users (org_id, role, first_name, last_name, email, invite_token, invite_expires, invite_accepted)
       VALUES (?, 'lo', ?, ?, ?, ?, ?, 0)
-    `).run(req.user.org_id, firstName.trim(), lastName.trim(), email.toLowerCase().trim(), token, expires);
+    `).run(req.user.org_id, firstName.trim(), lastName.trim(), to, token, expires);
 
     const org = db.prepare("SELECT name FROM organizations WHERE id = ?").get(req.user.org_id);
-    await sendInvite({
-      toEmail:  email,
+    const send = req.app.get("sendInvite") || sendInvite;   // the seam lets tests send nothing
+    await send({
+      toEmail:  to,
       toName:   firstName,
       fromName: `${req.user.first_name} ${req.user.last_name}`,
       orgName:  org.name,
       token,
     });
 
-    res.status(201).json({ success: true, message: `Invitation sent to ${email}` });
+    res.status(201).json({ success: true, message: `Invitation sent to ${to}` });
   } catch (err) {
     console.error("Invite error:", err.message);
     res.status(500).json({ success: false, error: "Failed to send invitation" });

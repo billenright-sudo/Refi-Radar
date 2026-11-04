@@ -192,6 +192,38 @@ test("the senders answer false, and send nothing, when mail isn't set up", async
   assert.ok(!warn.mock.calls.some((c) => c.arguments.join(" ").includes("secret")), "the link is never logged");
 });
 
+// The invite and refi-alert emails put names typed by people (the broker, the loan officer, the client, the company) into HTML, so
+// each is escaped; the subject is plain text, which a mail client never reads as HTML, so it is left as typed. The real senders run
+// here with nodemailer's transport replaced by one that only records the message, so no mail goes anywhere.
+test("the invite and alert emails escape every name in the body and leave the subject as typed", async (t) => {
+  const saved = { u: process.env.EMAIL_USER, p: process.env.EMAIL_PASS };
+  process.env.EMAIL_USER = "sender@x.test";
+  process.env.EMAIL_PASS = "not-a-real-password";
+  t.after(() => {
+    for (const [k, v] of [["EMAIL_USER", saved.u], ["EMAIL_PASS", saved.p]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+  const mails = [];
+  t.mock.method(require("nodemailer"), "createTransport", () => ({ sendMail: async (m) => { mails.push(m); } }));
+  const { sendInvite, sendRefiAlert } = require("../email");
+
+  await sendInvite({ toEmail: "lo@x.test", toName: "<i>Lou</i>", fromName: "<b>Boss</b> & Co", orgName: '"><script>x()</script>', token: "ab".repeat(32) });
+  await sendRefiAlert({ toEmail: "lo@x.test", toName: "<i>Lou</i>", clientName: "<u>Cleo</u>", brokerName: "O'Brien <img src=x>", monthlySavings: 412.6 });
+  assert.strictEqual(mails.length, 2);
+  const [invite, alert] = mails;
+
+  assert.ok(invite.html.includes("&lt;b&gt;Boss&lt;/b&gt; &amp; Co"));
+  assert.ok(invite.html.includes("&quot;&gt;&lt;script&gt;x()&lt;/script&gt;"));
+  assert.ok(!/<b>Boss|<script|<i>Lou/.test(invite.html), "no typed tag survives as a tag");
+  assert.strictEqual(invite.subject, '<b>Boss</b> & Co invited you to join "><script>x()</script> on Broker Radar');
+
+  assert.ok(alert.html.includes("Hi &lt;i&gt;Lou&lt;/i&gt;,"));
+  assert.ok(alert.html.includes("&lt;u&gt;Cleo&lt;/u&gt;"));
+  assert.ok(alert.html.includes("O&#39;Brien &lt;img src=x&gt;"));
+  assert.ok(alert.html.includes("$413/month"));
+  assert.ok(!/<i>Lou|<u>Cleo|<img/.test(alert.html), "no typed tag survives as a tag");
+  assert.strictEqual(alert.subject, "Action needed: <u>Cleo</u> is ready to refinance");
+});
+
 test("the invite, alert and email-change emails say Broker Radar, not RefiRadar", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "email.js"), "utf8");
   assert.ok(!src.includes("RefiRadar"), "email.js still says RefiRadar");

@@ -14,6 +14,8 @@ function createTransport() {
 const APP_URL = process.env.APP_URL || "http://localhost:8080";
 const FROM    = process.env.EMAIL_USER || "noreply@refi-radar.com";
 
+// Names in the HTML bodies below come from people (a broker types the company and the invitee, a client's name comes from an import),
+// so they go through escapeHtml (defined further down). Subjects are plain text, so they are left as typed.
 async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     console.warn("[email] EMAIL_USER/EMAIL_PASS not set — skipping invite email");
@@ -26,7 +28,7 @@ async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
     subject: `${fromName} invited you to join ${orgName} on Broker Radar`,
     html: `
       <h2>You've been invited to Broker Radar</h2>
-      <p><strong>${fromName}</strong> has invited you to join <strong>${orgName}</strong> as a Loan Officer on Broker Radar — the broker intelligence platform.</p>
+      <p><strong>${escapeHtml(fromName)}</strong> has invited you to join <strong>${escapeHtml(orgName)}</strong> as a Loan Officer on Broker Radar — the broker intelligence platform.</p>
       <p><a href="${link}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Accept Invitation</a></p>
       <p style="color:#666;font-size:12px">This link expires in 48 hours. If you didn't expect this invitation, you can ignore this email.</p>
     `,
@@ -44,8 +46,8 @@ async function sendRefiAlert({ toEmail, toName, clientName, brokerName, monthlyS
     subject: `Action needed: ${clientName} is ready to refinance`,
     html: `
       <h2>Refi Opportunity Alert</h2>
-      <p>Hi ${toName},</p>
-      <p>Your broker <strong>${brokerName}</strong> has flagged <strong>${clientName}</strong> as a high-priority refinance opportunity, with potential savings of <strong>$${Math.round(monthlySavings)}/month</strong>.</p>
+      <p>Hi ${escapeHtml(toName)},</p>
+      <p>Your broker <strong>${escapeHtml(brokerName)}</strong> has flagged <strong>${escapeHtml(clientName)}</strong> as a high-priority refinance opportunity, with potential savings of <strong>$${Math.round(monthlySavings)}/month</strong>.</p>
       <p>Log in to Broker Radar to review this client's analysis and follow up.</p>
       <p><a href="${APP_URL}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">View in Broker Radar</a></p>
     `,
@@ -99,7 +101,7 @@ function mailReady(env) {
   return Boolean(env && env.EMAIL_USER && env.EMAIL_PASS) && emailLinksWork(env);
 }
 
-// The two password emails. Names and addresses come from people, so they are escaped before they go into the HTML.
+// Names and addresses come from people, so every email body escapes them before they go into the HTML.
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
