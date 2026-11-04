@@ -121,10 +121,22 @@ _Last updated: 2026-10-27_
   scope (needs a public homepage, a privacy policy, a verified domain). The calendar 403 auth-reason
   mapping (`server/lib/google/calendar.js`) still has to be checked against a real account.
 - **Morning briefing deploy prerequisites (Bill's go):** `APP_URL` set on the service to its public
-  `https://` address (`--update-env-vars`). Without it, or with a localhost value, in production the
+  `https://` address (`--update-env-vars`) — **already set 2026-11-03**
+  (`https://refi-radar-194747178897.us-central1.run.app`; check it is still there before a deploy).
+  Without it, or with a localhost value, in production the
   Profile page's email change answers "Email isn't set up yet" and sends nothing (invite links use the
   same value). Keep `--max-instances 1`: the email-change limiter and the greeting's single-flight are
   in memory.
+- **Forgot-password deploy prerequisites (Bill's go; branch `feature/forgot-password`, plan
+  `docs/superpowers/plans/2026-11-03-forgot-password.md`):** the new Broker Radar mailbox: `EMAIL_USER` as
+  Cloud Run env (`--update-env-vars`) and `EMAIL_PASS` (the Google app password, typed by Bill) in Secret
+  Manager (`--update-secrets EMAIL_PASS=EMAIL_PASS:latest`) with `roles/secretmanager.secretAccessor` on it
+  for `194747178897-compute@developer.gserviceaccount.com`. `APP_URL` is already set (see above). Deploy
+  the code and the mailbox in the same deploy, with `--max-instances 1` (the reset-email send counters, 3
+  an hour per account and 60 an hour in all, and the rate limiters are in memory). The same mailbox turns
+  on the invite, refi-alert and email-change emails. Success checks are in the plan's Go-live section
+  (the Reset page's "If there's a Broker Radar account for…" answer, a `RateLimit-Remaining` of 4 on the
+  first `/forgot`, the "password changed" email, a second device signed out).
 - **Accepted claim-guard residual (Plan B, Ruling 42 — a design decision for Bill):** a model that
   skips the tool and phrases a done-claim inside a clarifying question ("…since it's on your
   calendar now — which Chen?"), or paraphrases a done-claim after an ambiguous reply, can still

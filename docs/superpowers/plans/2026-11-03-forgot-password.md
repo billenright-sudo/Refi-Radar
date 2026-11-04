@@ -381,10 +381,27 @@ Connecting the mailbox also turns on the invite, refi-alert and email-change ema
 
 ## Go-live (Bill, after merge)
 
+`APP_URL` is ALREADY set on the live service (`https://refi-radar-194747178897.us-central1.run.app`, set 2026-11-03), so it is
+not a new step; step 1 only checks that it is still there. Deploy the code and the mailbox in the SAME deploy: until both are
+in place the Reset page answers 503 ("isn't available right now"), and the same mailbox turns on the invite, refi-alert and
+email-change emails.
+
 Numbered steps go to Bill at deploy time:
-1. Create the new Google account for Broker Radar, turn on 2-step verification, and create an app password.
-2. In Secret Manager (project `refi-radar-496318`), create `EMAIL_PASS` with the app password, typed by Bill and never
+1. Check `APP_URL` is still set on the service (look for `APP_URL` in the output; it must be the https address above, not
+   localhost):
+   `gcloud run services describe refi-radar --region us-central1 --project refi-radar-496318 --format="yaml(spec.template.spec.containers[0].env)"`
+2. Create the new Google account for Broker Radar, turn on 2-step verification, and create an app password.
+3. In Secret Manager (project `refi-radar-496318`), create `EMAIL_PASS` with the app password, typed by Bill and never
    pasted to Claude. Grant `roles/secretmanager.secretAccessor` on it to
    `194747178897-compute@developer.gserviceaccount.com`, as the other secrets have.
-3. Deploy with `--max-instances 1 --update-env-vars EMAIL_USER=<new address> --update-secrets EMAIL_PASS=EMAIL_PASS:latest`.
-4. Live test on Bill's own account: request a reset, use the link, sign in.
+4. Deploy the code and the mailbox together with `--max-instances 1 --update-env-vars EMAIL_USER=<new address> --update-secrets EMAIL_PASS=EMAIL_PASS:latest`.
+   Keep `--max-instances 1`: the reset email counters (3 an hour per account, 60 an hour in all) and the rate limiters are
+   kept in memory, so a second instance would count separately and double every limit.
+5. Live test on Bill's own account: ask for a reset from Sign In, use the link, sign in. Success checks:
+   - The Reset page answers "If there's a Broker Radar account for…". If it answers "Password reset isn't available right
+     now" (the 503 line), `EMAIL_USER`, `EMAIL_PASS` or `APP_URL` is missing or wrong.
+   - In the browser's network tab, the `RateLimit-Remaining` response header on the FIRST `/forgot` reads 4. A lower number
+     means the limiter sees a shared proxy address instead of each visitor's own, so everyone would share one 5-an-hour limit.
+   - The reset email arrives, and its link opens "Choose a new password" for the right address.
+   - After saving, the "Your Broker Radar password was changed" email arrives.
+   - A second device (or browser) that was signed in to the same account before the reset is signed out.

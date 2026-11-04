@@ -5,6 +5,10 @@ round ("just draft the design"), so every decision below is my call unless it sa
 and he has settled both: the emails come from a new Google account made for Broker Radar, and the §7 wording is approved as
 written.
 
+Changed after approval (rulings R3, R6): the link carries the token in the URL fragment, it is checked with
+`POST /api/auth/reset/check`, and `/forgot` answers before any account-dependent work. A reset also cancels a pending
+login-email change.
+
 ## 1. Why
 
 A broker or loan officer who forgets their password has no way back in today. There is no reset, no change-password screen
@@ -70,7 +74,9 @@ Broker Radar to other brokerages.
   not reported to the page.
 - **Limits:**
   - 5 requests an hour per IP (429 with a plain message);
-  - for one account, at most 3 emails an hour. Extra requests still answer 200 but send nothing, so nobody can flood an inbox.
+  - for one account, at most 3 emails an hour. Extra requests still answer 200 but send nothing, so nobody can flood an inbox;
+  - in all, at most 60 reset emails an hour, kept in memory beside the per-account count. Past it the answer is still 200 and
+    nothing is stored or sent, so a crowd of accounts can't use up the mailbox's daily sending quota.
 - **Mail not set up:** if `EMAIL_USER`/`EMAIL_PASS` are unset, or in production `APP_URL` is unset or local, the answer is
   503: "Password reset isn't available right now. Please try again later." This is the same for every email, so it reveals
   nothing.
@@ -90,12 +96,14 @@ Broker Radar to other brokerages.
 
 ### 6.3 Saving the new password: `POST /api/auth/reset { token, password }`
 
-- The token must be valid as in 6.2. The password must be at least 8 characters; the page also checks that "confirm"
-  matches.
+- The token must be valid as in 6.2, and is checked before the password is hashed (an invalid token answers 410 without the
+  cost of a bcrypt hash). The password must be 8 to 256 characters; the page also checks that "confirm" matches.
 - **In one transaction:**
   - the new bcrypt hash is stored (cost 12, as today);
   - `users.session_version` goes up by one;
-  - the `password_resets` row is deleted.
+  - the `password_resets` row is deleted;
+  - any pending `email_changes` row for the user is deleted too, so a login-email change started before the reset (say, from a
+    stolen session) can't still be confirmed afterwards.
 - The answer sets a fresh session cookie and returns the user, as sign-in does. The "password changed" email goes out after
   the answer.
 - **Limit:** 10 tries per 15 minutes per IP, like sign-in.
