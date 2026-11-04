@@ -25,6 +25,7 @@ const { createSendCounter, issueReset } = require("../lib/passwordReset");
 const READY_ENV = { NODE_ENV: "test", EMAIL_USER: "a", EMAIL_PASS: "b" };
 const GONE = { success: false, error: "This link has expired or was already used." };
 const TOO_SHORT = { success: false, error: "Password must be at least 8 characters" };
+const TOO_LONG = { success: false, error: "Password must be at most 256 characters" };
 const NEW_PASSWORD = "brand-new-pass";
 
 const orgId = Number(db.prepare("INSERT INTO organizations (name) VALUES ('Reset API Org')").run().lastInsertRowid);
@@ -58,6 +59,7 @@ beforeEach(() => {
   resetImpl = async () => true; changedImpl = async () => true;
   app.set("authEnv", { ...READY_ENV });
   app.set("resetSendCounter", createSendCounter());
+  app.set("resetSiteSendCounter", createSendCounter({ max: 60 }));   // fresh each test, like the per-account one
 });
 
 // One request. Each gets a fresh client address unless the test pins one with `ip`; `cookie` carries a session.
@@ -264,6 +266,58 @@ test("reset: a new password signs in here, ends older sessions, and sends the ch
 
   await until(() => changedCalls.length === 1);
   assert.deepStrictEqual(changedCalls, [{ to: "signin@x.test", firstName: "Sam" }]);
+});
+
+test("reset: a password over 256 characters is refused (the link stays good); 256 is fine", async () => {
+  const id = addUser("longpw@x.test");
+  await forgot("longpw@x.test");
+  await until(() => resetCalls.length === 1);
+  const token = tokenOf(resetCalls[0].link);
+  const untouched = userRow(id);
+  const refused = await postReset(token, "x".repeat(257));
+  assert.strictEqual(refused.status, 400);
+  assert.deepStrictEqual(refused.data, TOO_LONG);
+  assert.deepStrictEqual(userRow(id), untouched);
+  assert.strictEqual((await getReset(token)).status, 200, "the link still works");
+  assert.strictEqual((await postReset(token, "y".repeat(256))).status, 200);
+});
+
+test("reset: the link is checked before the password is hashed, so a made-up link never costs a bcrypt hash", async (t) => {
+  const id = addUser("hashfirst@x.test");
+  await forgot("hashfirst@x.test");
+  await until(() => resetCalls.length === 1);
+  const token = tokenOf(resetCalls[0].link);
+  const hashSync = t.mock.method(bcrypt, "hashSync");   // still the real function, just counted
+  for (const junk of ["not-a-token", "a".repeat(64), undefined]) {
+    const r = await postReset(junk, NEW_PASSWORD);
+    assert.strictEqual(r.status, 410);
+    assert.deepStrictEqual(r.data, GONE);
+  }
+  assert.strictEqual(hashSync.mock.callCount(), 0, "no hash for a link that isn't good");
+  assert.strictEqual((await postReset(token, NEW_PASSWORD)).status, 200);
+  assert.strictEqual(hashSync.mock.callCount(), 1, "one hash for the good link");
+  assert.ok(bcrypt.compareSync(NEW_PASSWORD, userRow(id).password_hash));
+});
+
+test("forgot: a site-wide cap on reset emails protects the mailbox: past it, still 200, but nothing is stored or sent", async () => {
+  const ids = ["cap1", "cap2", "cap3"].map((n) => addUser(n + "@x.test"));
+  const site = createSendCounter({ max: 2 });
+  const asked = [];
+  app.set("resetSiteSendCounter", { take: (key, nowMs) => { asked.push(key); return site.take(key, nowMs); } });
+  const answers = [];
+  for (const n of ["cap1", "cap2", "cap3"]) answers.push(await forgot(n + "@x.test"));
+  answers.push(await forgot("nobody@x.test"));
+  for (const a of answers) {
+    assert.strictEqual(a.status, 200);
+    assert.deepStrictEqual(a.data, { success: true });
+  }
+  await until(() => resetCalls.length >= 2);
+  await new Promise((r) => setTimeout(r, 50));   // room for a 3rd, wrong send to show up
+  assert.deepStrictEqual(resetCalls.map((c) => c.to), ["cap1@x.test", "cap2@x.test"]);
+  assert.strictEqual(resetCount(), 2);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(ids[2]).n, 0);
+  // one shared key, asked only once a real account had passed its own limit: a made-up address never touches it
+  assert.deepStrictEqual(asked, ["all", "all", "all"]);
 });
 
 test("no log line contains the token or the link, even when the send throws", async () => {

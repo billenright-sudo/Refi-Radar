@@ -52,8 +52,15 @@ const inviteLimiter = rateLimit({
 // At most 3 reset emails an hour for one account, however many IPs ask. In memory (one instance runs, and a restart that forgets
 // the count is harmless). app.set("resetSendCounter", ...) swaps in a fresh one (tests).
 const moduleCounter = createSendCounter();
+// And at most 60 an hour in all, so that a crowd of different accounts (or a crowd of IPs) can't use up the mailbox's daily sending
+// quota and stop the invite and password-changed emails. Same kind of counter, one shared key. app.set("resetSiteSendCounter", ...)
+// swaps in a fresh one (tests).
+const SITE_RESET_EMAILS_PER_HOUR = 60;
+const moduleSiteCounter = createSendCounter({ max: SITE_RESET_EMAILS_PER_HOUR });
 
 const EMAIL_MAX = 254;
+// No real password is this long; refusing a huge one keeps absurd input out of the hash (the page says so, rather than cutting it).
+const PASSWORD_MAX = 256;
 // Every refusal of a reset link (malformed, unknown, expired, used, replaced) says exactly this, so the answer tells nothing
 // about which of them it was.
 const LINK_GONE = { success: false, error: "This link has expired or was already used." };
@@ -230,6 +237,7 @@ router.post("/forgot", forgotLimiter, (req, res) => {
 
   const key = mail.toLowerCase();
   const counter = req.app.get("resetSendCounter") || moduleCounter;
+  const siteCounter = req.app.get("resetSiteSendCounter") || moduleSiteCounter;
   const send = req.app.get("sendPasswordReset") || email.sendPasswordReset;
 
   res.json({ success: true });
@@ -240,8 +248,10 @@ router.post("/forgot", forgotLimiter, (req, res) => {
     try {
       // Only an account that can sign in counts (an unused invite should use its invite link). The send counter is asked only
       // for an account that was found: it never forgets a key, so asking it about made-up addresses would let anyone grow it.
+      // The site-wide count is asked last, only once this account has passed its own limit, so one account being asked for over
+      // and over can't use up the whole site's allowance. Past either limit nothing is stored and nothing is sent.
       const user = db.prepare("SELECT id, email, first_name FROM users WHERE email = ? AND invite_accepted = 1").get(key);
-      if (!user || !counter.take(key, Date.now())) return;
+      if (!user || !counter.take(key, Date.now()) || !siteCounter.take("all", Date.now())) return;
       const token = issueReset(db, user.id, Date.now());
       // The token goes in the URL fragment (#), which a browser never sends to a server, so the link can't land in a request log.
       sendAfterAnswer("reset", send, { to: user.email, firstName: user.first_name, link: `${email.APP_URL}/#reset=${token}` });
@@ -269,7 +279,13 @@ router.post("/reset", resetLimiter, (req, res) => {
   if (typeof password !== "string" || password.length < 8) {
     return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
   }
+  if (password.length > PASSWORD_MAX) {
+    return res.status(400).json({ success: false, error: `Password must be at most ${PASSWORD_MAX} characters` });
+  }
 
+  // The link is looked at before the (slow, cost 12) hash, so a made-up or used-up link costs a lookup, not a hash. completeReset
+  // looks again inside its transaction, because the link could be used or expire between the two.
+  if (!userForReset(db, token, Date.now())) return res.status(410).json(LINK_GONE);
   const updated = completeReset(db, token, bcrypt.hashSync(password, 12), Date.now());
   if (!updated) return res.status(410).json(LINK_GONE);
 
