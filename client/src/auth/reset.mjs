@@ -24,6 +24,23 @@ export function newPasswordProblem(password, confirm) {
   return null;
 }
 
+// What the "choose a new password" page does with the answer to its open-time link check (POST /reset/check). Only a 410 says the
+// link itself is no good (expired, used, replaced); that is final, and the page offers "Send a new link". Any other failure (the
+// host restarting, a bad gateway, a limit, a 200 the page can't use) says nothing about the link, so the page offers "Try again"
+// and keeps the token it already holds. `data` is the parsed body, or null when there was none.
+export function linkCheckOutcome(status, data) {
+  if (status === 410) return { kind: "gone", text: data?.error || "This link has expired or was already used." };
+  if (status === 200 && typeof data?.email === "string") return { kind: "ok", email: data.email };
+  return { kind: "retry", text: data?.error || "Couldn't check your link — please try again" };
+}
+
+// The address to put in the "Reset your password" box when it opens: what was typed on Sign In, or the account's own address when a
+// saved link turned out to be used up. Anything that is not a string (a click event handed over by mistake, nothing at all) is
+// an empty box, never "[object Object]".
+export function prefillEmail(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 // What the request page says after it asks for a link. It is the same for every address on purpose (the server answers the same
 // for an address with no account), so it says "if there's an account", never "we sent it".
 export function forgotSentText(email) {

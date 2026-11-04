@@ -2,7 +2,7 @@
 // The forgot-password screens' logic, with no DOM and no React (the screens are in App.jsx).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resetTokenFrom, newPasswordProblem, forgotSentText, PASSWORD_CHANGED_NOTICE } from "./reset.mjs";
+import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./reset.mjs";
 
 const HEX = "a".repeat(64);
 
@@ -33,6 +33,31 @@ test("newPasswordProblem: length first, then match", () => {
   assert.equal(newPasswordProblem("longenough", "longenough"), null);
   assert.equal(newPasswordProblem("12345678", "12345678"), null);   // exactly eight is enough
   assert.equal(newPasswordProblem("", ""), "Password must be at least 8 characters");
+});
+
+test("linkCheckOutcome: only a 410 means the link is gone; any other failure of the check can be tried again", () => {
+  assert.deepEqual(linkCheckOutcome(200, { success: true, email: "lou@x.test" }), { kind: "ok", email: "lou@x.test" });
+  assert.deepEqual(
+    linkCheckOutcome(410, { success: false, error: "This link has expired or was already used." }),
+    { kind: "gone", text: "This link has expired or was already used." },
+  );
+  assert.deepEqual(linkCheckOutcome(410, null), { kind: "gone", text: "This link has expired or was already used." });
+  // the host answering badly (a restart, a gateway error, a limit) says nothing about the link itself
+  assert.deepEqual(linkCheckOutcome(500, { success: false, error: "Server error" }), { kind: "retry", text: "Server error" });
+  assert.deepEqual(linkCheckOutcome(502, null), { kind: "retry", text: "Couldn't check your link — please try again" });
+  assert.deepEqual(linkCheckOutcome(429, {}), { kind: "retry", text: "Couldn't check your link — please try again" });
+  // a 200 with no address is not an answer the page can use
+  assert.deepEqual(linkCheckOutcome(200, { success: true }), { kind: "retry", text: "Couldn't check your link — please try again" });
+});
+
+test("prefillEmail: a string is kept (trimmed); anything else, such as a click event, is empty", () => {
+  assert.equal(prefillEmail("lou@x.test"), "lou@x.test");
+  assert.equal(prefillEmail("  lou@x.test "), "lou@x.test");
+  assert.equal(prefillEmail(""), "");
+  assert.equal(prefillEmail(undefined), "");
+  assert.equal(prefillEmail(null), "");
+  assert.equal(prefillEmail(42), "");
+  assert.equal(prefillEmail({ type: "click", target: {} }), "");
 });
 
 test("the sent text and the changed notice are the approved words", () => {

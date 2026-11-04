@@ -7,7 +7,7 @@ import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import { loadCalls } from "./calls.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
-import { resetTokenFrom, newPasswordProblem, forgotSentText, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
+import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import ImportView from "./import/ImportView.jsx";
 
 // ---------------------------------------------------------------------------
@@ -543,9 +543,9 @@ const LoginPage = ({ onLogin, goRegister, goForgot }) => {
       <form onSubmit={submit}>
         <AuthField label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" disabled={loading} />
         <AuthField label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" disabled={loading} />
-        {/* type="button": this sits inside the form, and a plain button would submit it */}
+        {/* type="button": this sits inside the form, and a plain button would submit it. The email typed so far goes along, so the next page has it filled in. */}
         <div style={{ textAlign: "right", marginTop: -8 }}>
-          <button type="button" onClick={goForgot} disabled={loading} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>
+          <button type="button" onClick={() => goForgot(email)} disabled={loading} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>
             Forgot password?
           </button>
         </div>
@@ -716,9 +716,10 @@ const AcceptInvitePage = ({ token, onLogin }) => {
 };
 
 // "Reset your password": opened from Sign In's "Forgot password?". Every 200 shows the same words, which say "if there's an account",
-// so the page never tells whether the address has one. The words after sending come from reset.mjs.
-const ForgotPasswordPage = ({ goLogin }) => {
-  const [email, setEmail] = useState("");
+// so the page never tells whether the address has one. The words after sending come from reset.mjs. `initialEmail` fills the box when
+// the address is already known (typed on Sign In, or the account's own address when its saved link was used up).
+const ForgotPasswordPage = ({ goLogin, initialEmail = "" }) => {
+  const [email, setEmail] = useState(initialEmail);
   const [sentTo, setSentTo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -782,30 +783,38 @@ const ResetPasswordPage = ({ token, onDone, goForgot }) => {
   const [email, setEmail] = useState(null);          // the account's address, once the token checks out
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [linkError, setLinkError] = useState("");    // the link is no good (expired, used, replaced) or could not be checked
+  const [canRetry, setCanRetry] = useState(false);   // the CHECK failed (network, host), not the link: asking again can work
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch("/api/auth/reset/check", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        });
-        const data = await res.json();
-        if (!res.ok) { setLinkError(data.error || "This link has expired or was already used."); return; }
-        setEmail(data.email);
-      } catch {
-        setLinkError("Network error — please try again");
-      } finally {
-        setLoadingInfo(false);
-      }
-    };
-    load();
+  // The token is held in App's state (the address was cleaned at once), so "Try again" can run the same check again with it.
+  const checkLink = useCallback(async () => {
+    setLoadingInfo(true);
+    setLinkError("");
+    setCanRetry(false);
+    try {
+      const res = await fetch("/api/auth/reset/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      let data = null;
+      try { data = await res.json(); } catch { /* no body */ }
+      const outcome = linkCheckOutcome(res.status, data);
+      if (outcome.kind === "ok") { setEmail(outcome.email); return; }
+      setLinkError(outcome.text);
+      setCanRetry(outcome.kind === "retry");
+    } catch {
+      setLinkError("Network error — please try again");
+      setCanRetry(true);
+    } finally {
+      setLoadingInfo(false);
+    }
   }, [token]);
+
+  useEffect(() => { checkLink(); }, [checkLink]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -845,7 +854,20 @@ const ResetPasswordPage = ({ token, onDone, goForgot }) => {
           <Icon name="alert" size={16} color={C.red} />
           <div style={{ marginTop: 8 }}>{linkError}</div>
         </div>
-        <button onClick={goForgot} style={{ ...btnPrimary, width: "100%" }}>Send a new link</button>
+        {/* `email` is known only when the open-time check passed and the SAVE then found the link used up: that one opens the request page
+            with the address filled in. When the check itself found the link gone, no address is known and the box opens empty. */}
+        {canRetry ? (
+          <>
+            <button onClick={checkLink} style={{ ...btnPrimary, width: "100%" }}>Try again</button>
+            <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: 13, color: C.muted }}>
+              <button onClick={() => goForgot(email)} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>
+                Send a new link
+              </button>
+            </div>
+          </>
+        ) : (
+          <button onClick={() => goForgot(email)} style={{ ...btnPrimary, width: "100%" }}>Send a new link</button>
+        )}
       </AuthCard>
     );
   }
@@ -873,7 +895,7 @@ const ResetPasswordPage = ({ token, onDone, goForgot }) => {
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
-const StatCard =({ label, value, sub, accent }) => (
+const StatCard = ({ label, value, sub, accent }) => (
   <div style={{ ...card, flex: 1 }}>
     <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
     <div style={{ ...mono, fontSize: 28, fontWeight: 700, color: accent || C.text, marginBottom: 4 }}>{value}</div>
@@ -2033,6 +2055,7 @@ export default function App() {
   const [authView, setAuthView] = useState("login"); // "login" | "register" | "accept-invite" | "forgot" | "reset"
   const [inviteToken, setInviteToken] = useState(null);
   const [resetToken, setResetToken] = useState(null);   // from the emailed link's #reset= fragment
+  const [forgotEmail, setForgotEmail] = useState("");     // what the "Reset your password" box opens with
 
   const [view, setView] = useState(DEFAULT_VIEW);
   const [panelOpen, setPanelOpen] = useState(false);       // the corner Charlie panel, on every page but Home
@@ -2121,6 +2144,10 @@ export default function App() {
     endKeptSession();        // and so is any Charli conversation: a sign-in starts a fresh one
     setRates(null);          // and the rates (a session that expired, then a sign-in, too): Home waits for this sign-in's own
   };
+
+  // Opens "Reset your password" with the address filled in when it is known (typed on Sign In, or the account's own address when its
+  // saved link was used up); prefillEmail turns anything else, such as nothing at all, into an empty box.
+  const goForgot = (knownEmail) => { setForgotEmail(prefillEmail(knownEmail)); setAuthView("forgot"); };
 
   // A reset saved: sign in on this device, THEN show the one-time note (handleLogin clears any older note, so the order matters).
   const handleResetDone = (userData) => {
@@ -2261,12 +2288,12 @@ export default function App() {
         {authView === "accept-invite" && inviteToken
           ? <AcceptInvitePage token={inviteToken} onLogin={handleLogin} />
           : authView === "reset" && resetToken
-          ? <ResetPasswordPage token={resetToken} onDone={handleResetDone} goForgot={() => setAuthView("forgot")} />
+          ? <ResetPasswordPage token={resetToken} onDone={handleResetDone} goForgot={goForgot} />
           : authView === "forgot"
-          ? <ForgotPasswordPage goLogin={() => setAuthView("login")} />
+          ? <ForgotPasswordPage goLogin={() => setAuthView("login")} initialEmail={forgotEmail} />
           : authView === "register"
           ? <RegisterPage onLogin={handleLogin} goLogin={() => setAuthView("login")} />
-          : <LoginPage onLogin={handleLogin} goRegister={() => setAuthView("register")} goForgot={() => setAuthView("forgot")} />
+          : <LoginPage onLogin={handleLogin} goRegister={() => setAuthView("register")} goForgot={goForgot} />
         }
       </div>
     );
