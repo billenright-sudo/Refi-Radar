@@ -196,8 +196,9 @@ router.post("/accept-invite", (req, res) => {
 });
 
 // POST /api/auth/forgot — ask for a password-reset link. The answer is 200 { success: true } for every address that is a valid email,
-// whether or not it has an account, so this page can't be used to find out who has one. It is sent BEFORE the email work starts,
-// so an account that exists answers no slower than one that doesn't.
+// whether or not it has an account, so this page can't be used to find out who has one. Nothing that only a real account does
+// (the lookup, the database write for the link, the email) happens before the answer: a write can be slow on the live disk and a
+// failure of it would be an error only real accounts could cause, and either would tell the caller the account exists.
 router.post("/forgot", forgotLimiter, (req, res) => {
   const raw = (req.body ?? {}).email;
   const mail = typeof raw === "string" ? raw.trim() : "";
@@ -210,24 +211,34 @@ router.post("/forgot", forgotLimiter, (req, res) => {
   }
 
   const key = mail.toLowerCase();
-  // Only an account that can sign in counts (an unused invite should use its invite link). The send counter is asked only for an
-  // account that was found: it never forgets a key, so asking it about made-up addresses would let anyone grow it.
-  const user = db.prepare("SELECT id, email, first_name FROM users WHERE email = ? AND invite_accepted = 1").get(key);
   const counter = req.app.get("resetSendCounter") || moduleCounter;
-  const token = user && counter.take(key, Date.now()) ? issueReset(db, user.id, Date.now()) : null;
+  const send = req.app.get("sendPasswordReset") || email.sendPasswordReset;
 
   res.json({ success: true });
 
-  if (token) {
-    const send = req.app.get("sendPasswordReset") || email.sendPasswordReset;
-    sendAfterAnswer("reset", send, { to: user.email, firstName: user.first_name, link: `${email.APP_URL}/?reset=${token}` });
-  }
+  // After the answer, and in one try so that nothing here can ever reach the caller (the response is already gone) or crash the
+  // process: whatever goes wrong is logged by its message only, which never holds the token or the link.
+  setImmediate(() => {
+    try {
+      // Only an account that can sign in counts (an unused invite should use its invite link). The send counter is asked only
+      // for an account that was found: it never forgets a key, so asking it about made-up addresses would let anyone grow it.
+      const user = db.prepare("SELECT id, email, first_name FROM users WHERE email = ? AND invite_accepted = 1").get(key);
+      if (!user || !counter.take(key, Date.now())) return;
+      const token = issueReset(db, user.id, Date.now());
+      // The token goes in the URL fragment (#), which a browser never sends to a server, so the link can't land in a request log.
+      sendAfterAnswer("reset", send, { to: user.email, firstName: user.first_name, link: `${email.APP_URL}/#reset=${token}` });
+    } catch (err) {
+      console.error("[auth] reset not issued", err?.message);
+    }
+  });
 });
 
-// GET /api/auth/reset/:token — is this link still good? (for the "choose a new password" page). Opening it does not use it up:
-// mail scanners open links before the person does.
-router.get("/reset/:token", (req, res) => {
-  const user = userForReset(db, req.params.token, Date.now());
+// POST /api/auth/reset/check { token } — is this link still good? (for the "choose a new password" page, which reads the token from
+// the #reset= fragment of the address). The token is in the body, not the URL, because request URLs end up in the host's request log.
+// Opening it does not use it up: mail scanners open links before the person does. No rate limit: it answers nothing without a valid
+// 256-bit token, and sharing the reset limiter would let a few page loads eat the tries a person needs on an office's shared address.
+router.post("/reset/check", (req, res) => {
+  const user = userForReset(db, (req.body ?? {}).token, Date.now());
   if (!user) return res.status(410).json(LINK_GONE);
   res.json({ success: true, email: user.email });
 });

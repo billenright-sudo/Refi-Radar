@@ -1,5 +1,5 @@
 "use strict";
-// The forgot-password routes (routes/auth.js): POST /forgot, GET /reset/:token, POST /reset. Throwaway DB, the real router. No
+// The forgot-password routes (routes/auth.js): POST /forgot, POST /reset/check, POST /reset. Throwaway DB, the real router. No
 // test sends mail: the two senders, the mail-ready check and the per-account send counter all come in through app seams.
 // The IP limiters in the router are module-level, so every request here carries its own X-Forwarded-For (the app trusts one
 // proxy hop, as server/index.js does) unless a test pins an address on purpose.
@@ -34,7 +34,7 @@ const addUser = (mail, { first = "Lou", accepted = 1, password = "old-password-1
 ).run(orgId, first, mail, bcrypt.hashSync(password, 4), accepted).lastInsertRowid);
 const userRow = (id) => db.prepare("SELECT * FROM users WHERE id = ?").get(id);
 const resetCount = () => db.prepare("SELECT COUNT(*) AS n FROM password_resets").get().n;
-const tokenOf = (link) => link.split("?reset=")[1];
+const tokenOf = (link) => link.split("#reset=")[1];
 
 let server, app, base, ipCounter = 0;
 // What the fake senders were asked to send, and what they do about it (set per test, cleared before each).
@@ -71,7 +71,8 @@ async function call(method, p, body, { ip, cookie } = {}) {
   return { status: res.status, data, cookie: setCookie ? setCookie.split(";")[0] : null };
 }
 const forgot = (mail, opts) => call("POST", "/api/auth/forgot", { email: mail }, opts);
-const getReset = (token) => call("GET", `/api/auth/reset/${token}`);
+// "is this link still good?": the token goes in the body, never in a URL the server would receive (and so log)
+const getReset = (token) => call("POST", "/api/auth/reset/check", { token });
 const postReset = (token, password, opts) => call("POST", "/api/auth/reset", { token, password }, opts);
 const login = (mail, password) => call("POST", "/api/auth/login", { email: mail, password });
 const me = (cookie) => call("GET", "/api/auth/me", undefined, { cookie });
@@ -121,7 +122,7 @@ test("forgot: the answer does not wait for the email", async () => {
   await until(() => resetCalls.length === 1);   // it was started, just not waited for
 });
 
-test("forgot: the link is APP_URL/?reset=<64 hex>, and the email is matched trimmed and lower-cased", async () => {
+test("forgot: the link is APP_URL/#reset=<64 hex> (a fragment, never sent to the server), and the email is matched trimmed and lower-cased", async () => {
   const id = addUser("lou@example.com", { first: "Lou" });
   const r = await forgot(" Lou@Example.com ");
   assert.strictEqual(r.status, 200);
@@ -129,7 +130,7 @@ test("forgot: the link is APP_URL/?reset=<64 hex>, and the email is matched trim
   const sent = resetCalls[0];
   assert.strictEqual(sent.to, "lou@example.com");
   assert.strictEqual(sent.firstName, "Lou");
-  assert.match(sent.link, /^http:\/\/localhost:8080\/\?reset=[0-9a-f]{64}$/);
+  assert.match(sent.link, /^http:\/\/localhost:8080\/#reset=[0-9a-f]{64}$/);
   assert.deepStrictEqual(Object.keys(sent).sort(), ["firstName", "link", "to"]);
   // the database holds a hash, never the token itself
   const stored = db.prepare("SELECT token_hash FROM password_resets WHERE user_id = ?").get(id).token_hash;
@@ -208,6 +209,10 @@ test("reset: the link works once, not after 60 minutes, not after a newer one; e
   assert.deepStrictEqual(await postReset(t3, "replaced-password").then((r) => [r.status, r.data]), [410, GONE]);
   assert.strictEqual((await getReset(t4)).status, 200);
 
+  // the token never travels in a URL: no GET route answers for it (a GET would put it in the host's request log)
+  assert.strictEqual((await call("GET", `/api/auth/reset/${t4}`)).status, 404);
+  assert.strictEqual((await call("GET", `/api/auth/reset/check?token=${t4}`)).status, 404);
+
   // malformed, unknown, and an unused invite that somehow has a row: all the same answer
   const invitedId = addUser("pending@x.test", { accepted: 0 });
   const tInvite = issueReset(db, invitedId, Date.now());
@@ -215,6 +220,8 @@ test("reset: the link works once, not after 60 minutes, not after a newer one; e
     assert.deepStrictEqual(await getReset(token).then((r) => [r.status, r.data]), [410, GONE], token);
     assert.deepStrictEqual(await postReset(token, "some-password-1").then((r) => [r.status, r.data]), [410, GONE], token);
   }
+  assert.deepStrictEqual(await call("POST", "/api/auth/reset/check", {}).then((r) => [r.status, r.data]), [410, GONE]);
+  assert.deepStrictEqual(await call("POST", "/api/auth/reset/check", { token: 42 }).then((r) => [r.status, r.data]), [410, GONE]);
   assert.deepStrictEqual(await call("POST", "/api/auth/reset", { password: "some-password-1" }).then((r) => [r.status, r.data]), [410, GONE]);
   assert.deepStrictEqual(await call("POST", "/api/auth/reset", { token: 42, password: "some-password-1" }).then((r) => [r.status, r.data]), [410, GONE]);
 });
@@ -297,8 +304,43 @@ test("no log line contains the token or the link, even when the send throws", as
   const text = logged.join("\n");
   assert.ok(text.includes("smtp down"));
   for (const t of tokens) assert.ok(!text.includes(t), "a log line holds a reset token");
-  assert.ok(!text.includes("?reset="), "a log line holds a reset link");
+  assert.ok(!/[?#]reset=/.test(text), "a log line holds a reset link");
   assert.ok(!text.includes("quiet@x.test"), "a log line names the account");
+});
+
+test("forgot: a failure after the answer (the link can't be stored) is the same 200, and is logged without a token", async () => {
+  addUser("unlucky@x.test");
+  const logged = [];
+  const real = { log: console.log, warn: console.warn, error: console.error };
+  console.log = console.warn = console.error = (...args) => logged.push(args.map(String).join(" "));
+  // the database refuses to store a link, as a full or failing disk would
+  const realPrepare = db.prepare;
+  db.prepare = function (sql) {
+    if (/INSERT INTO password_resets/.test(sql)) throw new Error("disk I/O error");
+    return realPrepare.call(this, sql);
+  };
+  let realAccount, madeUp;
+  try {
+    realAccount = await forgot("unlucky@x.test");
+    madeUp = await forgot("nobody@x.test");
+    assert.strictEqual(realAccount.status, 200, "the answer for a real account must not depend on storing the link");
+    await until(() => logged.some((l) => l.includes("[auth] reset not issued")));
+  } finally {
+    delete db.prepare;   // back to the prototype's own
+    Object.assign(console, real);
+  }
+  // a real account can't be told from a made-up one by the answer, even when storing the link fails
+  assert.strictEqual(realAccount.status, 200);
+  assert.deepStrictEqual(realAccount.data, { success: true });
+  assert.strictEqual(madeUp.status, realAccount.status);
+  assert.deepStrictEqual(madeUp.data, realAccount.data);
+  assert.strictEqual(resetCalls.length, 0);
+  assert.strictEqual(resetCount(), 0);
+  const text = logged.join(" | ");
+  assert.ok(text.includes("disk I/O error"));
+  assert.ok(!/[0-9a-f]{64}/.test(text), "a log line holds a token");
+  assert.ok(!/[?#]reset=/.test(text), "a log line holds a reset link");
+  assert.ok(!text.includes("unlucky@x.test"), "a log line names the account");
 });
 
 test("reset: 10 tries per 15 minutes per IP, then 429", async () => {

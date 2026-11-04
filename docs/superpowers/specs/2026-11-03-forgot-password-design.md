@@ -64,21 +64,25 @@ Broker Radar to other brokerages.
 - The email is matched trimmed and lower-cased against `users.email`.
 - Only accounts that can sign in count: `invite_accepted = 1`. Someone with an unused invite is treated as having no
   account; they should use their invite link.
-- **Answer:** `200 { success: true }` in every case, sent *before* any email work starts, so a real account answers no slower
-  than a made-up one. The email goes out after the answer. A send failure is logged without the link and not reported to the
-  page.
+- **Answer:** `200 { success: true }` in every case, sent *before* anything that only a real account does: the lookup, storing
+  the link and the email all happen after the answer. So a real account answers no slower than a made-up one, and a failure
+  there (a slow or failing disk) can't show up as an error only real accounts get. A failure is logged without the link and
+  not reported to the page.
 - **Limits:**
   - 5 requests an hour per IP (429 with a plain message);
   - for one account, at most 3 emails an hour. Extra requests still answer 200 but send nothing, so nobody can flood an inbox.
 - **Mail not set up:** if `EMAIL_USER`/`EMAIL_PASS` are unset, or in production `APP_URL` is unset or local, the answer is
   503: "Password reset isn't available right now. Please try again later." This is the same for every email, so it reveals
   nothing.
-- **The link:** `${APP_URL}/?reset=<token>`.
+- **The link:** `${APP_URL}/#reset=<token>`. The token sits after the `#` because Cloud Run's request log records the URL of every
+  request, and a URL fragment is never sent to the server, so the secret can't land in that log.
   - The token is 32 random bytes as 64 hex characters.
   - Stored as its SHA-256 in `password_resets`, one row per user. A new request replaces the row.
 
-### 6.2 Opening the link: `GET /api/auth/reset/:token`
+### 6.2 Opening the link: `POST /api/auth/reset/check { token }`
 
+- The page reads the token from the `#reset=` fragment and sends it in the request body, never in a URL (for the reason in 6.1).
+  There is no GET route that takes the token.
 - A well-formed, unexpired token answers `200 { email }`, and the page shows "Choose a new password for <email>".
 - Anything else answers 410: "This link has expired or was already used." The page then offers **"Send a new link"**, which
   goes to the Reset page with the email filled in when it is known.
