@@ -5,7 +5,9 @@ const crypto     = require("crypto");
 const rateLimit  = require("express-rate-limit");
 const db         = require("../db");
 const { sessionTokenFor, requireAuth } = require("../middleware/auth");
-const { sendInvite } = require("../email");
+const email = require("../email");
+const { sendInvite } = email;
+const { userForReset, issueReset, completeReset, createSendCounter } = require("../lib/passwordReset");
 const { stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
@@ -18,6 +20,34 @@ const loginLimiter = rateLimit({
   message: { success: false, error: "Too many login attempts — please try again in 15 minutes" },
 });
 
+// Each accepted /forgot makes the app's own mail account send to an address the caller chose, so it is limited per IP. A refused or
+// invalid request counts too, because this runs before any check.
+const forgotLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many reset requests — please try again in an hour" },
+});
+
+// Saving a new password is a bcrypt hash and a guess at a secret, so it gets the same limit as signing in.
+const resetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many attempts — please try again in 15 minutes" },
+});
+
+// At most 3 reset emails an hour for one account, however many IPs ask. In memory (one instance runs, and a restart that forgets
+// the count is harmless). app.set("resetSendCounter", ...) swaps in a fresh one (tests).
+const moduleCounter = createSendCounter();
+
+const EMAIL_MAX = 254;
+// Every refusal of a reset link (malformed, unknown, expired, used, replaced) says exactly this, so the answer tells nothing
+// about which of them it was.
+const LINK_GONE = { success: false, error: "This link has expired or was already used." };
+
 // Helper: safe user object (no password hash)
 function safeUser(u) {
   return {
@@ -29,6 +59,18 @@ function safeUser(u) {
 // Log the user in: set the session cookie, carrying their current session version so a later bump ends this session.
 function setSession(res, user) {
   res.cookie("rr_token", sessionTokenFor(user), { httpOnly: true, sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, secure: process.env.NODE_ENV === "production" });
+}
+
+// Sends one of the two password emails once the answer has already gone out, and never lets a failure reach the page (a failure on
+// /forgot would tell the caller the account exists). A failure is a rejection or the sender answering false. What gets logged is
+// the kind of email and the error's own message: never the link, the token or the address, because the link is the
+// credential.
+async function sendAfterAnswer(kind, send, args) {
+  try {
+    if ((await send(args)) === false) console.error(`[auth] ${kind} email not sent`);
+  } catch (err) {
+    console.error(`[auth] ${kind} email not sent`, err?.message);
+  }
 }
 
 // POST /api/auth/register — broker registers their shop
@@ -151,6 +193,62 @@ router.post("/accept-invite", (req, res) => {
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
   setSession(res, updated);
   res.json({ success: true, user: safeUser(updated) });
+});
+
+// POST /api/auth/forgot — ask for a password-reset link. The answer is 200 { success: true } for every address that is a valid email,
+// whether or not it has an account, so this page can't be used to find out who has one. It is sent BEFORE the email work starts,
+// so an account that exists answers no slower than one that doesn't.
+router.post("/forgot", forgotLimiter, (req, res) => {
+  const raw = (req.body ?? {}).email;
+  const mail = typeof raw === "string" ? raw.trim() : "";
+  if (!mail || mail.length > EMAIL_MAX || !mail.includes("@")) {
+    return res.status(400).json({ success: false, error: "Enter a valid email address" });
+  }
+  // Same answer for every address, so it reveals nothing; nothing is stored when no email could go out.
+  if (!email.mailReady(req.app.get("authEnv") || process.env)) {
+    return res.status(503).json({ success: false, error: "Password reset isn't available right now. Please try again later." });
+  }
+
+  const key = mail.toLowerCase();
+  // Only an account that can sign in counts (an unused invite should use its invite link). The send counter is asked only for an
+  // account that was found: it never forgets a key, so asking it about made-up addresses would let anyone grow it.
+  const user = db.prepare("SELECT id, email, first_name FROM users WHERE email = ? AND invite_accepted = 1").get(key);
+  const counter = req.app.get("resetSendCounter") || moduleCounter;
+  const token = user && counter.take(key, Date.now()) ? issueReset(db, user.id, Date.now()) : null;
+
+  res.json({ success: true });
+
+  if (token) {
+    const send = req.app.get("sendPasswordReset") || email.sendPasswordReset;
+    sendAfterAnswer("reset", send, { to: user.email, firstName: user.first_name, link: `${email.APP_URL}/?reset=${token}` });
+  }
+});
+
+// GET /api/auth/reset/:token — is this link still good? (for the "choose a new password" page). Opening it does not use it up:
+// mail scanners open links before the person does.
+router.get("/reset/:token", (req, res) => {
+  const user = userForReset(db, req.params.token, Date.now());
+  if (!user) return res.status(410).json(LINK_GONE);
+  res.json({ success: true, email: user.email });
+});
+
+// POST /api/auth/reset — choose the new password. completeReset is the one place the link is used up: it changes the password, ends
+// every older session and deletes the link in one transaction. The person resetting is signed in from the row it returns, which was
+// read after the session version went up (a cookie signed from any earlier copy of the row would be signed out at once).
+router.post("/reset", resetLimiter, (req, res) => {
+  const { token, password } = req.body ?? {};
+  if (typeof password !== "string" || password.length < 8) {
+    return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
+  }
+
+  const updated = completeReset(db, token, bcrypt.hashSync(password, 12), Date.now());
+  if (!updated) return res.status(410).json(LINK_GONE);
+
+  setSession(res, updated);
+  res.json({ success: true, user: safeUser(updated) });
+
+  const send = req.app.get("sendPasswordChanged") || email.sendPasswordChanged;
+  sendAfterAnswer("password-changed", send, { to: updated.email, firstName: updated.first_name });
 });
 
 module.exports = router;
