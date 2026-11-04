@@ -79,4 +79,88 @@ async function sendEmailChange(to, link) {
   }
 }
 
-module.exports = { sendInvite, sendRefiAlert, sendEmailChange, APP_URL };
+// Whether a link mailed from here can be opened by the person it goes to. In production APP_URL must be set, and must not name this
+// machine: APP_URL above falls back to http://localhost:8080, so without it every link would open nothing (and the page would still
+// say "check your inbox"). Outside production (development, tests) any value goes. `env` is process.env, or the "profileEnv" app
+// seam in tests. Pure.
+const LOCAL_HOST_RE = /^(?:localhost|.+\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\])$/i;
+function emailLinksWork(env) {
+  if (!env || env.NODE_ENV !== "production") return true;
+  const base = typeof env.APP_URL === "string" ? env.APP_URL.trim() : "";
+  if (!base) return false;
+  let host;
+  try { host = new URL(base).hostname; } catch { return false; }
+  return !LOCAL_HOST_RE.test(host);
+}
+
+// Whether a reset email can really reach someone: both mail settings present and a link that opens somewhere. The reset route
+// answers 503 when this is false, before it stores anything. Pure.
+function mailReady(env) {
+  return Boolean(env && env.EMAIL_USER && env.EMAIL_PASS) && emailLinksWork(env);
+}
+
+// The two password emails. Names and addresses come from people, so they are escaped before they go into the HTML.
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// The wording is Bill's, approved 2026-11-03 (forgot-password design §7): change it only with his say-so. Nothing is tracked.
+function passwordResetMessage({ firstName, email, link }) {
+  return {
+    subject: "Reset your Broker Radar password",
+    html: `
+      <p>Hi ${escapeHtml(firstName)},</p>
+      <p>Someone asked to reset the password for your Broker Radar account (${escapeHtml(email)}). To choose a new password, use this button within 60 minutes:</p>
+      <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Choose a new password</a></p>
+      <p style="color:#666;font-size:12px">If you didn't ask for this, you can ignore this email. Your password won't change.</p>
+    `,
+  };
+}
+
+function passwordChangedMessage({ firstName, email }) {
+  return {
+    subject: "Your Broker Radar password was changed",
+    html: `
+      <p>Hi ${escapeHtml(firstName)},</p>
+      <p>The password for your Broker Radar account (${escapeHtml(email)}) was just changed, and any other devices signed in to it were signed out.</p>
+      <p>If you did this, there's nothing else to do. If you didn't, reset your password from the Broker Radar sign-in page right away and let your broker know.</p>
+    `,
+  };
+}
+
+// Sends one of the two messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
+// the send fails; the caller decides what to do (the routes never tell the page, which must not reveal whether an account exists).
+// A reset message carries the secret link, so only err.message is logged, never the message, the link or the token.
+async function deliverPasswordMail(to, buildMessage, what) {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.warn(`[email] EMAIL_USER/EMAIL_PASS not set — skipping ${what} email`);
+    return false;
+  }
+  try {
+    const { subject, html } = buildMessage();   // built inside the try, so odd input gives false rather than a throw
+    await createTransport().sendMail({ from: `"Broker Radar" <${FROM}>`, to, subject, html });
+    return true;
+  } catch (err) {
+    console.error(`[email] ${what} send failed:`, err.message);
+    return false;
+  }
+}
+
+function sendPasswordReset({ to, firstName, link }) {
+  return deliverPasswordMail(to, () => passwordResetMessage({ firstName, email: to, link }), "password-reset");
+}
+
+function sendPasswordChanged({ to, firstName }) {
+  return deliverPasswordMail(to, () => passwordChangedMessage({ firstName, email: to }), "password-changed");
+}
+
+module.exports = {
+  sendInvite, sendRefiAlert, sendEmailChange, APP_URL,
+  emailLinksWork, mailReady,
+  passwordResetMessage, passwordChangedMessage, sendPasswordReset, sendPasswordChanged,
+};

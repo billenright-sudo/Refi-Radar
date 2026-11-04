@@ -279,4 +279,15 @@ db.exec(`
   );
 `);
 
+// password_resets: a forgotten-password link waiting to be used (lib/passwordReset.js). One per user, so a new request replaces
+// the old link. Unlike email_changes this keeps only the SHA-256 of the token, never the token itself: the link opens the account,
+// so a copy of the database must not hold anything that can be used. expires_at is epoch milliseconds.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS password_resets (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT    NOT NULL UNIQUE,
+    expires_at INTEGER NOT NULL
+  );
+`);
+
 module.exports = db;
