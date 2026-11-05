@@ -8,6 +8,7 @@ import { loadCalls } from "./calls.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
+import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
 
 // ---------------------------------------------------------------------------
@@ -563,8 +564,9 @@ const LoginPage = ({ onLogin, goRegister, goForgot }) => {
   );
 };
 
-const RegisterPage = ({ onLogin, goLogin }) => {
+const RegisterPage = ({ goLogin }) => {
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", password: "", orgName: "" });
+  const [sentTo, setSentTo] = useState(null);   // set once the server took the request: nothing is signed in until the emailed link is opened
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -581,13 +583,27 @@ const RegisterPage = ({ onLogin, goLogin }) => {
       });
       const data = await res.json();
       if (!res.ok) { setError(data.message || data.error || "Registration failed"); return; }
-      onLogin(data.user);
+      setSentTo(form.email.trim());
     } catch {
       setError("Network error — please try again");
     } finally {
       setLoading(false);
     }
   };
+
+  if (sentTo !== null) {
+    return (
+      <AuthCard>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "1.5rem", textAlign: "center" }}>Check your email</h2>
+        <div role="status" style={{ color: C.text, fontSize: 14, lineHeight: 1.6 }}>{signupSentText(sentTo)}</div>
+        <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: 13, color: C.muted }}>
+          <button onClick={goLogin} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>
+            Back to sign in
+          </button>
+        </div>
+      </AuthCard>
+    );
+  }
 
   return (
     <AuthCard>
@@ -607,7 +623,7 @@ const RegisterPage = ({ onLogin, goLogin }) => {
         <AuthField label="Brokerage Name" value={form.orgName} onChange={e => set("orgName", e.target.value)} placeholder="Premier Mortgage Group" disabled={loading} />
         <div style={{ fontSize: 11, color: C.muted, marginBottom: "1rem" }}>Your company name — e.g. Premier Mortgage Group</div>
         <button type="submit" disabled={loading} style={{ ...btnPrimary, width: "100%", opacity: loading ? 0.6 : 1 }}>
-          {loading ? "Creating account…" : "Start 14-Day Free Trial"}
+          {loading ? "Sending…" :"Start 14-Day Free Trial"}
         </button>
       </form>
       <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: 13, color: C.muted }}>
@@ -624,26 +640,38 @@ const AcceptInvitePage = ({ token, onLogin }) => {
   const [inviteInfo, setInviteInfo] = useState(null);
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [inviteError, setInviteError] = useState("");
+  const [canRetry, setCanRetry] = useState(false);   // the CHECK failed (network, host), not the invitation: asking again can work
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch(`/api/auth/invite/${token}`);
-        const data = await res.json();
-        if (!res.ok) { setInviteError(data.message || "Invalid or expired invite link"); return; }
-        setInviteInfo(data);
-      } catch {
-        setInviteError("Could not load invite details");
-      } finally {
-        setLoadingInfo(false);
-      }
-    };
-    load();
+  // The token is held in App's state (the address was cleaned at once), so "Try again" can run the same check again with it.
+  const checkInvite = useCallback(async () => {
+    setLoadingInfo(true);
+    setInviteError("");
+    setCanRetry(false);
+    try {
+      const res = await fetch("/api/auth/invite/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      let data = null;
+      try { data = await res.json(); } catch { /* no body */ }
+      const outcome = inviteCheckOutcome(res.status, data);
+      if (outcome.kind === "ok") { setInviteInfo(outcome.info); return; }
+      setInviteError(outcome.text);
+      setCanRetry(outcome.kind === "retry");
+    } catch {
+      setInviteError("Network error — please try again");
+      setCanRetry(true);
+    } finally {
+      setLoadingInfo(false);
+    }
   }, [token]);
+
+  useEffect(() => { checkInvite(); }, [checkInvite]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -658,6 +686,7 @@ const AcceptInvitePage = ({ token, onLogin }) => {
         body: JSON.stringify({ token, password }),
       });
       const data = await res.json();
+      if (res.status === 410) { setInviteError(data.error || "This invitation has expired or was already used."); setCanRetry(false); return; }   // used or replaced since the page opened
       if (!res.ok) { setSubmitError(data.message || data.error || "Failed to accept invite"); return; }
       window.history.replaceState({}, "", "/");
       onLogin(data.user);
@@ -683,6 +712,7 @@ const AcceptInvitePage = ({ token, onLogin }) => {
           <Icon name="alert" size={16} color={C.red} />
           <div style={{ marginTop: 8 }}>{inviteError}</div>
         </div>
+        {canRetry && <button onClick={checkInvite} style={{ ...btnPrimary, width: "100%", marginTop: "1.25rem" }}>Try again</button>}
       </AuthCard>
     );
   }
@@ -711,6 +741,106 @@ const AcceptInvitePage = ({ token, onLogin }) => {
           {submitting ? "Joining…" : "Set Password & Join"}
         </button>
       </form>
+    </AuthCard>
+  );
+};
+
+// "Finish creating your account": opened by the emailed sign-up link, whose token App read from the address. Opening it only checks the
+// token (an email scanner may open it first), so the account is made, and the link used up, only by the button. A good press signs
+// this device in (onDone gets the user).
+const FinishSignupPage = ({ token, onDone, goRegister }) => {
+  const [info, setInfo] = useState(null);            // { email, orgName } once the token checks out
+  const [loadingInfo, setLoadingInfo] = useState(true);
+  const [linkError, setLinkError] = useState("");    // the link is no good (expired, used) or could not be checked
+  const [canRetry, setCanRetry] = useState(false);   // the CHECK failed (network, host), not the link: asking again can work
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+
+  const checkLink = useCallback(async () => {
+    setLoadingInfo(true);
+    setLinkError("");
+    setCanRetry(false);
+    try {
+      const res = await fetch("/api/auth/register/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      let data = null;
+      try { data = await res.json(); } catch { /* no body */ }
+      const outcome = signupCheckOutcome(res.status, data);
+      if (outcome.kind === "ok") { setInfo({ email: outcome.email, orgName: outcome.orgName }); return; }
+      setLinkError(outcome.text);
+      setCanRetry(outcome.kind === "retry");
+    } catch {
+      setLinkError("Network error — please try again");
+      setCanRetry(true);
+    } finally {
+      setLoadingInfo(false);
+    }
+  }, [token]);
+
+  useEffect(() => { checkLink(); }, [checkLink]);
+
+  const create = async () => {
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      const res = await fetch("/api/auth/register/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const data = await res.json();
+      if (res.status === 410) { setLinkError(data.error || "This link has expired or was already used."); setCanRetry(false); return; }   // used or replaced since the page opened
+      if (!res.ok) { setSubmitError(data.error || "Couldn't create your account — please try again"); return; }
+      onDone(data.user);
+    } catch {
+      setSubmitError("Network error — please try again");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loadingInfo) {
+    return (
+      <AuthCard>
+        <div style={{ textAlign: "center", color: C.muted, padding: "2rem" }}>Checking your link…</div>
+      </AuthCard>
+    );
+  }
+
+  if (linkError) {
+    return (
+      <AuthCard>
+        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "1rem", color: C.red, textAlign: "center", marginBottom: "1.25rem" }}>
+          <Icon name="alert" size={16} color={C.red} />
+          <div style={{ marginTop: 8 }}>{linkError}</div>
+        </div>
+        {canRetry
+          ? <button onClick={checkLink} style={{ ...btnPrimary, width: "100%" }}>Try again</button>
+          : <button onClick={goRegister} style={{ ...btnPrimary, width: "100%" }}>Start again</button>}
+      </AuthCard>
+    );
+  }
+
+  return (
+    <AuthCard>
+      <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "1.5rem", textAlign: "center" }}>Finish creating your account</h2>
+      <div style={{ background: C.surfaceHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: "1.25rem" }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>Email</div>
+        <div style={{ color: C.text }}>{info?.email}</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 8, marginBottom: 4 }}>Brokerage</div>
+        <div style={{ color: C.text, fontWeight: 600 }}>{info?.orgName}</div>
+      </div>
+      {submitError && (
+        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "10px 14px", color: C.red, fontSize: 13, marginBottom: "1rem" }}>
+          {submitError}
+        </div>
+      )}
+      <button onClick={create} disabled={submitting} style={{ ...btnPrimary, width: "100%", opacity: submitting ? 0.6 : 1 }}>
+        {submitting ? "Creating…" : "Create my account"}
+      </button>
     </AuthCard>
   );
 };
@@ -2052,9 +2182,10 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
 export default function App() {
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
-  const [authView, setAuthView] = useState("login"); // "login" | "register" | "accept-invite" | "forgot" | "reset"
+  const [authView, setAuthView] = useState("login"); // "login" | "register" | "finish-signup" | "accept-invite" | "forgot" | "reset"
   const [inviteToken, setInviteToken] = useState(null);
   const [resetToken, setResetToken] = useState(null);   // from the emailed link's #reset= fragment
+  const [signupToken, setSignupToken] = useState(null); // from the emailed link's #signup= fragment
   const [forgotEmail, setForgotEmail] = useState("");     // what the "Reset your password" box opens with
 
   const [view, setView] = useState(DEFAULT_VIEW);
@@ -2099,6 +2230,16 @@ export default function App() {
   // bar or the browser history; the page keeps it in state. Someone already signed in who opens the link still gets the reset page
   // (it is for whoever has the link), and a good save signs them in as that account.
   useEffect(() => {
+    // Order: #signup=, #reset=, the invitation (#invite=, else a legacy ?token=), then /me. Each found link is taken out of the address
+    // at once and kept in state; someone already signed in who opens one still gets that page.
+    const signupFound = signupTokenFrom(window.location.hash);
+    if (signupFound) {
+      window.history.replaceState({}, "", window.location.pathname + window.location.search);
+      setSignupToken(signupFound);
+      setAuthView("finish-signup");
+      setAuthState("unauthenticated");
+      return;
+    }
     const resetFound = resetTokenFrom(window.location.hash);
     if (resetFound) {
       window.history.replaceState({}, "", window.location.pathname + window.location.search);
@@ -2107,10 +2248,12 @@ export default function App() {
       setAuthState("unauthenticated");
       return;
     }
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get("token");
-    if (token) {
-      setInviteToken(token);
+    const inviteFound = inviteTokenFrom(window.location.hash, window.location.search);
+    if (inviteFound) {
+      // a fragment link is cleaned like #reset=; a legacy ?token= link goes back to the bare site
+      if (inviteTokenFrom(window.location.hash, "")) window.history.replaceState({}, "", window.location.pathname + window.location.search);
+      else window.history.replaceState({}, "", "/");
+      setInviteToken(inviteFound);
       setAuthView("accept-invite");
       setAuthState("unauthenticated");
       return;
@@ -2154,6 +2297,12 @@ export default function App() {
     handleLogin(userData);
     setEmailNotice({ text: PASSWORD_CHANGED_NOTICE, bad: false });
     setResetToken(null);
+  };
+
+  // An account made from the emailed link: sign in on this device, then forget the link's token.
+  const handleSignupDone = (userData) => {
+    handleLogin(userData);
+    setSignupToken(null);
   };
 
   const handleLogout = async () => {
@@ -2285,14 +2434,16 @@ export default function App() {
       <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
         <style>{globalStyles}</style>
         <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
-        {authView === "accept-invite" && inviteToken
+        {authView === "finish-signup" && signupToken
+          ? <FinishSignupPage token={signupToken} onDone={handleSignupDone} goRegister={() => setAuthView("register")} />
+          : authView === "accept-invite" && inviteToken
           ? <AcceptInvitePage token={inviteToken} onLogin={handleLogin} />
           : authView === "reset" && resetToken
           ? <ResetPasswordPage token={resetToken} onDone={handleResetDone} goForgot={goForgot} />
           : authView === "forgot"
           ? <ForgotPasswordPage goLogin={() => setAuthView("login")} initialEmail={forgotEmail} />
           : authView === "register"
-          ? <RegisterPage onLogin={handleLogin} goLogin={() => setAuthView("login")} />
+          ? <RegisterPage goLogin={() => setAuthView("login")} />
           : <LoginPage onLogin={handleLogin} goRegister={() => setAuthView("register")} goForgot={goForgot} />
         }
       </div>
