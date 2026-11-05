@@ -216,3 +216,26 @@ test("a broker's confirmed email change updates the Stripe customer email; an LO
   await pause();
   assert.deepStrictEqual(calls, []);
 });
+
+test("a removed LO is treated like an unknown one by /clients, /stage and /alert (no notification, no mail)", async () => {
+  const { broker, los: [lo, other] } = brokerage({ los: 2 });
+  const clientId = addClient(other);
+  const same = async (method, suffix, body) => {
+    const gone = await call(method, `/api/org/los/${lo.id}${suffix}`, { as: broker, body });
+    const unknown = await call(method, `/api/org/los/999999${suffix}`, { as: broker, body });
+    return [gone, unknown];
+  };
+  assert.strictEqual((await del(broker, lo.id)).status, 200);
+  const [c1, c2] = await same("GET", "/clients");
+  assert.deepStrictEqual([c1.status, c1.data], [404, { success: false, error: "LO not found in your org" }]);
+  assert.deepStrictEqual([c1.status, c1.data], [c2.status, c2.data]);
+  const [s1, s2] = await same("PATCH", "/stage", { stage: "new" });
+  assert.deepStrictEqual([s1.status, s1.data], [s2.status, s2.data]);
+  assert.strictEqual(s1.status, 404);
+  const alert = (loId) => call("POST", "/api/org/alert", { as: broker, body: { loId, clientId } });
+  const a1 = await alert(lo.id), a2 = await alert(999999);
+  assert.deepStrictEqual([a1.status, a1.data], [a2.status, a2.data]);
+  assert.strictEqual(a1.status, 404);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE to_user = ?").get(lo.id).n, 0, "no alert is recorded, so no email is sent");
+  assert.strictEqual((await alert(other.id)).status, 200, "a live LO still gets alerts");
+});

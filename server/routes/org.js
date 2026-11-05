@@ -28,7 +28,7 @@ router.get("/los", (req, res) => {
 // GET /api/org/los/:id/clients — broker views one LO's clients
 router.get("/los/:id/clients", (req, res) => {
   const loId = parseInt(req.params.id);
-  const lo = db.prepare("SELECT id FROM users WHERE id = ? AND org_id = ? AND role = 'lo'").get(loId, req.user.org_id);
+  const lo = db.prepare("SELECT id FROM users WHERE id = ? AND org_id = ? AND role = 'lo' AND removed_at IS NULL").get(loId, req.user.org_id);
   if (!lo) return res.status(404).json({ success: false, error: "LO not found in your org" });
 
   const clients = db.prepare("SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC").all(loId);
@@ -53,7 +53,7 @@ router.patch("/los/:id/stage", (req, res) => {
 
   const loId = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
   const lo = Number.isSafeInteger(loId)
-    ? db.prepare("SELECT id FROM users WHERE id = ? AND org_id = ? AND role = 'lo'").get(loId, req.user.org_id)
+    ? db.prepare("SELECT id FROM users WHERE id = ? AND org_id = ? AND role = 'lo' AND removed_at IS NULL").get(loId, req.user.org_id)
     : undefined;
   if (!lo) return res.status(404).json({ success: false, error: "LO not found in your org" });
 
@@ -119,7 +119,7 @@ router.post("/alert", async (req, res) => {
   const { loId, clientId, message, monthlySavings } = req.body;
   if (!loId || !clientId) return res.status(400).json({ success: false, error: "loId and clientId required" });
 
-  const lo = db.prepare("SELECT * FROM users WHERE id = ? AND org_id = ? AND role = 'lo'").get(parseInt(loId), req.user.org_id);
+  const lo = db.prepare("SELECT * FROM users WHERE id = ? AND org_id = ? AND role = 'lo' AND removed_at IS NULL").get(parseInt(loId), req.user.org_id);
   if (!lo) return res.status(404).json({ success: false, error: "LO not found in your org" });
 
   const client = db.prepare("SELECT * FROM clients WHERE id = ? AND org_id = ?").get(parseInt(clientId), req.user.org_id);
