@@ -294,7 +294,7 @@ router.post("/register/check", (req, res) => {
 // With billing on, the organization starts with no card (billing_status 'none'), or in its free test month if the request came
 // with a usable tester code and the code still has a place (asked again in that transaction). The answer's `tester` is true only
 // when the month was granted (the page then shows "Start testing" instead of the card ask). Either way the acceptance given at
-// sign-up is recorded in the same transaction as the account.
+// sign-up is recorded in the same transaction as the account. For a tester, the Stripe side runs before the answer (bounded).
 router.post("/register/complete", signupCompleteLimiter, (req, res) => {
   const { token, password } = req.body ?? {};
   const request = signupFor(db, token, Date.now());
@@ -318,18 +318,27 @@ router.post("/register/complete", signupCompleteLimiter, (req, res) => {
   const org = db.prepare("SELECT name, billing_via_tester_code, billing_tester_until FROM organizations WHERE id = ?").get(user.org_id);
   const tester = Boolean(billing && org.billing_via_tester_code);
   setSession(res, user);
-  res.json({ success: true, user: safeUser(user), tester });
-  if (tester) startTesterSubscription(req, billing, user, org);
+  const answer = () => res.json({ success: true, user: safeUser(user), tester });
+  if (!tester) return answer();
+  startTesterSubscription(req, billing, user, org).then(answer, answer);
 });
 
-// The tester month's Stripe side (spec §6.1.3), after the answer, so a slow or failing Stripe never holds up "Create my account":
-// a customer and a trialing subscription for one user with no card, ending when the month ends (Stripe cancels it then if no card
-// was added), stored by the webhook's own rules, then the follow-ups that leaves (the test-month confirmation email). The month
-// itself already runs from our database, so a failure here costs only Stripe's side: it is logged by our organization id and the
-// error's message, never an address or a Stripe object. (If Stripe did make the subscription, its own webhook event carries our
-// org id and stores it.) Billing on with no gateway: the month runs with no Stripe subscription, and the log says so.
-function startTesterSubscription(req, config, user, org) {
+// How long "Create my account" waits for the tester month's Stripe side before answering without it (the work carries on).
+// app.set("testerSubscriptionWaitMs", n) overrides it (tests).
+const TESTER_WAIT_MS = 8_000;
+
+// The tester month's Stripe side (spec §6.1.3): a customer and a trialing subscription for one user with no card, ending when the
+// month ends (Stripe cancels it then if no card was added), stored by the webhook's own rules, then the follow-ups that leaves (the
+// test-month confirmation email). Run before the answer, like the webhook's follow-ups (ruling 9: Cloud Run throttles the CPU once
+// a response has gone), but for at most TESTER_WAIT_MS, so a slow Stripe never holds up "Create my account" for long. The month
+// itself already runs from our database, so a timeout or a failure costs only Stripe's side: it is logged by our organization id
+// and the error's message, never an address or a Stripe object. (If Stripe did make the subscription, its own webhook event
+// carries our org id and stores it.) Billing on with no gateway: the month runs with no Stripe subscription, and the log says so.
+// Never rejects.
+async function startTesterSubscription(req, config, user, org) {
   const orgId = user.org_id;
+  const failed = (err) => console.error(`[billing] tester subscription failed for org ${orgId}:`, err?.message);
+  let timer;
   try {
     const gateway = req.app.get("billingGateway");
     if (!gateway) {
@@ -337,13 +346,21 @@ function startTesterSubscription(req, config, user, org) {
       return;
     }
     const send = req.app.get("sendBillingConfirmation") || email.sendBillingConfirmation;
-    gateway.createTesterSubscription({
-      email: user.email, orgId, orgName: org.name, priceId: config.priceId, quantity: 1, trialEndMs: org.billing_tester_until,
-    })
-      .then((created) => runFollowUps({ db, gateway, send, config }, storeSubscription(db, orgId, created.subscription, wholeSecond(Date.now()))))
-      .catch((err) => console.error(`[billing] tester subscription failed for org ${orgId}:`, err?.message));
+    const waitMs = req.app.get("testerSubscriptionWaitMs") ?? TESTER_WAIT_MS;
+    // Never rejects either: a failure is logged where it happens, also one that comes after the wait has given up.
+    const work = (async () => {
+      const created = await gateway.createTesterSubscription({
+        email: user.email, orgId, orgName: org.name, priceId: config.priceId, quantity: 1, trialEndMs: org.billing_tester_until,
+      });
+      await runFollowUps({ db, gateway, send, config }, storeSubscription(db, orgId, created.subscription, wholeSecond(Date.now())));
+      return true;
+    })().catch((err) => { failed(err); return true; });
+    const done = await Promise.race([work, new Promise((resolve) => { timer = setTimeout(() => resolve(false), waitMs); })]);
+    if (!done) console.error(`[billing] tester subscription for org ${orgId} not finished after ${waitMs} ms: answered without it`);
   } catch (err) {
-    console.error(`[billing] tester subscription failed for org ${orgId}:`, err?.message);
+    failed(err);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

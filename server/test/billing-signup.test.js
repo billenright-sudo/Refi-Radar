@@ -251,9 +251,7 @@ test("tester code: wrong, unset, expired or used up is 400; right (any case) giv
     assert.strictEqual(signupRow(`blank${i}@x.test`).tester, 0, JSON.stringify(blank));
   }
 
-  // the right code, in any case and with spaces: the request is marked, and finishing it starts the month at once
-  let release;
-  gateway.state.hold = new Promise((r) => { release = r; });
+  // the right code, in any case and with spaces: the request is marked, and finishing it starts the month
   const token = await signupToken({ testerCode: "  Early-BIRD " });
   assert.strictEqual(signupRow("tia@x.test").tester, 1);
   const startedAt = Date.now();
@@ -261,36 +259,66 @@ test("tester code: wrong, unset, expired or used up is 400; right (any case) giv
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(Object.keys(r.data).sort(), ["success", "tester", "user"]);
   assert.deepStrictEqual([r.data.success, r.data.tester, r.data.user.email], [true, true, "tia@x.test"]);
-  // the answer doesn't wait for Stripe: the month runs from our own database
+  // the month, from our own database: 30 days from now, counted against the code
   const org = orgRow(r.data.user.orgId);
-  assert.deepStrictEqual([org.billing_status, org.billing_via_tester_code, org.stripe_subscription_id], ["none", 1, null]);
+  assert.strictEqual(org.billing_via_tester_code, 1);
   assert.ok(Math.abs(org.billing_tester_until - (startedAt + TESTER_DAYS * DAY_MS)) < 5000, "a 30-day month from now");
-  assert.strictEqual((await clients(r.cookie)).status, 200, "in, with no card");
-  await until(() => calls.length === 1);
+  // and Stripe's side was done before the answer (ruling 9): one card-less trial for one user, ending with the month, stored by the
+  // webhook's own rules, and the test-month confirmation sent once
   assert.deepStrictEqual(calls, [["createTesterSubscription", {
     email: "tia@x.test", orgId: org.id, orgName: "Tia Mortgage", priceId: "price_test", quantity: 1, trialEndMs: org.billing_tester_until,
   }]]);
-  assert.deepStrictEqual(confirmations, [], "nothing sent before Stripe has the subscription");
-
-  // Stripe's trial is stored by the webhook's own rules, and the test-month confirmation goes out once
-  release();
-  await until(() => confirmations.length === 1);
-  const stored = orgRow(org.id);
   assert.deepStrictEqual(
-    [stored.stripe_customer_id, stored.stripe_subscription_id, stored.stripe_item_id, stored.billing_status, stored.billing_quantity, stored.billing_has_card],
+    [org.stripe_customer_id, org.stripe_subscription_id, org.stripe_item_id, org.billing_status, org.billing_quantity, org.billing_has_card],
     ["cus_tester_1", "sub_tester_1", "si_tester_1", "trialing", 1, 0],
   );
-  assert.strictEqual(stored.billing_trial_end, Math.floor(org.billing_tester_until / 1000) * 1000);
-  assert.strictEqual(stored.billing_tester_until, org.billing_tester_until, "the month itself is unchanged");
+  assert.strictEqual(org.billing_trial_end, Math.floor(org.billing_tester_until / 1000) * 1000);
+  assert.strictEqual(confirmations.length, 1);
   assert.strictEqual(confirmations[0].to, "tia@x.test");
   assert.strictEqual(confirmations[0].kind, "tester");
   assert.strictEqual(confirmations[0].orgName, "Tia Mortgage");
-  await until(() => orgRow(org.id).billing_confirmation_sent === 1);
+  assert.strictEqual(org.billing_confirmation_sent, 1);
+  assert.strictEqual((await clients(r.cookie)).status, 200, "in, with no card");
   await settle();
   assert.strictEqual(confirmations.length, 1);
   assert.strictEqual(calls.length, 1, "nothing else reached Stripe");
-  assert.strictEqual((await clients(r.cookie)).status, 200);
   assert.strictEqual(testerOrgs(), 3);
+});
+
+test("a Stripe that hangs holds up the tester's answer only up to the bound, with tester: true; the work then carries on", async (t) => {
+  const logged = [];
+  for (const m of ["error", "warn", "log"]) t.mock.method(console, m, (...args) => { logged.push(args.map(String).join(" ")); });
+  const BOUND_MS = 300;
+  app.set("testerSubscriptionWaitMs", BOUND_MS);
+  let release;
+  gateway.state.hold = new Promise((r) => { release = r; });
+  try {
+    const token = await signupToken({ testerCode: CODE });
+    const startedAt = Date.now();
+    const r = await complete(token);
+    const took = Date.now() - startedAt;
+    assert.deepStrictEqual([r.status, r.data.success, r.data.tester], [200, true, true]);
+    assert.ok(took >= BOUND_MS, `it waited for Stripe first (${took} ms)`);
+    assert.ok(took < BOUND_MS + 3000, `then answered at the bound (${took} ms)`);
+    // the month runs from our database without Stripe's answer
+    const orgId = r.data.user.orgId;
+    const org = orgRow(orgId);
+    assert.deepStrictEqual([org.billing_status, org.billing_via_tester_code, org.stripe_subscription_id], ["none", 1, null]);
+    assert.ok(org.billing_tester_until > Date.now() + (TESTER_DAYS - 1) * DAY_MS);
+    assert.strictEqual((await clients(r.cookie)).status, 200, "in, with no card and no Stripe yet");
+    assert.deepStrictEqual(calls.map((c) => c[0]), ["createTesterSubscription"]);
+    assert.deepStrictEqual(confirmations, []);
+    assert.ok(logged.some((l) => l.includes(`org ${orgId}`) && l.includes(`not finished after ${BOUND_MS} ms`)), logged.join("\n"));
+    assert.ok(!logged.join("\n").includes("@x.test"), "no address in the log");
+
+    // Stripe answers late: the subscription is still stored and the confirmation still sent
+    release();
+    await until(() => confirmations.length === 1);
+    assert.deepStrictEqual([orgRow(orgId).stripe_subscription_id, orgRow(orgId).billing_status], ["sub_tester_1", "trialing"]);
+  } finally {
+    release();
+    app.set("testerSubscriptionWaitMs", undefined);
+  }
 });
 
 test("the 26th tester sign-up with a limit of 25 gets the normal card ask (re-checked at complete)", async () => {

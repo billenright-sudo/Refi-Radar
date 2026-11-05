@@ -15,7 +15,7 @@ const db = require("../db");
 const { billingConfig, monthlyTotalCents, BASE_CENTS, ADDITIONAL_CENTS, TRIAL_DAYS, TESTER_DAYS, TESTER_WARN_DAYS, STALE_MS, TERMS_VERSION, PRIVACY_VERSION } = require("../lib/billing/config");
 const { orgBilling, accessFor, bannerFor } = require("../lib/billing/access");
 const { checkoutPlan } = require("../lib/billing/plan");
-const { seatCount, testerCodeUsable } = require("../lib/billing/seats");
+const { seatCount, testerSlotOpen, testerCodeUsable } = require("../lib/billing/seats");
 
 const NOW = 1_800_000_000_000;
 const H = 3600_000;
@@ -164,6 +164,27 @@ test("testerCodeUsable: right code any case; wrong, unset, expired, or at the us
   assert.strictEqual(testerCodeUsable(db, cfg(), "beta-crew", NOW), false, "2 of 2 used");
   assert.strictEqual(testerCodeUsable(db, cfg({ testerMaxUses: 3 }), "beta-crew", NOW), true);
   assert.strictEqual(testerCodeUsable(db, cfg({ testerMaxUses: 0 }), "beta-crew", NOW), false);
+});
+
+test("testerSlotOpen: the code switched on, not past its day, and under its use limit; no code match involved", () => {
+  db.prepare("UPDATE organizations SET billing_via_tester_code = 0").run();
+  const cfg = (o = {}) => ({ testerCode: "beta-crew", testerMaxUses: 2, testerExpiresMs: null, ...o });
+  assert.strictEqual(testerSlotOpen(db, cfg(), NOW), true);
+  assert.strictEqual(testerSlotOpen(db, cfg({ testerCode: null }), NOW), false, "switched off");
+  assert.strictEqual(testerSlotOpen(db, null, NOW), false, "no billing config");
+  assert.strictEqual(testerSlotOpen(db, cfg({ testerExpiresMs: NOW }), NOW), true, "the last moment still works");
+  assert.strictEqual(testerSlotOpen(db, cfg({ testerExpiresMs: NOW - 1 }), NOW), false, "past its day");
+  assert.strictEqual(testerSlotOpen(db, cfg({ testerMaxUses: 0 }), NOW), false, "a limit of 0");
+
+  addOrg("S1", { billing_via_tester_code: 1 });
+  addOrg("S-not", { billing_via_tester_code: 0 });   // only organizations that came in on the code count
+  assert.strictEqual(testerSlotOpen(db, cfg(), NOW), true, "1 of 2 used");
+  addOrg("S2", { billing_via_tester_code: 1 });
+  assert.strictEqual(testerSlotOpen(db, cfg(), NOW), false, "2 of 2 used");
+  // testerCodeUsable is this rule after the code match: the right code with no place left is refused
+  assert.strictEqual(testerCodeUsable(db, cfg(), "beta-crew", NOW), false);
+  assert.strictEqual(testerSlotOpen(db, cfg({ testerMaxUses: 3 }), NOW), true);
+  assert.strictEqual(testerCodeUsable(db, cfg({ testerMaxUses: 3 }), "beta-crew", NOW), true);
 });
 
 const ORG_COLS = {

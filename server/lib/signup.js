@@ -4,6 +4,7 @@
 const crypto = require("crypto");
 const { hashToken } = require("./passwordReset");
 const { TESTER_DAYS } = require("./billing/config");
+const { testerSlotOpen } = require("./billing/seats");
 
 const SIGNUP_TTL_MS = 24 * 60 * 60 * 1000;
 const TRIAL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -39,21 +40,12 @@ function signupFor(db, token, nowMs) {
   `).get(hashToken(token), nowMs) || null;
 }
 
-// Whether the tester code still has a place for one more organization right now: still switched on, not past its expiry day, and
-// fewer organizations than its limit already came in on it. Asked again when the link is used, because several people can ask
-// with the code while only one place is left (spec §6.1.4, H10).
-function testerPlaceLeft(db, config, nowMs) {
-  if (!config || !config.testerCode) return false;
-  if (config.testerExpiresMs != null && nowMs > config.testerExpiresMs) return false;
-  const used = db.prepare("SELECT COUNT(*) AS n FROM organizations WHERE billing_via_tester_code = 1").get().n;
-  return used < config.testerMaxUses;
-}
-
 // Uses the link up: the organization (14-day trial from now) and the broker, then the request deleted, in one transaction so a
 // failure part-way leaves nothing behind. Returns the new users row, or null if the token isn't valid.
 // With billing on (`billingOn`, and the billing `config` for the tester code's limits) the organization starts with billing_status
 // 'none' (no card yet). A tester request also gets the free test month and is counted against the code, but only if the code still
-// has a place (checked inside this transaction); otherwise it is a normal sign-up and is asked for a card. With billing off the
+// has a place (testerSlotOpen, asked again inside this transaction: several people can ask with the code while only one place is
+// left, spec §6.1.4, H10); otherwise it is a normal sign-up and is asked for a card. With billing off the
 // billing columns are left as they were before billing (billing_status NULL).
 function completeSignup(db, token, nowMs, { billingOn = false, config = null } = {}) {
   return db.transaction(() => {
@@ -62,7 +54,7 @@ function completeSignup(db, token, nowMs, { billingOn = false, config = null } =
     const orgId = Number(db.prepare("INSERT INTO organizations (name, plan, trial_ends) VALUES (?, 'trial', ?)")
       .run(req.org_name, new Date(nowMs + TRIAL_MS).toISOString()).lastInsertRowid);
     if (billingOn) {
-      const tester = req.tester === 1 && testerPlaceLeft(db, config, nowMs);
+      const tester = req.tester === 1 && testerSlotOpen(db, config, nowMs);
       db.prepare("UPDATE organizations SET billing_status = 'none', billing_tester_until = ?, billing_via_tester_code = ? WHERE id = ?")
         .run(tester ? nowMs + TESTER_DAYS * DAY_MS : null, tester ? 1 : 0, orgId);
     }

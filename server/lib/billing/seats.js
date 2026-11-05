@@ -6,13 +6,22 @@ const seatCount = (db, orgId) => db.prepare(
   "SELECT COUNT(*) AS n FROM users WHERE org_id = ? AND invite_accepted = 1 AND removed_at IS NULL"
 ).get(orgId).n;
 
-// The code is a shared secret, so it is capped two ways: an expiry day and a number of organizations that may use it.
-function testerCodeUsable(db, config, code, nowMs) {
-  if (!config.testerCode || typeof code !== "string") return false;
-  if (code.trim().toLowerCase() !== config.testerCode) return false;
+// The code is a shared secret, so it is capped two ways: an expiry day and a number of organizations that may use it. Whether it
+// has a place for one more organization right now: switched on, not past its expiry day, and fewer organizations than its limit
+// already came in on it. The one home of that rule: asked when a code is typed (testerCodeUsable) and again when the sign-up link
+// is used (lib/signup.js), because several people can ask with the code while only one place is left.
+function testerSlotOpen(db, config, nowMs) {
+  if (!config || !config.testerCode) return false;
   if (config.testerExpiresMs != null && nowMs > config.testerExpiresMs) return false;
   const used = db.prepare("SELECT COUNT(*) AS n FROM organizations WHERE billing_via_tester_code = 1").get().n;
   return used < config.testerMaxUses;
+}
+
+// The typed code is the right one (trimmed, any case) and the code has a place left.
+function testerCodeUsable(db, config, code, nowMs) {
+  if (!config.testerCode || typeof code !== "string") return false;
+  if (code.trim().toLowerCase() !== config.testerCode) return false;
+  return testerSlotOpen(db, config, nowMs);
 }
 
 // Puts the subscription's quantity back to the user count (H2): after a loan officer joins or is removed, and whenever Stripe reports
@@ -30,4 +39,4 @@ async function syncSeats(db, gateway, orgId) {
   db.prepare("UPDATE organizations SET billing_quantity = ? WHERE id = ? AND stripe_item_id = ?").run(quantity, orgId, org.stripe_item_id);
 }
 
-module.exports = { seatCount, testerCodeUsable, syncSeats };
+module.exports = { seatCount, testerSlotOpen, testerCodeUsable, syncSeats };
