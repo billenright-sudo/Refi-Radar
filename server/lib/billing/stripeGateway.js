@@ -19,14 +19,18 @@ function createStripeGateway({ secretKey, client } = {}) {
 
   return {
     // For the start-up price check (H5). Fails closed: a price billed every N months reads "N month", and a tier carrying a flat fee
-    // has no single unitAmount (null), so neither can pass a check for "monthly, $99 then $49".
+    // has no single unitAmount (null), so neither can pass a check for "monthly, $99 then $49". usageType is "metered" for a price that
+    // charges for reported usage rather than per user; otherCurrencies is true when the price can also charge in another currency (a
+    // currency option other than its own), whose amounts we never check. Stripe sends neither tiers nor currency options unless asked.
     async retrievePrice(id) {
-      const price = await stripe.prices.retrieve(id, { expand: ["tiers"] });
+      const price = await stripe.prices.retrieve(id, { expand: ["tiers", "currency_options"] });
       const recurring = price.recurring;
       const interval = !recurring ? null : recurring.interval_count === 1 ? recurring.interval : `${recurring.interval_count} ${recurring.interval}`;
       return {
         currency: price.currency,
         interval,
+        usageType: recurring?.usage_type ?? null,
+        otherCurrencies: Object.keys(price.currency_options || {}).some((c) => c !== price.currency),
         tiersMode: price.tiers_mode ?? null,
         tiers: (price.tiers || []).map((t) => ({ upTo: t.up_to, unitAmount: t.flat_amount ? null : t.unit_amount })),
       };

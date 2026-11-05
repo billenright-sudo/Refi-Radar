@@ -95,15 +95,26 @@ test("the gateway exposes the whole interface, over an injected client", () => {
 
 test("retrievePrice reads the tiers and fails closed for anything but a plain monthly price (H5)", async () => {
   const price = {
-    id: "price_test", currency: "usd", recurring: { interval: "month", interval_count: 1 }, tiers_mode: "graduated",
+    id: "price_test", currency: "usd", recurring: { interval: "month", interval_count: 1, usage_type: "licensed" }, tiers_mode: "graduated",
     tiers: [{ up_to: 1, unit_amount: 9900, flat_amount: null }, { up_to: null, unit_amount: 4900, flat_amount: null }],
+    currency_options: { usd: { tiers: [] } },
   };
   const f = fakeStripe({ price });
   const gw = createStripeGateway({ client: f.client });
   assert.deepStrictEqual(await gw.retrievePrice("price_test"), {
-    currency: "usd", interval: "month", tiersMode: "graduated", tiers: [{ upTo: 1, unitAmount: 9900 }, { upTo: null, unitAmount: 4900 }],
+    currency: "usd", interval: "month", usageType: "licensed", otherCurrencies: false, tiersMode: "graduated",
+    tiers: [{ upTo: 1, unitAmount: 9900 }, { upTo: null, unitAmount: 4900 }],
   });
-  assert.deepStrictEqual(f.calls[0], ["prices.retrieve", "price_test", { expand: ["tiers"] }]);   // tiers aren't sent unless asked for
+  // neither the tiers nor the currency options are sent unless asked for
+  assert.deepStrictEqual(f.calls[0], ["prices.retrieve", "price_test", { expand: ["tiers", "currency_options"] }]);
+
+  // a metered price charges for usage, not per user; a price with options in other currencies could charge another amount
+  f.state.price = { ...price, recurring: { ...price.recurring, usage_type: "metered" } };
+  assert.strictEqual((await gw.retrievePrice("price_test")).usageType, "metered");
+  f.state.price = { ...price, currency_options: { usd: { tiers: [] }, eur: { tiers: [] } } };
+  assert.strictEqual((await gw.retrievePrice("price_test")).otherCurrencies, true);
+  f.state.price = { ...price, currency_options: undefined };
+  assert.strictEqual((await gw.retrievePrice("price_test")).otherCurrencies, false);
 
   // every 3 months is not monthly; a tier with a flat fee has no single unit amount; a $0 flat fee changes nothing
   f.state.price = { ...price, recurring: { interval: "month", interval_count: 3 } };
@@ -112,7 +123,8 @@ test("retrievePrice reads the tiers and fails closed for anything but a plain mo
   assert.deepStrictEqual((await gw.retrievePrice("price_test")).tiers, [{ upTo: 1, unitAmount: null }, { upTo: null, unitAmount: 4900 }]);
   // a one-off, per-unit price
   f.state.price = { id: "price_once", currency: "usd", recurring: null, tiers_mode: null, unit_amount: 9900 };
-  assert.deepStrictEqual(await gw.retrievePrice("price_once"), { currency: "usd", interval: null, tiersMode: null, tiers: [] });
+  assert.deepStrictEqual(await gw.retrievePrice("price_once"),
+    { currency: "usd", interval: null, usageType: null, otherCurrencies: false, tiersMode: null, tiers: [] });
 });
 
 test("createCheckout: card always, the terms tick, no promotion codes, the org on both, the user count and the plan's trial", async () => {
