@@ -22,11 +22,13 @@ function createStripeGateway({ secretKey, client } = {}) {
     // has no single unitAmount (null), so neither can pass a check for "monthly, $99 then $49". usageType is "metered" for a price that
     // charges for reported usage rather than per user; otherCurrencies is true when the price can also charge in another currency (a
     // currency option other than its own), whose amounts we never check. Stripe sends neither tiers nor currency options unless asked.
+    // active is false for an archived price (Stripe won't start a new subscription on one), and for one that doesn't say.
     async retrievePrice(id) {
       const price = await stripe.prices.retrieve(id, { expand: ["tiers", "currency_options"] });
       const recurring = price.recurring;
       const interval = !recurring ? null : recurring.interval_count === 1 ? recurring.interval : `${recurring.interval_count} ${recurring.interval}`;
       return {
+        active: price.active === true,
         currency: price.currency,
         interval,
         usageType: recurring?.usage_type ?? null,

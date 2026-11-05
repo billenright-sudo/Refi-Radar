@@ -5,7 +5,7 @@
 // the error's own message; we never add a Stripe id, an address, an object or a secret to a log line, but Stripe's own message can
 // name one of its ids.
 const { seatCount, syncSeats } = require("./seats");
-const { CONFIRMABLE, duplicateIds } = require("./events");
+const { CONFIRMABLE, LIVE, duplicateIds } = require("./events");
 const { BASE_CENTS, ADDITIONAL_CENTS, monthlyTotalCents } = require("./config");
 
 const money = (cents) => (cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`);
@@ -67,7 +67,8 @@ function dropDuplicate(db, orgId, subscriptionId) {
 // Works on the second subscriptions recorded for the organization (H1, billing_duplicate_pending) and nothing else: each is cancelled
 // if still live and its latest paid invoice refunded unless already refunded (the gateway's recorded-duplicate rules), then its
 // record is cleared. A failure keeps the record and is logged, so the next webhook event for the organization (or the billing status
-// call) tries again. Never throws.
+// call) tries again. A recorded id that is the organization's own live subscription now (adopted after its first ended) is never
+// cancelled: it is only taken off the record. Never throws.
 async function retryPendingDuplicate(db, gateway, orgId) {
   if (orgId == null || retrying.has(orgId)) return;
   const row = db.prepare("SELECT billing_duplicate_pending FROM organizations WHERE id = ?").get(orgId);
@@ -77,6 +78,13 @@ async function retryPendingDuplicate(db, gateway, orgId) {
   try {
     for (const subscriptionId of ids) {
       try {
+        // read again for each: an event may have made it the organization's own subscription since the list was read
+        const own = db.prepare("SELECT stripe_subscription_id, billing_status FROM organizations WHERE id = ?").get(orgId);
+        if (own?.stripe_subscription_id === subscriptionId && LIVE.has(own.billing_status)) {
+          dropDuplicate(db, orgId, subscriptionId);
+          console.log(`[billing] second subscription for org ${orgId} is now its only one: kept, not cancelled`);
+          continue;
+        }
         const result = await gateway.cancelAndRefund(subscriptionId, { recorded: true });
         dropDuplicate(db, orgId, subscriptionId);
         console.log(`[billing] second subscription for org ${orgId}: cancelled ${result?.cancelled ? "now" : "already"}, refunded ${result?.refunded ? "yes" : "no"}`);

@@ -355,6 +355,56 @@ test("a second subscription whose cancel or refund fails stays recorded and is t
   assert.strictEqual(orgRow(orgId).stripe_subscription_id, "sub_keep", "the organization's own subscription is never touched");
 });
 
+test("a recorded second subscription that becomes the organization's only one is kept: never cancelled or refunded (H1)", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "log", () => {});
+  const cancels = () => calls.filter((c) => c[0] === "cancelAndRefund");
+  const orgId = addOrg();
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_A", item: { id: "si_A" } }), T0 + 10));
+
+  // sub_B is recorded as a second subscription, and its cancel fails
+  cancelImpl = async () => { throw new Error("cancel failed"); };
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_B", item: { id: "si_B" } }), T0 + 20));
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, "sub_B");
+  // sub_A then ends (its event tries sub_B again, which fails again)
+  await post(event("customer.subscription.deleted", subscription(orgId, { id: "sub_A", status: "canceled", item: { id: "si_A" } }), T0 + 30));
+  assert.deepStrictEqual([orgRow(orgId).billing_status, orgRow(orgId).billing_duplicate_pending], ["canceled", "sub_B"]);
+
+  // sub_B is now the brokerage's only subscription: adopted and taken off the record, so nothing cancels or refunds it, even with
+  // a gateway that would now succeed
+  cancelImpl = async () => ({ cancelled: true, refunded: true });
+  calls = [];
+  await post(event("customer.subscription.updated",
+    subscription(orgId, { id: "sub_B", status: "active", trial_end: null, item: { id: "si_B" } }), T0 + 40));
+  await settle();
+  const o = orgRow(orgId);
+  assert.deepStrictEqual([o.stripe_subscription_id, o.stripe_item_id, o.billing_status, o.billing_duplicate_pending], ["sub_B", "si_B", "active", null]);
+  assert.deepStrictEqual(cancels(), []);
+  await post(event("invoice.paid", { id: "in_after_adopt", object: "invoice", customer: `cus_${orgId}` }, T0 + 50));
+  assert.deepStrictEqual(cancels(), []);
+
+  // the retry's own guard: a record that names the organization's live subscription is skipped and cleared
+  db.prepare("UPDATE organizations SET billing_duplicate_pending = 'sub_B' WHERE id = ?").run(orgId);
+  await retryPendingDuplicate(db, gateway, orgId);
+  assert.deepStrictEqual(cancels(), []);
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, null);
+
+  // but one stored as the organization's after it has ended (we cancelled it as a second subscription and its refund failed, then
+  // the first ended) stays recorded, so the refund owed for it is still made
+  const other = addOrg();
+  await post(event("customer.subscription.created", subscription(other, { id: "sub_P" }), T0 + 10));
+  cancelImpl = async () => { throw new Error("refund failed"); };
+  await post(event("customer.subscription.created", subscription(other, { id: "sub_Q" }), T0 + 20));
+  await post(event("customer.subscription.deleted", subscription(other, { id: "sub_P", status: "canceled" }), T0 + 30));
+  storeSubscription(db, other, subscription(other, { id: "sub_Q", status: "canceled" }), (T0 + 40) * 1000);
+  assert.deepStrictEqual([orgRow(other).stripe_subscription_id, orgRow(other).billing_duplicate_pending], ["sub_Q", "sub_Q"]);
+  cancelImpl = async () => ({ cancelled: false, refunded: true });
+  calls = [];
+  await retryPendingDuplicate(db, gateway, other);
+  assert.deepStrictEqual(cancels(), [["cancelAndRefund", "sub_Q", { recorded: true }]]);
+  assert.strictEqual(orgRow(other).billing_duplicate_pending, null);
+});
+
 test("the webhook answers once its follow-ups have run, and still 200 when one fails (ruling 9)", async (t) => {
   t.mock.method(console, "error", () => {});
   const orgId = addOrg({ seats: 2 });

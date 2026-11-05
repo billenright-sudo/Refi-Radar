@@ -93,6 +93,12 @@ function applySubscription(db, org, sub, eventMs, nowMs) {
   // Recent API versions keep the period end on the item rather than on the subscription.
   const periodEnd = msOf(sub.current_period_end ?? item.current_period_end);
   const live = LIVE.has(sub.status);
+  // A subscription recorded as a second one (H1) that is now stored as the organization's own live subscription (its first ended
+  // while the cancel kept failing, say) comes off the record in this same write, so no retry can cancel and refund the only
+  // subscription the brokerage pays for. One stored after it has ended stays recorded: if we cancelled it as a second subscription,
+  // its refund is still owed (the gateway refunds only one carrying our cancel's mark).
+  const pending = duplicateIds(org.billing_duplicate_pending);
+  const keptPending = live ? pending.filter((id) => id !== sub.id) : pending;
   db.prepare(`
     UPDATE organizations SET
       stripe_customer_id = COALESCE(?, stripe_customer_id),
@@ -107,7 +113,8 @@ function applySubscription(db, org, sub, eventMs, nowMs) {
       billing_ever_subscribed = MAX(billing_ever_subscribed, ?),
       billing_pending_checkout = CASE WHEN ? THEN NULL ELSE billing_pending_checkout END,
       billing_event_at = MAX(COALESCE(billing_event_at, 0), ?),
-      billing_synced_at = ?
+      billing_synced_at = ?,
+      billing_duplicate_pending = ?
     WHERE id = ?
   `).run(
     idOf(sub.customer), sub.id, typeof item.id === "string" ? item.id : null, typeof sub.status === "string" ? sub.status : null,
@@ -116,7 +123,7 @@ function applySubscription(db, org, sub, eventMs, nowMs) {
     // shows the other, so one without a card can't tell us there is none.
     sub.default_payment_method ? 1 : 0, STARTED.has(sub.status) ? 1 : 0,
     // a live subscription means the card step is done, so no Checkout is pending any more
-    live ? 1 : 0, eventMs, nowMs, org.id,
+    live ? 1 : 0, eventMs, nowMs, keptPending.length ? keptPending.join(" ") : null, org.id,
   );
 
   const followUps = [];
@@ -195,9 +202,12 @@ function applyStripeEvent(db, event, nowMs = Date.now()) {
 // The same rules for a subscription read from Stripe outside a webhook (the status call's re-read, the tester month's new
 // subscription): eventCreatedMs is when it was read.
 function storeSubscription(db, orgId, subscription, eventCreatedMs, nowMs = Date.now()) {
-  const org = orgById(db, orgId);
-  if (!org || !subscription || typeof subscription.id !== "string") return [];
-  return applySubscription(db, org, subscription, eventCreatedMs, nowMs).followUps;
+  if (!subscription || typeof subscription.id !== "string") return [];
+  // one transaction, as for a webhook event: the read of the organization and the writes it decides on go together
+  return db.transaction(() => {
+    const org = orgById(db, orgId);
+    return org ? applySubscription(db, org, subscription, eventCreatedMs, nowMs).followUps : [];
+  })();
 }
 
-module.exports = { applyStripeEvent, storeSubscription, duplicateIds, CONFIRMABLE };
+module.exports = { applyStripeEvent, storeSubscription, duplicateIds, CONFIRMABLE, LIVE };

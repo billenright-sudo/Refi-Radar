@@ -40,7 +40,7 @@ const CONFIG = Object.freeze({
 const NEEDS_ATTENTION = "Broker Radar needs attention before you can continue.";
 const UNREACHABLE = { success: false, error: "Couldn't reach the payment service. Please try again." };
 const GOOD_PRICE = Object.freeze({
-  currency: "usd", interval: "month", usageType: "licensed", tiersMode: "graduated", otherCurrencies: false,
+  active: true, currency: "usd", interval: "month", usageType: "licensed", tiersMode: "graduated", otherCurrencies: false,
   tiers: [{ upTo: 1, unitAmount: 9900 }, { upTo: null, unitAmount: 4900 }],
 });
 
@@ -254,6 +254,8 @@ test("a mismatched or unreadable Stripe price leaves billing off and logs why (H
   assert.deepStrictEqual(await check(GOOD_PRICE), { ok: true });
   assert.deepStrictEqual(await check({ ...GOOD_PRICE, tiers: [{ upTo: 1, unitAmount: 9900 }, { upTo: "inf", unitAmount: 4900 }] }), { ok: true });
   const bad = [
+    { ...GOOD_PRICE, active: false },   // archived: Checkout would refuse it, and nobody could add a card
+    { ...GOOD_PRICE, active: undefined },
     { ...GOOD_PRICE, interval: "year" },
     { ...GOOD_PRICE, interval: "3 month" },
     { ...GOOD_PRICE, interval: null },
@@ -290,6 +292,7 @@ test("a mismatched or unreadable Stripe price leaves billing off and logs why (H
   db.prepare("UPDATE organizations SET billing_status = NULL WHERE id = ?").run(orgId);
   const starts = [
     { setup: (gw) => { gw.state.price = { ...GOOD_PRICE, currency: "eur" }; }, why: /\[billing\] off: / },
+    { setup: (gw) => { gw.state.price = { ...GOOD_PRICE, active: false }; }, why: /\[billing\] off: the Stripe price is archived/ },
     { setup: (gw) => { gw.state.fail.add("retrievePrice"); }, why: /\[billing\] off: .*retrievePrice failed/ },
     { setup: (gw) => { gw.retrievePrice = () => new Promise(() => {}); }, why: /\[billing\] off: .*took longer than/ },   // Stripe never answers
     { setup: () => { throw new Error("bad key sk_test_must_never_be_logged"); }, why: /\[billing\] off: / },

@@ -27,6 +27,8 @@ async function verifyPrice(gateway, priceId) {
     return { ok: false, reason: `the Stripe price couldn't be read (${safeMessage(err)})` };
   }
   if (!price || typeof price !== "object") return { ok: false, reason: "the Stripe price couldn't be read" };
+  // An archived price can't start a subscription: billing on with one would ask every new broker for a card they couldn't add.
+  if (price.active !== true) return { ok: false, reason: "the Stripe price is archived (not active)" };
   if (price.interval !== "month") return { ok: false, reason: "the Stripe price isn't charged once a month" };
   if (price.currency !== "usd") return { ok: false, reason: "the Stripe price isn't in US dollars" };
   if (price.otherCurrencies !== false) return { ok: false, reason: "the Stripe price also charges in other currencies" };
