@@ -1,8 +1,8 @@
 # Account hardening (sign-up, sign-in, invite links): design
 
-Status: DRAFT, 2026-11-04. Bill asked for "the two security fixes" flagged when forgot-password shipped, and chose
-**email-verified sign-up** over "keep instant sign-up, add a limit". Everything else below is my call unless it says otherwise.
-The two new emails in §6 need Bill's approval of the wording.
+Status: APPROVED by Bill 2026-11-05 ("go, emails approved"), including the wording of both emails in §6. Bill asked for
+"the two security fixes" flagged when forgot-password shipped, and chose **email-verified sign-up** over "keep instant sign-up,
+add a limit". Everything else below is my call unless it says otherwise.
 
 The live site has sent email since 2026-11-04 (revision 00042, mailbox broker.radar.app@gmail.com), so sign-up through an email
 link works as soon as this ships; without a mailbox (local development) sign-up answers 503, as reset does.
