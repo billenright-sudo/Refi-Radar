@@ -316,4 +316,60 @@ db.exec(`
   );
 `);
 
+// ── Billing (lib/billing/*). Times are epoch milliseconds. Every column is added only if missing, so a start is idempotent.
+// organizations: the Stripe ids and a local copy of the subscription's state. billing_status is NULL for an organization
+// that existed before billing (nothing has told us otherwise); the webhook and the sync keep the rest current.
+const billingOrgCols = [
+  ["stripe_customer_id", "TEXT"], ["stripe_subscription_id", "TEXT"], ["stripe_item_id", "TEXT"], ["billing_status", "TEXT"],
+  ["billing_quantity", "INTEGER"], ["billing_trial_end", "INTEGER"], ["billing_period_end", "INTEGER"],
+  ["billing_cancel_at_period_end", "INTEGER NOT NULL DEFAULT 0"], ["billing_exempt", "INTEGER NOT NULL DEFAULT 0"],
+  ["billing_tester_until", "INTEGER"], ["billing_via_tester_code", "INTEGER NOT NULL DEFAULT 0"],
+  ["billing_ever_subscribed", "INTEGER NOT NULL DEFAULT 0"], ["billing_has_card", "INTEGER NOT NULL DEFAULT 0"],
+  ["billing_event_at", "INTEGER"], ["billing_synced_at", "INTEGER"], ["billing_pending_checkout", "TEXT"],
+  ["billing_confirmation_sent", "INTEGER NOT NULL DEFAULT 0"],
+];
+const billingHave = new Set(db.prepare("PRAGMA table_info(organizations)").all().map((c) => c.name));
+for (const [name, def] of billingOrgCols) {
+  if (!billingHave.has(name)) db.exec(`ALTER TABLE organizations ADD COLUMN ${name} ${def}`);
+}
+
+// users: removing a seat keeps the row (its history stays) but frees the seat; removed_email remembers the address that was
+// released so the person can be invited again.
+const billingUserCols = db.prepare("PRAGMA table_info(users)").all();
+if (!billingUserCols.some((c) => c.name === "removed_at")) db.exec("ALTER TABLE users ADD COLUMN removed_at INTEGER");
+if (!billingUserCols.some((c) => c.name === "removed_email")) db.exec("ALTER TABLE users ADD COLUMN removed_email TEXT");
+
+// signup_requests: what the person agreed to and whether they used the tester code, carried to the organization when the link is used.
+const billingSignupCols = db.prepare("PRAGMA table_info(signup_requests)").all();
+if (!billingSignupCols.some((c) => c.name === "tester")) db.exec("ALTER TABLE signup_requests ADD COLUMN tester INTEGER NOT NULL DEFAULT 0");
+if (!billingSignupCols.some((c) => c.name === "terms_version")) db.exec("ALTER TABLE signup_requests ADD COLUMN terms_version TEXT");
+if (!billingSignupCols.some((c) => c.name === "privacy_version")) db.exec("ALTER TABLE signup_requests ADD COLUMN privacy_version TEXT");
+
+// stripe_events: the ids of webhook events already handled, so Stripe's retries and replays do nothing twice.
+// terms_acceptances: which version of the Terms / Privacy Policy each user agreed to, when, and from which address.
+// feedback: notes sent from inside the app.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stripe_events (
+    id          TEXT    PRIMARY KEY,
+    type        TEXT    NOT NULL,
+    received_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS terms_acceptances (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    document    TEXT    NOT NULL CHECK(document IN ('terms','privacy')),
+    version     TEXT    NOT NULL,
+    accepted_at INTEGER NOT NULL,
+    ip          TEXT
+  );
+  CREATE TABLE IF NOT EXISTS feedback (
+    id         INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    org_id     INTEGER NOT NULL,
+    page       TEXT    NOT NULL,
+    message    TEXT    NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+`);
+
 module.exports = db;
