@@ -141,7 +141,35 @@ function passwordChangedMessage({ firstName, email }) {
   };
 }
 
-// Sends one of the two messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
+// The two sign-up emails. The wording is Bill's, approved 2026-11-05 (auth-hardening design §6): change it only with his say-so.
+// A goes to a new address and carries the sign-up link; B goes to an address that already has an account or an invitation.
+function signupMessage({ firstName, orgName, email, link }) {
+  return {
+    subject: "Finish creating your Broker Radar account",
+    html: `
+      <p>Hi ${escapeHtml(firstName)},</p>
+      <p>Thanks for starting a Broker Radar trial for ${escapeHtml(orgName)}.</p>
+      <p>To finish creating your account (${escapeHtml(email)}), use this button within 24 hours:</p>
+      <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Create my account</a></p>
+      <p style="color:#666;font-size:12px">If you didn't ask for this, you can ignore this email. No account will be created.</p>
+    `,
+  };
+}
+
+function alreadyRegisteredMessage({ firstName, email, link }) {
+  return {
+    subject: "You already have a Broker Radar account",
+    html: `
+      <p>Hi ${escapeHtml(firstName)},</p>
+      <p>Someone just tried to create a new Broker Radar account with your email (${escapeHtml(email)}), but there's already an account or an invitation for this address.</p>
+      <p>If this was you, sign in instead. If you've forgotten your password, use "Forgot password?" on the sign-in page. If your broker invited you, use the link in that invitation.</p>
+      <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Go to sign in</a></p>
+      <p style="color:#666;font-size:12px">If it wasn't you, you can ignore this email. Nothing has changed.</p>
+    `,
+  };
+}
+
+// Sends one of the four messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
 // the send fails; the caller decides what to do (the routes never tell the page, which must not reveal whether an account exists).
 // A reset message carries the secret link, so only err.message is logged, never the message, the link or the token.
 async function deliverPasswordMail(to, buildMessage, what) {
@@ -167,8 +195,17 @@ function sendPasswordChanged({ to, firstName }) {
   return deliverPasswordMail(to, () => passwordChangedMessage({ firstName, email: to }), "password-changed");
 }
 
+function sendSignup({ to, firstName, orgName, link }) {
+  return deliverPasswordMail(to, () => signupMessage({ firstName, orgName, email: to, link }), "sign-up");
+}
+
+function sendAlreadyRegistered({ to, firstName }) {
+  return deliverPasswordMail(to, () => alreadyRegisteredMessage({ firstName, email: to, link: `${APP_URL}/` }), "already-registered");
+}
+
 module.exports = {
   sendInvite, inviteLink, sendRefiAlert, sendEmailChange, APP_URL,
   emailLinksWork, mailReady,
   passwordResetMessage, passwordChangedMessage, sendPasswordReset, sendPasswordChanged,
+  signupMessage, alreadyRegisteredMessage, sendSignup, sendAlreadyRegistered,
 };
