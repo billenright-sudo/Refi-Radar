@@ -65,7 +65,10 @@ function fakeGateway() {
     },
     retrieveCheckout: async (id) => {
       rec("retrieveCheckout", id);
-      if (!state.checkouts[id]) throw new Error("No such checkout session");
+      // what Stripe's SDK throws for a session it doesn't have (a test-mode one asked for with live keys, say)
+      if (!state.checkouts[id]) {
+        throw Object.assign(new Error("No such checkout.session"), { type: "StripeInvalidRequestError", code: "resource_missing", statusCode: 404 });
+      }
       return { ...state.checkouts[id] };
     },
     retrieveSubscription: async (id) => {
@@ -584,11 +587,42 @@ test("status syncs a pending Checkout (back before the webhook) and re-reads a s
     assert.deepStrictEqual(s.data.access, { ok: true });
   });
   assert.ok(lines.some((l) => /\[billing\].*org \d+/.test(l)), lines.join("\n"));
+  // a pending Checkout that can't be read (Stripe down): kept, to be read again; /card answers 502 and makes no second Checkout
   gateway.state.fail.add("retrieveCheckout");
   const failing = brokerage({ billing_pending_checkout: "cs_x" });
   assert.strictEqual((await captureLogs(async () => assert.strictEqual((await get("/api/billing/status", failing.broker)).status, 200))).length > 0, true);
   assert.strictEqual(orgRow(failing.orgId).billing_pending_checkout, "cs_x", "kept, to be read again");
+  calls = [];
+  await captureLogs(async () => assert.deepStrictEqual((await post("/api/billing/card", failing.broker)).data, UNREACHABLE));
+  assert.deepStrictEqual(names(), ["retrieveCheckout"], "no second Checkout while the first can't be read");
+  assert.strictEqual(orgRow(failing.orgId).billing_pending_checkout, "cs_x");
   gateway.state.fail.clear();
+  // but one Stripe doesn't have (resource_missing: a test-mode Checkout after the switch to live keys) is forgotten, and /card makes
+  // a new one instead of a 502 for ever
+  const missing = brokerage({ billing_pending_checkout: "cs_from_test_mode" });
+  calls = [];
+  const fresh = await captureLogs(async () => {
+    const r = await post("/api/billing/card", missing.broker);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(orgRow(missing.orgId).billing_pending_checkout, r.data.url.split("/").pop());
+  });
+  assert.deepStrictEqual(names(), ["retrieveCheckout", "createCheckout"]);
+  assert.ok(!fresh.some((l) => l.includes("cs_from_test_mode")), "no Stripe id in the log");
+  // the status call forgets it too
+  const goneToo = brokerage({ billing_pending_checkout: "cs_gone_too" });
+  await captureLogs(async () => assert.strictEqual((await get("/api/billing/status", goneToo.broker)).status, 200));
+  assert.strictEqual(orgRow(goneToo.orgId).billing_pending_checkout, null);
+  // a bare 404 from the gateway counts as missing too
+  const savedRead = gateway.retrieveCheckout;
+  gateway.retrieveCheckout = async (id) => { calls.push(["retrieveCheckout", id]); throw Object.assign(new Error("Not Found"), { statusCode: 404 }); };
+  try {
+    const notFound = brokerage({ billing_pending_checkout: "cs_404" });
+    calls = [];
+    await captureLogs(async () => assert.strictEqual((await post("/api/billing/card", notFound.broker)).status, 200));
+    assert.deepStrictEqual(names(), ["retrieveCheckout", "createCheckout"]);
+  } finally {
+    gateway.retrieveCheckout = savedRead;
+  }
 
   // the user count is put back when it differs (H2), and a recorded second subscription is retried (H1)
   const seats = brokerage({ los: 2, billing_status: "active", stripe_subscription_id: "sub_seats", stripe_item_id: "si_seats", billing_quantity: 1, billing_synced_at: Date.now() });

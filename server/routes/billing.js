@@ -68,20 +68,32 @@ function sharedPerOrg() {
 const cardOnce = sharedPerOrg();
 const repairOnce = sharedPerOrg();
 
+// Stripe has no such object: its SDK says resource_missing (HTTP 404).
+const missingAtStripe = (err) => err?.code === "resource_missing" || err?.statusCode === 404 || err?.status === 404;
+
 // The organization's pending Checkout, read back from Stripe. A finished one stores its subscription (the same rules as the webhook)
-// and is forgotten; an expired one is forgotten; an open one is kept, to be shown again. -> { session, followUps }. Throws when
-// Stripe can't be reached, leaving the pending Checkout in place to be read next time.
+// and is forgotten; an expired one is forgotten; an open one is kept, to be shown again. One Stripe doesn't have at all (a test-mode
+// Checkout once live keys are in, say) can never finish, so it is forgotten too (status "missing"), and the broker gets a new one
+// rather than an error for ever. -> { session, followUps }. Any other failure throws, leaving the pending Checkout in place to be
+// read next time (and no second Checkout is made meanwhile).
 async function settleCheckout(gateway, org, nowMs) {
   const id = org.billing_pending_checkout;
-  const session = await gateway.retrieveCheckout(id);
+  const forget = () => db.prepare("UPDATE organizations SET billing_pending_checkout = NULL WHERE id = ? AND billing_pending_checkout = ?").run(org.id, id);
+  let session;
+  try {
+    session = await gateway.retrieveCheckout(id);
+  } catch (err) {
+    if (!missingAtStripe(err)) throw err;
+    forget();
+    console.warn(`[billing] the pending Checkout for org ${org.id} doesn't exist at Stripe: forgotten`);
+    return { session: { status: "missing" }, followUps: [] };
+  }
   let followUps = [];
   if (session.status === "complete" && session.subscriptionId) {
     const subscription = await gateway.retrieveSubscription(session.subscriptionId);
     followUps = storeSubscription(db, org.id, subscription, readAt(nowMs), nowMs);
   }
-  if (session.status === "complete" || session.status === "expired") {
-    db.prepare("UPDATE organizations SET billing_pending_checkout = NULL WHERE id = ? AND billing_pending_checkout = ?").run(org.id, id);
-  }
+  if (session.status === "complete" || session.status === "expired") forget();
   return { session, followUps };
 }
 
