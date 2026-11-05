@@ -79,12 +79,15 @@ When `/login` finds no account that can sign in (no row, an unused invite, or no
     `${APP_URL}/#signup=<token>` (the token after the `#`, like reset links, so it never reaches the server).
 - **Limits:**
   - 5 requests an hour per IP (429 "Too many sign-up attempts — please try again in an hour");
-  - at most 3 emails an hour to one address, counting reset, A and B together (one per-address counter shared with `/forgot`);
-    extra requests still answer 200 and send nothing;
+  - at most 3 sign-up emails (A and B together) an hour to one address, and separately at most 3 reset emails; extra requests
+    still answer 200 and send nothing. Kept apart so that sign-up attempts, by the person or anyone else, can never block a
+    password reset. (Changed 2026-11-05 at code review.)
   - sign-up emails (A and B) have their own site-wide cap of **20 an hour** (one counter), apart from the reset emails' cap of
     60 an hour. Anyone can ask for sign-up emails to made-up addresses, so one shared cap would let them use it up and silently
     stop password-reset emails for the rest of the hour. The per-address count is asked first, as in `/forgot`. (Changed
     2026-11-05 at code review.)
+  - a full site cap is logged once an hour (no address): "[auth] sign-up email limit reached for this hour" or "[auth] reset
+    email limit reached for this hour". (Added 2026-11-05 at code review.)
   - sign-up asks the per-address counter about addresses that have no account, so the counter must not grow without end: it
     drops an address once its last send is over an hour old (a sweep inside `take`, or when the map passes a size). Both
     counters stay in memory: the service runs one instance.
@@ -98,9 +101,15 @@ When `/login` finds no account that can sign in (no row, an unused invite, or no
   **`POST /api/auth/register/check { token }`**:
   - 200 `{ email, orgName }` for a well-formed, unexpired request whose address still has no user;
   - otherwise 410 "This link has expired or was already used."
-- The page, **"Finish creating your account"**, shows the email and brokerage name and one button, **Create my account**. Opening
-  the link does not create the account: mail scanners open links first.
-- **`POST /api/auth/register/complete { token }`**, in one transaction:
+- The page, **"Finish creating your account"**, shows the email and brokerage name, a Password field and one button, **Create my
+  account**. Opening the link does not create the account: mail scanners open links first.
+- **`POST /api/auth/register/complete { token, password }`**:
+  - the request must be valid (else 410, the same message);
+  - **the password chosen at sign-up is required**: a missing, non-string or wrong one is 400 "That isn't the password you chose
+    when you signed up. Try again, or start again to choose a new one." Nothing is created and the link stays good. Why: without
+    it, whoever asked for the link could choose a password, wait for the address's owner to press Create my account, and then sign
+    in to that person's new account with the password they chose. (Added 2026-11-05 at code review.)
+  then, in one transaction:
   - the request must still be valid and the address must still have no user (else 410, the same message);
   - create the organization (14-day trial starting now) and the broker user (`invite_accepted = 1`, the stored password hash);
   - delete the request.
@@ -183,16 +192,19 @@ Both come from `"Broker Radar" <EMAIL_USER>` in the same plain style as the rese
 The approved layout stays as it is; these use the existing sign-in card (`AuthCard`, amber links, the red error box).
 
 - **Register:** the same form. After sending, the card shows "Check your email" and the line from 5.2, with **Back to sign in**.
-- **Finish creating your account:** heading, the email and brokerage name, **Create my account**. Expired: the 410 line and
-  **Start again**.
+- **Finish creating your account:** heading, the email and brokerage name, a **Password** field (placeholder "The password you
+  chose when you signed up"), **Create my account**, and below it an amber text link **Start again** (opens Register). An empty
+  field is not sent: the red line says "Enter the password you chose when you signed up." A 400 shows the server's line in the
+  same red box and keeps the page. Expired: the 410 line and **Start again**.
 - **Accept invite:** unchanged, except that an expired or used link shows "This invitation has expired or was already used."
 
 ## 8. Tests that have to change
 
 Four test files create accounts through `/api/auth/register` (sessions, auth, sweeps-api, coaching). They move to a shared test
 helper that creates a signed-in broker through the new flow with a fake mailer (or directly in the database where the flow isn't
-the subject). Seams follow the existing pattern: `app.set("sendSignup")`, `app.set("sendAlreadyRegistered")`. The existing seam
-names `resetSendCounter` and `resetSiteSendCounter` stay (no rename churn in the reset tests) and now cover sign-up emails too.
+the subject). Seams follow the existing pattern: `app.set("sendSignup")`, `app.set("sendAlreadyRegistered")`. Sign-up has its
+own per-address key ("signup:" + the address, in the same counter) and its own site counter (`signupSiteSendCounter`);
+`resetSendCounter` and `resetSiteSendCounter` keep their names (no rename churn in the reset tests).
 
 The only other caller of `/api/auth/register` is `scripts/seed-demo.js`, which registers the demo broker and logs in on a 409.
 It changes to: log in first; if that fails, print that the demo account must first be created through sign-up, and stop.
