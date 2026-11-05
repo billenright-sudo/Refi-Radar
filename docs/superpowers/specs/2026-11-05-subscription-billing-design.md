@@ -146,7 +146,7 @@ the trial or tester end date, the next charge date, and **Manage billing** (Stri
 
 ### 6.9 Feedback (H9, my call)
 
-A **Send feedback** button for everyone signed in (broker and loan officer, locked or not): a box, **Send**, and "Thanks — Bill's
+A **Send feedback** button for everyone signed in (broker and loan officer, locked or not): a box, **Send**, and "Thanks — the Broker Radar
 team will read this." The text, the page it was sent from, the user and the brokerage are stored, and emailed to the address in
 `FEEDBACK_TO` (Bill's inbox) from the app's mailbox. At most 10 an hour per user. Nothing is sent when `FEEDBACK_TO` is unset.
 

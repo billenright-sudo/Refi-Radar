@@ -45,7 +45,7 @@ Vite, `node --test`.
   month ends on {date}. Add a card to keep going." · "Add card" · "Your last payment didn't go through. Update your card to keep
   Broker Radar running." · "Update card" · "Your brokerage's subscription needs attention. Please contact your broker." · "$99 a
   month, plus $49 for each additional user, starting today, until you cancel." · "We've updated our terms" · "I agree" · "Manage
-  billing" · "Download my clients (CSV)" · "That tester code isn't valid." · "Thanks — Bill's team will read this." ·
+  billing" · "Download my clients (CSV)" · "That tester code isn't valid." · "Thanks — the Broker Radar team will read this." ·
   "Brokerage $99 + {n} additional users × $49 = ${total} a month" / "Brokerage $99 a month".
 - All wording is **draft until Bill approves it** (spec §10); the final report lists it again.
 - The approved layout stays: reuse `AuthCard`, `AuthField`, `btnPrimary`, the red error box, amber text buttons, `card`, `C.*`,
@@ -384,7 +384,7 @@ working until {date}." · the past-due line · "No charge for this account." (ex
 `FEEDBACK_TO` is set) email it after the answer — subject "Broker Radar feedback from {brokerage}", body: who (name, role), page,
 the message, all escaped. `feedbackCanSend(message) -> null | errorLine` in `feedback.mjs`.
 Client: a "Send feedback" button in the sidebar's bottom group (every signed-in user, and on the lock pages) opens a small panel in
-the existing `card` style: a textarea, "Send", and after a 200 "Thanks — Bill's team will read this."
+the existing `card` style: a textarea, "Send", and after a 200 "Thanks — the Broker Radar team will read this."
 
 - [ ] **Step 1: Tests** — empty / too long / 11th in an hour; stored with user, org, page; emailed to `FEEDBACK_TO` with every value
   escaped; nothing emailed without it; a locked user can still send; client helper lines.
