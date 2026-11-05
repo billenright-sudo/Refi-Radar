@@ -1,6 +1,6 @@
 # Subscription billing and terms: design
 
-Status: DRAFT, 2026-11-05, for Bill's approval. Marked **Bill** where Bill decided; **my call** where I did (Bill can override any of
+Status: APPROVED by Bill 2026-11-05 ("Yes"). Marked **Bill** where Bill decided; **my call** where I did (Bill can override any of
 these); **open** where only Bill can decide.
 
 ## 1. Why
