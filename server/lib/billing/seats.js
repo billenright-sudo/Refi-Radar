@@ -15,4 +15,19 @@ function testerCodeUsable(db, config, code, nowMs) {
   return used < config.testerMaxUses;
 }
 
-module.exports = { seatCount, testerCodeUsable };
+// Puts the subscription's quantity back to the user count (H2): after a loan officer joins or is removed, and whenever Stripe reports
+// a different quantity. Nothing without a subscription item, or for one that has ended (Stripe refuses to change those). The new
+// count is stored only once Stripe has taken it, so a failed push (which throws, for the caller to log) is tried again next time.
+async function syncSeats(db, gateway, orgId) {
+  const org = db.prepare(
+    "SELECT stripe_subscription_id, stripe_item_id, billing_status, billing_quantity FROM organizations WHERE id = ?"
+  ).get(orgId);
+  if (!org || !org.stripe_subscription_id || !org.stripe_item_id) return;
+  if (org.billing_status === "canceled" || org.billing_status === "incomplete_expired") return;
+  const quantity = seatCount(db, orgId);
+  if (quantity < 1 || quantity === org.billing_quantity) return;
+  await gateway.setQuantity({ subscriptionId: org.stripe_subscription_id, itemId: org.stripe_item_id, quantity });
+  db.prepare("UPDATE organizations SET billing_quantity = ? WHERE id = ? AND stripe_item_id = ?").run(quantity, orgId, org.stripe_item_id);
+}
+
+module.exports = { seatCount, testerCodeUsable, syncSeats };

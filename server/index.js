@@ -20,6 +20,7 @@ const voiceRoutes = require("./routes/voice");
 const googleRoutes = require("./routes/google");
 const profileRoutes = require("./routes/profile");
 const integrationRoutes = require("./routes/integrations");
+const billingWebhookRoutes = require("./routes/billingWebhook");
 const { charliModel } = require("./lib/assistant/orchestrator");
 
 const PORT         = process.env.PORT || 8080;
@@ -33,6 +34,9 @@ app.set("trust proxy", 1);
 // The ARIVE (Zapier) feed reads its own 32 KB body and no cookie on /loans, so it is mounted BEFORE the app-wide 20 MB JSON
 // parser below (R9): that parser would otherwise take the body first and the 32 KB limit would never apply.
 app.use("/api/integrations", integrationRoutes);
+// The Stripe webhook checks a signature over the exact bytes Stripe sent, so it reads its own raw body and must come before the JSON
+// parser too. It answers 404 until billing is switched on (the billing config and gateway on the app).
+app.use("/api/billing/webhook", billingWebhookRoutes);
 
 app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());

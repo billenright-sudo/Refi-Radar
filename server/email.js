@@ -168,7 +168,26 @@ function alreadyRegisteredMessage({ firstName, email, link }) {
   };
 }
 
-// Sends one of the four messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
+// The billing confirmation (spec §6.1.5, H6): one email to the broker when the brokerage's first subscription starts, with the end of
+// the free trial or test month, the price after it, and how to cancel. DRAFT wording for Bill's approval (spec §10): change it only
+// with his say-so. `kind` is "trial" (a card was added) or "tester" (a test month with no card yet).
+function billingConfirmationMessage({ firstName, orgName, kind, endDate, totalLine }) {
+  const tester = kind === "tester";
+  return {
+    subject: tester ? "Your Broker Radar test month has started" : "Your Broker Radar trial has started",
+    html: `
+      <p>Hi ${escapeHtml(firstName)},</p>
+      <p>${escapeHtml(orgName)}'s free ${tester ? "test month" : "trial"} runs until ${escapeHtml(endDate)}.</p>
+      <p>${tester
+        ? "Before it ends we'll ask you for a card; without one, Broker Radar pauses and your data is kept."
+        : "After that, Broker Radar is $99 a month, plus $49 for each additional user, charged to the card you added until you cancel."}</p>
+      ${totalLine ? `<p>${escapeHtml(totalLine)}</p>` : ""}
+      <p>You can cancel any time in Broker Radar under Billing → Manage billing.</p>
+    `,
+  };
+}
+
+// Sends one of the messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
 // the send fails; the caller decides what to do (the routes never tell the page, which must not reveal whether an account exists).
 // A reset message carries the secret link, so only err.message is logged, never the message, the link or the token.
 async function deliverPasswordMail(to, buildMessage, what) {
@@ -202,9 +221,14 @@ function sendAlreadyRegistered({ to, firstName }) {
   return deliverPasswordMail(to, () => alreadyRegisteredMessage({ firstName, email: to, link: `${APP_URL}/` }), "already-registered");
 }
 
+function sendBillingConfirmation({ to, firstName, orgName, kind, endDate, totalLine }) {
+  return deliverPasswordMail(to, () => billingConfirmationMessage({ firstName, orgName, kind, endDate, totalLine }), "billing-confirmation");
+}
+
 module.exports = {
   sendInvite, inviteLink, sendRefiAlert, sendEmailChange, APP_URL,
   emailLinksWork, mailReady,
   passwordResetMessage, passwordChangedMessage, sendPasswordReset, sendPasswordChanged,
   signupMessage, alreadyRegisteredMessage, sendSignup, sendAlreadyRegistered,
+  billingConfirmationMessage, sendBillingConfirmation,
 };
