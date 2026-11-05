@@ -3,7 +3,8 @@
 //   POST /api/auth/register          { firstName, lastName, email, password, orgName } -> 200 { success } (no cookie, no user, for every valid request);
 //                                                                                          400 / 429 / 503 { success: false, error } (a line to show as it is)
 //   POST /api/auth/register/check    { token }            -> 200 { success, email, orgName }; 410 { success: false, error }
-//   POST /api/auth/register/complete { token }            -> 200 { success, user } and the session cookie (signed in); 410 / 429 { success: false, error }
+//   POST /api/auth/register/complete { token, password }  -> 200 { success, user } and the session cookie (signed in);
+//                                                           400 (not the password chosen at sign-up; the link stays good) / 410 / 429 { success: false, error }
 //   POST /api/auth/invite/check      { token }            -> 200 { success, firstName, lastName, email, orgName }; 410 { success: false, error }
 //   POST /api/auth/accept-invite     { token, password }  -> 200 { user } and the session cookie; 400 / 410 / 429 { success: false, error }
 // The emailed links are <site>/#signup=<token> and <site>/#invite=<token>. Invitations emailed before this release are
@@ -44,6 +45,13 @@ export function signupCheckOutcome(status, data) {
   if (status === 410) return { kind: "gone", text: data?.error || "This link has expired or was already used." };
   if (status === 200 && typeof data?.email === "string" && typeof data?.orgName === "string") return { kind: "ok", email: data.email, orgName: data.orgName };
   return { kind: "retry", text: data?.error || RETRY_TEXT };
+}
+
+// What "Create my account" says instead of sending, or null to send. Finishing needs the password chosen at sign-up (so whoever
+// asked for the link can't hand the address's owner an account with a password they know); an empty field is caught here, and
+// anything typed goes to the server as it is (passwords are never trimmed).
+export function finishSignupProblem(password) {
+  return password ? null : "Enter the password you chose when you signed up.";
 }
 
 // The same for the invitation page's open-time check.

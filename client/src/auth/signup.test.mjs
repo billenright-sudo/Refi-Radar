@@ -2,7 +2,7 @@
 // The sign-up and invite screens' logic, with no DOM and no React (the screens are in App.jsx).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome } from "./signup.mjs";
+import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./signup.mjs";
 
 const HEX = "a".repeat(64);
 
@@ -32,6 +32,13 @@ test("signupCheckOutcome: ok needs email and orgName; only a 410 is final", () =
   assert.equal(signupCheckOutcome(200, { email: "a@x" }).kind, "retry");
   assert.equal(signupCheckOutcome(502, null).kind, "retry");
   assert.deepEqual(signupCheckOutcome(502, null), { kind: "retry", text: "Couldn't check your link — please try again" });
+});
+
+test("finishSignupProblem: an empty password field is the approved line and is not sent; anything typed is sent as it is", () => {
+  assert.equal(finishSignupProblem(""), "Enter the password you chose when you signed up.");
+  assert.equal(finishSignupProblem(undefined), "Enter the password you chose when you signed up.");
+  assert.equal(finishSignupProblem("password123"), null);
+  assert.equal(finishSignupProblem("        "), null, "passwords are never trimmed: spaces are a password, for the server to judge");
 });
 
 test("inviteCheckOutcome: ok carries the four fields; only a 410 is final", () => {

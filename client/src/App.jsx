@@ -8,7 +8,7 @@ import { loadCalls } from "./calls.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
-import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome } from "./auth/signup.mjs";
+import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
 
 // ---------------------------------------------------------------------------
@@ -615,15 +615,15 @@ const RegisterPage = ({ goLogin }) => {
       )}
       <form onSubmit={submit}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 1rem" }}>
-          <AuthField label="First Name" value={form.firstName} onChange={e => set("firstName", e.target.value)} placeholder="Bill" disabled={loading} />
-          <AuthField label="Last Name" value={form.lastName} onChange={e => set("lastName", e.target.value)} placeholder="Enright" disabled={loading} />
+          <AuthField label="First Name" value={form.firstName} onChange={e => set("firstName", e.target.value)} placeholder="Jane" disabled={loading} />
+          <AuthField label="Last Name" value={form.lastName} onChange={e => set("lastName", e.target.value)} placeholder="Smith" disabled={loading} />
         </div>
         <AuthField label="Email" type="email" value={form.email} onChange={e => set("email", e.target.value)} placeholder="you@yourbrokerage.com" disabled={loading} />
         <AuthField label="Password" type="password" value={form.password} onChange={e => set("password", e.target.value)} placeholder="Choose a strong password" disabled={loading} />
         <AuthField label="Brokerage Name" value={form.orgName} onChange={e => set("orgName", e.target.value)} placeholder="Premier Mortgage Group" disabled={loading} />
         <div style={{ fontSize: 11, color: C.muted, marginBottom: "1rem" }}>Your company name — e.g. Premier Mortgage Group</div>
         <button type="submit" disabled={loading} style={{ ...btnPrimary, width: "100%", opacity: loading ? 0.6 : 1 }}>
-          {loading ? "Sending…" :"Start 14-Day Free Trial"}
+          {loading ? "Sending…" : "Start 14-Day Free Trial"}
         </button>
       </form>
       <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: 13, color: C.muted }}>
@@ -746,13 +746,16 @@ const AcceptInvitePage = ({ token, onLogin }) => {
 };
 
 // "Finish creating your account": opened by the emailed sign-up link, whose token App read from the address. Opening it only checks the
-// token (an email scanner may open it first), so the account is made, and the link used up, only by the button. A good press signs
-// this device in (onDone gets the user).
+// token (an email scanner may open it first), so the account is made, and the link used up, only by the button, and only with the
+// password chosen at sign-up (so whoever asked for the link can't hand the address's owner an account with a password they know). A
+// wrong password is a 400 whose line shows in the red box, and the link stays good. A good press signs this device in (onDone gets
+// the user).
 const FinishSignupPage = ({ token, onDone, goRegister }) => {
   const [info, setInfo] = useState(null);            // { email, orgName } once the token checks out
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [linkError, setLinkError] = useState("");    // the link is no good (expired, used) or could not be checked
   const [canRetry, setCanRetry] = useState(false);   // the CHECK failed (network, host), not the link: asking again can work
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
@@ -782,14 +785,17 @@ const FinishSignupPage = ({ token, onDone, goRegister }) => {
 
   useEffect(() => { checkLink(); }, [checkLink]);
 
-  const create = async () => {
+  const create = async (e) => {
+    e.preventDefault();
+    const problem = finishSignupProblem(password);
+    if (problem) { setSubmitError(problem); return; }
     setSubmitting(true);
     setSubmitError("");
     try {
       const res = await fetch("/api/auth/register/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ token, password }),
       });
       const data = await res.json();
       if (res.status === 410) { setLinkError(data.error || "This link has expired or was already used."); setCanRetry(false); return; }   // used or replaced since the page opened
@@ -838,9 +844,17 @@ const FinishSignupPage = ({ token, onDone, goRegister }) => {
           {submitError}
         </div>
       )}
-      <button onClick={create} disabled={submitting} style={{ ...btnPrimary, width: "100%", opacity: submitting ? 0.6 : 1 }}>
-        {submitting ? "Creating…" : "Create my account"}
-      </button>
+      <form onSubmit={create}>
+        <AuthField label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="The password you chose when you signed up" disabled={submitting} />
+        <button type="submit" disabled={submitting} style={{ ...btnPrimary, width: "100%", opacity: submitting ? 0.6 : 1 }}>
+          {submitting ? "Creating…" : "Create my account"}
+        </button>
+      </form>
+      <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: 13, color: C.muted }}>
+        <button onClick={goRegister} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>
+          Start again
+        </button>
+      </div>
     </AuthCard>
   );
 };
