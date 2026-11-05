@@ -5,6 +5,7 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { requireAccess } = require("../middleware/access");
 const { sendRefiAlert } = require("../email");
 const { CAREER_STAGES, stageById } = require("../lib/assistant/coaching");
+const { syncSeats } = require("../lib/billing/seats");
 
 const router = express.Router();
 router.use(requireAuth, requireAccess, requireBroker);
@@ -15,7 +16,7 @@ function toUser(u) {
 
 // GET /api/org/los — list all LOs in this org
 router.get("/los", (req, res) => {
-  const los = db.prepare("SELECT * FROM users WHERE org_id = ? AND role = 'lo' ORDER BY first_name ASC").all(req.user.org_id);
+  const los = db.prepare("SELECT * FROM users WHERE org_id = ? AND role = 'lo' AND removed_at IS NULL ORDER BY first_name ASC").all(req.user.org_id);
   // For each LO, include client count
   const result = los.map(lo => {
     const { n } = db.prepare("SELECT COUNT(*) AS n FROM clients WHERE user_id = ?").get(lo.id);
@@ -62,6 +63,53 @@ router.patch("/los/:id/stage", (req, res) => {
   } catch (err) {
     console.error("PATCH /api/org/los/:id/stage:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+
+// DELETE /api/org/los/:id — a broker removes an accepted loan officer, or cancels a pending invitation (spec §6.3).
+// A pending invite is simply deleted (no seat was ever counted). An accepted LO is kept as a row, so history (Charli's
+// recommendations, the contact log, assistant usage) stays whole, but every way in is closed in ONE transaction: their clients move
+// to the broker, the login is blanked and their session version raised, the address is freed, and their ARIVE key, Google
+// connection, reset link and email change are deleted. Then, after the answer, the new user count goes to Stripe (a failure is
+// logged by its message and retried at the next sync). 404 for anything that is not an LO of the caller's org that is not removed.
+router.delete("/los/:id", (req, res) => {
+  const loId = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
+  const lo = Number.isSafeInteger(loId)
+    ? db.prepare("SELECT id, invite_accepted FROM users WHERE id = ? AND org_id = ? AND role = 'lo' AND removed_at IS NULL").get(loId, req.user.org_id)
+    : undefined;
+  if (!lo) return res.status(404).json({ success: false, error: "LO not found in your org" });
+
+  const orgId = req.user.org_id;
+  try {
+    db.transaction(() => {
+      if (!lo.invite_accepted) {
+        db.prepare("DELETE FROM users WHERE id = ? AND org_id = ? AND invite_accepted = 0").run(lo.id, orgId);
+        return;
+      }
+      db.prepare("UPDATE clients SET user_id = ? WHERE user_id = ?").run(req.user.id, lo.id);
+      db.prepare(`
+        UPDATE users SET removed_at = ?, removed_email = email, email = 'removed-' || id || '@removed.invalid',
+                         password_hash = NULL, session_version = session_version + 1
+        WHERE id = ?
+      `).run(Date.now(), lo.id);
+      for (const table of ["integration_keys", "google_connections", "password_resets", "email_changes"]) {
+        db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(lo.id);
+      }
+    })();
+  } catch (err) {
+    console.error("DELETE /api/org/los/:id:", err.message);
+    return res.status(500).json({ success: false, error: "Database error" });
+  }
+  res.json({ success: true });
+
+  if (!lo.invite_accepted) return;
+  try {
+    const gateway = req.app.get("billingGateway");
+    if (!req.app.get("billingConfig")?.enabled || !gateway) return;
+    syncSeats(db, gateway, orgId)
+      .catch((err) => console.error(`[billing] sync_seats failed for org ${orgId}:`, err?.message));
+  } catch (err) {
+    console.error(`[billing] sync_seats failed for org ${orgId}:`, err?.message);
   }
 });
 
@@ -115,7 +163,7 @@ function billingChip(org, nowMs) {
 // GET /api/org/stats — broker dashboard summary
 router.get("/stats", (req, res) => {
   const orgId = req.user.org_id;
-  const los          = db.prepare("SELECT COUNT(*) AS n FROM users WHERE org_id=? AND role='lo'").get(orgId).n;
+  const los          = db.prepare("SELECT COUNT(*) AS n FROM users WHERE org_id=? AND role='lo' AND removed_at IS NULL").get(orgId).n;
   const totalClients = db.prepare("SELECT COUNT(*) AS n FROM clients WHERE org_id=?").get(orgId).n;
   const org          = db.prepare("SELECT * FROM organizations WHERE id=?").get(orgId);
   const { plan, trialEnds } = req.app.get("billingConfig")?.enabled ? billingChip(org, Date.now()) : { plan: org.plan, trialEnds: org.trial_ends };

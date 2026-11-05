@@ -52,18 +52,18 @@ const emailChangeLimiter = rateLimit({
 function confirmEmailChange(token) {
   return db.transaction(() => {
     const row = db.prepare("SELECT user_id, new_email, expires_at FROM email_changes WHERE token = ?").get(token);
-    if (!row) return false;
+    if (!row) return null;
     db.prepare("DELETE FROM email_changes WHERE user_id = ?").run(row.user_id);
-    if (row.expires_at <= Date.now()) return false;
-    if (db.prepare("SELECT 1 FROM users WHERE email = ? AND id <> ?").get(row.new_email, row.user_id)) return false;
-    if (db.prepare("UPDATE users SET email = ? WHERE id = ?").run(row.new_email, row.user_id).changes !== 1) return false;
+    if (row.expires_at <= Date.now()) return null;
+    if (db.prepare("SELECT 1 FROM users WHERE email = ? AND id <> ?").get(row.new_email, row.user_id)) return null;
+    if (db.prepare("UPDATE users SET email = ? WHERE id = ?").run(row.new_email, row.user_id).changes !== 1) return null;
     db.prepare("DELETE FROM password_resets WHERE user_id = ?").run(row.user_id);
-    return true;
+    return { userId: row.user_id, email: row.new_email };
   })();
 }
 
 router.get("/email/confirm/:token", (req, res) => {
-  let confirmed = false;
+  let confirmed = null;
   if (TOKEN_RE.test(req.params.token)) {
     try {
       confirmed = confirmEmailChange(req.params.token);
@@ -73,7 +73,26 @@ router.get("/email/confirm/:token", (req, res) => {
   }
   res.set("Cache-Control", "no-store");
   res.redirect(302, confirmed ? "/?emailChanged=1" : "/?emailChanged=0");
+  if (confirmed) syncBillingEmail(req, confirmed);
 });
+
+// H14: a broker's login email is also their brokerage's billing email at Stripe, so after a confirmed change (and after the
+// redirect, so a slow Stripe never holds up the person) the customer's email follows. Nothing for a loan officer, with billing off
+// or no gateway, or a brokerage with no Stripe customer. A failure is logged by its message only.
+function syncBillingEmail(req, { userId, email: newEmail }) {
+  try {
+    const gateway = req.app.get("billingGateway");
+    if (!req.app.get("billingConfig")?.enabled || !gateway) return;
+    const org = db.prepare(
+      "SELECT o.stripe_customer_id FROM users u JOIN organizations o ON o.id = u.org_id WHERE u.id = ? AND u.role = 'broker'"
+    ).get(userId);
+    if (!org?.stripe_customer_id) return;
+    Promise.resolve(gateway.updateCustomerEmail(org.stripe_customer_id, newEmail))
+      .catch((err) => console.error("[billing] update_customer_email failed:", err?.message));
+  } catch (err) {
+    console.error("[billing] update_customer_email failed:", err?.message);
+  }
+}
 
 router.use(requireAuth);
 
