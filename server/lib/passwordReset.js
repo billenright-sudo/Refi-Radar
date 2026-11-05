@@ -51,13 +51,17 @@ function completeReset(db, token, passwordHash, nowMs) {
   })();
 }
 
-// How many reset emails one account (the key) may be sent: `max` per rolling `windowMs`. Kept in memory because the service runs
-// one instance and a restart that forgets the count is harmless. A refused take is not counted, so being over the limit
-// doesn't extend itself.
+// How many emails one address (the key) may be sent: `max` per rolling `windowMs`. Kept in memory because the service runs one
+// instance and a restart that forgets the count is harmless. A refused take is not counted, so being over the limit doesn't
+// extend itself. Sign-up asks about addresses that have no account, so the counter forgets an address an hour after its last
+// send (every take sweeps the map) and never grows without end.
 function createSendCounter({ max = 3, windowMs = 60 * 60 * 1000 } = {}) {
   const takes = new Map();   // key -> times of the takes still inside the window
   return {
     take(key, nowMs) {
+      for (const [k, times] of takes) {
+        if (times.length === 0 || times[times.length - 1] <= nowMs - windowMs) takes.delete(k);
+      }
       const recent = (takes.get(key) || []).filter((t) => t > nowMs - windowMs);
       if (recent.length >= max) {
         takes.set(key, recent);
@@ -66,6 +70,9 @@ function createSendCounter({ max = 3, windowMs = 60 * 60 * 1000 } = {}) {
       recent.push(nowMs);
       takes.set(key, recent);
       return true;
+    },
+    size() {
+      return takes.size;
     },
   };
 }

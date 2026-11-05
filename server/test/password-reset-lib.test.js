@@ -231,3 +231,14 @@ test("the invite, alert and email-change emails say Broker Radar, not RefiRadar"
   const fromLine = '"Broker Radar" <${FROM}>';
   assert.strictEqual(src.split(fromLine).length - 1, 4);
 });
+
+test("createSendCounter forgets a key once its last take is over the window old", () => {
+  const c = createSendCounter({ max: 3, windowMs: 1000 });
+  c.take("a", 0); c.take("b", 500);
+  assert.strictEqual(c.size(), 2);
+  c.take("c", 1001);                      // "a" (last take 0) is gone; "b" (500) is still inside the window
+  assert.strictEqual(c.size(), 2);
+  c.take("c", 1501);                      // now "b" is gone too
+  assert.strictEqual(c.size(), 1);
+  assert.strictEqual(c.take("a", 1501), true, "a forgotten key starts again from nothing");
+});

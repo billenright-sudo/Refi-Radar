@@ -290,4 +290,19 @@ db.exec(`
   );
 `);
 
+// signup_requests: a sign-up waiting for its emailed link (lib/signup.js). One per address, so a new request replaces the old link.
+// Like password_resets it keeps only the SHA-256 of the token. Nothing else exists for the person yet: the organization and the
+// broker are created when the link is used. expires_at is epoch milliseconds.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS signup_requests (
+    email         TEXT    PRIMARY KEY,
+    token_hash    TEXT    NOT NULL UNIQUE,
+    first_name    TEXT    NOT NULL,
+    last_name     TEXT    NOT NULL,
+    org_name      TEXT    NOT NULL,
+    password_hash TEXT    NOT NULL,
+    expires_at    INTEGER NOT NULL
+  );
+`);
+
 module.exports = db;
