@@ -2,10 +2,11 @@
 const express = require("express");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const refi = require("../lib/refi");
 
 const router = express.Router();
-router.use(requireAuth);
+router.use(requireAuth, requireAccess);
 
 // POST /api/sweeps — run the deterministic opportunity sweep over the caller's book.
 // Body: { rates } — the current rates the client already fetched for the dashboard.

@@ -19,6 +19,7 @@ const rateLimit = require("express-rate-limit");
 const Anthropic = require("@anthropic-ai/sdk");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const { runTurn, DEFAULT_TURN_DEADLINE_MS, isSkip } = require("../lib/assistant/orchestrator");
 const followups = require("../lib/assistant/followups");
 const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
@@ -369,7 +370,7 @@ async function confirmCreateEvent(req, res, sideEffect) {
 // index.js mounts.
 function createAssistantRouter({ limiter = {} } = {}) {
   const router = express.Router();
-  router.use(requireAuth);
+  router.use(requireAuth, requireAccess);
   // 60 requests per 15 minutes, counted per signed-in user (an office shares one IP address).
   router.use(rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes

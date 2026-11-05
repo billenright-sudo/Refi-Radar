@@ -21,7 +21,10 @@ const googleRoutes = require("./routes/google");
 const profileRoutes = require("./routes/profile");
 const integrationRoutes = require("./routes/integrations");
 const billingWebhookRoutes = require("./routes/billingWebhook");
+const billingRoutes = require("./routes/billing");
 const { charliModel } = require("./lib/assistant/orchestrator");
+const { startBilling } = require("./lib/billing/startup");
+const { createStripeGateway } = require("./lib/billing/stripeGateway");
 
 const PORT         = process.env.PORT || 8080;
 const CLIENT_BUILD = path.join(__dirname, "client/build");
@@ -54,6 +57,7 @@ app.use("/api/assistant",     assistantRoutes);
 app.use("/api/voice",         voiceRoutes);
 app.use("/api/google",        googleRoutes);
 app.use("/api/profile",       profileRoutes);
+app.use("/api/billing",       billingRoutes);   // not gated: a locked brokerage still adds a card and takes its clients out
 
 // Health check
 app.get("/health", (req, res) => {
@@ -66,9 +70,22 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(CLIENT_BUILD, "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`RefiRadar v2 running on port ${PORT}`);
-  // the two model settings, each by its name: the rates fetch's (routes/rates.js) and Charlie's (orchestrator.js)
-  console.log(`Rates model (CLAUDE_MODEL): ${process.env.CLAUDE_MODEL || "claude-sonnet-4-5"}`);
-  console.log(`Charlie model (CHARLI_MODEL): ${charliModel()}`);
-});
+// Billing is switched on before the server listens (lib/billing/startup.js): only with all three Stripe settings and a Stripe price
+// that matches the one the app shows (H5), checked with a wait of about 10 seconds at most, so a slow Stripe can't hold up the start.
+// Otherwise billing stays off ("[billing] off: <reason>" in the log) and the app behaves exactly as it did before billing.
+(async () => {
+  try {
+    const { config, gateway } = await startBilling(db, process.env, (c) => createStripeGateway({ secretKey: c.secretKey }));
+    app.set("billingConfig", config);
+    if (gateway) app.set("billingGateway", gateway);
+  } catch (err) {
+    console.warn(`[billing] off: start-up failed (${err?.message})`);
+    app.set("billingConfig", { enabled: false });
+  }
+  app.listen(PORT, () => {
+    console.log(`RefiRadar v2 running on port ${PORT}`);
+    // the two model settings, each by its name: the rates fetch's (routes/rates.js) and Charlie's (orchestrator.js)
+    console.log(`Rates model (CLAUDE_MODEL): ${process.env.CLAUDE_MODEL || "claude-sonnet-4-5"}`);
+    console.log(`Charlie model (CHARLI_MODEL): ${charliModel()}`);
+  });
+})();

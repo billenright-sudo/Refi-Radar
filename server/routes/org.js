@@ -2,11 +2,12 @@
 const express = require("express");
 const db      = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const { sendRefiAlert } = require("../email");
 const { CAREER_STAGES, stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
-router.use(requireAuth, requireBroker);
+router.use(requireAuth, requireAccess, requireBroker);
 
 function toUser(u) {
   return { id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, inviteAccepted: !!u.invite_accepted, createdAt: u.created_at, careerStage: stageById(u.career_stage)?.id ?? null };
@@ -101,13 +102,24 @@ router.post("/alert", async (req, res) => {
   }
 });
 
+// The Overview chip with billing on (H12): the billing status word ("exempt" for an exempt brokerage) instead of the old sign-up
+// plan, and the end of the running free trial or test month (ISO) instead of the old sign-up trial date. A paid subscription keeps
+// Stripe's old trial end, which is not shown.
+function billingChip(org, nowMs) {
+  if (org.billing_exempt) return { plan: "exempt", trialEnds: null };
+  const endMs = org.billing_status === "trialing" && org.billing_trial_end ? org.billing_trial_end
+    : org.billing_tester_until > nowMs ? org.billing_tester_until : null;
+  return { plan: org.billing_status ?? "none", trialEnds: endMs ? new Date(endMs).toISOString() : null };
+}
+
 // GET /api/org/stats — broker dashboard summary
 router.get("/stats", (req, res) => {
   const orgId = req.user.org_id;
   const los          = db.prepare("SELECT COUNT(*) AS n FROM users WHERE org_id=? AND role='lo'").get(orgId).n;
   const totalClients = db.prepare("SELECT COUNT(*) AS n FROM clients WHERE org_id=?").get(orgId).n;
   const org          = db.prepare("SELECT * FROM organizations WHERE id=?").get(orgId);
-  res.json({ success: true, stats: { loCount: los, totalClients, orgName: org.name, plan: org.plan, trialEnds: org.trial_ends } });
+  const { plan, trialEnds } = req.app.get("billingConfig")?.enabled ? billingChip(org, Date.now()) : { plan: org.plan, trialEnds: org.trial_ends };
+  res.json({ success: true, stats: { loCount: los, totalClients, orgName: org.name, plan, trialEnds } });
 });
 
 module.exports = router;

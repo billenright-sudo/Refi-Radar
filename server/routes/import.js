@@ -22,13 +22,14 @@ const multer = require("multer");
 const XLSX = require("xlsx");
 const db = require("../db");
 const { requireAuth, requireBroker } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const { FIELDS, detectMapping, offeredHeaders, cleanMapping, readFields } = require("../lib/intake/fields");
 const { ingest } = require("../lib/intake/ingest");
 // What counts as funded until the broker ticks their own statuses (shared with the ARIVE feed's dead statuses).
 const { looksFunded } = require("../lib/intake/normalize");
 
 const router = express.Router();
-router.use(requireAuth, requireBroker);
+router.use(requireAuth, requireAccess, requireBroker);
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_ROWS = 5000;

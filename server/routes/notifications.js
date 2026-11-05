@@ -2,9 +2,10 @@
 const express = require("express");
 const db      = require("../db");
 const { requireAuth } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 
 const router = express.Router();
-router.use(requireAuth);
+router.use(requireAuth, requireAccess);
 
 function toNotif(n) {
   return {

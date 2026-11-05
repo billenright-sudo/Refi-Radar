@@ -2,11 +2,12 @@
 const express = require("express");
 const db      = require("../db");
 const { requireAuth } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const followups = require("../lib/assistant/followups");   // called as followups.x(): tests can swap one
 const { HAND_KEPT, readMarks, writeMarks } = require("../lib/intake/handEdits");
 
 const router = express.Router();
-router.use(requireAuth);
+router.use(requireAuth, requireAccess);
 
 function toClient(row) {
   return {

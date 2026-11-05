@@ -19,6 +19,7 @@ const express = require("express");
 const rateLimit = require("express-rate-limit");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const oauth = require("../lib/google/oauth");
 
 const NOT_CONFIGURED = "Google isn't set up on this server";
@@ -88,7 +89,7 @@ function createGoogleRouter({ limiter = {} } = {}) {
     }
   });
 
-  router.use(requireAuth);
+  router.use(requireAuth, requireAccess);
   router.use(limit);
 
   router.post("/connect", (req, res) => {

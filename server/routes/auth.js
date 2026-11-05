@@ -5,11 +5,13 @@ const crypto     = require("crypto");
 const rateLimit  = require("express-rate-limit");
 const db         = require("../db");
 const { sessionTokenFor, requireAuth } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const email = require("../email");
 const { sendInvite } = email;
 const { userForReset, issueReset, completeReset, createSendCounter, hashToken } = require("../lib/passwordReset");
 const { issueSignup, signupFor, completeSignup, purgeExpiredSignups } = require("../lib/signup");
 const { stageById } = require("../lib/assistant/coaching");
+const { syncSeats } = require("../lib/billing/seats");
 
 const router = express.Router();
 
@@ -297,7 +299,8 @@ router.get("/me", requireAuth, (req, res) => {
 });
 
 // POST /api/auth/invite — broker invites an LO
-router.post("/invite", requireAuth, inviteLimiter, async (req, res) => {
+// A locked brokerage can't add users (the billing gate, middleware/access.js); the rest of this router stays open.
+router.post("/invite", requireAuth, requireAccess, inviteLimiter, async (req, res) => {
   if (req.user.role !== "broker") return res.status(403).json({ success: false, error: "Only brokers can invite LOs" });
 
   const { firstName, lastName, email: rawEmail } = req.body ?? {};
@@ -374,6 +377,21 @@ router.post("/accept-invite", acceptInviteLimiter, (req, res) => {
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
   setSession(res, updated);
   res.json({ success: true, user: safeUser(updated) });
+
+  // A new user is a new seat: with billing on and a subscription on file, Stripe's quantity follows (H2). After the answer, so a
+  // slow or failing Stripe never holds up the person joining; a failure is logged by its message and tried again on the broker's
+  // next billing status call.
+  try {
+    const config = req.app.get("billingConfig");
+    const gateway = req.app.get("billingGateway");
+    if (!config?.enabled || !gateway) return;
+    const org = db.prepare("SELECT stripe_subscription_id FROM organizations WHERE id = ?").get(updated.org_id);
+    if (!org?.stripe_subscription_id) return;
+    syncSeats(db, gateway, updated.org_id)
+      .catch((err) => console.error(`[billing] sync_seats failed for org ${updated.org_id}:`, err?.message));
+  } catch (err) {
+    console.error(`[billing] sync_seats failed for org ${updated.org_id}:`, err?.message);
+  }
 });
 
 // POST /api/auth/forgot — ask for a password-reset link. The answer is 200 { success: true } for every address that is a valid email,

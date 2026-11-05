@@ -153,6 +153,18 @@ Cloud Run handles SSL, zero-downtime rolling deploys, and auto-scale to zero.
 | `DATA_DIR` | Directory for SQLite database file | No (default: `./data`) |
 | `CLAUDE_MODEL` | Override the Claude model used | No (default: `claude-sonnet-4-5`) |
 | `CHARLI_MODEL` | Charlie's model (the voice co-pilot) | No (default: `claude-sonnet-5-5`) |
+| `STRIPE_SECRET_KEY` | Stripe secret key (Secret Manager, `--update-secrets`) | For billing |
+| `STRIPE_WEBHOOK_SECRET` | Signing secret of the Stripe webhook `<APP_URL>/api/billing/webhook` (Secret Manager) | For billing |
+| `STRIPE_PRICE_ID` | The one Stripe price: monthly, USD, graduated $99 for the first user then $49 each | For billing |
+| `BILLING_TESTER_CODE` | Private sign-up code for a free 30-day test month, no card | No (no code) |
+| `BILLING_TESTER_MAX_USES` | How many brokerages may use the tester code | No (default: 25) |
+| `BILLING_TESTER_EXPIRES` | Last day the tester code works, `YYYY-MM-DD` (UTC) | No (no end date) |
+| `BILLING_EXEMPT_EMAILS` | Comma list of broker login emails whose brokerage never pays | No |
+| `FEEDBACK_TO` | Inbox that receives in-app feedback | No (feedback is stored, not emailed) |
+
+**Billing** is on only when all three `STRIPE_*` settings are set **and** the Stripe price matches what the app shows ($99 a month
+for the brokerage, plus $49 for each additional user); the start-up check logs `[billing] off: <reason>` otherwise, and the app then
+behaves exactly as it does without billing. Step-by-step setup, with a check per step: [docs/billing-setup.md](docs/billing-setup.md).
 
 ---
 

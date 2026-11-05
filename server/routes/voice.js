@@ -14,6 +14,7 @@ const rateLimit = require("express-rate-limit");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 const { requireAuth } = require("../middleware/auth");
+const { requireAccess } = require("../middleware/access");
 const { recordUsage, ttsCharsToday } = require("../lib/assistant/metering");
 const { toSpeech } = require("../lib/assistant/speech");
 
@@ -101,7 +102,7 @@ function uploadName(mimetype) {
 // ones). The default export is the one index.js mounts.
 function createVoiceRouter({ limiter = {}, timeoutMs = TIMEOUT_MS } = {}) {
   const router = express.Router();
-  router.use(requireAuth);
+  router.use(requireAuth, requireAccess);
   // 120 requests per 15 minutes, counted per signed-in user (an office shares one IP address). A spoken
   // exchange is one /stt and one /tts per turn, so this is about sixty turns.
   router.use(rateLimit({
