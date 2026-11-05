@@ -84,11 +84,17 @@ const inviteLimiter = rateLimit({
 // neither page can be used to flood an inbox. In memory (one instance runs, and a restart that forgets the count is harmless).
 // app.set("resetSendCounter", ...) swaps in a fresh one (tests).
 const moduleCounter = createSendCounter();
-// And at most 60 an hour in all, reset and sign-up emails together, so that a crowd of different addresses (or a crowd of IPs) can't
-// use up the mailbox's daily sending quota and stop the invite and password-changed emails. Same kind of counter, one shared key.
+// And at most 60 reset emails an hour in all, so that a crowd of different accounts (or a crowd of IPs) can't use up the mailbox's
+// daily sending quota and stop the invite and password-changed emails. Same kind of counter, one shared key.
 // app.set("resetSiteSendCounter", ...) swaps in a fresh one (tests).
 const SITE_RESET_EMAILS_PER_HOUR = 60;
 const moduleSiteCounter = createSendCounter({ max: SITE_RESET_EMAILS_PER_HOUR });
+// Sign-up emails (A and B together) have their own site-wide cap, apart from the reset one. Anyone can ask for sign-up emails to
+// made-up addresses (a reset email only ever goes to a real account), so if the two shared one cap a dozen IPs could use it up and
+// silently stop every password-reset email for the rest of the hour. Kept lower, since nobody needs a sign-up email urgently.
+// app.set("signupSiteSendCounter", ...) swaps in a fresh one (tests).
+const SITE_SIGNUP_EMAILS_PER_HOUR = 20;
+const moduleSignupSiteCounter = createSendCounter({ max: SITE_SIGNUP_EMAILS_PER_HOUR });
 
 const EMAIL_MAX = 254;
 // No real password is this long; refusing a huge one keeps absurd input out of the hash (the page says so, rather than cutting it).
@@ -173,7 +179,7 @@ router.post("/register", registerLimiter, (req, res) => {
 
   const key = mail.toLowerCase();
   const counter = req.app.get("resetSendCounter") || moduleCounter;
-  const siteCounter = req.app.get("resetSiteSendCounter") || moduleSiteCounter;
+  const siteCounter = req.app.get("signupSiteSendCounter") || moduleSignupSiteCounter;
   const sendNew = req.app.get("sendSignup") || email.sendSignup;
   const sendTaken = req.app.get("sendAlreadyRegistered") || email.sendAlreadyRegistered;
 
@@ -191,7 +197,9 @@ router.post("/register", registerLimiter, (req, res) => {
       // Both counters count emails, and one goes out (A or B) for every request they let through. The per-address count is the
       // one /forgot uses, so an inbox gets at most 3 of the reset and sign-up emails together; it is asked first, so one address
       // asked for over and over can't use up the whole site's allowance. It forgets an address an hour after its last send, so
-      // asking it about addresses with no account can't grow it without end. Past either limit nothing is stored or sent.
+      // asking it about addresses with no account can't grow it without end. The site-wide count is sign-up's own, never the
+      // reset emails' (anyone can ask for these emails to made-up addresses, so sharing it would let them stop password resets).
+      // Past either limit nothing is stored or sent.
       if (!counter.take(key, now) || !siteCounter.take("all", now)) return;
       // Any user at all, an unused invitation included: email B, addressed with the name stored on that account, never the one
       // typed into the form (anyone can type anything there).

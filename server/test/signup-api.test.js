@@ -69,7 +69,8 @@ beforeEach(() => {
   signupImpl = async () => true; takenImpl = async () => true; resetImpl = async () => true;
   app.set("authEnv", { ...READY_ENV });
   app.set("resetSendCounter", createSendCounter());
-  app.set("resetSiteSendCounter", createSendCounter({ max: 60 }));   // fresh each test, like the per-address one
+  app.set("resetSiteSendCounter", createSendCounter({ max: 60 }));    // fresh each test, like the per-address one
+  app.set("signupSiteSendCounter", createSendCounter({ max: 20 }));   // and sign-up's own site cap
 });
 
 // One request. Each gets a fresh client address unless the test pins one with `ip`; `cookie` carries a session. A request that
@@ -302,7 +303,7 @@ test("register: 5 an hour per IP, then 429", async () => {
   assert.ok(!signupCalls.some((c) => c.to === "ip5@x.test"), "nothing sent for a refused request");
 });
 
-test("register: at most 3 emails an hour to one address, counted together with reset emails; the site cap is shared too", async () => {
+test("register: at most 3 emails an hour to one address, counted together with reset emails; sign-up has its own site cap, so it can't use up the reset emails' cap", async () => {
   addBroker(db, { email: "lou@x.test", firstName: "Lou" });
   const answers = [];
   answers.push(await forgot("lou@x.test"));
@@ -319,9 +320,14 @@ test("register: at most 3 emails an hour to one address, counted together with r
   assert.strictEqual(takenCalls.length, 1);
   assert.strictEqual(signupCalls.length, 0);
 
-  // one site-wide cap for reset and sign-up emails together
-  app.set("resetSiteSendCounter", createSendCounter({ max: 2 }));
-  for (const mail of ["cap1@x.test", "cap2@x.test", "cap3@x.test"]) {
+  // (a) sign-up's own site cap (A and B together): past it, still 200, nothing stored or sent, and the reset emails' cap is never
+  // asked, so a crowd asking for sign-up emails to made-up addresses can't stop password resets
+  const resetSite = createSendCounter({ max: 60 });
+  const resetSiteAsked = [];
+  app.set("resetSiteSendCounter", { take: (key, nowMs) => { resetSiteAsked.push(key); return resetSite.take(key, nowMs); } });
+  app.set("signupSiteSendCounter", createSendCounter({ max: 2 }));
+  const dee = addBroker(db, { email: "dee@x.test", firstName: "Dee" });
+  for (const mail of ["cap1@x.test", "cap2@x.test", "cap3@x.test", "dee@x.test"]) {
     const r = await register({ email: mail });
     assert.strictEqual(r.status, 200);
     assert.deepStrictEqual(r.data, OK);
@@ -330,12 +336,29 @@ test("register: at most 3 emails an hour to one address, counted together with r
   await settle();
   assert.deepStrictEqual(signupCalls.map((c) => c.to), ["cap1@x.test", "cap2@x.test"]);
   assert.strictEqual(signupRow("cap3@x.test"), undefined, "past the cap nothing is stored");
-  const dee = addBroker(db, { email: "dee@x.test", firstName: "Dee" });
+  assert.strictEqual(takenCalls.length, 1, "email B is under the same sign-up cap");
+  assert.deepStrictEqual(resetSiteAsked, [], "sign-up never asks the reset emails' cap");
   const r = await forgot("dee@x.test");
   assert.strictEqual(r.status, 200);
+  await until(() => resetCalls.length === 3);
+  assert.strictEqual(resetCalls[2].to, "dee@x.test", "a reset email still goes out past sign-up's cap");
+  assert.deepStrictEqual(resetSiteAsked, ["all"]);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(dee.id).n, 1);
+
+  // (b) and the other way: with the reset emails' cap used up, sign-up emails A and B still go out
+  app.set("resetSiteSendCounter", createSendCounter({ max: 0 }));
+  app.set("signupSiteSendCounter", createSendCounter({ max: 20 }));
+  const eve = addBroker(db, { email: "eve@x.test", firstName: "Eve" });
+  assert.strictEqual((await forgot("eve@x.test")).status, 200);
   await settle();
-  assert.strictEqual(resetCalls.length, 2, "the reset email is refused by the same cap");
-  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(dee.id).n, 0);
+  assert.strictEqual(resetCalls.length, 3, "the reset cap is in force");
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(eve.id).n, 0);
+  assert.strictEqual((await register({ email: "fresh@x.test" })).status, 200);
+  assert.strictEqual((await register({ email: "eve@x.test" })).status, 200);
+  await until(() => signupCalls.length === 3 && takenCalls.length === 2);
+  assert.strictEqual(signupCalls[2].to, "fresh@x.test");
+  assert.ok(signupRow("fresh@x.test"), "the request is stored");
+  assert.deepStrictEqual(takenCalls[1], { to: "eve@x.test", firstName: "Eve" });
 });
 
 test("register/check: 200 with the email and brokerage; a check does not use the link up; 410 for every bad link", async () => {

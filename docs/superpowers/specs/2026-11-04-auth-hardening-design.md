@@ -81,8 +81,10 @@ When `/login` finds no account that can sign in (no row, an unused invite, or no
   - 5 requests an hour per IP (429 "Too many sign-up attempts — please try again in an hour");
   - at most 3 emails an hour to one address, counting reset, A and B together (one per-address counter shared with `/forgot`);
     extra requests still answer 200 and send nothing;
-  - the site-wide cap of 60 emails an hour is **shared by reset and sign-up emails** (one counter), so between them they can't
-    use up the mailbox's daily quota. The per-address count is asked first, as in `/forgot`;
+  - sign-up emails (A and B) have their own site-wide cap of **20 an hour** (one counter), apart from the reset emails' cap of
+    60 an hour. Anyone can ask for sign-up emails to made-up addresses, so one shared cap would let them use it up and silently
+    stop password-reset emails for the rest of the hour. The per-address count is asked first, as in `/forgot`. (Changed
+    2026-11-05 at code review.)
   - sign-up asks the per-address counter about addresses that have no account, so the counter must not grow without end: it
     drops an address once its last send is over an hour old (a sweep inside `take`, or when the map passes a size). Both
     counters stay in memory: the service runs one instance.
