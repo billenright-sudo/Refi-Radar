@@ -373,3 +373,17 @@ test("resolveOwner: email, unique full name, fallback with a flag, other org, LO
     id: bea, name: "Bea Ng", named: false, flag: noMatch("lou@a.test"),
   });
 });
+
+test("resolveOwner ignores a removed loan officer; a re-invited person of the same name routes to the new account", () => {
+  const org = addOrg("Removal Co");
+  const boss = addUser(org, "broker", "boss@rmv.test", "Bo", "Boss");
+  const old = addUser(org, "lo", "rita@rmv.test", "Rita", "Vale");
+  const none = (v) => ({ id: boss, name: "Bo Boss", named: false, flag: `routed to your book: no loan officer in your company matches "${v}"` });
+  assert.strictEqual(resolveOwner(db, userRow(boss), "Rita Vale").id, old);
+  db.prepare("UPDATE users SET removed_at = ?, removed_email = email, email = 'removed:' || id WHERE id = ?").run(Date.now(), old);
+  assert.deepStrictEqual(resolveOwner(db, userRow(boss), "Rita Vale"), none("Rita Vale"));
+  assert.deepStrictEqual(resolveOwner(db, userRow(boss), "rita@rmv.test"), none("rita@rmv.test"));
+  const again = addUser(org, "lo", "rita@rmv.test", "Rita", "Vale");   // re-invited under the freed address
+  assert.deepStrictEqual(resolveOwner(db, userRow(boss), "Rita Vale"), { id: again, name: "Rita Vale", named: true, flag: null });
+  assert.deepStrictEqual(resolveOwner(db, userRow(boss), "rita@rmv.test"), { id: again, name: "Rita Vale", named: true, flag: null });
+});

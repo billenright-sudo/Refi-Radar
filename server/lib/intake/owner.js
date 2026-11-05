@@ -20,7 +20,7 @@ function resolveOwner(db, actor, loanOfficer) {
   const wanted = typeof loanOfficer === "string" ? loanOfficer.trim() : "";
   if (!wanted) return { ...self, named: false, flag: null };
 
-  const people = db.prepare("SELECT id, first_name, last_name, email FROM users WHERE org_id = ?").all(actor.org_id);
+  const people = db.prepare("SELECT id, first_name, last_name, email FROM users WHERE org_id = ? AND removed_at IS NULL").all(actor.org_id);
   let match = null;
   if (wanted.includes("@")) {
     const email = wanted.toLowerCase();

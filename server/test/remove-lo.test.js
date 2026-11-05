@@ -23,6 +23,7 @@ const { addBroker } = require("../test-support/accounts");
 const authRoutes = require("../routes/auth");
 const orgRoutes = require("../routes/org");
 const profileRoutes = require("../routes/profile");
+const { createGoogleRouter } = require("../routes/google");
 const { createIntegrationsRouter } = require("../routes/integrations");
 const { hashToken } = require("../lib/passwordReset");
 const { TERMS_VERSION, PRIVACY_VERSION } = require("../lib/terms");
@@ -48,6 +49,8 @@ before(async () => {
   app.use("/api/auth", authRoutes);
   app.use("/api/org", orgRoutes);
   app.use("/api/profile", profileRoutes);
+  app.use("/api/google", createGoogleRouter({ limiter: { max: 1000 } }));
+  app.set("googleFetch", async () => { throw new Error("no network in tests"); });
   app.set("sendInvite", async () => {});
   app.set("sendEmailChange", async (to, link) => { sentChange.push({ to, link }); return true; });
   server = app.listen(0);
@@ -111,7 +114,7 @@ test("removal moves clients, ends the session at once, and frees the address for
   const row = userRow(lo.id);
   assert.ok(Math.abs(row.removed_at - Date.now()) < 5000);
   assert.strictEqual(row.removed_email, oldEmail);
-  assert.strictEqual(row.email, `removed-${lo.id}@removed.invalid`);
+  assert.strictEqual(row.email, `removed:${lo.id}`);
   assert.strictEqual(row.password_hash, null);
   assert.strictEqual(row.session_version, lo.session_version + 1);
   // the old token (old session version) no longer works
@@ -133,12 +136,13 @@ test("removal revokes the ARIVE key (a feed post with it is refused), the Google
   ).run(lo.id);
   db.prepare("INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(lo.id, hashToken("t1"), Date.now() + 1e6);
   db.prepare("INSERT INTO email_changes (user_id, new_email, token, expires_at) VALUES (?, 'n@x.test', ?, ?)").run(lo.id, "a".repeat(64), Date.now() + 1e6);
+  db.prepare("INSERT INTO google_oauth_states (state, user_id, code_verifier, expires_at) VALUES ('state-rm-1', ?, 'v', ?)").run(lo.id, Date.now() + 6e5);
   const feed = (k) => call("POST", "/api/integrations/loans", { headers: { authorization: `Bearer ${k}` }, body: { loan_id: "L1" } });
   assert.notStrictEqual((await feed(key)).status, 401, "the key works before removal");
   assert.strictEqual((await del(broker, lo.id)).status, 200);
   const refused = await feed(key);
   assert.deepStrictEqual([refused.status, refused.data], [401, { error: "Unauthorized" }]);
-  for (const t of ["integration_keys", "google_connections", "password_resets", "email_changes"]) {
+  for (const t of ["integration_keys", "google_connections", "password_resets", "email_changes", "google_oauth_states"]) {
     assert.strictEqual(db.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE user_id = ?`).get(lo.id).n, 0, t);
   }
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM integration_keys WHERE user_id = ?").get(keep.id).n, 1, "another LO's key stays");
@@ -238,4 +242,36 @@ test("a removed LO is treated like an unknown one by /clients, /stage and /alert
   assert.strictEqual(a1.status, 404);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE to_user = ?").get(lo.id).n, 0, "no alert is recorded, so no email is sent");
   assert.strictEqual((await alert(other.id)).status, 200, "a live LO still gets alerts");
+});
+
+test("cancelling a pending invite keeps the clients an import already routed to it: they move to the broker", async () => {
+  const { broker, pending: [inv] } = brokerage({ los: 0, pending: 1 });
+  const clientId = addClient(inv);
+  db.prepare("INSERT INTO contact_log (client_id, user_id, outcome) VALUES (?, ?, 'reached')").run(clientId, broker.id);
+  assert.strictEqual((await del(broker, inv.id)).status, 200);
+  assert.strictEqual(userRow(inv.id), undefined);
+  assert.strictEqual(db.prepare("SELECT user_id FROM clients WHERE id = ?").get(clientId).user_id, broker.id);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM contact_log WHERE client_id = ?").get(clientId).n, 1, "history stays");
+});
+
+test("the placeholder email cannot be squatted: an invite of the old tombstone shape does not stop a removal, and removed:<id> is refused", async () => {
+  const { broker, los: [lo] } = brokerage();
+  const inv = (email) => call("POST", "/api/auth/invite", { as: broker, body: { firstName: "Sq", lastName: "Uatter", email } });
+  const squat = await inv(`removed-${lo.id}@removed.invalid`);
+  assert.strictEqual(squat.status, 201);
+  assert.strictEqual((await del(broker, lo.id)).status, 200);
+  assert.strictEqual(userRow(lo.id).email, `removed:${lo.id}`);
+  assert.strictEqual((await inv(`removed:${lo.id}`)).status, 400);
+});
+
+test("a Google sign-in begun before removal cannot be finished after it (the state is gone, as an unknown state is)", async () => {
+  const { broker, los: [lo] } = brokerage();
+  db.prepare("INSERT INTO google_oauth_states (state, user_id, code_verifier, expires_at) VALUES ('state-rm-2', ?, 'v', ?)").run(lo.id, Date.now() + 6e5);
+  assert.strictEqual((await del(broker, lo.id)).status, 200);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM google_oauth_states WHERE user_id = ?").get(lo.id).n, 0);
+  const cb = (state) => call("GET", `/api/google/callback?code=abc&state=${state}`, { headers: { cookie: `rr_google_flow=${state}` } });
+  const gone = await cb("state-rm-2"), unknown = await cb("state-never-made");
+  assert.deepStrictEqual([gone.status, gone.location], [unknown.status, unknown.location]);
+  assert.strictEqual(gone.location, "/?google=error");
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM google_connections WHERE user_id = ?").get(lo.id).n, 0);
 });

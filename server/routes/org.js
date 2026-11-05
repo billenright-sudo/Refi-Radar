@@ -70,7 +70,8 @@ router.patch("/los/:id/stage", (req, res) => {
 // A pending invite is simply deleted (no seat was ever counted). An accepted LO is kept as a row, so history (Charli's
 // recommendations, the contact log, assistant usage) stays whole, but every way in is closed in ONE transaction: their clients move
 // to the broker, the login is blanked and their session version raised, the address is freed, and their ARIVE key, Google
-// connection, reset link and email change are deleted. Then, after the answer, the new user count goes to Stripe (a failure is
+// connection, a Google sign-in begun but not finished, reset link and email change are deleted. The placeholder email has no "@",
+// so no address validator (invite, sign-up, forgot-password, email change) can ever accept it: it cannot be squatted. Then, after the answer, the new user count goes to Stripe (a failure is
 // logged by its message and retried at the next sync). 404 for anything that is not an LO of the caller's org that is not removed.
 router.delete("/los/:id", (req, res) => {
   const loId = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
@@ -83,16 +84,19 @@ router.delete("/los/:id", (req, res) => {
   try {
     db.transaction(() => {
       if (!lo.invite_accepted) {
+        // An import or the ARIVE feed can already have routed clients to a pending invitee (lib/intake/owner.js), and clients
+        // cascade-delete with their user: they move to the broker first, so cancelling an invite never loses a client.
+        db.prepare("UPDATE clients SET user_id = ? WHERE user_id = ?").run(req.user.id, lo.id);
         db.prepare("DELETE FROM users WHERE id = ? AND org_id = ? AND invite_accepted = 0").run(lo.id, orgId);
         return;
       }
       db.prepare("UPDATE clients SET user_id = ? WHERE user_id = ?").run(req.user.id, lo.id);
       db.prepare(`
-        UPDATE users SET removed_at = ?, removed_email = email, email = 'removed-' || id || '@removed.invalid',
+        UPDATE users SET removed_at = ?, removed_email = email, email = 'removed:' || id,
                          password_hash = NULL, session_version = session_version + 1
         WHERE id = ?
       `).run(Date.now(), lo.id);
-      for (const table of ["integration_keys", "google_connections", "password_resets", "email_changes"]) {
+      for (const table of ["integration_keys", "google_connections", "password_resets", "email_changes", "google_oauth_states"]) {
         db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(lo.id);
       }
     })();
