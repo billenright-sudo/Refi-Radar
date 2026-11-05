@@ -670,7 +670,7 @@ test("accept-invite pushes the user count when there is a subscription and calls
     `).run(orgId, `nia${++seq}@api.test`, hashToken(token), new Date(Date.now() + DAY_MS).toISOString());
     return token;
   };
-  const acceptInvite = (token) => post("/api/auth/accept-invite", null, { token, password: "password123" });
+  const acceptInvite = (token) => post("/api/auth/accept-invite", null, { token, password: "password123", acceptTerms: true });
 
   const subbed = brokerage({ billing_status: "trialing", stripe_subscription_id: "sub_inv", stripe_item_id: "si_inv", billing_quantity: 1, billing_synced_at: Date.now() });
   const r = await acceptInvite(invite(subbed.orgId));

@@ -11,7 +11,10 @@ const { sendInvite } = email;
 const { userForReset, issueReset, completeReset, createSendCounter, hashToken } = require("../lib/passwordReset");
 const { issueSignup, signupFor, completeSignup, purgeExpiredSignups } = require("../lib/signup");
 const { stageById } = require("../lib/assistant/coaching");
-const { syncSeats } = require("../lib/billing/seats");
+const { syncSeats, testerCodeUsable } = require("../lib/billing/seats");
+const { storeSubscription } = require("../lib/billing/events");
+const { runFollowUps } = require("../lib/billing/followUps");
+const { CURRENT_VERSIONS, recordAcceptance } = require("../lib/terms");
 
 const router = express.Router();
 
@@ -125,6 +128,20 @@ const DUMMY_HASH = bcrypt.hashSync("broker-radar: no account has this password",
 const LINK_GONE = { success: false, error: "This link has expired or was already used." };
 // The same for an invitation link: malformed, unknown, expired or used.
 const INVITE_GONE = { success: false, error: "This invitation has expired or was already used." };
+// With billing on (spec §6.1, §6.6): the sign-up and accept-invite pages' terms tick, and a tester code that can't be used (wrong,
+// switched off, past its day or its limit: all the same words).
+const TERMS_REQUIRED = { success: false, error: "Please agree to the Terms of Service and Privacy Policy." };
+const TESTER_INVALID = { success: false, error: "That tester code isn't valid." };
+
+// Billing is on for sign-up when start-up switched it on (lib/billing/startup.js). Creating the tester month's Stripe subscription
+// also needs the gateway, which the routes read separately.
+const billingConfigOn = (req) => {
+  const config = req.app.get("billingConfig");
+  return config && config.enabled ? config : null;
+};
+// A subscription read from Stripe counts as of its whole second, like the billing status call's re-read: Stripe's event times are
+// whole seconds, and the webhook's event for the same subscription, from the same second, must still apply.
+const wholeSecond = (ms) => Math.floor(ms / 1000) * 1000;
 
 // The person an invitation link is for: an unaccepted invitation whose stored SHA-256 matches and which has not expired. Anything that
 // is not a 64-character lower-case hex string is null without a lookup.
@@ -165,6 +182,8 @@ async function sendAfterAnswer(kind, send, args) {
 // below, whether the address is new, already has an account or an invitation, or is over its hourly limit, so this page can't be
 // used to find out who has an account. Everything that depends on the address (the lookup, the password hash, storing the request,
 // the email) happens after the answer, the /forgot pattern: a slow or failing step that only one kind of address takes would show.
+// With billing on, the form also carries `acceptTerms` (the tick, required) and an optional `testerCode`; with billing off both are
+// ignored completely.
 router.post("/register", registerLimiter, (req, res) => {
   const body = req.body ?? {};
   const text = (value) => (typeof value === "string" ? value.trim() : "");
@@ -188,10 +207,26 @@ router.post("/register", registerLimiter, (req, res) => {
   if (firstName.length > NAME_MAX || lastName.length > NAME_MAX || orgName.length > NAME_MAX) {
     return res.status(400).json({ success: false, error: "Names and the brokerage name can be at most 100 characters" });
   }
+  // The terms tick and the tester code depend only on the request, never on the address, so they are 400s like the ones above,
+  // given before the answer. Only the boolean true is a tick. A blank or missing code is no code; anything else must be usable
+  // (the right code in any case, switched on, not past its day or its limit). The limit is asked again when the link is used.
+  const billing = billingConfigOn(req);
+  let tester = false;
+  if (billing) {
+    if (body.acceptTerms !== true) return res.status(400).json(TERMS_REQUIRED);
+    const code = body.testerCode;
+    const noCode = code === undefined || code === null || (typeof code === "string" && !code.trim());
+    if (!noCode) {
+      if (!testerCodeUsable(db, billing, code, Date.now())) return res.status(400).json(TESTER_INVALID);
+      tester = true;
+    }
+  }
   // Same answer for every address, so it reveals nothing; nothing is stored when no email could go out.
   if (!email.mailReady(req.app.get("authEnv") || process.env)) {
     return res.status(503).json({ success: false, error: "Sign-up isn't available right now. Please try again later." });
   }
+  // What the person was shown and agreed to (billing on), stored with the request and recorded when the account is created.
+  const agreed = billing ? CURRENT_VERSIONS : { termsVersion: null, privacyVersion: null };
 
   const key = mail.toLowerCase();
   const counter = req.app.get("resetSendCounter") || moduleCounter;
@@ -229,7 +264,7 @@ router.post("/register", registerLimiter, (req, res) => {
         sendAfterAnswer("already-registered", sendTaken, { to: existing.email, firstName: existing.first_name });
         return;
       }
-      const token = issueSignup(db, { email: key, firstName, lastName, orgName, passwordHash }, now);
+      const token = issueSignup(db, { email: key, firstName, lastName, orgName, passwordHash, tester, ...agreed }, now);
       // The token goes in the URL fragment (#), which a browser never sends to a server, so the link can't land in a request log.
       sendAfterAnswer("sign-up", sendNew, { to: key, firstName, orgName, link: `${email.APP_URL}/#signup=${token}` });
     } catch (err) {
@@ -256,6 +291,10 @@ router.post("/register/check", (req, res) => {
 // request again (still unexpired, and the address still has no user, since an invitation could have arrived in the meantime),
 // creates the organization on its 14-day trial and the broker with the password hashed at sign-up, and deletes the request. Every
 // refusal of the link is the same 410. Then the new broker is signed in, as /login does.
+// With billing on, the organization starts with no card (billing_status 'none'), or in its free test month if the request came
+// with a usable tester code and the code still has a place (asked again in that transaction). The answer's `tester` is true only
+// when the month was granted (the page then shows "Start testing" instead of the card ask). Either way the acceptance given at
+// sign-up is recorded in the same transaction as the account.
 router.post("/register/complete", signupCompleteLimiter, (req, res) => {
   const { token, password } = req.body ?? {};
   const request = signupFor(db, token, Date.now());
@@ -263,11 +302,50 @@ router.post("/register/complete", signupCompleteLimiter, (req, res) => {
   if (typeof password !== "string" || !bcrypt.compareSync(password, request.password_hash)) {
     return res.status(400).json({ success: false, error: "That isn't the password you chose when you signed up. Try again, or start again to choose a new one." });
   }
-  const user = completeSignup(db, token, Date.now());
+  const billing = billingConfigOn(req);
+  const nowMs = Date.now();
+  // The account and the acceptance together or not at all. The versions are the ones stored with the request, so what the person
+  // was shown (a request is only ever replaced under a new token, so the row read above is the one completeSignup uses). A request
+  // made while billing was off agreed to nothing, so nothing is recorded: with billing on later, the terms page asks them.
+  const user = db.transaction(() => {
+    const created = completeSignup(db, token, nowMs, { billingOn: Boolean(billing), config: billing });
+    if (created && request.terms_version && request.privacy_version) {
+      recordAcceptance(db, created.id, { termsVersion: request.terms_version, privacyVersion: request.privacy_version }, nowMs, req.ip);
+    }
+    return created;
+  })();
   if (!user) return res.status(410).json(LINK_GONE);
+  const org = db.prepare("SELECT name, billing_via_tester_code, billing_tester_until FROM organizations WHERE id = ?").get(user.org_id);
+  const tester = Boolean(billing && org.billing_via_tester_code);
   setSession(res, user);
-  res.json({ success: true, user: safeUser(user) });
+  res.json({ success: true, user: safeUser(user), tester });
+  if (tester) startTesterSubscription(req, billing, user, org);
 });
+
+// The tester month's Stripe side (spec §6.1.3), after the answer, so a slow or failing Stripe never holds up "Create my account":
+// a customer and a trialing subscription for one user with no card, ending when the month ends (Stripe cancels it then if no card
+// was added), stored by the webhook's own rules, then the follow-ups that leaves (the test-month confirmation email). The month
+// itself already runs from our database, so a failure here costs only Stripe's side: it is logged by our organization id and the
+// error's message, never an address or a Stripe object. (If Stripe did make the subscription, its own webhook event carries our
+// org id and stores it.) Billing on with no gateway: the month runs with no Stripe subscription, and the log says so.
+function startTesterSubscription(req, config, user, org) {
+  const orgId = user.org_id;
+  try {
+    const gateway = req.app.get("billingGateway");
+    if (!gateway) {
+      console.warn(`[billing] tester month for org ${orgId} started with no Stripe subscription: no payment service is set up`);
+      return;
+    }
+    const send = req.app.get("sendBillingConfirmation") || email.sendBillingConfirmation;
+    gateway.createTesterSubscription({
+      email: user.email, orgId, orgName: org.name, priceId: config.priceId, quantity: 1, trialEndMs: org.billing_tester_until,
+    })
+      .then((created) => runFollowUps({ db, gateway, send, config }, storeSubscription(db, orgId, created.subscription, wholeSecond(Date.now()))))
+      .catch((err) => console.error(`[billing] tester subscription failed for org ${orgId}:`, err?.message));
+  } catch (err) {
+    console.error(`[billing] tester subscription failed for org ${orgId}:`, err?.message);
+  }
+}
 
 // POST /api/auth/login
 router.post("/login", loginLimiter, (req, res) => {
@@ -296,6 +374,19 @@ router.post("/logout", (req, res) => {
 // GET /api/auth/me
 router.get("/me", requireAuth, (req, res) => {
   res.json({ success: true, user: safeUser(req.user) });
+});
+
+// POST /api/auth/terms/accept — the signed-in user agrees to the current Terms of Service and Privacy Policy ("We've updated our
+// terms" → I agree, spec §6.6): both are recorded with the time and the address it came from. Not behind the billing gate: it is
+// how a user the gate stops with "terms" (no acceptance yet, or an older version) gets past it.
+router.post("/terms/accept", requireAuth, (req, res) => {
+  try {
+    recordAcceptance(db, req.user.id, CURRENT_VERSIONS, Date.now(), req.ip);
+  } catch (err) {
+    console.error("[auth] terms acceptance not recorded", err?.message);
+    return res.status(500).json({ success: false, error: "Database error" });
+  }
+  res.json({ success: true });
 });
 
 // POST /api/auth/invite — broker invites an LO
@@ -356,22 +447,30 @@ router.post("/invite/check", (req, res) => {
 // POST /api/auth/accept-invite { token, password } — the password is checked first (it costs nothing), then the invitation, and only
 // then the (slow, cost 12) hash, so a made-up token costs a lookup, not a hash. The UPDATE only matches an unaccepted invitation, so
 // two requests with the same token can't both win: the loser changes no row and gets the same 410.
+// With billing on, the page's terms tick (`acceptTerms: true`) is required too, checked with the password (it costs nothing either),
+// and the current Terms and Privacy versions are recorded in the same transaction that accepts the invitation (spec §6.6).
 router.post("/accept-invite", acceptInviteLimiter, (req, res) => {
-  const { token, password } = req.body ?? {};
+  const { token, password, acceptTerms } = req.body ?? {};
   if (typeof password !== "string" || password.length < 8) {
     return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
   }
   if (password.length > PASSWORD_MAX) {
     return res.status(400).json({ success: false, error: `Password must be at most ${PASSWORD_MAX} characters` });
   }
+  const billingOn = Boolean(billingConfigOn(req));
+  if (billingOn && acceptTerms !== true) return res.status(400).json(TERMS_REQUIRED);
 
   const user = inviteeFor(token, Date.now());
   if (!user) return res.status(410).json(INVITE_GONE);
 
   const hash = bcrypt.hashSync(password, 12);
-  const changed = db.prepare(
-    "UPDATE users SET password_hash = ?, invite_token_hash = NULL, invite_expires = NULL, invite_accepted = 1 WHERE id = ? AND invite_accepted = 0"
-  ).run(hash, user.id).changes;
+  const changed = db.transaction(() => {
+    const n = db.prepare(
+      "UPDATE users SET password_hash = ?, invite_token_hash = NULL, invite_expires = NULL, invite_accepted = 1 WHERE id = ? AND invite_accepted = 0"
+    ).run(hash, user.id).changes;
+    if (n && billingOn) recordAcceptance(db, user.id, CURRENT_VERSIONS, Date.now(), req.ip);
+    return n;
+  })();
   if (!changed) return res.status(410).json(INVITE_GONE);
 
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
