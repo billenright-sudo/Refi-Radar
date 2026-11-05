@@ -18,6 +18,7 @@ const jwt = require("jsonwebtoken");
 
 const db = require("../db");
 const { signToken } = require("../middleware/auth");
+const { addBroker } = require("../test-support/accounts");
 const authRoutes = require("../routes/auth");
 
 function makeApp() {
@@ -54,13 +55,10 @@ async function withServer(fn) {
 
 test("a token signed before this change (no sv) still works while the version is 0", async () => {
   await withServer(async (base) => {
-    const reg = await call(base, "POST", "/api/auth/register", {
-      body: { firstName: "Old", lastName: "Token", email: "old@sessions.test", password: "password123", orgName: "Old Token Co" },
-    });
-    assert.equal(reg.status, 201);
+    const user = addBroker(db, { email: "old@sessions.test", firstName: "Old", lastName: "Token", orgName: "Old Token Co" });
 
     // The shape every token had before the session version existed: just the user id.
-    const legacy = signToken({ userId: reg.data.user.id });
+    const legacy = signToken({ userId: user.id });
     assert.equal(jwt.decode(legacy).sv, undefined);
 
     const me = await call(base, "GET", "/api/auth/me", { token: legacy });
@@ -69,17 +67,13 @@ test("a token signed before this change (no sv) still works while the version is
   });
 });
 
-test("login, register and accept-invite tokens carry the account's current version", async () => {
+test("login and accept-invite tokens carry the account's current version", async () => {
   await withServer(async (base) => {
-    // register -> a brand-new account is at version 0
-    const reg = await call(base, "POST", "/api/auth/register", {
-      body: { firstName: "Vera", lastName: "Version", email: "vera@sessions.test", password: "password123", orgName: "Version Co" },
-    });
-    assert.equal(reg.status, 201);
-    assert.equal(jwt.decode(reg.token).sv, 0);
+    // (a brand-new account's first session, from finishing sign-up, is checked at version 0 in signup-api.test.js)
+    const vera = addBroker(db, { email: "vera@sessions.test", firstName: "Vera", lastName: "Version", orgName: "Version Co" });
 
     // login -> picks up whatever the account's version is by then
-    db.prepare("UPDATE users SET session_version = 2 WHERE id = ?").run(reg.data.user.id);
+    db.prepare("UPDATE users SET session_version = 2 WHERE id = ?").run(vera.id);
     const login = await call(base, "POST", "/api/auth/login", { body: { email: "vera@sessions.test", password: "password123" } });
     assert.equal(login.status, 200);
     assert.equal(jwt.decode(login.token).sv, 2);
@@ -90,7 +84,7 @@ test("login, register and accept-invite tokens carry the account's current versi
     db.prepare(`
       INSERT INTO users (org_id, role, first_name, last_name, email, invite_token_hash, invite_expires, invite_accepted)
       VALUES (?, 'lo', 'Ivy', 'Invitee', 'ivy@sessions.test', ?, ?, 0)
-    `).run(reg.data.user.orgId, require("../lib/passwordReset").hashToken(invite), expires);
+    `).run(vera.org_id, require("../lib/passwordReset").hashToken(invite), expires);
     const accepted = await call(base, "POST", "/api/auth/accept-invite", { body: { token: invite, password: "password123" } });
     assert.equal(accepted.status, 200);
     assert.equal(jwt.decode(accepted.token).sv, 0);
@@ -99,18 +93,17 @@ test("login, register and accept-invite tokens carry the account's current versi
 
 test("raising the version ends every older session", async () => {
   await withServer(async (base) => {
-    const reg = await call(base, "POST", "/api/auth/register", {
-      body: { firstName: "Sam", lastName: "Session", email: "sam@sessions.test", password: "password123", orgName: "Session Co" },
-    });
-    assert.equal(reg.status, 201);
+    const sam = addBroker(db, { email: "sam@sessions.test", firstName: "Sam", lastName: "Session", orgName: "Session Co" });
+    const first = await call(base, "POST", "/api/auth/login", { body: { email: "sam@sessions.test", password: "password123" } });
+    assert.equal(first.status, 200);
 
     const a = await call(base, "POST", "/api/auth/login", { body: { email: "sam@sessions.test", password: "password123" } });
     assert.equal((await call(base, "GET", "/api/auth/me", { token: a.token })).status, 200);
 
-    db.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ?").run(reg.data.user.id);
+    db.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ?").run(sam.id);
 
-    // Session A, and the one register handed out, are both finished; a fresh login works.
-    for (const old of [a.token, reg.token]) {
+    // Session A, and the first one, are both finished; a fresh login works.
+    for (const old of [a.token, first.token]) {
       const stale = await call(base, "GET", "/api/auth/me", { token: old });
       assert.equal(stale.status, 401);
       assert.deepEqual(stale.data, { success: false, error: "Invalid or expired session" });

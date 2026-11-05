@@ -2,8 +2,8 @@
  * RefiRadar — Demo Data Seeder
  * Usage: node scripts/seed-demo.js [APP_URL]
  *
- * Creates a demo broker account and loads 12 realistic clients.
- * Safe to re-run — skips registration if account already exists.
+ * Signs in as the demo broker and loads 12 realistic clients. The demo account must already exist: sign-up finishes only
+ * through its emailed link, so create it once through sign-up on the site.
  *
  * Demo credentials:
  *   Email:    demo@refiradar.com
@@ -187,7 +187,7 @@ async function api(method, path, body) {
   };
   const res  = await fetch(`${APP_URL}${path}`, opts);
 
-  // Capture Set-Cookie header on login/register
+  // Capture Set-Cookie header on login
   const setCookie = res.headers.get("set-cookie");
   if (setCookie) cookie = setCookie.split(";")[0];
 
@@ -207,24 +207,15 @@ function bold(s)   { return `\x1b[1m${s}\x1b[0m`; }
   console.log(bold("\n🏠 RefiRadar — Demo Seeder"));
   console.log(`   Target: ${APP_URL}\n`);
 
-  // 1. Register demo broker (or log in if already exists)
-  process.stdout.write("  Creating broker account… ");
-  const reg = await api("POST", "/api/auth/register", BROKER);
-
-  if (reg.status === 201) {
-    console.log(green("✓ Registered"));
-  } else if (reg.status === 409) {
-    process.stdout.write(amber("already exists, logging in… "));
-    const login = await api("POST", "/api/auth/login", { email: BROKER.email, password: BROKER.password });
-    if (login.status !== 200) {
-      console.log(red(`✗ Login failed: ${login.data?.error}`));
-      process.exit(1);
-    }
-    console.log(green("✓ Logged in"));
-  } else {
-    console.log(red(`✗ Failed (${reg.status}): ${reg.data?.error}`));
+  // 1. Sign in as the demo broker. Sign-up now finishes only through the link it emails, so this script can't create the
+  //    account: it has to have been made once through sign-up on the site.
+  process.stdout.write("  Signing in as the demo broker… ");
+  const login = await api("POST", "/api/auth/login", { email: BROKER.email, password: BROKER.password });
+  if (login.status !== 200) {
+    console.log(red(`✗ Couldn't sign in as the demo broker (${login.status}). Create the demo account through sign-up on the site first (sign-up now needs the emailed link), then run this again.`));
     process.exit(1);
   }
+  console.log(green("✓ Logged in"));
 
   // 2. Load clients
   console.log(`\n  Loading ${CLIENTS.length} clients:\n`);

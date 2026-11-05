@@ -13,6 +13,9 @@ const assert = require("node:assert");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 
+const db = require("../db");
+const { addBroker } = require("../test-support/accounts");
+
 const authRoutes = require("../routes/auth");
 const clientRoutes = require("../routes/clients");
 const sweepsRoutes = require("../routes/sweeps");
@@ -44,7 +47,8 @@ test("sweeps endpoint + log-contact", async () => {
   const base = `http://localhost:${server.address().port}`;
   try {
     const s = session(base);
-    await s("POST", "/api/auth/register", { firstName: "Ann", lastName: "B", email: "ann@test.co", password: "password123", orgName: "Alpha" });
+    addBroker(db, { email: "ann@test.co", firstName: "Ann", lastName: "B", orgName: "Alpha" });
+    assert.equal((await s("POST", "/api/auth/login", { email: "ann@test.co", password: "password123" })).status, 200);
 
     // A clear opportunity and a non-opportunity.
     await s("POST", "/api/clients", { name: "Refi Ready", loanType: "30yr_fixed", currentRate: 8.0, loanBalance: 485000, propertyValue: 650000, creditScore: 760 });

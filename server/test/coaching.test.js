@@ -20,6 +20,7 @@ const cookieParser = require("cookie-parser");
 
 const db = require("../db");
 const { signToken } = require("../middleware/auth");
+const { addBroker } = require("../test-support/accounts");
 const assistantTools = require("../lib/assistant/tools");
 const refi = require("../lib/refi");
 const { CLOSE_QUESTION, CLOSE_NO_CALLS } = require("../lib/assistant/briefing");
@@ -1015,13 +1016,9 @@ test("/api/auth/me returns careerStage: null until it is set, then the stage id"
   assert.equal((await as(lou)("GET", "/api/auth/me")).data.user.careerStage, null);
 });
 
-test("register and login return careerStage: null for a new account", async () => {
-  const register = await fetch(base + "/api/auth/register", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ firstName: "New", lastName: "Broker", email: "newbroker@coach.test", password: "password123", orgName: "Fresh Org" }),
-  });
-  assert.equal(register.status, 201);
-  assert.equal((await register.json()).user.careerStage, null);
+test("a new broker's login returns careerStage: null", async () => {
+  // (finishing sign-up returning careerStage: null is checked in signup-api.test.js)
+  addBroker(db, { email: "newbroker@coach.test", firstName: "New", lastName: "Broker", orgName: "Fresh Org" });
   const login = await fetch(base + "/api/auth/login", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: "newbroker@coach.test", password: "password123" }),

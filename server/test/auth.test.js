@@ -1,6 +1,6 @@
 "use strict";
-// Auth + permissions tests against a throwaway SQLite DB. Verifies registration,
-// login (good + bad), session via httpOnly cookie, that protected routes reject
+// Auth + permissions tests against a throwaway SQLite DB. Verifies login
+// (good + bad), session via httpOnly cookie, that protected routes reject
 // anonymous callers, and — the key permission property — that clients are isolated
 // per organization (one broker can never see another org's book).
 // Isolate the DB + secret BEFORE requiring db.js (it opens the DB at load).
@@ -16,6 +16,8 @@ const assert = require("node:assert");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 
+const db = require("../db");
+const { addBroker } = require("../test-support/accounts");
 const authRoutes = require("../routes/auth");
 const clientRoutes = require("../routes/clients");
 
@@ -53,11 +55,11 @@ test("auth flow + per-org client isolation", async () => {
   try {
     const alpha = session(base);
 
-    // Register broker in org "Alpha" — succeeds, returns a broker, sets the cookie.
-    let r = await alpha("POST", "/api/auth/register", {
-      firstName: "Ann", lastName: "Broker", email: "ann@test.co", password: "password123", orgName: "Alpha Mortgage",
-    });
-    assert.equal(r.status, 201);
+    // A broker in org "Alpha" signs in — succeeds, returns a broker, sets the cookie. (Sign-up needs an emailed link, so the
+    // account is made directly; signup-api.test.js covers sign-up itself.)
+    addBroker(db, { email: "ann@test.co", firstName: "Ann", orgName: "Alpha Mortgage" });
+    let r = await alpha("POST", "/api/auth/login", { email: "ann@test.co", password: "password123" });
+    assert.equal(r.status, 200);
     assert.equal(r.data.user.role, "broker");
 
     // Session cookie works.
@@ -86,10 +88,9 @@ test("auth flow + per-org client isolation", async () => {
 
     // A broker in a different org sees none of Alpha's clients.
     const beta = session(base);
-    r = await beta("POST", "/api/auth/register", {
-      firstName: "Bob", lastName: "Broker", email: "bob@test.co", password: "password123", orgName: "Beta Mortgage",
-    });
-    assert.equal(r.status, 201);
+    addBroker(db, { email: "bob@test.co", firstName: "Bob", orgName: "Beta Mortgage" });
+    r = await beta("POST", "/api/auth/login", { email: "bob@test.co", password: "password123" });
+    assert.equal(r.status, 200);
     r = await beta("GET", "/api/clients");
     assert.equal(r.status, 200);
     assert.equal(r.data.clients.length, 0, "org isolation: no cross-org client visibility");

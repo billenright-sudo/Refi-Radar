@@ -8,6 +8,7 @@ const { sessionTokenFor, requireAuth } = require("../middleware/auth");
 const email = require("../email");
 const { sendInvite } = email;
 const { userForReset, issueReset, completeReset, createSendCounter, hashToken } = require("../lib/passwordReset");
+const { issueSignup, signupFor, completeSignup, purgeExpiredSignups } = require("../lib/signup");
 const { stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
@@ -28,6 +29,26 @@ const forgotLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: "Too many reset requests — please try again in an hour" },
+});
+
+// Each accepted sign-up request makes the app's own mail account send to an address the caller chose (email A or B), so it is
+// limited per IP like /forgot. A refused or invalid request counts too, because this runs before any check.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many sign-up attempts — please try again in an hour" },
+});
+
+// Finishing sign-up is a guess at a secret, so it gets the reset limit, with its own count (not resetLimiter's or
+// acceptInviteLimiter's): the pages don't eat each other's tries.
+const signupCompleteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many attempts — please try again in 15 minutes" },
 });
 
 // Saving a new password is a bcrypt hash and a guess at a secret, so it gets the same limit as signing in.
@@ -59,20 +80,26 @@ const inviteLimiter = rateLimit({
   message: { success: false, error: "Too many invitations — please try again in an hour" },
 });
 
-// At most 3 reset emails an hour for one account, however many IPs ask. In memory (one instance runs, and a restart that forgets
-// the count is harmless). app.set("resetSendCounter", ...) swaps in a fresh one (tests).
+// At most 3 emails an hour to one address, however many IPs ask: reset emails and the two sign-up emails counted together, so
+// neither page can be used to flood an inbox. In memory (one instance runs, and a restart that forgets the count is harmless).
+// app.set("resetSendCounter", ...) swaps in a fresh one (tests).
 const moduleCounter = createSendCounter();
-// And at most 60 an hour in all, so that a crowd of different accounts (or a crowd of IPs) can't use up the mailbox's daily sending
-// quota and stop the invite and password-changed emails. Same kind of counter, one shared key. app.set("resetSiteSendCounter", ...)
-// swaps in a fresh one (tests).
+// And at most 60 an hour in all, reset and sign-up emails together, so that a crowd of different addresses (or a crowd of IPs) can't
+// use up the mailbox's daily sending quota and stop the invite and password-changed emails. Same kind of counter, one shared key.
+// app.set("resetSiteSendCounter", ...) swaps in a fresh one (tests).
 const SITE_RESET_EMAILS_PER_HOUR = 60;
 const moduleSiteCounter = createSendCounter({ max: SITE_RESET_EMAILS_PER_HOUR });
 
 const EMAIL_MAX = 254;
 // No real password is this long; refusing a huge one keeps absurd input out of the hash (the page says so, rather than cutting it).
 const PASSWORD_MAX = 256;
-// Every refusal of a reset link (malformed, unknown, expired, used, replaced) says exactly this, so the answer tells nothing
-// about which of them it was.
+// Sign-up's names and brokerage name come from an anonymous visitor and go into email A, so they are capped (after trimming).
+const NAME_MAX = 100;
+// What /login compares against when there is no password to compare: a hash of the same cost (12) as a real one, made once when
+// the module loads. Every failed sign-in then costs one bcrypt check, so its speed can't tell whether the account exists.
+const DUMMY_HASH = bcrypt.hashSync("broker-radar: no account has this password", 12);
+// Every refusal of a reset or sign-up link (malformed, unknown, expired, used, replaced) says exactly this, so the answer tells
+// nothing about which of them it was.
 const LINK_GONE = { success: false, error: "This link has expired or was already used." };
 // The same for an invitation link: malformed, unknown, expired or used.
 const INVITE_GONE = { success: false, error: "This invitation has expired or was already used." };
@@ -111,37 +138,97 @@ async function sendAfterAnswer(kind, send, args) {
   }
 }
 
-// POST /api/auth/register — broker registers their shop
-router.post("/register", (req, res) => {
-  const { firstName, lastName, email, password, orgName } = req.body;
-  if (!firstName || !lastName || !email || !password || !orgName) {
+// POST /api/auth/register — a broker asks to sign up their shop. Nothing is created here: the account exists only once the link
+// emailed to the address is used (/register/complete). The answer is 200 { success: true } for every request that passes the checks
+// below, whether the address is new, already has an account or an invitation, or is over its hourly limit, so this page can't be
+// used to find out who has an account. Everything that depends on the address (the lookup, the password hash, storing the request,
+// the email) happens after the answer, the /forgot pattern: a slow or failing step that only one kind of address takes would show.
+router.post("/register", registerLimiter, (req, res) => {
+  const body = req.body ?? {};
+  const text = (value) => (typeof value === "string" ? value.trim() : "");
+  const firstName = text(body.firstName);
+  const lastName = text(body.lastName);
+  const orgName = text(body.orgName);
+  const mail = text(body.email);
+  const { password } = body;   // never trimmed
+  if (!firstName || !lastName || !orgName || !mail || typeof password !== "string" || !password) {
     return res.status(400).json({ success: false, error: "All fields required" });
   }
   if (password.length < 8) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
-
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email.toLowerCase().trim());
-  if (existing) return res.status(409).json({ success: false, error: "Email already registered" });
-
-  const hash = bcrypt.hashSync(password, 12);
-  const trialEnds = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
-
-  const register = db.transaction(() => {
-    const org = db.prepare("INSERT INTO organizations (name, plan, trial_ends) VALUES (?, 'trial', ?)").run(orgName.trim(), trialEnds);
-    const user = db.prepare(`
-      INSERT INTO users (org_id, role, first_name, last_name, email, password_hash, invite_accepted)
-      VALUES (?, 'broker', ?, ?, ?, ?, 1)
-    `).run(org.lastInsertRowid, firstName.trim(), lastName.trim(), email.toLowerCase().trim(), hash);
-    return db.prepare("SELECT * FROM users WHERE id = ?").get(user.lastInsertRowid);
-  });
-
-  try {
-    const user = register();
-    setSession(res, user);
-    res.status(201).json({ success: true, user: safeUser(user) });
-  } catch (err) {
-    console.error("Register error:", err.message);
-    res.status(500).json({ success: false, error: "Registration failed" });
+  if (password.length > PASSWORD_MAX) {
+    return res.status(400).json({ success: false, error: `Password must be at most ${PASSWORD_MAX} characters` });
   }
+  // The mail goes to exactly this address: a "," or ";" would make the mail library send it to several people, and whitespace is
+  // never in an address (the invite form's rule).
+  if (mail.length > EMAIL_MAX || !mail.includes("@") || /[,;\s]/.test(mail)) {
+    return res.status(400).json({ success: false, error: "Enter a valid email address" });
+  }
+  if (firstName.length > NAME_MAX || lastName.length > NAME_MAX || orgName.length > NAME_MAX) {
+    return res.status(400).json({ success: false, error: "Names and the brokerage name can be at most 100 characters" });
+  }
+  // Same answer for every address, so it reveals nothing; nothing is stored when no email could go out.
+  if (!email.mailReady(req.app.get("authEnv") || process.env)) {
+    return res.status(503).json({ success: false, error: "Sign-up isn't available right now. Please try again later." });
+  }
+
+  const key = mail.toLowerCase();
+  const counter = req.app.get("resetSendCounter") || moduleCounter;
+  const siteCounter = req.app.get("resetSiteSendCounter") || moduleSiteCounter;
+  const sendNew = req.app.get("sendSignup") || email.sendSignup;
+  const sendTaken = req.app.get("sendAlreadyRegistered") || email.sendAlreadyRegistered;
+
+  res.json({ success: true });
+
+  // After the answer, and in one try so that nothing here can ever reach the caller (the response is already gone) or crash the
+  // process: whatever goes wrong is logged by its message only, which never holds the token or the link.
+  setImmediate(() => {
+    try {
+      // The (slow, cost 12) hash comes first, for every address, even one that will get email B or nothing: the work after the
+      // answer then has the same shape in every case, so a request sent straight after this one can't time the difference.
+      const passwordHash = bcrypt.hashSync(password, 12);
+      const now = Date.now();
+      purgeExpiredSignups(db, now);
+      // Both counters count emails, and one goes out (A or B) for every request they let through. The per-address count is the
+      // one /forgot uses, so an inbox gets at most 3 of the reset and sign-up emails together; it is asked first, so one address
+      // asked for over and over can't use up the whole site's allowance. It forgets an address an hour after its last send, so
+      // asking it about addresses with no account can't grow it without end. Past either limit nothing is stored or sent.
+      if (!counter.take(key, now) || !siteCounter.take("all", now)) return;
+      // Any user at all, an unused invitation included: email B, addressed with the name stored on that account, never the one
+      // typed into the form (anyone can type anything there).
+      const existing = db.prepare("SELECT email, first_name FROM users WHERE email = ?").get(key);
+      if (existing) {
+        sendAfterAnswer("already-registered", sendTaken, { to: existing.email, firstName: existing.first_name });
+        return;
+      }
+      const token = issueSignup(db, { email: key, firstName, lastName, orgName, passwordHash }, now);
+      // The token goes in the URL fragment (#), which a browser never sends to a server, so the link can't land in a request log.
+      sendAfterAnswer("sign-up", sendNew, { to: key, firstName, orgName, link: `${email.APP_URL}/#signup=${token}` });
+    } catch (err) {
+      console.error("[auth] sign-up not issued", err?.message);
+    }
+  });
+});
+
+// POST /api/auth/register/check { token } — is this sign-up link still good? (for the "finish creating your account" page, which
+// reads the token from the #signup= fragment of the address). The token is in the body, not the URL, because request URLs end up in
+// the host's request log. Opening it does not use it up: mail scanners open links before the person does. No rate limit, for the
+// same reasons as /reset/check: it answers nothing without a valid 256-bit token, and a limit would let page loads eat the tries a
+// person needs on a shared address.
+router.post("/register/check", (req, res) => {
+  const request = signupFor(db, (req.body ?? {}).token, Date.now());
+  if (!request) return res.status(410).json(LINK_GONE);
+  res.json({ success: true, email: request.email, orgName: request.org_name });
+});
+
+// POST /api/auth/register/complete { token } — "Create my account". completeSignup is the one place the link is used up: in one
+// transaction it checks the request again (still unexpired, and the address still has no user, since an invitation could have
+// arrived in the meantime), creates the organization on its 14-day trial and the broker with the password hashed at sign-up, and
+// deletes the request. Every refusal is the same 410. Then the new broker is signed in, as /login does.
+router.post("/register/complete", signupCompleteLimiter, (req, res) => {
+  const user = completeSignup(db, (req.body ?? {}).token, Date.now());
+  if (!user) return res.status(410).json(LINK_GONE);
+  setSession(res, user);
+  res.json({ success: true, user: safeUser(user) });
 });
 
 // POST /api/auth/login
@@ -150,7 +237,11 @@ router.post("/login", loginLimiter, (req, res) => {
   if (!email || !password) return res.status(400).json({ success: false, error: "Email and password required" });
 
   const user = db.prepare("SELECT * FROM users WHERE email = ? AND invite_accepted = 1").get(email.toLowerCase().trim());
-  if (!user || !user.password_hash || !bcrypt.compareSync(password, user.password_hash)) {
+  // Exactly one bcrypt check whatever is found: with no account that can sign in (no row, an unused invite, no password) the
+  // password is checked against DUMMY_HASH, so a failed sign-in takes the same time whether or not the account exists.
+  const hash = user && user.password_hash ? user.password_hash : DUMMY_HASH;
+  const matches = bcrypt.compareSync(password, hash);
+  if (!user || !user.password_hash || !matches) {
     return res.status(401).json({ success: false, error: "Invalid email or password" });
   }
 
@@ -275,10 +366,12 @@ router.post("/forgot", forgotLimiter, (req, res) => {
   // process: whatever goes wrong is logged by its message only, which never holds the token or the link.
   setImmediate(() => {
     try {
-      // Only an account that can sign in counts (an unused invite should use its invite link). The send counter is asked only
-      // for an account that was found: it never forgets a key, so asking it about made-up addresses would let anyone grow it.
-      // The site-wide count is asked last, only once this account has passed its own limit, so one account being asked for over
-      // and over can't use up the whole site's allowance. Past either limit nothing is stored and nothing is sent.
+      // Only an account that can sign in counts (an unused invite should use its invite link). The send counter counts emails,
+      // so it is asked only for an account that was found, the one case where a reset email goes out: a made-up address gets no
+      // email and uses up none of the 3 an hour that its reset and sign-up emails share. (The counter forgets an address an hour
+      // after its last send, so it can't grow without end either way.) The site-wide count is asked last, only once this account
+      // has passed its own limit, so one account being asked for over and over can't use up the whole site's allowance. Past
+      // either limit nothing is stored and nothing is sent.
       const user = db.prepare("SELECT id, email, first_name FROM users WHERE email = ? AND invite_accepted = 1").get(key);
       if (!user || !counter.take(key, Date.now()) || !siteCounter.take("all", Date.now())) return;
       const token = issueReset(db, user.id, Date.now());
