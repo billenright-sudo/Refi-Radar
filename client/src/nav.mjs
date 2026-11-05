@@ -21,6 +21,9 @@ const BROKER = [
   { id: "import", label: "Import Clients", icon: "upload" },
 ];
 
+// Only a broker, and only while billing is on.
+const BILLING = { id: "billing", label: "Billing", icon: "card" };
+
 const BOTTOM = [
   { id: "profile", label: "Profile", icon: "user" },
 ];
@@ -28,12 +31,15 @@ const BOTTOM = [
 const fresh = (items) => items.map((item) => ({ ...item }));
 
 // The items in the three runs the sidebar draws: the main ones, the broker's (below a rule), and the bottom one. -> { main, broker, bottom }
-export function navGroups(role) {
-  return { main: fresh(MAIN), broker: role === "broker" ? fresh(BROKER) : [], bottom: fresh(BOTTOM) };
+export function navGroups(role, { billing = false } = {}) {
+  const isBroker = role === "broker";
+  const broker = isBroker ? fresh(BROKER) : [];
+  if (isBroker && billing) broker.push({ ...BILLING });
+  return { main: fresh(MAIN), broker, bottom: fresh(BOTTOM) };
 }
 
 // All of them in order, for a role ("broker" | "lo"; anything else is a loan officer's).
-export function navItems(role) {
-  const { main, broker, bottom } = navGroups(role);
+export function navItems(role, opts) {
+  const { main, broker, bottom } = navGroups(role, opts);
   return [...main, ...broker, ...bottom];
 }

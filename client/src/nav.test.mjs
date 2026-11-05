@@ -83,3 +83,16 @@ test("the lists are fresh copies: changing one does not change the next", () => 
   assert.equal(navItems("broker")[0].label, "Home");
   assert.equal(navItems("broker").at(-1).id, "profile");
 });
+
+test("with billing on, a broker gets Billing before Profile; nobody else does", () => {
+  const items = navItems("broker", { billing: true });
+  const list = ids(items);
+  assert.deepEqual(items.find((i) => i.id === "billing"), { id: "billing", label: "Billing", icon: "card" });
+  assert.equal(list[list.length - 1], "profile");
+  assert.ok(list.indexOf("billing") > list.indexOf("import"));
+  assert.ok(!ids(navItems("broker")).includes("billing"));
+  assert.ok(!ids(navItems("broker", { billing: false })).includes("billing"));
+  assert.ok(!ids(navItems("lo", { billing: true })).includes("billing"));
+  const { broker } = navGroups("broker", { billing: true });
+  assert.ok(ids(broker).includes("billing"));
+});

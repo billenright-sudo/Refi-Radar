@@ -10,6 +10,7 @@ import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
+import { gateScreen, bannerText, billingLines, chipLabel, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE } from "./billing/billing.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -181,6 +182,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     upload:    "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
     logout:    "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
     mic:       "M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8",
+    card:      "M3 5h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM1 10h22",
     user:      "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   };
   return (
@@ -391,8 +393,8 @@ const RefiRadarLogo = () => (
   </div>
 );
 
-const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
-  const { main: nav, broker: brokerNav, bottom: bottomNav } = navGroups(user?.role);
+const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
+  const { main: nav, broker: brokerNav, bottom: bottomNav } = navGroups(user?.role, { billing: billingOn });
 
   const isBrokerActive = (id) => {
     if (id === "team") return view === "team" || view === "lo-portal";
@@ -470,6 +472,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout }) => {
 const NoticeBanner = ({ notice, onClose }) => notice && (
   <div role="status" data-testid="email-changed-notice" style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 100, width: "max-content", maxWidth: "calc(100vw - 32px)", display: "flex", alignItems: "flex-start", gap: 12, background: notice.bad ? C.redBg : C.greenBg, border: `1px solid ${notice.bad ? C.red : C.green}`, color: notice.bad ? C.red : C.green, borderRadius: 10, padding: "10px 14px", fontSize: 13.5, lineHeight: 1.45 }}>
     <span>{notice.text}</span>
+    {notice.action && <button onClick={notice.action.onClick} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, padding: 0, flexShrink: 0 }}>{notice.action.label}</button>}
     <button onClick={onClose} aria-label="Dismiss" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex", flexShrink: 0 }}>
       <Icon name="x" size={14} color={notice.bad ? C.red : C.green} />
     </button>
@@ -1062,10 +1065,10 @@ const OpportunityRow = ({ client, a, onClick }) => (
   </div>
 );
 
-const OrgStatsCard = () => {
+const OrgStatsCard = ({ billingOn }) => {
   const [stats, setStats] = useState(null);
   useEffect(() => {
-    fetch("/api/org/stats").then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d); }).catch(() => {});
+    fetch("/api/org/stats").then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d.stats ?? d); }).catch(() => {});
   }, []);
   if (!stats) return null;
 
@@ -1086,7 +1089,7 @@ const OrgStatsCard = () => {
         {stats.plan && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ background: C.amberBg, color: C.amber, borderRadius: 6, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>
-              {stats.plan === "trial" ? "Trial" : stats.plan}
+              {billingOn ? chipLabel(stats.plan, stats.trialEnds) : stats.plan === "trial" ? "Trial" : stats.plan}
             </span>
             {trialEnd && <span style={{ color: C.muted, fontSize: 12 }}>expires {trialEnd}</span>}
           </div>
@@ -1164,7 +1167,7 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
   );
 };
 
-const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user }) => {
+const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn }) => {
   const topOpps = scored.filter(c => c.a?.good).slice(0, 5);
   const hour = new Date().getHours();
   const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
@@ -1183,7 +1186,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         </button>
       </div>
 
-      {user?.role === "broker" && <OrgStatsCard />}
+      {user?.role === "broker" && <OrgStatsCard billingOn={billingOn} />}
 
       <TreasuryWidget treasury={treasury} />
 
@@ -2193,9 +2196,103 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Billing: the gate pages, the Billing page
+// ---------------------------------------------------------------------------
+const errorBox = (text) => text && <div role="alert" style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: "1rem" }}>{text}</div>;
+const textButton = { background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13, padding: 0 };
+const EXPORT_URL = "/api/billing/export.csv";
+
+// Opens Stripe's card page (or portal): POST, then follow the address it sends back.
+async function openStripe(path) {
+  const res = await fetch(path, { method: "POST" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.url) throw new Error(data.error || "Couldn't reach the payment service. Please try again.");
+  window.location.assign(data.url);
+}
+
+const BillingGate = ({ screen, onSignOut, onRecheck }) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const go = async (work) => {
+    setBusy(true); setError("");
+    try { await work(); } catch (e) { setError(e.message || "Something went wrong. Please try again."); setBusy(false); }
+  };
+  const addCard = () => go(() => openStripe("/api/billing/card"));
+  const accept = () => go(async () => {
+    const res = await fetch("/api/auth/terms/accept", { method: "POST" });
+    if (!res.ok) throw new Error("Couldn't save that. Please try again.");
+    await onRecheck();
+    setBusy(false);
+  });
+  const heading = { fontSize: 20, fontWeight: 700, marginBottom: 12, color: C.text };
+  const para = { color: C.muted, fontSize: 14, lineHeight: 1.6, marginBottom: "1.25rem" };
+  const exportLink = <a href={EXPORT_URL} download style={{ ...textButton, textDecoration: "none" }}>Download my clients (CSV)</a>;
+  const signOut = <button onClick={onSignOut} style={textButton}>Sign out</button>;
+  return (
+    <AuthCard>
+      {screen === "terms" && (<>
+        <div style={heading}>We've updated our terms</div>
+        <div style={para}>Please read the <a href="/terms" target="_blank" rel="noreferrer" style={{ color: C.amber }}>Terms of Service</a> and <a href="/privacy" target="_blank" rel="noreferrer" style={{ color: C.amber }}>Privacy Policy</a>, then agree to keep using Broker Radar.</div>
+        {errorBox(error)}
+        <button onClick={accept} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>I agree</button>
+        <div style={{ textAlign: "center", marginTop: "1rem" }}>{signOut}</div>
+      </>)}
+      {screen === "start_trial" && (<>
+        <div style={heading}>Start your free trial</div>
+        <div style={para}>{SPEC_LINE}</div>
+        {errorBox(error)}
+        <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Add card and start trial</button>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{signOut}</div>
+      </>)}
+      {screen === "ended" && (<>
+        <div style={heading}>Your subscription has ended</div>
+        <div style={para}>{RETURNING_LINE}</div>
+        {errorBox(error)}
+        <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Restart subscription</button>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{signOut}</div>
+      </>)}
+      {screen === "lo_locked" && (<>
+        <div style={para}>{LO_LOCKED_LINE}</div>
+        <div style={{ textAlign: "center" }}>{signOut}</div>
+      </>)}
+    </AuthCard>
+  );
+};
+
+const BillingView = ({ billing, onRefresh }) => {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { onRefresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!billing || !billing.enabled) return null;
+  const open = async (path) => {
+    setBusy(true); setError("");
+    try { await openStripe(path); } catch (e) { setError(e.message); setBusy(false); }
+  };
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: "1.25rem" }}>Billing</h1>
+      <div style={{ ...card }}>
+        {billingLines(billing, Date.now()).map((line) => <div key={line} style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8, color: C.text }}>{line}</div>)}
+        {errorBox(error)}
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: "1rem", flexWrap: "wrap" }}>
+          {billing.hasCustomer
+            ? <button onClick={() => open("/api/billing/portal")} disabled={busy} style={{ ...btnPrimary, opacity: busy ? 0.6 : 1 }}>Manage billing</button>
+            : !billing.exempt && <button onClick={() => open("/api/billing/card")} disabled={busy} style={{ ...btnPrimary, opacity: busy ? 0.6 : 1 }}>Add card</button>}
+          <a href={EXPORT_URL} download style={{ ...textButton, textDecoration: "none" }}>Download my clients (CSV)</a>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
+  const [billingState, setBillingState] = useState(null);   // { access, billing, role } from /api/billing/status; null = unknown (the app shows)
+  const [finishing, setFinishing] = useState(false);        // back from Stripe (?billing=done), waiting for the subscription to land
+  const [bannerShut, setBannerShut] = useState(false);
+  const billingReturn = useRef(null);                       // "done" | "cancelled" from the address, until the next status read uses it
   const [authView, setAuthView] = useState("login"); // "login" | "register" | "finish-signup" | "accept-invite" | "forgot" | "reset"
   const [inviteToken, setInviteToken] = useState(null);
   const [resetToken, setResetToken] = useState(null);   // from the emailed link's #reset= fragment
@@ -2228,6 +2325,17 @@ export default function App() {
     if (text) { setGoogleNotice(text); setView("profile"); }
   }, []);
 
+  // Stripe sends the browser back to /?billing=done or =cancelled: remember which and take it out of the address. The status read after
+  // /me (or sign-in) uses it: done waits for the subscription to land, cancelled just shows the gate again.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const found = url.searchParams.get("billing");
+    if (found === null) return;
+    url.searchParams.delete("billing");
+    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    if (found === "done" || found === "cancelled") billingReturn.current = found;
+  }, []);
+
   // The link mailed to a new login address sends the browser to /?emailChanged=1 (done) or =0 (did not work), signed in or not: show
   // that line once, and take the parameter out of the address.
   useEffect(() => {
@@ -2238,6 +2346,35 @@ export default function App() {
     window.history.replaceState({}, "", url.pathname + url.search + url.hash);
     if (found) setEmailNotice(found);
   }, []);
+
+  // Billing status for the signed-in user; null when it can't be read (network, 5xx): the app then shows, the server gate still guards.
+  const readBilling = useCallback(async () => {
+    try {
+      const res = await fetch("/api/billing/status");
+      if (!res.ok) return null;
+      const d = await res.json();
+      return d && d.access ? { access: d.access, billing: d.billing ?? null, role: d.role } : null;
+    } catch { return null; }
+  }, []);
+  const refreshBilling = useCallback(async () => { const st = await readBilling(); if (st) setBillingState(st); return st; }, [readBilling]);
+
+  // After sign-in (or /me): read the billing status, then show the app or a gate. Back from Stripe: read it up to 10 times, a second
+  // apart, until the access is open or the subscription is no longer "none".
+  const enterApp = useCallback(async () => {
+    let st = await readBilling();
+    if (billingReturn.current === "done" && st) {
+      setFinishing(true);
+      for (let i = 0; i < 10 && !st.access.ok && (!st.billing || st.billing.status === "none"); i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        st = (await readBilling()) || st;
+      }
+      setFinishing(false);
+    }
+    billingReturn.current = null;
+    setBillingState(st);
+    setBannerShut(false);
+    setAuthState("authenticated");
+  }, [readBilling]);
 
   // Check for a password-reset link first, then an accept-invite token. The reset link is <site>/#reset=<token>: the token is in the
   // fragment so it never reaches the server's request log. It is taken out of the address at once, so it does not stay in the address
@@ -2277,11 +2414,11 @@ export default function App() {
       .then(async (res) => {
         if (res.status === 401) { setAuthState("unauthenticated"); return; }
         const data = await res.json();
-        if (data.user) { setUser(data.user); setAuthState("authenticated"); }
+        if (data.user) { setUser(data.user); await enterApp(); }
         else { setAuthState("unauthenticated"); }
       })
       .catch(() => setAuthState("unauthenticated"));
-  }, []);
+  }, [enterApp]);
 
   // Home is Charlie's own page: going there takes the panel away.
   useEffect(() => { if (view === "home") setPanelOpen(false); }, [view]);
@@ -2293,7 +2430,8 @@ export default function App() {
 
   const handleLogin = (userData) => {
     setUser(userData);
-    setAuthState("authenticated");
+    setAuthState("loading");   // the loading screen stays up until the billing status is read
+    enterApp();
     setView(DEFAULT_VIEW);
     setPanelOpen(false);
     setGoogleNotice(null);   // a Google result from before this sign-in is stale
@@ -2323,6 +2461,7 @@ export default function App() {
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     endKeptSession();
     setUser(null);
+    setBillingState(null);
     setAuthState("unauthenticated");
     setAuthView("login");
     setClients([]);
@@ -2334,9 +2473,13 @@ export default function App() {
     setUser((u) => (u && Object.keys(patch).some((k) => u[k] !== patch[k]) ? { ...u, ...patch } : u));
   }, []);
 
-  // Load clients once authenticated
+  const gate = authState === "authenticated" ? gateScreen(billingState?.access, billingState?.role ?? user?.role) : null;
+  const appOpen = authState === "authenticated" && !gate;
+  const billingOn = Boolean(billingState?.billing?.enabled);
+
+  // Load clients once the app is open
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (!appOpen) return;
     setClientsLoading(true);
     fetch("/api/clients")
       .then(async (r) => {
@@ -2346,7 +2489,7 @@ export default function App() {
       })
       .catch(err => console.error("Failed to load clients:", err))
       .finally(() => setClientsLoading(false));
-  }, [authState]);
+  }, [appOpen]);
 
   const ratesAskedOn = useRef(null);   // the local day rates were last asked for (see the new-day check below)
   const fetchRates = useCallback(async () => {
@@ -2381,10 +2524,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (!appOpen) return;
     fetchRates();
     fetchTreasury();
-  }, [authState, fetchRates, fetchTreasury]);
+  }, [appOpen, fetchRates, fetchTreasury]);
 
   // The device's local day, read on every render. A tab left open past midnight renders again when it comes back into view or takes
   // focus (no timers that wake the device), or when Charlie finds its briefing is yesterday's (onStale). Charlie's screens are keyed
@@ -2403,9 +2546,9 @@ export default function App() {
   const ratesFetchedOn = lastFetched ? localDateOf(lastFetched) : null;
   const charlieRates = ratesFetchedOn === today ? rates : null;
   useEffect(() => {
-    if (authState !== "authenticated" || !ratesFetchedOn || ratesFetchedOn === today || ratesAskedOn.current === today) return;
+    if (!appOpen || !ratesFetchedOn || ratesFetchedOn === today || ratesAskedOn.current === today) return;
     fetchRates();
-  }, [authState, ratesFetchedOn, today, fetchRates]);
+  }, [appOpen, ratesFetchedOn, today, fetchRates]);
 
   const handleDeleteClient = useCallback((id) => {
     setClients(prev => prev.filter(c => c.id !== id));
@@ -2436,7 +2579,7 @@ export default function App() {
         <style>{globalStyles}</style>
         <div style={{ textAlign: "center" }}>
           <div style={{ width: 40, height: 40, border: `3px solid ${C.border}`, borderTopColor: C.amber, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
-          <div style={{ color: C.muted, fontSize: 14 }}>Loading Broker Radar…</div>
+          <div style={{ color: C.muted, fontSize: 14 }}>{finishing ? "Finishing up…" : "Loading Broker Radar…"}</div>
         </div>
       </div>
     );
@@ -2464,13 +2607,28 @@ export default function App() {
     );
   }
 
+  // A gate replaces the app
+  if (gate) {
+    return (
+      <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
+        <style>{globalStyles}</style>
+        <BillingGate screen={gate} onSignOut={handleLogout} onRecheck={refreshBilling} />
+      </div>
+    );
+  }
+
+  const bannerKind = billingState?.billing?.banner;
+  const bannerLine = user?.role === "broker" && !bannerShut ? bannerText(bannerKind, billingState?.billing?.testerUntil) : null;
+  const billingBanner = bannerLine ? { text: bannerLine, bad: bannerKind === "past_due", action: { label: bannerKind === "past_due" ? "Update card" : "Add card", onClick: () => openStripe("/api/billing/card").catch((e) => window.alert(e.message)) } } : null;
+
   // Authenticated app
   return (
     <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
       <style>{globalStyles}</style>
       <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
+      <NoticeBanner notice={billingBanner} onClose={() => setBannerShut(true)} />
       <div style={{ display: "flex", minHeight: "100vh" }}>
-        <Sidebar view={view} setView={setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} />
+        <Sidebar view={view} setView={setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} billingOn={user?.role === "broker" && billingOn} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {/* Header bar */}
           <header style={{ height: 52, background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 2rem", flexShrink: 0 }}>
@@ -2478,7 +2636,7 @@ export default function App() {
           </header>
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
             {view === "home"          && <CharliView key={today} mode="home" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} onStale={renderAgain} />}
-            {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} />}
+            {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
@@ -2488,6 +2646,7 @@ export default function App() {
             {view === "edit"          && selected && <EditClient client={selected} setClients={setClients} setSelected={setSelected} setView={setView} />}
             {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} />}
             {view === "lo-portal"     && selectedLO && user?.role === "broker" && <LOPortal lo={selectedLO} rates={rates} setView={setView} />}
+            {view === "billing"       && user?.role === "broker" && billingOn && <BillingView billing={billingState.billing} onRefresh={refreshBilling} />}
             {view === "import"        && <ImportView ui={{ C, card, mono, Icon, $c }} onImported={() => fetch("/api/clients").then(r => r.json()).then(d => { if (d.success) setClients(d.clients); }).catch(() => {})} onDone={() => setView("clients")} />}
           </main>
         </div>
