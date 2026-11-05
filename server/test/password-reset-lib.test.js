@@ -16,7 +16,7 @@ const db = require("../db");
 const {
   RESET_TTL_MS, hashToken, issueReset, userForReset, completeReset, createSendCounter,
 } = require("../lib/passwordReset");
-const { passwordResetMessage, passwordChangedMessage, mailReady } = require("../email");
+const { passwordResetMessage, passwordChangedMessage, mailReady, inviteLink, APP_URL } = require("../email");
 
 const NOW = 1_800_000_000_000;
 const orgId = Number(db.prepare("INSERT INTO organizations (name) VALUES ('Reset Org')").run().lastInsertRowid);
@@ -214,6 +214,9 @@ test("the invite and alert emails escape every name in the body and leave the su
   assert.ok(invite.html.includes("&lt;b&gt;Boss&lt;/b&gt; &amp; Co"));
   assert.ok(invite.html.includes("&quot;&gt;&lt;script&gt;x()&lt;/script&gt;"));
   assert.ok(!/<b>Boss|<script|<i>Lou/.test(invite.html), "no typed tag survives as a tag");
+  assert.ok(invite.html.includes(inviteLink("ab".repeat(32))));
+  assert.ok(!invite.html.includes("?token="));
+  assert.strictEqual(inviteLink("ab".repeat(32)), APP_URL + "/#invite=" + "ab".repeat(32));
   assert.strictEqual(invite.subject, '<b>Boss</b> & Co invited you to join "><script>x()</script> on Broker Radar');
 
   assert.ok(alert.html.includes("Hi &lt;i&gt;Lou&lt;/i&gt;,"));

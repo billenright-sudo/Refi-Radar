@@ -88,9 +88,9 @@ test("login, register and accept-invite tokens carry the account's current versi
     const invite = "ab".repeat(32);
     const expires = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
     db.prepare(`
-      INSERT INTO users (org_id, role, first_name, last_name, email, invite_token, invite_expires, invite_accepted)
+      INSERT INTO users (org_id, role, first_name, last_name, email, invite_token_hash, invite_expires, invite_accepted)
       VALUES (?, 'lo', 'Ivy', 'Invitee', 'ivy@sessions.test', ?, ?, 0)
-    `).run(reg.data.user.orgId, invite, expires);
+    `).run(reg.data.user.orgId, require("../lib/passwordReset").hashToken(invite), expires);
     const accepted = await call(base, "POST", "/api/auth/accept-invite", { body: { token: invite, password: "password123" } });
     assert.equal(accepted.status, 200);
     assert.equal(jwt.decode(accepted.token).sv, 0);

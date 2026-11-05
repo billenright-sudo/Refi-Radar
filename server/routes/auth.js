@@ -7,7 +7,7 @@ const db         = require("../db");
 const { sessionTokenFor, requireAuth } = require("../middleware/auth");
 const email = require("../email");
 const { sendInvite } = email;
-const { userForReset, issueReset, completeReset, createSendCounter } = require("../lib/passwordReset");
+const { userForReset, issueReset, completeReset, createSendCounter, hashToken } = require("../lib/passwordReset");
 const { stageById } = require("../lib/assistant/coaching");
 
 const router = express.Router();
@@ -32,6 +32,16 @@ const forgotLimiter = rateLimit({
 
 // Saving a new password is a bcrypt hash and a guess at a secret, so it gets the same limit as signing in.
 const resetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Too many attempts — please try again in 15 minutes" },
+});
+
+// Accepting an invitation is a guess at a secret and a bcrypt hash, so it has its own count (not resetLimiter's): the two pages don't
+// eat each other's tries.
+const acceptInviteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10,
   standardHeaders: true,
@@ -64,6 +74,17 @@ const PASSWORD_MAX = 256;
 // Every refusal of a reset link (malformed, unknown, expired, used, replaced) says exactly this, so the answer tells nothing
 // about which of them it was.
 const LINK_GONE = { success: false, error: "This link has expired or was already used." };
+// The same for an invitation link: malformed, unknown, expired or used.
+const INVITE_GONE = { success: false, error: "This invitation has expired or was already used." };
+
+// The person an invitation link is for: an unaccepted invitation whose stored SHA-256 matches and which has not expired. Anything that
+// is not a 64-character lower-case hex string is null without a lookup.
+function inviteeFor(token, nowMs) {
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) return null;
+  const user = db.prepare("SELECT * FROM users WHERE invite_token_hash = ? AND invite_accepted = 0").get(hashToken(token));
+  if (!user || !(new Date(user.invite_expires).getTime() > nowMs)) return null;
+  return user;
+}
 
 // Helper: safe user object (no password hash)
 function safeUser(u) {
@@ -170,9 +191,9 @@ router.post("/invite", requireAuth, inviteLimiter, async (req, res) => {
 
   try {
     db.prepare(`
-      INSERT INTO users (org_id, role, first_name, last_name, email, invite_token, invite_expires, invite_accepted)
+      INSERT INTO users (org_id, role, first_name, last_name, email, invite_token_hash, invite_expires, invite_accepted)
       VALUES (?, 'lo', ?, ?, ?, ?, ?, 0)
-    `).run(req.user.org_id, firstName.trim(), lastName.trim(), to, token, expires);
+    `).run(req.user.org_id, firstName.trim(), lastName.trim(), to, hashToken(token), expires);
 
     const org = db.prepare("SELECT name FROM organizations WHERE id = ?").get(req.user.org_id);
     const send = req.app.get("sendInvite") || sendInvite;   // the seam lets tests send nothing
@@ -191,29 +212,37 @@ router.post("/invite", requireAuth, inviteLimiter, async (req, res) => {
   }
 });
 
-// GET /api/auth/invite/:token — validate invite token (for the accept-invite page)
-router.get("/invite/:token", (req, res) => {
-  if (!/^[0-9a-f]{64}$/.test(req.params.token)) return res.status(400).json({ success: false, error: "Invalid token format" });
-  const user = db.prepare("SELECT id, first_name, last_name, email, org_id, invite_expires FROM users WHERE invite_token = ? AND invite_accepted = 0").get(req.params.token);
-  if (!user) return res.status(404).json({ success: false, error: "Invalid or expired invitation" });
-  if (new Date(user.invite_expires) < new Date()) return res.status(410).json({ success: false, error: "Invitation has expired" });
+// POST /api/auth/invite/check { token } — is this invitation still good? (for the accept-invite page, which reads the token from the
+// #invite= fragment of the address). The token is in the body, not the URL, because request URLs end up in the host's request log.
+// Opening it does not use it up: mail scanners open links before the person does. No rate limit, for the same reasons as /reset/check:
+// it answers nothing without a valid 256-bit token, and a limit would let page loads eat the tries a person needs on a shared address.
+router.post("/invite/check", (req, res) => {
+  const user = inviteeFor((req.body ?? {}).token, Date.now());
+  if (!user) return res.status(410).json(INVITE_GONE);
   const org = db.prepare("SELECT name FROM organizations WHERE id = ?").get(user.org_id);
   res.json({ success: true, firstName: user.first_name, lastName: user.last_name, email: user.email, orgName: org.name });
 });
 
-// POST /api/auth/accept-invite
-router.post("/accept-invite", (req, res) => {
-  const { token, password } = req.body;
-  if (!token || !password) return res.status(400).json({ success: false, error: "Token and password required" });
-  if (!/^[0-9a-f]{64}$/.test(token)) return res.status(400).json({ success: false, error: "Invalid token format" });
-  if (password.length < 8) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
+// POST /api/auth/accept-invite { token, password } — the password is checked first (it costs nothing), then the invitation, and only
+// then the (slow, cost 12) hash, so a made-up token costs a lookup, not a hash. The UPDATE only matches an unaccepted invitation, so
+// two requests with the same token can't both win: the loser changes no row and gets the same 410.
+router.post("/accept-invite", acceptInviteLimiter, (req, res) => {
+  const { token, password } = req.body ?? {};
+  if (typeof password !== "string" || password.length < 8) {
+    return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
+  }
+  if (password.length > PASSWORD_MAX) {
+    return res.status(400).json({ success: false, error: `Password must be at most ${PASSWORD_MAX} characters` });
+  }
 
-  const user = db.prepare("SELECT * FROM users WHERE invite_token = ? AND invite_accepted = 0").get(token);
-  if (!user) return res.status(404).json({ success: false, error: "Invalid or already used token" });
-  if (new Date(user.invite_expires) < new Date()) return res.status(410).json({ success: false, error: "Invitation has expired" });
+  const user = inviteeFor(token, Date.now());
+  if (!user) return res.status(410).json(INVITE_GONE);
 
   const hash = bcrypt.hashSync(password, 12);
-  db.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL, invite_accepted = 1 WHERE id = ?").run(hash, user.id);
+  const changed = db.prepare(
+    "UPDATE users SET password_hash = ?, invite_token_hash = NULL, invite_expires = NULL, invite_accepted = 1 WHERE id = ? AND invite_accepted = 0"
+  ).run(hash, user.id).changes;
+  if (!changed) return res.status(410).json(INVITE_GONE);
 
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
   setSession(res, updated);

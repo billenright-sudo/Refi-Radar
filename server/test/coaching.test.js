@@ -1113,8 +1113,8 @@ test("POST /api/auth/accept-invite returns careerStage: null, or the stage the b
   const invite = () => {
     const token = crypto.randomBytes(32).toString("hex");
     const id = Number(db.prepare(
-      "INSERT INTO users (org_id, role, first_name, last_name, email, invite_token, invite_expires, invite_accepted) VALUES (?, 'lo', 'Ivan', 'Invited', ?, ?, ?, 0)"
-    ).run(org, `invited${++seq}@coach.test`, token, new Date(Date.now() + 3600 * 1000).toISOString()).lastInsertRowid);
+      "INSERT INTO users (org_id, role, first_name, last_name, email, invite_token_hash, invite_expires, invite_accepted) VALUES (?, 'lo', 'Ivan', 'Invited', ?, ?, ?, 0)"
+    ).run(org, `invited${++seq}@coach.test`, require("../lib/passwordReset").hashToken(token), new Date(Date.now() + 3600 * 1000).toISOString()).lastInsertRowid);
     return { token, id };
   };
   const accept = (token) => fetch(base + "/api/auth/accept-invite", {

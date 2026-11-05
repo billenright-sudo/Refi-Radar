@@ -2,6 +2,7 @@
 const path = require("path");
 const fs   = require("fs");
 const Database = require("better-sqlite3");
+const { hashToken } = require("./lib/passwordReset");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_PATH  = path.join(DATA_DIR, "refi-radar.db");
@@ -121,6 +122,16 @@ if (!userCols.some((c) => c.name === "nmls_id")) {
 if (!userCols.some((c) => c.name === "session_version")) {
   db.exec("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0");
 }
+// An invitation's secret is kept only as its SHA-256 (the link carries the secret, lookups hash it), so a copy of the database holds
+// nothing that opens an account. invite_token is the old plaintext column: every start moves any value still in it to the hash, in one
+// transaction. Links already mailed keep working, because their lookups use the hash. Nothing writes invite_token any more.
+if (!userCols.some((c) => c.name === "invite_token_hash")) {
+  db.exec("ALTER TABLE users ADD COLUMN invite_token_hash TEXT");
+}
+db.transaction(() => {
+  const move = db.prepare("UPDATE users SET invite_token_hash = ?, invite_token = NULL WHERE id = ?");
+  for (const r of db.prepare("SELECT id, invite_token FROM users WHERE invite_token IS NOT NULL").all()) move.run(hashToken(r.invite_token), r.id);
+})();
 const orgCols = db.prepare("PRAGMA table_info(organizations)").all();
 if (!orgCols.some((c) => c.name === "nmls_id")) {
   db.exec("ALTER TABLE organizations ADD COLUMN nmls_id TEXT");

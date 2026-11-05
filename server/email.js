@@ -14,6 +14,12 @@ function createTransport() {
 const APP_URL = process.env.APP_URL || "http://localhost:8080";
 const FROM    = process.env.EMAIL_USER || "noreply@refi-radar.com";
 
+// The invitation secret goes after the "#", which a browser never sends to a server, so it stays out of request logs. The page reads it
+// and checks it with a POST.
+function inviteLink(token) {
+  return `${APP_URL}/#invite=${token}`;
+}
+
 // Names in the HTML bodies below come from people (a broker types the company and the invitee, a client's name comes from an import),
 // so they go through escapeHtml (defined further down). Subjects are plain text, so they are left as typed.
 async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
@@ -21,7 +27,7 @@ async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
     console.warn("[email] EMAIL_USER/EMAIL_PASS not set — skipping invite email");
     return;
   }
-  const link = `${APP_URL}/accept-invite?token=${token}`;
+  const link = inviteLink(token);
   await createTransport().sendMail({
     from: `"Broker Radar" <${FROM}>`,
     to: toEmail,
@@ -162,7 +168,7 @@ function sendPasswordChanged({ to, firstName }) {
 }
 
 module.exports = {
-  sendInvite, sendRefiAlert, sendEmailChange, APP_URL,
+  sendInvite, inviteLink, sendRefiAlert, sendEmailChange, APP_URL,
   emailLinksWork, mailReady,
   passwordResetMessage, passwordChangedMessage, sendPasswordReset, sendPasswordChanged,
 };
