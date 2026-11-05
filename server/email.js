@@ -148,8 +148,7 @@ function signupMessage({ firstName, orgName, email, link }) {
     subject: "Finish creating your Broker Radar account",
     html: `
       <p>Hi ${escapeHtml(firstName)},</p>
-      <p>Thanks for starting a Broker Radar trial for ${escapeHtml(orgName)}.</p>
-      <p>To finish creating your account (${escapeHtml(email)}), use this button within 24 hours:</p>
+      <p>Thanks for starting a Broker Radar trial for ${escapeHtml(orgName)}. To finish creating your account (${escapeHtml(email)}), use this button within 24 hours:</p>
       <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Create my account</a></p>
       <p style="color:#666;font-size:12px">If you didn't ask for this, you can ignore this email. No account will be created.</p>
     `,

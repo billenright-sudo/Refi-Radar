@@ -87,7 +87,8 @@ async function call(method, p, body, { ip, cookie } = {}) {
 const register = (over = {}, opts) => call("POST", "/api/auth/register", { ...FORM, ...over }, opts);
 // "is this link still good?" and "use it": the token goes in the body, never in a URL the server would receive (and so log)
 const check = (token) => call("POST", "/api/auth/register/check", { token });
-const complete = (token, opts) => call("POST", "/api/auth/register/complete", { token }, opts);
+// "use it" also needs the password chosen at sign-up: every link here was asked for with FORM's
+const complete = (token, opts, password = FORM.password) => call("POST", "/api/auth/register/complete", { token, password }, opts);
 const login = (mail, password) => call("POST", "/api/auth/login", { email: mail, password });
 const forgot = (mail) => call("POST", "/api/auth/forgot", { email: mail });
 const me = (cookie) => call("GET", "/api/auth/me", undefined, { cookie });
@@ -303,22 +304,32 @@ test("register: 5 an hour per IP, then 429", async () => {
   assert.ok(!signupCalls.some((c) => c.to === "ip5@x.test"), "nothing sent for a refused request");
 });
 
-test("register: at most 3 emails an hour to one address, counted together with reset emails; sign-up has its own site cap, so it can't use up the reset emails' cap", async () => {
+test("register: at most 3 sign-up emails an hour to one address, and apart from them at most 3 reset emails, so sign-up can never block a reset; sign-up has its own site cap, so it can't use up the reset emails' cap", async () => {
+  // 3 sign-ups for an account that exists: 3 of email B, and a 4th sends nothing
   addBroker(db, { email: "lou@x.test", firstName: "Lou" });
-  const answers = [];
-  answers.push(await forgot("lou@x.test"));
-  answers.push(await forgot("lou@x.test"));
-  answers.push(await register({ email: "lou@x.test" }));
-  answers.push(await register({ email: "lou@x.test" }));   // the 4th email for this address in the hour: not sent
-  for (const a of answers) {
+  for (let i = 0; i < 4; i++) {
+    const a = await register({ email: "lou@x.test" });
     assert.strictEqual(a.status, 200);
     assert.deepStrictEqual(a.data, OK);
   }
-  await until(() => resetCalls.length + takenCalls.length >= 3);
+  await until(() => takenCalls.length >= 3);
   await settle();
-  assert.strictEqual(resetCalls.length, 2);
-  assert.strictEqual(takenCalls.length, 1);
+  assert.deepStrictEqual(takenCalls.map((c) => c.to), ["lou@x.test", "lou@x.test", "lou@x.test"]);
   assert.strictEqual(signupCalls.length, 0);
+  // a reset for that account straight after still goes out: the sign-ups used none of its reset emails
+  assert.deepStrictEqual(await forgot("lou@x.test").then((x) => [x.status, x.data]), [200, OK]);
+  await until(() => resetCalls.length === 1);
+  assert.strictEqual(resetCalls[0].to, "lou@x.test");
+
+  // and the other way: 3 resets for an account, then a sign-up for it: email B still goes out
+  addBroker(db, { email: "mo@x.test", firstName: "Mo" });
+  for (let i = 0; i < 3; i++) assert.strictEqual((await forgot("mo@x.test")).status, 200);
+  await until(() => resetCalls.length === 4);
+  assert.deepStrictEqual(await register({ email: "mo@x.test" }).then((x) => [x.status, x.data]), [200, OK]);
+  await until(() => takenCalls.length === 4);
+  assert.deepStrictEqual(takenCalls[3], { to: "mo@x.test", firstName: "Mo" });
+  await settle();
+  assert.strictEqual(resetCalls.length, 4);
 
   // (a) sign-up's own site cap (A and B together): past it, still 200, nothing stored or sent, and the reset emails' cap is never
   // asked, so a crowd asking for sign-up emails to made-up addresses can't stop password resets
@@ -336,12 +347,12 @@ test("register: at most 3 emails an hour to one address, counted together with r
   await settle();
   assert.deepStrictEqual(signupCalls.map((c) => c.to), ["cap1@x.test", "cap2@x.test"]);
   assert.strictEqual(signupRow("cap3@x.test"), undefined, "past the cap nothing is stored");
-  assert.strictEqual(takenCalls.length, 1, "email B is under the same sign-up cap");
+  assert.strictEqual(takenCalls.length, 4, "email B is under the same sign-up cap");
   assert.deepStrictEqual(resetSiteAsked, [], "sign-up never asks the reset emails' cap");
   const r = await forgot("dee@x.test");
   assert.strictEqual(r.status, 200);
-  await until(() => resetCalls.length === 3);
-  assert.strictEqual(resetCalls[2].to, "dee@x.test", "a reset email still goes out past sign-up's cap");
+  await until(() => resetCalls.length === 5);
+  assert.strictEqual(resetCalls[4].to, "dee@x.test", "a reset email still goes out past sign-up's cap");
   assert.deepStrictEqual(resetSiteAsked, ["all"]);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(dee.id).n, 1);
 
@@ -351,14 +362,47 @@ test("register: at most 3 emails an hour to one address, counted together with r
   const eve = addBroker(db, { email: "eve@x.test", firstName: "Eve" });
   assert.strictEqual((await forgot("eve@x.test")).status, 200);
   await settle();
-  assert.strictEqual(resetCalls.length, 3, "the reset cap is in force");
+  assert.strictEqual(resetCalls.length, 5, "the reset cap is in force");
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ?").get(eve.id).n, 0);
   assert.strictEqual((await register({ email: "fresh@x.test" })).status, 200);
   assert.strictEqual((await register({ email: "eve@x.test" })).status, 200);
-  await until(() => signupCalls.length === 3 && takenCalls.length === 2);
+  await until(() => signupCalls.length === 3 && takenCalls.length === 5);
   assert.strictEqual(signupCalls[2].to, "fresh@x.test");
   assert.ok(signupRow("fresh@x.test"), "the request is stored");
-  assert.deepStrictEqual(takenCalls[1], { to: "eve@x.test", firstName: "Eve" });
+  assert.deepStrictEqual(takenCalls[4], { to: "eve@x.test", firstName: "Eve" });
+});
+
+test("a full site cap is logged once an hour, by which cap it is, with no address", async (t) => {
+  const warned = [];
+  t.mock.method(console, "warn", (...args) => { warned.push(args); });
+  const lines = (text) => warned.filter((args) => args.some((a) => String(a).includes(text)));
+  const SIGNUP_FULL = "[auth] sign-up email limit reached for this hour";
+  const RESET_FULL = "[auth] reset email limit reached for this hour";
+
+  // sign-up's cap of 1: the first email goes, the next two are refused, and only the first refusal is logged
+  app.set("signupSiteSendCounter", createSendCounter({ max: 1 }));
+  for (const mail of ["one@x.test", "two@x.test", "three@x.test"]) assert.strictEqual((await register({ email: mail })).status, 200);
+  await until(() => lines(SIGNUP_FULL).length >= 1);
+  await settle();
+  assert.strictEqual(signupCalls.length, 1);
+  assert.strictEqual(lines(SIGNUP_FULL).length, 1);
+  assert.strictEqual(lines(RESET_FULL).length, 0, "the reset cap isn't full");
+
+  // the same for the reset emails' cap
+  app.set("resetSiteSendCounter", createSendCounter({ max: 1 }));
+  for (const mail of ["r1@x.test", "r2@x.test", "r3@x.test"]) {
+    addBroker(db, { email: mail });
+    assert.strictEqual((await forgot(mail)).status, 200);
+  }
+  await until(() => lines(RESET_FULL).length >= 1);
+  await settle();
+  assert.strictEqual(resetCalls.length, 1);
+  assert.strictEqual(lines(RESET_FULL).length, 1);
+  assert.strictEqual(lines(SIGNUP_FULL).length, 1);
+
+  // the lines are exactly these, and none names an address
+  assert.deepStrictEqual(warned, [[SIGNUP_FULL], [RESET_FULL]]);
+  assert.ok(!warned.some((args) => args.some((a) => String(a).includes("@"))), "a warning names an address");
 });
 
 test("register/check: 200 with the email and brokerage; a check does not use the link up; 410 for every bad link", async () => {
@@ -447,6 +491,33 @@ test("register/complete: signs in as the new broker, with a 14-day trial, and wo
   assert.deepStrictEqual(await complete(older).then((x) => [x.status, x.data]), [410, GONE], "replaced");
   assert.strictEqual(count("organizations"), orgs + 1);
   assert.strictEqual((await complete(newer)).status, 200, "the newest link works");
+});
+
+test("register/complete: the password chosen at sign-up is required; a wrong or missing one is 400, creates nothing, and the link still works", async () => {
+  const WRONG = { success: false, error: "That isn't the password you chose when you signed up. Try again, or start again to choose a new one." };
+  const token = await signupToken();
+  const users = count("users");
+  const orgs = count("organizations");
+  const request = signupRow("nia@x.test");
+  // missing, not a string, wrong, and the right one with a space added (passwords are never trimmed): all the same 400
+  for (const body of [{ token }, { token, password: 42 }, { token, password: "wrong-password" }, { token, password: ` ${FORM.password}` }]) {
+    const r = await call("POST", "/api/auth/register/complete", body);
+    assert.strictEqual(r.status, 400, JSON.stringify(body.password));
+    assert.deepStrictEqual(r.data, WRONG, JSON.stringify(body.password));
+    assert.strictEqual(r.cookie, null, "nobody is signed in");
+  }
+  assert.strictEqual(count("users"), users, "no broker");
+  assert.strictEqual(count("organizations"), orgs, "no organization");
+  assert.deepStrictEqual(signupRow("nia@x.test"), request, "the request is still waiting, unchanged");
+  assert.strictEqual((await check(token)).status, 200, "the link still works");
+
+  // and the right password then creates the account
+  const r = await complete(token);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.data.user.email, "nia@x.test");
+  assert.ok(r.cookie && r.cookie.startsWith("rr_token="));
+  assert.strictEqual(count("users"), users + 1);
+  assert.strictEqual(signupRow("nia@x.test"), undefined);
 });
 
 test("register/complete: refused, and nothing created, after the address got an invite in the meantime", async () => {

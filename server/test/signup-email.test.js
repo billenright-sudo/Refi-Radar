@@ -17,6 +17,8 @@ test("email A: the approved words, the link, and every typed value escaped", () 
   assert.ok(m.html.includes("Hi &lt;b&gt;Nia&lt;/b&gt;,"));
   assert.ok(m.html.includes("Thanks for starting a Broker Radar trial for O&#39;Neil &amp; &lt;i&gt;Co&lt;/i&gt;."));
   assert.ok(m.html.includes("To finish creating your account (nia@x.test), use this button within 24 hours:"));
+  // one paragraph, as the approved copy (§6) shows it: the two sentences joined by a single space
+  assert.ok(m.html.includes("Thanks for starting a Broker Radar trial for O&#39;Neil &amp; &lt;i&gt;Co&lt;/i&gt;. To finish creating your account (nia@x.test), use this button within 24 hours:"));
   assert.ok(m.html.includes(`href="${L}"`) && m.html.includes(">Create my account</a>"));
   assert.ok(m.html.includes("If you didn't ask for this, you can ignore this email. No account will be created."));
   assert.ok(!/<b>Nia|<i>Co/.test(m.html));

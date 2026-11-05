@@ -80,9 +80,11 @@ const inviteLimiter = rateLimit({
   message: { success: false, error: "Too many invitations — please try again in an hour" },
 });
 
-// At most 3 emails an hour to one address, however many IPs ask: reset emails and the two sign-up emails counted together, so
-// neither page can be used to flood an inbox. In memory (one instance runs, and a restart that forgets the count is harmless).
-// app.set("resetSendCounter", ...) swaps in a fresh one (tests).
+// At most 3 reset emails an hour to one address, however many IPs ask, and apart from them at most 3 sign-up emails (A and B
+// together), so neither page can be used to flood an inbox. One counter, two kinds of key: a reset counts under the address,
+// a sign-up under "signup:" + the address. Kept apart because anyone can ask for sign-up emails to someone else's address, and if
+// the two shared a count, three of those would block that person's password reset for an hour. In memory (one instance runs, and
+// a restart that forgets the count is harmless). app.set("resetSendCounter", ...) swaps in a fresh one (tests).
 const moduleCounter = createSendCounter();
 // And at most 60 reset emails an hour in all, so that a crowd of different accounts (or a crowd of IPs) can't use up the mailbox's
 // daily sending quota and stop the invite and password-changed emails. Same kind of counter, one shared key.
@@ -91,10 +93,22 @@ const SITE_RESET_EMAILS_PER_HOUR = 60;
 const moduleSiteCounter = createSendCounter({ max: SITE_RESET_EMAILS_PER_HOUR });
 // Sign-up emails (A and B together) have their own site-wide cap, apart from the reset one. Anyone can ask for sign-up emails to
 // made-up addresses (a reset email only ever goes to a real account), so if the two shared one cap a dozen IPs could use it up and
-// silently stop every password-reset email for the rest of the hour. Kept lower, since nobody needs a sign-up email urgently.
-// app.set("signupSiteSendCounter", ...) swaps in a fresh one (tests).
+// silently stop every password-reset email for the rest of the hour. Kept lower than the reset cap because anyone can ask for
+// sign-up emails to made-up addresses. app.set("signupSiteSendCounter", ...) swaps in a fresh one (tests).
 const SITE_SIGNUP_EMAILS_PER_HOUR = 20;
 const moduleSignupSiteCounter = createSendCounter({ max: SITE_SIGNUP_EMAILS_PER_HOUR });
+
+// A full site cap means the mailbox's hourly allowance is used up (perhaps by someone asking for made-up addresses), so it is
+// logged, but at most once an hour per cap, so a flood of requests can't flood the log as well. The line names the cap only: never
+// an address, a token or a link. Remembered per counter object, so a fresh counter (tests) starts with no warning given.
+const CAP_WARN_EVERY_MS = 60 * 60 * 1000;
+const capWarnedAt = new WeakMap();
+function warnCapFull(siteCounter, line, nowMs) {
+  const last = capWarnedAt.get(siteCounter);
+  if (last !== undefined && nowMs - last < CAP_WARN_EVERY_MS) return;
+  capWarnedAt.set(siteCounter, nowMs);
+  console.warn(line);
+}
 
 const EMAIL_MAX = 254;
 // No real password is this long; refusing a huge one keeps absurd input out of the hash (the page says so, rather than cutting it).
@@ -194,13 +208,18 @@ router.post("/register", registerLimiter, (req, res) => {
       const passwordHash = bcrypt.hashSync(password, 12);
       const now = Date.now();
       purgeExpiredSignups(db, now);
-      // Both counters count emails, and one goes out (A or B) for every request they let through. The per-address count is the
-      // one /forgot uses, so an inbox gets at most 3 of the reset and sign-up emails together; it is asked first, so one address
-      // asked for over and over can't use up the whole site's allowance. It forgets an address an hour after its last send, so
-      // asking it about addresses with no account can't grow it without end. The site-wide count is sign-up's own, never the
-      // reset emails' (anyone can ask for these emails to made-up addresses, so sharing it would let them stop password resets).
-      // Past either limit nothing is stored or sent.
-      if (!counter.take(key, now) || !siteCounter.take("all", now)) return;
+      // Both counters count emails, and one goes out (A or B) for every request they let through. The per-address count is
+      // sign-up's own key ("signup:" + the address), never the one /forgot uses, so sign-up requests, whoever sends them, can't
+      // use up an address's reset emails (nor resets its sign-up emails); it is asked first, so one address asked for over and over
+      // can't use up the whole site's allowance. It forgets an address an hour after its last send, so asking it about addresses
+      // with no account can't grow it without end. The site-wide count is sign-up's own too, never the reset emails' (anyone can
+      // ask for these emails to made-up addresses, so sharing it would let them stop password resets). Past either limit nothing
+      // is stored or sent; a full site cap is logged (once an hour, no address).
+      if (!counter.take("signup:" + key, now)) return;
+      if (!siteCounter.take("all", now)) {
+        warnCapFull(siteCounter, "[auth] sign-up email limit reached for this hour", now);
+        return;
+      }
       // Any user at all, an unused invitation included: email B, addressed with the name stored on that account, never the one
       // typed into the form (anyone can type anything there).
       const existing = db.prepare("SELECT email, first_name FROM users WHERE email = ?").get(key);
@@ -228,12 +247,21 @@ router.post("/register/check", (req, res) => {
   res.json({ success: true, email: request.email, orgName: request.org_name });
 });
 
-// POST /api/auth/register/complete { token } — "Create my account". completeSignup is the one place the link is used up: in one
-// transaction it checks the request again (still unexpired, and the address still has no user, since an invitation could have
-// arrived in the meantime), creates the organization on its 14-day trial and the broker with the password hashed at sign-up, and
-// deletes the request. Every refusal is the same 410. Then the new broker is signed in, as /login does.
+// POST /api/auth/register/complete { token, password } — "Create my account". The person finishing must also type the password
+// chosen at sign-up: otherwise whoever asked for the link could pick a password, wait for the address's owner to click "Create my
+// account", and then sign in to that account with the password they chose. A missing, non-string or wrong password is a 400 that
+// uses nothing up (the link stays good). completeSignup is the one place the link is used up: in one transaction it checks the
+// request again (still unexpired, and the address still has no user, since an invitation could have arrived in the meantime),
+// creates the organization on its 14-day trial and the broker with the password hashed at sign-up, and deletes the request. Every
+// refusal of the link is the same 410. Then the new broker is signed in, as /login does.
 router.post("/register/complete", signupCompleteLimiter, (req, res) => {
-  const user = completeSignup(db, (req.body ?? {}).token, Date.now());
+  const { token, password } = req.body ?? {};
+  const request = signupFor(db, token, Date.now());
+  if (!request) return res.status(410).json(LINK_GONE);
+  if (typeof password !== "string" || !bcrypt.compareSync(password, request.password_hash)) {
+    return res.status(400).json({ success: false, error: "That isn't the password you chose when you signed up. Try again, or start again to choose a new one." });
+  }
+  const user = completeSignup(db, token, Date.now());
   if (!user) return res.status(410).json(LINK_GONE);
   setSession(res, user);
   res.json({ success: true, user: safeUser(user) });
@@ -376,12 +404,17 @@ router.post("/forgot", forgotLimiter, (req, res) => {
     try {
       // Only an account that can sign in counts (an unused invite should use its invite link). The send counter counts emails,
       // so it is asked only for an account that was found, the one case where a reset email goes out: a made-up address gets no
-      // email and uses up none of the 3 an hour that its reset and sign-up emails share. (The counter forgets an address an hour
-      // after its last send, so it can't grow without end either way.) The site-wide count is asked last, only once this account
-      // has passed its own limit, so one account being asked for over and over can't use up the whole site's allowance. Past
-      // either limit nothing is stored and nothing is sent.
+      // email and uses up none of its 3 reset emails an hour. Sign-up counts its emails under a key of its own, so sign-up requests
+      // never use these up. (The counter forgets an address an hour after its last send, so it can't grow without end either way.)
+      // The site-wide count is asked last, only once this account has passed its own limit, so one account being asked for over and
+      // over can't use up the whole site's allowance. Past either limit nothing is stored and nothing is sent; a full site cap is
+      // logged (once an hour, no address).
       const user = db.prepare("SELECT id, email, first_name FROM users WHERE email = ? AND invite_accepted = 1").get(key);
-      if (!user || !counter.take(key, Date.now()) || !siteCounter.take("all", Date.now())) return;
+      if (!user || !counter.take(key, Date.now())) return;
+      if (!siteCounter.take("all", Date.now())) {
+        warnCapFull(siteCounter, "[auth] reset email limit reached for this hour", Date.now());
+        return;
+      }
       const token = issueReset(db, user.id, Date.now());
       // The token goes in the URL fragment (#), which a browser never sends to a server, so the link can't land in a request log.
       sendAfterAnswer("reset", send, { to: user.email, firstName: user.first_name, link: `${email.APP_URL}/#reset=${token}` });
