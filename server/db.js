@@ -327,6 +327,8 @@ const billingOrgCols = [
   ["billing_ever_subscribed", "INTEGER NOT NULL DEFAULT 0"], ["billing_has_card", "INTEGER NOT NULL DEFAULT 0"],
   ["billing_event_at", "INTEGER"], ["billing_synced_at", "INTEGER"], ["billing_pending_checkout", "TEXT"],
   ["billing_confirmation_sent", "INTEGER NOT NULL DEFAULT 0"],
+  // a second subscription found for the organization (H1), kept until it is cancelled and refunded, so a failure is tried again
+  ["billing_duplicate_pending", "TEXT"],
 ];
 const billingHave = new Set(db.prepare("PRAGMA table_info(organizations)").all().map((c) => c.name));
 for (const [name, def] of billingOrgCols) {

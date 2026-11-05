@@ -5,14 +5,17 @@
 //   400 { success: false }   no Stripe-Signature, a bad one, or a body that isn't the signed JSON
 //   413 { success: false }   a body over 1 MB
 //   500 { success: false }   the event couldn't be stored (Stripe sends it again)
-//   200 { received: true }   applied, a replay, or an event we don't use. The follow-ups (cancel a second subscription, put the user
-//                            count back, the confirmation email) run after the answer, so Stripe never waits on them.
+//   200 { received: true }   applied, a replay, or an event we don't use, once the follow-ups have run: cancel and refund a second
+//                            subscription (H1), put the user count back (H2), the confirmation email (H6), and a retry of any
+//                            second subscription still recorded for the event's organization. They run BEFORE the answer because
+//                            Cloud Run throttles the CPU once a response has gone (ruling 9). A failed follow-up still answers 200:
+//                            the event is recorded, and what failed is kept to be tried again on the organization's next event.
 // Nothing from the body is ever logged: only the event type, the outcome and an error's message.
 const express = require("express");
 const db = require("../db");
 const email = require("../email");
 const { applyStripeEvent } = require("../lib/billing/events");
-const { runFollowUps } = require("../lib/billing/followUps");
+const { runFollowUps, retryPendingDuplicate } = require("../lib/billing/followUps");
 
 const router = express.Router();
 const REFUSED = Object.freeze({ success: false });
@@ -24,7 +27,7 @@ function billingOn(req, res, next) {
   next();
 }
 
-router.post("/", billingOn, express.raw({ type: "application/json", limit: "1mb" }), (req, res) => {
+router.post("/", billingOn, express.raw({ type: "application/json", limit: "1mb" }), async (req, res) => {
   const config = req.app.get("billingConfig");
   const gateway = req.app.get("billingGateway");
   const signature = req.get("stripe-signature");
@@ -46,15 +49,19 @@ router.post("/", billingOn, express.raw({ type: "application/json", limit: "1mb"
     console.error(`[billing] webhook ${type} not stored:`, err?.message);
     return res.status(500).json(REFUSED);
   }
-  console.log(`[billing] webhook ${type}: ${result.outcome}`);
-  res.json({ received: true });
+  const { orgId } = result;
+  console.log(`[billing] webhook ${type}${orgId != null ? ` for org ${orgId}` : ""}: ${result.outcome}`);
 
-  if (!result.followUps.length) return;
   const send = req.app.get("sendBillingConfirmation") || email.sendBillingConfirmation;
-  setImmediate(() => {
-    runFollowUps({ db, gateway, send, config }, result.followUps)
-      .catch((err) => console.error("[billing] follow-ups failed:", err?.message));
-  });
+  try {
+    await runFollowUps({ db, gateway, send, config }, result.followUps);
+    // Any event for the organization retries a second subscription still recorded for it, unless this event's own follow-ups just did.
+    const handled = result.followUps.some((f) => f.type === "cancel_duplicate" && f.orgId === orgId);
+    if (orgId != null && !handled) await retryPendingDuplicate(db, gateway, orgId);
+  } catch (err) {
+    console.error(`[billing] follow-ups failed for org ${orgId}:`, err?.message);
+  }
+  res.json({ received: true });
 });
 
 // express.raw's own refusals (too big, a bad encoding) answer like the rest of this route, without Express's HTML error page.

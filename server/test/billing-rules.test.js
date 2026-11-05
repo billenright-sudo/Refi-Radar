@@ -172,6 +172,7 @@ const ORG_COLS = {
   billing_cancel_at_period_end: "INTEGER", billing_exempt: "INTEGER", billing_tester_until: "INTEGER",
   billing_via_tester_code: "INTEGER", billing_ever_subscribed: "INTEGER", billing_has_card: "INTEGER",
   billing_event_at: "INTEGER", billing_synced_at: "INTEGER", billing_pending_checkout: "TEXT", billing_confirmation_sent: "INTEGER",
+  billing_duplicate_pending: "TEXT",
 };
 const ORG_ZERO = ["billing_cancel_at_period_end", "billing_exempt", "billing_via_tester_code", "billing_ever_subscribed", "billing_has_card", "billing_confirmation_sent"];
 

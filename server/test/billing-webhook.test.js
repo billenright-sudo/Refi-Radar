@@ -19,7 +19,7 @@ const Stripe = require("stripe");
 const db = require("../db");
 const webhookRoutes = require("../routes/billingWebhook");
 const { applyStripeEvent, storeSubscription } = require("../lib/billing/events");
-const { runFollowUps, totalLine, formatEndDate } = require("../lib/billing/followUps");
+const { runFollowUps, retryPendingDuplicate, totalLine, formatEndDate } = require("../lib/billing/followUps");
 const { syncSeats } = require("../lib/billing/seats");
 const { accessFor } = require("../lib/billing/access");
 const { checkoutPlan } = require("../lib/billing/plan");
@@ -38,7 +38,7 @@ const TRIAL_END = T0 + 14 * DAY;
 let calls, cancelImpl, quantityImpl;
 const gateway = {
   constructEvent: (raw, sig, secret) => Stripe.webhooks.constructEvent(raw, sig, secret),
-  cancelAndRefund: async (id) => { calls.push(["cancelAndRefund", id]); return cancelImpl(id); },
+  cancelAndRefund: async (id, opts) => { calls.push(["cancelAndRefund", id, opts]); return cancelImpl(id, opts); },
   setQuantity: async (args) => { calls.push(["setQuantity", args]); return quantityImpl(args); },
 };
 let sent, sendImpl;
@@ -243,13 +243,13 @@ test("the same event twice applies once; an older event after a newer one is ign
   await settle();
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(sent.length, 1);
-  assert.deepStrictEqual(applyStripeEvent(db, first), { outcome: "duplicate", followUps: [] });
+  assert.deepStrictEqual(applyStripeEvent(db, first), { outcome: "duplicate", followUps: [], orgId });
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM stripe_events WHERE id = ?").get(first.id).n, 1);
 
   const newer = event("customer.subscription.updated", subscription(orgId, { status: "past_due", item: { quantity: 2 } }), T0 + 200);
   const older = event("customer.subscription.updated", subscription(orgId, { status: "active", item: { quantity: 2 } }), T0 + 150);
   assert.strictEqual(applyStripeEvent(db, newer).outcome, "applied");
-  assert.deepStrictEqual(applyStripeEvent(db, older), { outcome: "ignored", followUps: [] });
+  assert.deepStrictEqual(applyStripeEvent(db, older), { outcome: "ignored", followUps: [], orgId });
   assert.strictEqual(orgRow(orgId).billing_status, "past_due");
   assert.strictEqual(orgRow(orgId).billing_event_at, (T0 + 200) * 1000);
   // the ignored event is recorded too, so Stripe's retry of it is a duplicate
@@ -278,16 +278,17 @@ test("a second live subscription for one org is cancelled and refunded through t
   // a second card page finished in another tab: its subscription is cancelled (and refunded) at once; the first one stays
   const r = await post(event("customer.subscription.created", subscription(orgId, { id: "sub_B", item: { id: "si_B" } }), T0 + 20));
   assert.deepStrictEqual([r.status, r.data], [200, { received: true }]);
-  await until(() => calls.length === 1);
-  assert.deepStrictEqual(calls, [["cancelAndRefund", "sub_B"]]);
+  // recorded first, and worked on as a recorded duplicate; cleared once that went through
+  assert.deepStrictEqual(calls, [["cancelAndRefund", "sub_B", { recorded: true }]]);
   let o = orgRow(orgId);
   assert.deepStrictEqual([o.stripe_subscription_id, o.stripe_item_id, o.billing_status], ["sub_A", "si_A", "trialing"]);
+  assert.strictEqual(o.billing_duplicate_pending, null);
 
   // a checkout for yet another one says the same, even delivered late (older than what was applied): two tabs a second apart
   await post(event("checkout.session.completed", checkoutSession(orgId, { id: "cs_C", subscription: "sub_C" }), T0 + 5));
-  await until(() => calls.length === 2);
-  assert.deepStrictEqual(calls[1], ["cancelAndRefund", "sub_C"]);
+  assert.deepStrictEqual(calls[1], ["cancelAndRefund", "sub_C", { recorded: true }]);
   assert.strictEqual(orgRow(orgId).stripe_subscription_id, "sub_A");
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, null);
 
   // the cancelled one's own "deleted" event doesn't touch the organization, and cancels nothing more
   await post(event("customer.subscription.deleted", subscription(orgId, { id: "sub_B", status: "canceled", item: { id: "si_B" } }), T0 + 30));
@@ -305,6 +306,85 @@ test("a second live subscription for one org is cancelled and refunded through t
   o = orgRow(orgId);
   assert.deepStrictEqual([o.stripe_subscription_id, o.stripe_item_id, o.billing_status], ["sub_D", "si_D", "active"]);
   assert.strictEqual(calls.length, 2);
+});
+
+test("a second subscription whose cancel or refund fails stays recorded and is tried again on the org's next event (H1)", async (t) => {
+  const errors = [];
+  t.mock.method(console, "error", (...a) => { errors.push(a.map(String).join(" ")); });
+  const orgId = addOrg();
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_keep" }), T0 + 10));
+
+  // the refund fails after the cancel went through (the gateway throws): the id stays recorded, and the answer is still 200
+  cancelImpl = async () => { throw new Error("refund failed"); };
+  const r = await post(event("customer.subscription.created", subscription(orgId, { id: "sub_extra" }), T0 + 20));
+  assert.deepStrictEqual([r.status, r.data], [200, { received: true }]);
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, "sub_extra");
+  assert.deepStrictEqual(calls, [["cancelAndRefund", "sub_extra", { recorded: true }]], "tried once for this event, not twice");
+  assert.ok(errors.includes(`[billing] cancel_duplicate failed for org ${orgId}: refund failed`), errors.join("\n"));
+
+  // the next event for the organization, of any kind, tries again; this time it goes through and the record is cleared
+  cancelImpl = async () => ({ cancelled: false, refunded: true });
+  await post(event("invoice.paid", { id: "in_retry", object: "invoice", customer: `cus_${orgId}` }, T0 + 30));
+  assert.deepStrictEqual(calls[1], ["cancelAndRefund", "sub_extra", { recorded: true }]);
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, null);
+  await post(event("invoice.paid", { id: "in_after", object: "invoice", customer: `cus_${orgId}` }, T0 + 40));
+  assert.strictEqual(calls.length, 2, "nothing more once it is done");
+
+  // the cancel itself fails: the same
+  cancelImpl = async () => { throw new Error("cancel failed"); };
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_third" }), T0 + 50));
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, "sub_third");
+  cancelImpl = async () => ({ cancelled: true, refunded: true });
+  await post(event("customer.updated", { id: `cus_${orgId}`, object: "customer", metadata: {}, invoice_settings: { default_payment_method: null } }, T0 + 60));
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, null);
+  assert.deepStrictEqual(calls.slice(2).map((c) => c[1]), ["sub_third", "sub_third"]);
+
+  // two found before either is dealt with: both kept; the one that fails stays, the other is cleared
+  cancelImpl = async (id) => { if (id === "sub_bad") throw new Error("still down"); return { cancelled: true, refunded: false }; };
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_bad" }), T0 + 70));
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_ok" }), T0 + 80));
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, "sub_bad");
+  assert.ok(calls.some((c) => c[1] === "sub_ok"));
+  // the billing status call (Task 3) drives the same retry
+  cancelImpl = async () => ({ cancelled: true, refunded: false });
+  await retryPendingDuplicate(db, gateway, orgId);
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, null);
+  const n = calls.length;
+  await retryPendingDuplicate(db, gateway, orgId);
+  assert.strictEqual(calls.length, n, "nothing recorded: no call");
+  assert.strictEqual(orgRow(orgId).stripe_subscription_id, "sub_keep", "the organization's own subscription is never touched");
+});
+
+test("the webhook answers once its follow-ups have run, and still 200 when one fails (ruling 9)", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const orgId = addOrg({ seats: 2 });
+  sendImpl = () => new Promise((r) => setTimeout(() => r(true), 50));
+  quantityImpl = async () => { throw new Error("quantity refused"); };
+  const r = await post(event("customer.subscription.created", subscription(orgId, { item: { quantity: 1 } }), T0 + 10));
+  assert.deepStrictEqual([r.status, r.data], [200, { received: true }]);
+  // no waiting needed: by the answer the email went and the failed push was tried
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(orgRow(orgId).billing_confirmation_sent, 1);
+  assert.deepStrictEqual(calls, [["setQuantity", { subscriptionId: `sub_${orgId}`, itemId: `si_${orgId}`, quantity: 2 }]]);
+  assert.strictEqual(orgRow(orgId).billing_quantity, 1, "kept, so the next event pushes it again");
+});
+
+test("the confirmation goes only during the trial: an active event still carrying trial_end, or a paid start, owes none (ruling 6)", async () => {
+  // the trial already converted (Stripe keeps trial_end on the subscription afterwards) and no confirmation ever went out
+  const converted = addOrg();
+  const sub = subscription(converted, { status: "active", trial_end: T0 - DAY, item: { current_period_end: T0 + 29 * DAY } });
+  assert.deepStrictEqual(storeSubscription(db, converted, sub, NOW), []);
+  await post(event("customer.subscription.updated", sub, T0 + 10));
+  assert.strictEqual(orgRow(converted).billing_trial_end, (T0 - DAY) * 1000);
+  // coming back: active at once, no trial
+  const returning = addOrg({ billing_ever_subscribed: 1 });
+  await post(event("customer.subscription.created", subscription(returning, { status: "active", trial_end: null }), T0 + 10));
+  // and the follow-up itself refuses too, should a confirm reach it for an active subscription
+  await runFollowUps({ db, gateway, send, config: CONFIG }, [{ type: "confirm", orgId: converted }]);
+  await settle();
+  assert.deepStrictEqual(sent, []);
+  assert.strictEqual(orgRow(converted).billing_confirmation_sent, 0);
+  assert.strictEqual(orgRow(returning).billing_confirmation_sent, 0);
 });
 
 test("a quantity that differs from the user count is pushed back (H2)", async () => {
@@ -493,20 +573,17 @@ test("no log line holds a secret or a whole Stripe object", async (t) => {
     assert.match(line, /^\[billing\] /, line);
     for (const b of banned) assert.ok(!line.includes(b), `a log line holds ${b}: ${line}`);
   }
+  // every failure names our own organization number (ruling 10), so a log line can be traced without a Stripe id
+  for (const [type, message] of [["sync_seats", "quantity refused"], ["confirm", "mail refused"], ["cancel_duplicate", "cancel refused"]]) {
+    assert.ok(lines.includes(`[billing] ${type} failed for org ${orgId}: ${message}`), `${type}: ${lines.join("\n")}`);
+  }
 });
 
-test("index.js mounts the webhook before the JSON parser; the real gateway and the pinned stripe package (shape only)", () => {
+// The gateway's own behaviour is tested over a fake Stripe client in billing-gateway.test.js.
+test("index.js mounts the webhook before the JSON parser, and the stripe package is pinned", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
   const mount = src.indexOf('app.use("/api/billing/webhook"');
   assert.ok(mount > 0, "the webhook is mounted");
   assert.ok(mount < src.indexOf("app.use(express.json("), "before the JSON parser, which would take the raw body first");
-
-  const gatewayModule = require("../lib/billing/stripeGateway");
-  assert.strictEqual(typeof gatewayModule.createStripeGateway, "function");
-  const gatewaySrc = fs.readFileSync(path.join(__dirname, "..", "lib", "billing", "stripeGateway.js"), "utf8");
-  for (const name of ["retrievePrice", "createCheckout", "retrieveCheckout", "retrieveSubscription", "createPortal",
-    "createTesterSubscription", "setQuantity", "cancelAndRefund", "updateCustomerEmail", "constructEvent"]) {
-    assert.ok(new RegExp(`\\b${name}\\b`).test(gatewaySrc), name);
-  }
   assert.match(require("../package.json").dependencies.stripe, /^\d+\.\d+\.\d+$/, "stripe is pinned to an exact version");
 });

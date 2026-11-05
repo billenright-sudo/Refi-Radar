@@ -1,10 +1,12 @@
 "use strict";
 // What a Stripe webhook event does to an organization's billing columns (spec §6.4). Synchronous, and in one transaction with the
 // record of the event's id, so a replay changes nothing and a failure records nothing (Stripe then sends it again). Whatever has to
-// reach Stripe or send mail comes back as a follow-up, for lib/billing/followUps.js to run once the webhook has answered:
-//   { type: "cancel_duplicate", subscriptionId }  a second live subscription for an organization that already has one (H1)
-//   { type: "sync_seats", orgId }                 Stripe's quantity isn't the organization's user count (H2)
-//   { type: "confirm", orgId }                    the confirmation email is still owed (H6)
+// reach Stripe or send mail comes back as a follow-up, for lib/billing/followUps.js to run before the webhook answers:
+//   { type: "cancel_duplicate", subscriptionId, orgId }  a second live subscription for an organization that already has one (H1);
+//                                                       its id is recorded in billing_duplicate_pending first, in the same
+//                                                       transaction, so a failed cancel or refund is tried again later
+//   { type: "sync_seats", orgId }                        Stripe's quantity isn't the organization's user count (H2)
+//   { type: "confirm", orgId }                           the confirmation email is still owed (H6)
 // The organization is the one named in the object's metadata (org_id, which our Checkout and tester subscriptions carry), else the
 // one holding the object's subscription or customer id. Times are epoch ms; Stripe's are whole seconds.
 const { seatCount } = require("./seats");
@@ -12,14 +14,24 @@ const { seatCount } = require("./seats");
 const LIVE = new Set(["trialing", "active", "past_due"]);
 // Statuses only a subscription that really started can reach: once seen, the organization never gets a free trial again.
 const STARTED = new Set([...LIVE, "unpaid", "paused"]);
-// The confirmation is owed while it hasn't gone out and the subscription is running, so a failed send is tried again on the next
-// event (ruling 2 of the build ledger).
-const CONFIRMABLE = new Set(["trialing", "active"]);
+// The confirmation is owed only while the trial (or tester month) is running, so a failed send is tried again on the next event
+// during it (ruling 2), but never once the subscription is active: Stripe keeps trial_end after the trial converts, and a paying
+// customer must not be told about a trial that is over (ruling 6). Shared with lib/billing/followUps.js.
+const CONFIRMABLE = new Set(["trialing"]);
 
 const idOf = (v) => (typeof v === "string" ? v : v && typeof v.id === "string" ? v.id : null);
 const msOf = (seconds) => (Number.isFinite(seconds) ? seconds * 1000 : null);
 const ignored = () => ({ outcome: "ignored", followUps: [] });
 const orgById = (db, id) => db.prepare("SELECT * FROM organizations WHERE id = ?").get(id);
+
+// billing_duplicate_pending holds the ids of second subscriptions still to cancel and refund, space-separated (almost always one).
+const duplicateIds = (text) => String(text ?? "").split(" ").filter(Boolean);
+function recordDuplicate(db, org, subscriptionId) {
+  const ids = duplicateIds(org.billing_duplicate_pending);
+  if (!ids.includes(subscriptionId)) ids.push(subscriptionId);
+  db.prepare("UPDATE organizations SET billing_duplicate_pending = ? WHERE id = ?").run(ids.join(" "), org.id);
+  return { outcome: "applied", followUps: [{ type: "cancel_duplicate", subscriptionId, orgId: org.id }] };
+}
 
 function findOrg(db, { orgIds = [], subscriptionId = null, customerId = null }) {
   for (const raw of orgIds) {
@@ -38,20 +50,41 @@ function findOrg(db, { orgIds = [], subscriptionId = null, customerId = null }) 
   return null;
 }
 
+// The organization an event is about, for every type (an invoice's too, so any event can drive the duplicate retry).
+function orgFor(db, event) {
+  const o = event.data?.object;
+  if (!o || typeof o !== "object") return null;
+  switch (event.type) {
+    case "checkout.session.completed":
+      return findOrg(db, { orgIds: [o.client_reference_id, o.metadata?.org_id], customerId: idOf(o.customer) });
+    case "customer.subscription.created":
+    case "customer.subscription.updated":
+    case "customer.subscription.deleted":
+      return findOrg(db, { orgIds: [o.metadata?.org_id], subscriptionId: idOf(o), customerId: idOf(o.customer) });
+    case "customer.updated":
+      return findOrg(db, { orgIds: [o.metadata?.org_id], customerId: idOf(o) });
+    default:
+      return findOrg(db, {
+        orgIds: [o.metadata?.org_id],
+        subscriptionId: idOf(o.subscription) ?? idOf(o.parent?.subscription_details?.subscription),
+        customerId: idOf(o.customer),
+      });
+  }
+}
+
 // H1: the organization already holds a different subscription that is live. This check comes before the age check on purpose: two
 // card pages finished a second apart can be delivered in either order, and the second subscription must be cancelled either way.
-// (A late event for an old subscription that has really ended is harmless: the gateway looks at it again before cancelling or
-// refunding anything.)
+// (A late event for an old subscription that has really ended is harmless: the gateway looks at it again, and never refunds one
+// that ended without our duplicate cancel.)
 const holdsAnotherLive = (org, subscriptionId) =>
   Boolean(org.stripe_subscription_id && subscriptionId && org.stripe_subscription_id !== subscriptionId && LIVE.has(org.billing_status));
 const olderThanApplied = (org, eventMs) => org.billing_event_at != null && eventMs < org.billing_event_at;
 
 function applySubscription(db, org, sub, eventMs, nowMs) {
   if (holdsAnotherLive(org, sub.id)) {
-    // A live newcomer is a second subscription: cancel it and leave the organization's state alone. One that isn't live (the
-    // duplicate's own "deleted" event, say) says nothing about the organization's subscription.
-    if (LIVE.has(sub.status)) return { outcome: "applied", followUps: [{ type: "cancel_duplicate", subscriptionId: sub.id }] };
-    return ignored();
+    // A live newcomer is a second subscription: record it and cancel it, leaving the organization's state alone. One that isn't
+    // live (the duplicate's own "deleted" event, say) says nothing about the organization's subscription.
+    return LIVE.has(sub.status) ? recordDuplicate(db, org, sub.id) : ignored();
   }
   // Stripe's times are whole seconds, so only a strictly older event is stale: one from the same second still applies.
   if (olderThanApplied(org, eventMs)) return ignored();
@@ -97,15 +130,11 @@ function applySubscription(db, org, sub, eventMs, nowMs) {
 // A finished Checkout: the customer, the subscription it made, and a card (Checkout always collects one). It doesn't carry the
 // subscription's own state, so the status and the pending Checkout are left for the subscription event (or the status call's re-read
 // through that pending Checkout, H4); it doesn't move billing_event_at for the same reason.
-function applyCheckout(db, session, eventMs) {
+function applyCheckout(db, org, session, eventMs) {
   if (session.mode !== "subscription") return ignored();
   const subscriptionId = idOf(session.subscription);
   const customerId = idOf(session.customer);
-  const org = findOrg(db, { orgIds: [session.client_reference_id, session.metadata?.org_id], customerId });
-  if (!org) return ignored();
-  if (holdsAnotherLive(org, subscriptionId)) {
-    return { outcome: "applied", followUps: [{ type: "cancel_duplicate", subscriptionId }] };
-  }
+  if (holdsAnotherLive(org, subscriptionId)) return recordDuplicate(db, org, subscriptionId);
   if (olderThanApplied(org, eventMs)) return ignored();
   // A new subscription replacing an ended one: the old item and quantity are not its own, so they go until its event arrives.
   const replaced = subscriptionId && subscriptionId !== org.stripe_subscription_id ? 1 : 0;
@@ -123,44 +152,43 @@ function applyCheckout(db, session, eventMs) {
 
 // The customer changed: a default card on it (a tester adding one in the portal) means there is a card. Only ever adds one (see
 // applySubscription), so its order against other events doesn't matter and it is applied whatever its age.
-function applyCustomer(db, customer) {
-  const org = findOrg(db, { orgIds: [customer.metadata?.org_id], customerId: customer.id });
-  if (!org || (org.stripe_customer_id && org.stripe_customer_id !== customer.id)) return ignored();
+function applyCustomer(db, org, customer) {
+  if (org.stripe_customer_id && org.stripe_customer_id !== customer.id) return ignored();
   if (customer.invoice_settings?.default_payment_method) {
     db.prepare("UPDATE organizations SET billing_has_card = 1 WHERE id = ?").run(org.id);
   }
   return { outcome: "applied", followUps: [] };
 }
 
-function handle(db, event, nowMs) {
-  const object = event.data?.object;
-  if (!object || typeof object !== "object") return ignored();
+function handle(db, event, org, nowMs) {
+  const object = event.data.object;
   const eventMs = msOf(event.created) ?? nowMs;
   switch (event.type) {
     case "checkout.session.completed":
-      return applyCheckout(db, object, eventMs);
+      return applyCheckout(db, org, object, eventMs);
     case "customer.subscription.created":
     case "customer.subscription.updated":
-    case "customer.subscription.deleted": {
-      if (typeof object.id !== "string") return ignored();
-      const org = findOrg(db, { orgIds: [object.metadata?.org_id], subscriptionId: object.id, customerId: idOf(object.customer) });
-      return org ? applySubscription(db, org, object, eventMs, nowMs) : ignored();
-    }
+    case "customer.subscription.deleted":
+      return typeof object.id === "string" ? applySubscription(db, org, object, eventMs, nowMs) : ignored();
     case "customer.updated":
-      return typeof object.id === "string" ? applyCustomer(db, object) : ignored();
+      return typeof object.id === "string" ? applyCustomer(db, org, object) : ignored();
     default:
       // invoice events and the rest: acknowledged and ignored (the subscription events carry the status)
       return ignored();
   }
 }
 
+// -> { outcome, followUps, orgId }: orgId is the organization the event is about (null when none is ours), whatever the outcome, so
+// the webhook can retry that organization's recorded duplicate on any event.
 function applyStripeEvent(db, event, nowMs = Date.now()) {
-  if (!event || typeof event.id !== "string" || typeof event.type !== "string") return ignored();
+  if (!event || typeof event.id !== "string" || typeof event.type !== "string") return { ...ignored(), orgId: null };
   return db.transaction(() => {
-    if (db.prepare("SELECT 1 FROM stripe_events WHERE id = ?").get(event.id)) return { outcome: "duplicate", followUps: [] };
-    const result = handle(db, event, nowMs);
+    const org = orgFor(db, event);
+    const orgId = org ? org.id : null;
+    if (db.prepare("SELECT 1 FROM stripe_events WHERE id = ?").get(event.id)) return { outcome: "duplicate", followUps: [], orgId };
+    const result = org ? handle(db, event, org, nowMs) : ignored();
     db.prepare("INSERT INTO stripe_events (id, type, received_at) VALUES (?, ?, ?)").run(event.id, event.type, nowMs);
-    return result;
+    return { ...result, orgId };
   })();
 }
 
@@ -172,4 +200,4 @@ function storeSubscription(db, orgId, subscription, eventCreatedMs, nowMs = Date
   return applySubscription(db, org, subscription, eventCreatedMs, nowMs).followUps;
 }
 
-module.exports = { applyStripeEvent, storeSubscription };
+module.exports = { applyStripeEvent, storeSubscription, duplicateIds, CONFIRMABLE };
