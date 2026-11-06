@@ -23,7 +23,7 @@ const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, withTurnClientNa
 const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG,
-  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
+  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, doNotEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
@@ -1691,7 +1691,7 @@ function trimSweep(data) {
     .filter((r) => r && r.best)
     .sort((a, b) => rank(b) - rank(a) || refi.impact(b.best) - refi.impact(a.best))
     .slice(0, SWEEP_TOP_OPPORTUNITIES)
-    .map((r) => ({ name: r.name, best: r.best }));
+    .map((r) => (r.doNotEmail ? { name: r.name, doNotEmail: true, best: r.best } : { name: r.name, best: r.best }));
   const checkIns = (Array.isArray(data.checkIns) ? data.checkIns : [])
     .slice(0, SWEEP_TOP_CHECKINS)
     .map((r) => ({ name: r.name, monthsSince: r.checkIn && r.checkIn.monthsSince }));
@@ -2514,6 +2514,7 @@ function codeAuthoredLine(outs, blocks, aboutCalendar) {
     }
     if (code === "nmls_missing") return NMLS_NEEDED;
     if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
+    if (code === "do_not_email") return doNotEmailLine(cleanName(o.data.client) || "That client");
   }
   return null;
 }

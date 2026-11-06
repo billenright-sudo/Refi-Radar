@@ -91,6 +91,11 @@ if (!clientCols.some((c) => c.name === "source")) {
 if (!clientCols.some((c) => c.name === "edited_by_hand")) {
   db.exec("ALTER TABLE clients ADD COLUMN edited_by_hand TEXT NOT NULL DEFAULT ''");
 }
+// do_not_email: the broker ticked "Do not email this client" (Bill 2026-11-06). Charlie never sets up or offers an email for
+// them; set only by hand on the client form, so an import never changes it. Clients already stored get 0 (email allowed).
+if (!clientCols.some((c) => c.name === "do_not_email")) {
+  db.exec("ALTER TABLE clients ADD COLUMN do_not_email INTEGER NOT NULL DEFAULT 0");
+}
 // Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
 db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
 

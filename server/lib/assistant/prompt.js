@@ -62,6 +62,8 @@ const GOOGLE_UNAVAILABLE = "I couldn't reach Google just now — try that again 
 const NMLS_NEEDED = "Before I write to clients, add your NMLS ID on your Profile page — it goes in every email signature.";
 // The client has no usable address on the record (a draft goes to the address on file and nowhere else). `name` is the client's name.
 const noEmailLine = (name) => `There's no email on file for ${name} — add one to their record and ask me again.`;
+// The broker ticked "Do not email this client" (DRAFT wording for Bill, 2026-11-06).
+const doNotEmailLine = (name) => `${name} is marked do not email — give them a call instead.`;
 // Charli never sends email (the broker sends it from their own mail app): what code says when the user asks her to send it, or
 // whether she sent it, and the turn sets up no email.
 const NO_SEND = "I don't send email — open it in your email app and send it yourself.";
@@ -184,7 +186,8 @@ const CHARLI_SYSTEM = [
 
   "Email: to write to a client, find the client, then call draftEmailTool with a purpose, check_in or refi_review. You never write " +
     "the email yourself and you never send email: it opens in the user's own email for them to review and send. After a sweep or a " +
-    "calendar read you may offer to book a follow-up or write a check-in; offering is fine, doing needs their request.",
+    "calendar read you may offer to book a follow-up or write a check-in; offering is fine, doing needs their request. A client whose " +
+    "record or sweep row says doNotEmail is never offered an email: suggest a call instead.",
 
   // (Charlie morning briefing, Task 7: the broker's answer to the briefing's code-authored follow-up question)
   "Follow-up answers: when the user tells you they reached a client you asked about, call logContactTool with outcome reached " +
@@ -225,5 +228,5 @@ const JOKE_TOPICS = Object.freeze([
 
 module.exports = {
   CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG,
-  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
+  GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, doNotEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 };

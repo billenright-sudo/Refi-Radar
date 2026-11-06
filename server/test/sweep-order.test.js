@@ -28,3 +28,12 @@ test("runSweep breaks a full tie by name", () => {
   const { opportunities } = refi.runSweep([client(1, "Pat Second", same), client(2, "Kim First", same)], RATES, NOW);
   assert.deepEqual(opportunities.map((r) => r.name), ["Kim First", "Pat Second"]);
 });
+
+test("runSweep marks do-not-email clients, so Charlie's sweep never offers them an email", () => {
+  const rows = [
+    client(1, "Flagged Fran", { currentRate: 8.5, loanBalance: 400000, propertyValue: 600000, do_not_email: 1 }),
+    client(2, "Open Owen", { currentRate: 8.5, loanBalance: 400000, propertyValue: 600000 }),
+  ];
+  const flags = Object.fromEntries(refi.runSweep(rows, RATES, NOW).opportunities.map((r) => [r.name, r.doNotEmail]));
+  assert.deepEqual(flags, { "Flagged Fran": true, "Open Owen": false });
+});

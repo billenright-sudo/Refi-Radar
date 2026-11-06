@@ -199,7 +199,8 @@ function sweepClient(raw, rates, now = new Date()) {
   const c = norm(raw);
   const lenses = [rateTerm(c, rates), cashOut(c), armToFixed(c, rates), termSwap(c, rates)].filter(Boolean);
   lenses.sort((x, y) => (PRIORITY_RANK[y.priority] - PRIORITY_RANK[x.priority]) || (impact(y) - impact(x)));
-  return { clientId: c.id, name: c.name, best: lenses[0] || null, opportunities: lenses, checkIn: checkInStatus(c, now) };
+  const doNotEmail = raw.do_not_email === 1 || raw.doNotEmail === true;
+  return { clientId: c.id, name: c.name, doNotEmail, best: lenses[0] || null, opportunities: lenses, checkIn: checkInStatus(c, now) };
 }
 
 function runSweep(clients, rates, now = new Date()) {

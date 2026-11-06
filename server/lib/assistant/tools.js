@@ -50,7 +50,7 @@ function toClient(row) {
     loanType: row.loan_type, currentRate: row.current_rate,
     loanBalance: row.loan_balance, propertyValue: row.property_value,
     closeDate: row.close_date, creditScore: row.credit_score,
-    notes: row.notes, lastContact: row.last_contact,
+    notes: row.notes, lastContact: row.last_contact, doNotEmail: row.do_not_email === 1,
   };
 }
 
@@ -346,6 +346,14 @@ function draftEmailTool(args, ctx) {
   if (!client) return fail("(not found)", "no such client in your book");
   const purpose = a.purpose;
   if (typeof purpose !== "string" || !PURPOSES.includes(purpose)) return fail("(invalid input)", `purpose must be one of: ${PURPOSES.join(", ")}`);
+  // The broker ticked "Do not email this client": refused before anything else (no NMLS or address prompt for an email that
+  // must not exist), with the client named for the code-authored line.
+  if (client.do_not_email === 1) {
+    return {
+      data: { error: "this client is marked do not email: never set up or offer an email for them; suggest a call instead", code: "do_not_email", client: client.name },
+      source: "(do not email)",
+    };
+  }
 
   const sender = ctx.db.prepare("SELECT first_name, last_name, nmls_id FROM users WHERE id = ?").get(ctx.user.id);
   const org = ctx.db.prepare("SELECT name, nmls_id FROM organizations WHERE id = ?").get(ctx.user.org_id);

@@ -976,3 +976,21 @@ test("tools dispatch map has no prototype, so a model-supplied name can't hit Ob
   }
   assert.ok(Object.isFrozen(tools));
 });
+
+test("draftEmailTool: a do-not-email client is refused before anything else, named, with nothing composed", () => {
+  db.prepare("UPDATE clients SET do_not_email = 1 WHERE id = ?").run(chenCId);
+  try {
+    const r = draftEmailTool({ clientId: chenCId, purpose: "refi_review" }, billCtx);
+    assert.deepStrictEqual([r.source, r.data.code, r.data.client, r.compose], ["(do not email)", "do_not_email", "Robert & Linda Chen", undefined]);
+    assert.equal(typeof r.data.error, "string");
+    // it is refused even when the sender has no NMLS ID yet (no point asking them to add one for this client)
+    setClientEmail(chenCId, "");
+    assert.equal(draftEmailTool({ clientId: chenCId, purpose: "check_in" }, billCtx).data.code, "do_not_email");
+    // and findClient tells the model, so it doesn't offer an email in the first place
+    assert.equal(findClient({ query: "chen" }, billCtx).data.matches.find((m) => m.id === chenCId).doNotEmail, true);
+  } finally {
+    db.prepare("UPDATE clients SET do_not_email = 0 WHERE id = ?").run(chenCId);
+    setClientEmail(chenCId, "linda.chen@example.com");
+  }
+  assert.equal(findClient({ query: "chen" }, billCtx).data.matches.find((m) => m.id === chenCId).doNotEmail, false);
+});

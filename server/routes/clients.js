@@ -16,7 +16,7 @@ function toClient(row) {
     loanType: row.loan_type, currentRate: row.current_rate,
     loanBalance: row.loan_balance, propertyValue: row.property_value,
     closeDate: row.close_date, creditScore: row.credit_score,
-    notes: row.notes, lastContact: row.last_contact,
+    notes: row.notes, lastContact: row.last_contact, doNotEmail: row.do_not_email === 1,
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
@@ -45,8 +45,8 @@ function createClientForUser(db, user, body) {
   const errors = validateClient(input);
   if (Object.keys(errors).length) return { errors };
   const info = db.prepare(`
-    INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes)
-    VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes)
+    INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes, do_not_email)
+    VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes, @do_not_email)
   `).run({
     org_id: user.org_id, user_id: user.id,
     name: input.name.trim(), email: (input.email||"").trim(),
@@ -54,6 +54,7 @@ function createClientForUser(db, user, body) {
     current_rate: parseFloat(input.currentRate), loan_balance: parseFloat(input.loanBalance),
     property_value: parseFloat(input.propertyValue), close_date: input.closeDate||"",
     credit_score: parseInt(input.creditScore)||700, notes: (input.notes||"").trim(),
+    do_not_email: input.doNotEmail === true ? 1 : 0,
   });
   const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(info.lastInsertRowid);
   return { client: toClient(row) };
@@ -120,6 +121,8 @@ router.put("/:id", (req, res) => {
       current_rate: parseFloat(req.body.currentRate), loan_balance: parseFloat(req.body.loanBalance),
       property_value: parseFloat(req.body.propertyValue), close_date: req.body.closeDate||"",
       credit_score: parseInt(req.body.creditScore)||700, notes: (req.body.notes||"").trim(),
+      // A save that doesn't say (an older page) keeps the flag as it was; only true or false changes it.
+      do_not_email: typeof req.body.doNotEmail === "boolean" ? (req.body.doNotEmail ? 1 : 0) : existing.do_not_email,
     };
     // A rate, property value or credit score this save changes is marked as edited by hand, so the import keeps it.
     const marks = readMarks(existing.edited_by_hand);
@@ -127,7 +130,7 @@ router.put("/:id", (req, res) => {
     db.prepare(`
       UPDATE clients SET name=@name, email=@email, phone=@phone, loan_type=@loan_type,
         current_rate=@current_rate, loan_balance=@loan_balance, property_value=@property_value,
-        close_date=@close_date, credit_score=@credit_score, notes=@notes, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
+        close_date=@close_date, credit_score=@credit_score, notes=@notes, do_not_email=@do_not_email, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
       WHERE id=@id
     `).run({ ...values, edited_by_hand: writeMarks(marks) });
     const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);

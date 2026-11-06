@@ -8397,3 +8397,28 @@ test("Live check P5–P7: CHARLI_SYSTEM carries the picks paragraph exactly, onc
     assert.ok(client.calls[0].system.includes(PICKS));
   });
 });
+
+test("do not email: the turn ends with its own line, nothing composed, and the model is told about the flag", async () => {
+  const { doNotEmailLine } = require("../lib/assistant/prompt");
+  assert.equal(doNotEmailLine("Robert & Linda Chen"), "Robert & Linda Chen is marked do not email — give them a call instead.");
+  assert.match(CHARLI_SYSTEM, /doNotEmail/, "the prompt tells Charlie never to offer an email to a flagged client");
+  db.prepare("UPDATE clients SET do_not_email = 1 WHERE id = ?").run(mikeChen);
+  try {
+    const client = fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose: "refi_review" }), say("Here is the email.")]);
+    const r = await runTurn({ messages: userSays("Draft the Chens a refinance review"), ctx: mikeCtx, client });
+    assert.equal(r.reply, doNotEmailLine("Robert & Linda Chen"));
+    assert.equal("compose" in r, false);
+    assert.equal(r.sideEffect, undefined);
+    assert.equal(client.calls.length, 1, "code answers: the model is not asked again");
+    // the flag reaches the model through findClient and the sweep (contact details still don't)
+    const found = forModel("findClient", { matches: [{ id: 1, name: "A", email: "a@b.co", phone: "1", notes: "n", doNotEmail: true }] });
+    assert.deepStrictEqual(found.matches[0], { id: 1, name: "A", doNotEmail: true });
+    const swept = forModel("runSweepTool", { counts: {}, byLens: {}, checkIns: [], opportunities: [
+      { name: "A", doNotEmail: true, best: { priority: "high", monthlySavings: 300 } },
+      { name: "B", doNotEmail: false, best: { priority: "high", monthlySavings: 200 } },
+    ] });
+    assert.deepStrictEqual(swept.opportunities.map((o) => [o.name, o.doNotEmail]), [["A", true], ["B", undefined]]);
+  } finally {
+    db.prepare("UPDATE clients SET do_not_email = 0 WHERE id = ?").run(mikeChen);
+  }
+});

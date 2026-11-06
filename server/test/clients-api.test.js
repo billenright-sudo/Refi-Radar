@@ -236,3 +236,30 @@ test("Bill 11/3: a save that changes the rate, property value or credit score ma
   assert.strictEqual((await as(lou)("PUT", `/api/clients/${other}`, { ...form, name: "Not Lou's", currentRate: "5" })).status, 403);
   assert.strictEqual(clientRow(other).edited_by_hand, "");
 });
+
+// ── Do not email (Bill 2026-11-06) ─────────────────────────────────────────────────────────────────────────────────────────
+const NEW_CLIENT = { name: "Dana Noemail", email: "dana@example.com", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 450000 };
+
+test("a client can be saved as do-not-email, and reads back that way", async () => {
+  const made = await as(ann)("POST", "/api/clients", { ...NEW_CLIENT, doNotEmail: true });
+  assert.equal(made.status, 201, JSON.stringify(made.data));
+  assert.equal(made.data.client.doNotEmail, true);
+  assert.equal(clientRow(made.data.client.id).do_not_email, 1);
+  const plain = await as(ann)("POST", "/api/clients", { ...NEW_CLIENT, name: "Eli Plain" });
+  assert.equal(plain.data.client.doNotEmail, false, "unticked by default");
+  const list = await as(ann)("GET", "/api/clients");
+  const flags = Object.fromEntries((list.data.clients || list.data).map((c) => [c.name, c.doNotEmail]));
+  assert.deepEqual(flags, { "Dana Noemail": true, "Eli Plain": false });
+});
+
+test("editing a client sets or clears do-not-email, and a save that doesn't mention it keeps it", async () => {
+  const id = (await as(ann)("POST", "/api/clients", { ...NEW_CLIENT, doNotEmail: true })).data.client.id;
+  const kept = await as(ann)("PUT", `/api/clients/${id}`, { ...NEW_CLIENT, currentRate: 7.25 });
+  assert.equal(kept.status, 200, JSON.stringify(kept.data));
+  assert.equal(kept.data.client.doNotEmail, true, "an older form without the field never clears it");
+  const cleared = await as(ann)("PUT", `/api/clients/${id}`, { ...NEW_CLIENT, doNotEmail: false });
+  assert.equal(cleared.data.client.doNotEmail, false);
+  const set = await as(ann)("PUT", `/api/clients/${id}`, { ...NEW_CLIENT, doNotEmail: true });
+  assert.equal(set.data.client.doNotEmail, true);
+  assert.equal(clientRow(id).do_not_email, 1);
+});

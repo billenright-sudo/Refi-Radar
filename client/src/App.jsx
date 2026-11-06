@@ -1445,6 +1445,9 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", ...ph(isPhone, { flexWrap: "wrap" }) }}>
           {a && <PriorityBadge priority={a.priority} good={a.good} />}
+          {client.doNotEmail && (
+            <span style={{ background: C.surfaceHi, border: `1px solid ${C.border}`, color: C.mutedHi, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600 }}>Do not email</span>
+          )}
           <button
             onClick={() => setView("edit")}
             style={{ display: "flex", alignItems: "center", gap: 6, background: C.surfaceHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px", color: C.mutedHi, fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}
@@ -1698,7 +1701,7 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
 // ---------------------------------------------------------------------------
 // Shared client form (Add + Edit)
 // ---------------------------------------------------------------------------
-const EMPTY_FORM = { name: "", email: "", phone: "", loanType: "30yr_fixed", currentRate: "", loanBalance: "", propertyValue: "", closeDate: "", creditScore: "", notes: "" };
+const EMPTY_FORM = { name: "", email: "", phone: "", loanType: "30yr_fixed", currentRate: "", loanBalance: "", propertyValue: "", closeDate: "", creditScore: "", notes: "", doNotEmail: false };
 
 function clientToForm(c) {
   return {
@@ -1712,6 +1715,7 @@ function clientToForm(c) {
     closeDate:     c.closeDate || "",
     creditScore:   c.creditScore != null ? String(c.creditScore) : "",
     notes:         c.notes || "",
+    doNotEmail:    c.doNotEmail === true,
   };
 }
 
@@ -1770,6 +1774,10 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
           <label style={{ display: "block", fontSize: 12, color: C.muted, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Notes</label>
           <textarea placeholder="Notes about this client…" value={form.notes} onChange={e => set("notes", e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
         </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: "1.5rem", color: C.mutedHi, fontSize: 14, cursor: "pointer" }}>
+          <input type="checkbox" checked={!!form.doNotEmail} onChange={e => set("doNotEmail", e.target.checked)} style={{ width: 18, height: 18, accentColor: C.amber }} />
+          Do not email this client
+        </label>
         <div style={{ display: "flex", gap: "1rem" }}>
           <button onClick={submit} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
             {saving ? "Saving…" : "Save Client"}
@@ -1803,6 +1811,7 @@ const AddClient = ({ setClients, setView }) => {
           closeDate:     form.closeDate,
           creditScore:   parseInt(form.creditScore) || 700,
           notes:         form.notes,
+          doNotEmail:    form.doNotEmail === true,
         }),
       });
       const data = await res.json();
@@ -1857,6 +1866,7 @@ const EditClient = ({ client, setClients, setSelected, setView }) => {
           closeDate:     form.closeDate,
           creditScore:   parseInt(form.creditScore) || 700,
           notes:         form.notes,
+          doNotEmail:    form.doNotEmail === true,
         }),
       });
       const data = await res.json();
