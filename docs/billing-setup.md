@@ -417,17 +417,24 @@ Fill in your values, then run the command below. It keeps every setting the app 
 gcloud run services update refi-radar --region us-central1 --project refi-radar-496318 --update-secrets="STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest" --update-env-vars="STRIPE_PRICE_ID=price_REPLACE_ME,BILLING_EXEMPT_EMAILS=you@example.com,BILLING_TESTER_CODE=REPLACE_ME,BILLING_TESTER_MAX_USES=25,BILLING_TESTER_EXPIRES=2026-12-31,FEEDBACK_TO=you@example.com"
 ```
 
-**Check 1, the settings as the live app has them.** This reads them back:
+**Check 1, the settings as the live app has them.** The command below reads them back.
+
+**Before you run it:** run it yourself, in your own PowerShell window, and don't share your screen while it runs or while its
+answer is showing. It prints the **name** of every setting the live app has, but a **value** only for the eight settings that
+aren't secrets. If anything that looks like a key shows up anyway (it would start `sk_live_`, `whsec_` or `sk-ant-`), stop there:
+close the window, don't copy anything from it, and tell your assistant.
 
 ```powershell
-gcloud run services describe refi-radar --region us-central1 --project refi-radar-496318 --format="yaml(spec.template.spec.containers[0].env)"
+$show = @("STRIPE_PRICE_ID","BILLING_TESTER_CODE","BILLING_TESTER_MAX_USES","BILLING_TESTER_EXPIRES","BILLING_EXEMPT_EMAILS","FEEDBACK_TO","APP_URL","EMAIL_USER"); (gcloud run services describe refi-radar --region us-central1 --project refi-radar-496318 --format=json | Out-String | ConvertFrom-Json).spec.template.spec.containers[0].env | ForEach-Object { if ($show -contains $_.name) { "$($_.name) = $($_.value)" } elseif ($_.valueFrom) { "$($_.name) (from Secret Manager)" } else { $_.name } }
 ```
 
-- It lists `STRIPE_PRICE_ID`, `BILLING_EXEMPT_EMAILS`, `BILLING_TESTER_CODE`, `BILLING_TESTER_MAX_USES`, `BILLING_TESTER_EXPIRES`,
-  `FEEDBACK_TO` and `APP_URL`, each with the value you meant. The app's other settings appear too; that is expected.
-- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (and the app's other secrets, such as `EMAIL_PASS`) appear only with
-  `valueFrom`, `secretKeyRef` and `key: latest`: a name, never the secret itself. If anything that looks like a key shows as a
-  value (it would start `sk_live_`, `whsec_` or `sk-ant-`), stop, don't share your screen, and tell your assistant.
+**Check:**
+- These eight show as `NAME = value`, each with the value you meant: `STRIPE_PRICE_ID` (the live price ID, starting `price_`),
+  `BILLING_TESTER_CODE`, `BILLING_TESTER_MAX_USES`, `BILLING_TESTER_EXPIRES`, `BILLING_EXEMPT_EMAILS`, `FEEDBACK_TO`, `APP_URL`
+  and `EMAIL_USER` (the app's mailbox address).
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (and the app's other secrets, such as `EMAIL_PASS`) show as
+  `NAME (from Secret Manager)`: a name, never the secret itself.
+- Every other line is a setting's name on its own, with no value. That is expected.
 - The tester code is shown as typed. It isn't a key, but keep it to the testers you choose.
 
 **Check 2, APP_URL.** In that list, `APP_URL` must be the live app's public address, exactly `<APP_URL>` (today
