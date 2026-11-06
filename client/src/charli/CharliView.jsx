@@ -5,6 +5,8 @@ import { createReplay, shouldClear } from "./replay.mjs";
 import { createAudio, transcribe } from "./audio.js";
 import { stripItems } from "./strip.mjs";
 import { useIsPhone } from "../useIsPhone.js";
+import CharlieFace from "./CharlieFace.jsx";
+import { faceState } from "./face.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
@@ -320,6 +322,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   else status = "Tap Talk to speak, or type below";
 
   const micNote = !paused && MIC_NOTES[mic];
+  const face = faceState({ speaking, working, paused });
   const buttonBase = { display: "flex", alignItems: "center", gap: 8, border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "inherit" };
   const primary = { ...buttonBase, background: C.amber, color: "#0f2040" };
   const ghost = { ...buttonBase, background: "transparent", color: C.mutedHi, border: `1px solid ${C.border}` };
@@ -464,6 +467,9 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
             </button>
           </div>
         </div>
+        <div style={{ display: "flex", justifyContent: "center", margin: "0.2rem 0 1rem" }}>
+          <CharlieFace state={face} size={96} />
+        </div>
         {statusRow}
         {banners}
         {transcript}
@@ -498,6 +504,9 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
       {banners}
 
       <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1.75rem 1.75rem 1.5rem", textAlign: "center", ...(isPhone ? { padding: "1.1rem 1rem" } : null) }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: isPhone ? 14 : 20 }}>
+          <CharlieFace state={face} size={isPhone ? 112 : 148} />
+        </div>
         {briefingTurn ? (
           <>
             <div style={{ fontSize: 17, lineHeight: 1.65, textAlign: "left", whiteSpace: "pre-wrap", ...(isPhone ? { fontSize: 16, overflowWrap: "anywhere" } : null) }}>{briefingTurn.content}</div>

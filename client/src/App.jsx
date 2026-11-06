@@ -20,6 +20,7 @@ import {
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
+import { FACE } from "./charli/face.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -2911,7 +2912,7 @@ export default function App() {
           title="Open Charlie"
           style={{ position: "fixed", right: 20, bottom: 20, zIndex: 50, display: "flex", alignItems: "center", gap: 8, background: C.amber, color: "#0f2040", border: "none", borderRadius: 999, padding: "12px 18px", fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 6px 20px rgba(0,0,0,0.4)" }}
         >
-          <Icon name="mic" size={16} color="#0f2040" />Charlie
+          <img src={FACE.thumb} alt="" width={26} height={26} style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", boxShadow: "0 0 0 2px #0f2040", display: "block" }} />Charlie
         </button>
       )}
       {view !== "home" && panelOpen && <CharliView key={today} mode="panel" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} onStale={renderAgain} />}
