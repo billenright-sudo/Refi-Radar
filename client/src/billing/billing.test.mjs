@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   gateScreen, bannerText, money, totalLine, billingLines, chipLabel, formatDate, registerExtras, removeConfirmText,
-  testerPriceLine, isGateResponse, createGateWatch, stillFinishing, overviewChip, publicFlags, FREE_ENDED_HEADING, RETURNING_LINE,
+  testerPriceLine, isGateResponse, createGateWatch, stillFinishing, overviewChip, publicFlags, FREE_ENDED_HEADING, RETURNING_LINE, legalPageFor,
 } from "./billing.mjs";
 
 const NOW = Date.UTC(2026, 10, 5, 12);
@@ -209,4 +209,19 @@ test("publicFlags: billing and feedback from /api/billing/public; anything else 
   assert.deepEqual(publicFlags({ enabled: true }), { billing: true, feedback: false });
   assert.deepEqual(publicFlags(null), { billing: false, feedback: false });
   assert.deepEqual(publicFlags({ enabled: "yes", feedback: 1 }), { billing: false, feedback: false }, "only a true is on");
+});
+
+// Round 2, item 8: the Terms and Privacy drafts show only while billing is on; with billing off /terms and /privacy are the normal
+// app, as before billing. Until GET /api/billing/public has answered (null), the page waits rather than flash either one.
+test("legalPageFor: the draft only with billing on; the app with it off; wait until the public read is back", () => {
+  assert.equal(legalPageFor("/terms", true), "terms");
+  assert.equal(legalPageFor("/privacy", true), "privacy");
+  assert.equal(legalPageFor("/terms", false), null);
+  assert.equal(legalPageFor("/privacy", false), null);
+  assert.equal(legalPageFor("/terms", null), "wait");
+  assert.equal(legalPageFor("/privacy", undefined), "wait");
+  for (const other of ["/", "/terms/", "/Terms", "/privacy.html", "/termsx", "", undefined]) {
+    assert.equal(legalPageFor(other, true), null, String(other));
+    assert.equal(legalPageFor(other, null), null, `${other}: other paths never wait`);
+  }
 });

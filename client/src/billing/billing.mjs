@@ -126,6 +126,16 @@ export function overviewChip(stats, billingOn) {
   return { label: chipLabel(stats.plan, stats.trialEnds), trialEnd: stats.trialEnds ? formatDate(Date.parse(stats.trialEnds)) : null };
 }
 
+// Which legal draft /terms or /privacy shows (round 2, item 8): only while billing is on (GET /api/billing/public's `enabled`). With
+// billing off those paths are the normal app, as before billing. `billingOn` is null (or undefined) until that read is back: "wait",
+// so neither the document nor the app flashes first. Any other path never waits. -> "terms" | "privacy" | "wait" | null
+export function legalPageFor(pathname, billingOn) {
+  const doc = pathname === "/terms" ? "terms" : pathname === "/privacy" ? "privacy" : null;
+  if (!doc) return null;
+  if (billingOn === null || billingOn === undefined) return "wait";
+  return billingOn === true ? doc : null;
+}
+
 // GET /api/billing/public's two switches; anything but a true is off (a failed read too).
 export function publicFlags(d) {
   return { billing: Boolean(d) && d.enabled === true, feedback: Boolean(d) && d.feedback === true };

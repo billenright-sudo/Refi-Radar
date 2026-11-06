@@ -13,7 +13,7 @@ import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, i
 import ImportView from "./import/ImportView.jsx";
 import {
   gateScreen, bannerText, billingLines, registerExtras, removeConfirmText, testerPriceLine, createGateWatch, stillFinishing, overviewChip,
-  publicFlags, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE, FREE_ENDED_HEADING,
+  publicFlags, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE, FREE_ENDED_HEADING, legalPageFor,
 } from "./billing/billing.mjs";
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
@@ -548,8 +548,8 @@ const TermsTick = ({ checked, onChange, disabled }) => (
   </label>
 );
 
-// The Terms of Service or Privacy Policy, for /terms and /privacy: open to anyone, signed in or not.
-const legalDocFor = (pathname) => (pathname === "/terms" ? termsDoc : pathname === "/privacy" ? privacyDoc : null);
+// The Terms of Service or Privacy Policy, for /terms and /privacy: open to anyone, signed in or not, and only while billing is on
+// (legalPageFor; with billing off those paths are the normal app).
 const LegalPage = ({ doc, title }) => {
   const back = () => { if (window.history.length > 1) window.history.back(); else window.location.assign("/"); };
   return (
@@ -2459,6 +2459,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [billingPublicOn, setBillingPublicOn] = useState(false);   // GET /api/billing/public, read once at boot; a failure means off
   const [feedbackOn, setFeedbackOn] = useState(false);             // the same read: Send feedback has an inbox (FEEDBACK_TO)
+  const [billingPublicRead, setBillingPublicRead] = useState(false); // that read is back (or failed): /terms and /privacy wait for it
   const [billingState, setBillingState] = useState(null);  // { access, billing, role } from /api/billing/status; null = unknown (the app shows)
   const [finishing, setFinishing] = useState(false);        // back from Stripe (?billing=done), waiting for the subscription to land
   const [bannerShut, setBannerShut] = useState(false);
@@ -2521,7 +2522,8 @@ export default function App() {
     fetch("/api/billing/public")
       .then(r => r.ok ? r.json() : null)
       .then(d => { const flags = publicFlags(d); setBillingPublicOn(flags.billing); setFeedbackOn(flags.feedback); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setBillingPublicRead(true));
   }, []);
 
   // Billing status for the signed-in user; null when it can't be read (network, 5xx): the app then shows, the server gate still guards.
@@ -2763,19 +2765,20 @@ export default function App() {
     .client-tile:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
   `;
 
-  // The legal pages come before any sign-in check, and show for signed-in people too.
-  const legalDoc = legalDocFor(window.location.pathname);
-  if (legalDoc) {
+  // The legal pages come before any sign-in check, and show for signed-in people too, but only while billing is on: with billing off
+  // /terms and /privacy are the normal app. They wait (the spinner) for the public read, so neither flashes first.
+  const legal = legalPageFor(window.location.pathname, billingPublicRead ? billingPublicOn : null);
+  if (legal === "terms" || legal === "privacy") {
     return (
       <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
         <style>{globalStyles}</style>
-        <LegalPage doc={legalDoc} title={window.location.pathname === "/terms" ? "Terms of Service" : "Privacy Policy"} />
+        <LegalPage doc={legal === "terms" ? termsDoc : privacyDoc} title={legal === "terms" ? "Terms of Service" : "Privacy Policy"} />
       </div>
     );
   }
 
   // Loading spinner
-  if (authState === "loading") {
+  if (authState === "loading" || legal === "wait") {
     return (
       <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <style>{globalStyles}</style>
