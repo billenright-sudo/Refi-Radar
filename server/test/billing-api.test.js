@@ -325,6 +325,21 @@ test("a mismatched or unreadable Stripe price leaves billing off and logs why (H
   assert.ok(half.some((l) => /\[billing\] off: .*STRIPE_WEBHOOK_SECRET.*STRIPE_PRICE_ID/.test(l)), half.join("\n"));
   assert.ok(!half.some((l) => /must_never_be_logged/.test(l)));
 
+  // in production, Stripe's way back to the app (and every emailed link) needs a public APP_URL: without one billing stays off,
+  // before any Stripe call, and the log names the setting (never a value)
+  for (const appUrl of [undefined, "", "http://localhost:8080", "http://127.0.0.1:8080", "not a url"]) {
+    let r3;
+    const prodEnv = { ...env, NODE_ENV: "production", ...(appUrl === undefined ? {} : { APP_URL: appUrl }) };
+    const why = await captureLogs(async () => { r3 = await startBilling(db, prodEnv, () => assert.fail("no Stripe call without a working APP_URL")); });
+    assert.deepStrictEqual([r3.config.enabled, r3.gateway], [false, null], String(appUrl));
+    assert.ok(why.some((l) => /^\[billing\] off: APP_URL /.test(l)), why.join("\n"));
+    assert.ok(!why.some((l) => /must_never_be_logged|whsec_never_logged|localhost|127\.0\.0\.1/.test(l)), why.join("\n"));
+    assert.strictEqual(orgRow(orgId).billing_status, null, "billing off changes no organization");
+  }
+  const prodOn = await startBilling(db, { ...env, NODE_ENV: "production", APP_URL: "https://app.broker-radar.test" }, () => fakeGateway(), { timeoutMs: 1000, nowMs: Date.now() });
+  assert.strictEqual(prodOn.config.enabled, true, "a public APP_URL in production: on");
+  db.prepare("UPDATE organizations SET billing_status = NULL, billing_tester_until = NULL WHERE id = ?").run(orgId);
+
   // a good price: on, the gateway handed back, the start-up applied
   let on;
   const lines = await captureLogs(async () => { on = await startBilling(db, env, () => fakeGateway(), { timeoutMs: 1000 }); });
@@ -781,18 +796,58 @@ test("start-up: existing orgs get a 30-day month once; exempt follows the list; 
   assert.strictEqual(e.billing_via_tester_code, 0);
   assert.strictEqual(e.billing_exempt, 0);
   assert.strictEqual(orgRow(bill.orgId).billing_exempt, 1);
+  // the exemption is set first, and an exempt organization gets no free month (it is never charged, so nothing is used up)
+  assert.deepStrictEqual([orgRow(bill.orgId).billing_tester_until, orgRow(bill.orgId).billing_status], [null, null]);
   assert.strictEqual(orgRow(paying.orgId).billing_exempt, 0, "off the list, so no longer exempt");
   assert.strictEqual(orgRow(paying.orgId).billing_tester_until, null, "an organization already on billing gets no free month");
   assert.strictEqual(orgRow(paying.orgId).billing_status, "active");
 
-  // once: a later start (a day on) leaves the month where it was; the list changes, the exemption follows
+  // once: a later start (a day on) leaves the month where it was; the list changes, the exemption follows, and an organization
+  // from before billing whose exemption has just ended gets its free month from that start
   applyBillingStartup(db, { ...CONFIG, exemptEmails: [paying.broker.email] }, NOW + DAY_MS);
   assert.strictEqual(orgRow(existing.orgId).billing_tester_until, NOW + 30 * DAY_MS);
   assert.strictEqual(orgRow(bill.orgId).billing_exempt, 0);
+  assert.deepStrictEqual([orgRow(bill.orgId).billing_tester_until, orgRow(bill.orgId).billing_status], [NOW + 31 * DAY_MS, "none"]);
   assert.strictEqual(orgRow(paying.orgId).billing_exempt, 1);
   // no list at all exempts no one
   applyBillingStartup(db, { ...CONFIG, exemptEmails: undefined }, NOW + DAY_MS);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM organizations WHERE billing_exempt = 1").get().n, 0);
+});
+
+test("an exempt brokerage is never asked for a card: no banner, /card 409, /portal still open, no tester month at start-up (I1)", async () => {
+  const NO_CHARGE = { success: false, error: "This account has no charge." };
+  // exempt, and its columns would otherwise ask for a card: a free month in its last week with no card, then a failed payment
+  const ending = brokerage({ billing_exempt: 1, billing_tester_until: Date.now() + 3 * DAY_MS, billing_has_card: 0 });
+  const owing = brokerage({ billing_exempt: 1, billing_status: "past_due", stripe_customer_id: "cus_ex", stripe_subscription_id: "sub_ex", billing_synced_at: Date.now() });
+  for (const b of [ending, owing]) {
+    const s = await get("/api/billing/status", b.broker);
+    assert.deepStrictEqual(s.data.access, { ok: true });
+    assert.strictEqual(s.data.billing.exempt, true);
+    assert.strictEqual(s.data.billing.banner, null, "no banner for an account with no charge");
+    calls = [];
+    const card = await post("/api/billing/card", b.broker);
+    assert.deepStrictEqual([card.status, card.data], [409, NO_CHARGE]);
+    assert.deepStrictEqual(calls, [], "nothing reaches Stripe for a card ask");
+    assert.strictEqual(orgRow(b.orgId).billing_pending_checkout, null);
+  }
+  // the portal (invoices from before the exemption, a card to remove) stays open
+  calls = [];
+  const portal = await post("/api/billing/portal", owing.broker);
+  assert.deepStrictEqual(portal.data, { url: "https://billing.stripe.test/portal" });
+  assert.deepStrictEqual(names(), ["createPortal"]);
+  // the same brokerage off the list is asked again as usual
+  db.prepare("UPDATE organizations SET billing_exempt = 0 WHERE id = ?").run(ending.orgId);
+  assert.strictEqual((await get("/api/billing/status", ending.broker)).data.billing.banner, "tester_ending");
+  assert.strictEqual((await post("/api/billing/card", ending.broker)).status, 200);
+
+  // start-up with the broker's address on the list: exempt, and no 30-day month is handed out
+  const before = brokerage();
+  db.prepare("UPDATE organizations SET billing_status = NULL WHERE id = ?").run(before.orgId);
+  const r = await startBilling(db, { STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x", STRIPE_PRICE_ID: "price_test", BILLING_EXEMPT_EMAILS: before.broker.email },
+    () => fakeGateway(), { timeoutMs: 1000 });
+  assert.strictEqual(r.config.enabled, true);
+  const row = orgRow(before.orgId);
+  assert.deepStrictEqual([row.billing_exempt, row.billing_tester_until], [1, null]);
 });
 
 test("/org/stats shows the billing state instead of the old trial date when billing is on (H12)", async () => {

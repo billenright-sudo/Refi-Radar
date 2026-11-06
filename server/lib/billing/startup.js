@@ -6,6 +6,7 @@
 // charged a price the app doesn't show. The check waits about 10 seconds at most: a slow Stripe can't hold up the start.
 // Nothing here logs a setting's value; an error's message is logged with anything that looks like a Stripe key taken out.
 const { billingConfig, BASE_CENTS, ADDITIONAL_CENTS, TESTER_DAYS } = require("./config");
+const { emailLinksWork } = require("../../email");
 
 const DAY_MS = 24 * 3600_000;
 const CHECK_TIMEOUT_MS = 10_000;
@@ -42,27 +43,29 @@ async function verifyPrice(gateway, priceId) {
   return { ok: true };
 }
 
-// What switching billing on does to the organizations already there (spec §6.7). Off: nothing. On:
-//   - every organization from before billing (billing_status NULL: nothing has told us otherwise) gets a free 30-day month from
-//     today and the status 'none', once (the status is never NULL again). It is not a tester-code sign-up, so it doesn't count
-//     against the code's limit. These brokerages have no Stripe subscription yet, so Stripe sends them no reminder (H13).
+// What switching billing on does to the organizations already there (spec §6.7). Off: nothing. On, in this order:
 //   - billing_exempt follows BILLING_EXEMPT_EMAILS on every start: an organization is exempt exactly while its broker's address is
 //     on the list (any case), so taking an address off the list ends the exemption.
+//   - then every organization from before billing (billing_status NULL: nothing has told us otherwise) that is not exempt gets a
+//     free 30-day month from today and the status 'none', once (the status is never NULL again). It is not a tester-code sign-up,
+//     so it doesn't count against the code's limit. These brokerages have no Stripe subscription yet, so Stripe sends them no
+//     reminder (H13). An exempt one is left as it is (it is never charged, so it uses up no free month): if its exemption ends at a
+//     later start, it gets its month from that start.
 function applyBillingStartup(db, config, nowMs) {
   if (!config || !config.enabled) return;
   const emails = [...new Set((config.exemptEmails || []).map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
   db.transaction(() => {
-    db.prepare("UPDATE organizations SET billing_status = 'none', billing_tester_until = ? WHERE billing_status IS NULL")
-      .run(nowMs + TESTER_DAYS * DAY_MS);
     if (!emails.length) {
       db.prepare("UPDATE organizations SET billing_exempt = 0 WHERE billing_exempt <> 0").run();
-      return;
+    } else {
+      db.prepare(`
+        UPDATE organizations SET billing_exempt = CASE WHEN id IN (
+          SELECT org_id FROM users WHERE role = 'broker' AND removed_at IS NULL AND lower(email) IN (${emails.map(() => "?").join(", ")})
+        ) THEN 1 ELSE 0 END
+      `).run(...emails);
     }
-    db.prepare(`
-      UPDATE organizations SET billing_exempt = CASE WHEN id IN (
-        SELECT org_id FROM users WHERE role = 'broker' AND removed_at IS NULL AND lower(email) IN (${emails.map(() => "?").join(", ")})
-      ) THEN 1 ELSE 0 END
-    `).run(...emails);
+    db.prepare("UPDATE organizations SET billing_status = 'none', billing_tester_until = ? WHERE billing_status IS NULL AND billing_exempt = 0")
+      .run(nowMs + TESTER_DAYS * DAY_MS);
   })();
 }
 
@@ -82,6 +85,10 @@ async function startBilling(db, env, makeGateway, { timeoutMs = CHECK_TIMEOUT_MS
     const missing = STRIPE_SETTINGS.filter((name) => !(typeof env?.[name] === "string" && env[name].trim()));
     return missing.length < STRIPE_SETTINGS.length ? off(`${missing.join(", ")} not set`) : { config, gateway: null };
   }
+
+  // Stripe's card page and portal send the broker back to APP_URL, and the confirmation and sign-up emails link to it: in production
+  // a missing or local one would strand every broker on Stripe's page, so billing stays off (before any Stripe call).
+  if (!emailLinksWork(env)) return off("APP_URL is not set to the app's public address");
 
   let gateway;
   try {

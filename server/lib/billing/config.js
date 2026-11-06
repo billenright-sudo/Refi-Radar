@@ -42,7 +42,8 @@ function billingConfig(env = {}) {
     testerCode: trimmed(env.BILLING_TESTER_CODE)?.toLowerCase() ?? null,
     testerMaxUses,
     testerExpiresMs,
-    exemptEmails: String(env.BILLING_EXEMPT_EMAILS || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+    // commas, semicolons or whitespace between addresses (an address has none of them), so no gcloud delimiter trick is needed
+    exemptEmails: String(env.BILLING_EXEMPT_EMAILS || "").split(/[\s,;]+/).map((s) => s.trim().toLowerCase()).filter(Boolean),
     feedbackTo: trimmed(env.FEEDBACK_TO),
   };
 }

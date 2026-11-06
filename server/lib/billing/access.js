@@ -19,8 +19,10 @@ function accessFor({ config, org, termsOk, nowMs }) {
   return { ok: false, reason: "needs_card" };
 }
 
-// A tester who has already added a card is not nagged: the card will be charged when the month ends.
+// A tester who has already added a card is not nagged: the card will be charged when the month ends. An exempt brokerage is never
+// charged, so it never gets a banner asking for a card or a payment.
 function bannerFor(org, nowMs) {
+  if (org.billing_exempt) return null;
   if (org.billing_status === "past_due") return "past_due";
   const left = org.billing_tester_until - nowMs;
   if (org.billing_tester_until && left > 0 && left <= TESTER_WARN_DAYS * 24 * 3600_000 && !org.billing_has_card) return "tester_ending";

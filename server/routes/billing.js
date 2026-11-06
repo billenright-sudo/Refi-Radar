@@ -12,7 +12,9 @@
 //   POST /card        (broker)     -> { url }: a live subscription -> Stripe's portal, straight to its card form (also for a tester's
 //                                    card-less month: a Checkout would make a second subscription); a still-open pending Checkout ->
 //                                    the same page again (H1); else a new Checkout for the user count, remembered as pending.
+//                                    409 { success: false, error: "This account has no charge." } for an exempt brokerage (I1).
 //   POST /portal      (broker)     -> { url }: Stripe's customer portal (card, invoices, cancel); 409 before there is a customer.
+//                                    Open to an exempt brokerage too (invoices from before, a card to take off).
 //   GET  /export.csv  (broker)     -> every client of the brokerage as CSV; open with billing off and while locked (H11).
 // Billing off: 404 on /card and /portal; /public says so and /status lets everyone in. A loan officer: 403 on /card, /portal and
 // /export.csv. Stripe unreachable: 502 { success: false, error: "Couldn't reach the payment service. Please try again." }.
@@ -39,6 +41,7 @@ const REPAIR_WAIT_MS = 8_000;
 const NOT_FOUND = Object.freeze({ success: false, error: "Not found" });
 const UNREACHABLE = Object.freeze({ success: false, error: "Couldn't reach the payment service. Please try again." });
 const NO_CUSTOMER = Object.freeze({ success: false, error: "There's no billing account to manage yet." });
+const NO_CHARGE = Object.freeze({ success: false, error: "This account has no charge." });
 const returnUrl = (outcome) => `${email.APP_URL}/?billing=${outcome}`;
 
 // Billing is on when start-up switched it on and put the gateway on the app (index.js), the webhook's rule too.
@@ -213,6 +216,8 @@ async function cardUrl({ config, gateway, send }, user, nowMs) {
 router.post("/card", requireAuth, billingOn, requireBroker, async (req, res) => {
   const orgId = req.user.org_id;
   try {
+    // An exempt brokerage is never charged, so it is never sent to a card page (I1).
+    if (orgBilling(db, orgId)?.billing_exempt) return res.status(409).json(NO_CHARGE);
     const url = await cardOnce(orgId, () => cardUrl(billingOf(req), req.user, Date.now()));
     res.json({ url });
   } catch (err) {

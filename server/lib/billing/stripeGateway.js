@@ -40,6 +40,7 @@ function createStripeGateway({ secretKey, client } = {}) {
 
     // Stripe's own card page. The quantity is the user count; `plan` is checkoutPlan's answer (14 days, until a date, or no trial).
     // The organization rides along twice: on the session (client_reference_id) and on the subscription it makes (metadata.org_id).
+    // A card only: a payment method a dashboard setting could switch on (a bank debit, say) is never offered.
     async createCheckout({ customerId, email, orgId, priceId, quantity, plan, successUrl, cancelUrl }) {
       const subscriptionData = { metadata: { org_id: String(orgId) } };
       if (plan?.trial === "days") subscriptionData.trial_period_days = plan.days;
@@ -47,6 +48,7 @@ function createStripeGateway({ secretKey, client } = {}) {
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         line_items: [{ price: priceId, quantity }],
+        payment_method_types: ["card"],
         payment_method_collection: "always",
         consent_collection: { terms_of_service: "required" },
         allow_promotion_codes: false,

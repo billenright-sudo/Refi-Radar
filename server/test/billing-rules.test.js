@@ -61,6 +61,9 @@ test("billingConfig: Stripe configured only with all three; tester limits, exemp
   assert.strictEqual(billingConfig({ BILLING_TESTER_EXPIRES: "2026-12-31" }).testerExpiresMs, Date.UTC(2026, 11, 31, 23, 59, 59, 999));
   assert.strictEqual(billingConfig({ BILLING_TESTER_EXPIRES: "soon" }).testerExpiresMs, null);
   assert.deepStrictEqual(billingConfig({ BILLING_EXEMPT_EMAILS: " A@X.test, ,b@y.test ,," }).exemptEmails, ["a@x.test", "b@y.test"]);
+  // commas, semicolons or any whitespace separate the addresses, so the gcloud command never needs its ^;^ delimiter
+  assert.deepStrictEqual(billingConfig({ BILLING_EXEMPT_EMAILS: "a@x.test;b@y.test c@z.test\td@w.test\n e@v.test ;; ,f@u.test" }).exemptEmails,
+    ["a@x.test", "b@y.test", "c@z.test", "d@w.test", "e@v.test", "f@u.test"]);
   assert.strictEqual(billingConfig({ FEEDBACK_TO: " me@x.test " }).feedbackTo, "me@x.test");
   assert.strictEqual(billingConfig({ FEEDBACK_TO: " " }).feedbackTo, null);
 });
@@ -121,12 +124,18 @@ test("bannerFor: past_due; tester_ending only in the last 7 days and only withou
   assert.strictEqual(ending(-D), null);
   assert.strictEqual(ending(3 * D, { billing_has_card: 1 }), null);
   assert.strictEqual(ending(3 * D, { billing_status: "past_due" }), "past_due");
+  // an exempt brokerage is never asked for a card or told about a payment, whatever its columns say
+  assert.strictEqual(ending(3 * D, { billing_exempt: 1 }), null);
+  assert.strictEqual(bannerFor(org({ billing_exempt: 1, billing_status: "past_due" }), NOW), null);
 });
 
-test("checkoutPlan: first time 14 days; tester month -> until (at least 49 h away); after any subscription -> none", () => {
+test("checkoutPlan: first time 14 days; tester month -> until (at least 49 h away); after any subscription or free month -> none", () => {
   const org = (o = {}) => ({ billing_tester_until: null, billing_ever_subscribed: 0, ...o });
   assert.deepStrictEqual(checkoutPlan(org(), NOW), { trial: "days", days: 14 });
-  assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW - 1 }), NOW), { trial: "days", days: 14 }, "an over tester month is not running");
+  // one free period per brokerage: a free month that is over (a tester code's or the start-up month's) was the free period
+  assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW - 1 }), NOW), { trial: "none" }, "a free month already given");
+  assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW }), NOW), { trial: "none" }, "the month's last moment has passed");
+  assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW - 40 * D }), NOW), { trial: "none" });
   assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW + 10 * D }), NOW), { trial: "until", endMs: NOW + 10 * D });
   assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW + 2 * H }), NOW), { trial: "until", endMs: NOW + 49 * H });
   assert.deepStrictEqual(checkoutPlan(org({ billing_tester_until: NOW + 49 * H }), NOW), { trial: "until", endMs: NOW + 49 * H });

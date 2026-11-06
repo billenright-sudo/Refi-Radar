@@ -143,6 +143,7 @@ test("createCheckout: card always, the terms tick, no promotion codes, the org o
   assert.deepStrictEqual(f.calls[0], ["checkout.sessions.create", {
     mode: "subscription",
     line_items: [{ price: "price_test", quantity: 3 }],
+    payment_method_types: ["card"],
     payment_method_collection: "always",
     consent_collection: { terms_of_service: "required" },
     allow_promotion_codes: false,
@@ -165,6 +166,8 @@ test("createCheckout: card always, the terms tick, no promotion codes, the org o
   await gw.createCheckout({ ...base, customerId: "cus_12", plan: { trial: "none" } });
   assert.deepStrictEqual(f.calls[2][1].subscription_data, { metadata: { org_id: "12" } });
   assert.strictEqual(f.calls[2][1].payment_method_collection, "always");
+  // a card and nothing else (no bank debit or wallet a dashboard setting could add), for every plan
+  for (const c of f.calls) assert.deepStrictEqual(c[1].payment_method_types, ["card"]);
 });
 
 test("createTesterSubscription: no card, cancels itself without one, the org on customer and subscription, the trial end", async () => {
