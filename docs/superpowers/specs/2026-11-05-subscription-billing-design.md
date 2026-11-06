@@ -188,3 +188,12 @@ Sign-up price line (6.1.1) · Start your free trial (6.1.2) · test month and it
 "Please agree to the Terms of Service and Privacy Policy." · the confirmation email (6.1.5) · past-due banner, lock pages, "Your
 subscription has ended", "Restart subscription", "Download my clients (CSV)" (6.2, 6.8) · Billing page lines (6.5) · "We've updated
 our terms" (6.6) · Send feedback (6.9) · the remove-loan-officer and cancel-invitation confirmations (6.3).
+
+Added in the final fix wave (2026-11-05), awaiting approval:
+- The tester's price line, under the test-month banner and on the Billing page while a tester month runs with no card (6.1.3,
+  6.5): "From {date} we'll charge {total} a month until you cancel." ({date} is the month's end, as "Nov 30, 2026"; {total} is
+  today's monthly total, as "$99" or "$295").
+- The remove-loan-officer confirmation while billing is off (or the brokerage is exempt), without the part about paying (6.3):
+  "Remove {first} {last}? They'll be signed out right away and their clients move to you."
+- The answer an exempt brokerage gets if a card page is asked for anyway (the app shows it no card button): "This account has no
+  charge."

@@ -29,9 +29,9 @@ Stripe to its place through your clipboard, using the commands below, and never 
 
 Before any test, read and approve each of these. Your assistant can show you each one.
 
-- The new lines in the app: the sign-up price line, "Start your free trial", the test-month page and its banner, the past-due
-  banner, the lock pages, the Billing page lines, "We've updated our terms", Send feedback, and the remove-a-loan-officer
-  confirmations.
+- The new lines in the app: the sign-up price line, "Start your free trial", the test-month page and its banner, the tester's
+  price line ("From {date} we'll charge {total} a month until you cancel."), the past-due banner, the lock pages, the Billing page
+  lines, "We've updated our terms", Send feedback, and the remove-a-loan-officer confirmations.
 - **Our own confirmation email**: the one Broker Radar sends when a brokerage's free trial or test month starts.
 - Stripe's emails to customers: the receipt, the failed-payment notice and the trial reminder. Read each in Stripe's email preview
   once your Stripe account exists (step 2). Switch each one on only after you have approved it.
@@ -165,14 +165,28 @@ Add-Content -Path .env -Value "`nBILLING_TESTER_CODE=test-month"
 Add-Content -Path .env -Value "`nAPP_URL=http://localhost:5173"
 ```
 
-5. Copy any ordinary word, so the secret is no longer on your clipboard.
+5. Add the two addresses the test run uses (neither is a secret):
+   - `BILLING_EXEMPT_EMAILS`: the brokerage that never pays, tested in step 10. Use an address you control and will use **only**
+     for that one test brokerage (with Gmail, `yourname+exempt@gmail.com` arrives in your usual inbox). Any test brokerage signed
+     up with this address becomes exempt.
+   - `FEEDBACK_TO`: the inbox that receives Send feedback. Your usual address is fine.
 
-**Check:** this lists the setting **names** in the file, never their values. It must show `STRIPE_SECRET_KEY`,
-`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, `BILLING_TESTER_CODE` and `APP_URL`. It must also show `EMAIL_USER` and `EMAIL_PASS`,
-because sign-up sends its link by email; if those two are missing, your assistant sets them up with you first.
+   Replace both example addresses, then run:
 
 ```powershell
-Select-String -Path .env -Pattern "^(STRIPE_|BILLING_|APP_URL|EMAIL_)" | ForEach-Object { $_.Line.Split("=")[0] } | Sort-Object -Unique
+Add-Content -Path .env -Value "`nBILLING_EXEMPT_EMAILS=yourname+exempt@gmail.com"
+Add-Content -Path .env -Value "`nFEEDBACK_TO=you@example.com"
+```
+
+6. Copy any ordinary word, so the secret is no longer on your clipboard.
+
+**Check:** this lists the setting **names** in the file, never their values. It must show `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, `BILLING_TESTER_CODE`, `BILLING_EXEMPT_EMAILS`, `FEEDBACK_TO` and `APP_URL`. It must
+also show `EMAIL_USER` and `EMAIL_PASS`, because sign-up sends its link by email; if those two are missing, your assistant sets
+them up with you first.
+
+```powershell
+Select-String -Path .env -Pattern "^(STRIPE_|BILLING_|APP_URL|FEEDBACK_TO|EMAIL_)" | ForEach-Object { $_.Line.Split("=")[0] } | Sort-Object -Unique
 ```
 
 ## 9. Start everything on your computer
@@ -184,6 +198,10 @@ You need three PowerShell windows, kept open for the whole test. Your assistant 
 ```powershell
 stripe listen --forward-to localhost:8080/api/billing/webhook --events checkout.session.completed,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,customer.updated
 ```
+
+   **Careful:** when it starts, this window prints the test webhook secret on screen (a line with a value starting `whsec_`). It
+   is only a test secret, but treat it like a password: don't take a screenshot of this window, don't share your screen while it
+   shows, and don't copy the value anywhere. Step 8 already put it in the settings file without showing it.
 
 2. **Window 2, the app's server**, using a test database of its own, so your everyday data on this computer is left alone:
 
@@ -218,27 +236,82 @@ Use addresses you control. Test cards take any future expiry date, any CVC and a
 2. **Add a user.** Invite a loan officer and accept the invitation.
    **Check:** in Stripe the subscription's quantity is now 2, and the app's Billing page shows $99 + 1 additional user × $49 = $148
    a month.
-3. **The tester code.** Sign up a second brokerage with the tester code `test-month`, and choose **Start testing** (no card).
+3. **Remove a user.** In the first brokerage, go to My Team and remove that loan officer. The question says "and you'll stop
+   paying for them"; answer OK.
+   **Check:** in Stripe the subscription's quantity is back to 1, and the app's Billing page shows "Brokerage $99 a month".
+4. **The tester code.** Sign up a second brokerage with the tester code `test-month`, and choose **Start testing** (no card).
    **Check:** you are in the app at once. In Stripe, the second brokerage has a trialing subscription with no card, ending in 30
-   days.
-4. **Cancel.** In the first brokerage, go to Billing → **Manage billing** → cancel.
-   **Check:** Stripe shows the subscription set to cancel at the end of the trial, and the app keeps working until then.
-5. **A card that fails.** Sign up a third brokerage and add card `4000 0000 0000 0341`. It is accepted, then fails when charged.
+   days. The app's Billing page shows that end date and "From … we'll charge $99 a month until you cancel."
+5. **A tester adds a card.** In the second brokerage, go to Billing → **Manage billing**, and add card `4242 4242 4242 4242`. Then,
+   in Stripe, open that brokerage's subscription and choose **end trial now**.
+   **Check:** Stripe shows a paid invoice for $99 for that brokerage, and the app's Billing page now says "Next charge on …".
+6. **Cancel.** In the first brokerage, go to Billing → **Manage billing** → cancel.
+   **Check:** Stripe shows the subscription set to cancel at the end of the trial. Back in the app, the Billing page says
+   "Cancelled. Broker Radar keeps working until …", and the app keeps working until then.
+7. **A returning customer.** In Stripe, open the first brokerage's subscription and cancel it **immediately**. Then reload the
+   app's page.
+   **Check:** the app now shows "Your subscription has ended". Choose **Restart subscription** and use card
+   `4242 4242 4242 4242`. Stripe shows a new subscription that is active at once (no trial) and a $99 invoice paid today; you are
+   back in the app.
+8. **A card that fails.** Sign up a third brokerage and add card `4000 0000 0000 0341`. It is accepted, then fails when charged.
    In Stripe, open its subscription and end the trial now, so Stripe tries to charge it.
    **Check:** the payment fails, the subscription shows "past due", and the app shows "Your last payment didn't go through. Update
    your card to keep Broker Radar running." with **Update card**.
+9. **Brokerages from before billing, and the exempt list.** This shows what happens on the day billing is switched on.
+   1. Stop Window 2 (press `Ctrl+C` in it). Start it again with billing **off** for this one run:
+
+```powershell
+$env:STRIPE_WEBHOOK_SECRET = " "
+node index.js
+```
+
+   2. Window 2 shows `[billing] off: STRIPE_WEBHOOK_SECRET not set`. Reload http://localhost:5173 and sign up two brokerages: one
+      with the exempt address from step 8 (`yourname+exempt@gmail.com`), and one with another address of yours that you haven't
+      used in this test. Neither sign-up shows a price or a terms tick. (While billing is off, Window 1 may show `[404]`; that is
+      expected.)
+   3. Stop Window 2 again (`Ctrl+C`), start it with billing back **on**, and reload http://localhost:5173:
+
+```powershell
+Remove-Item Env:STRIPE_WEBHOOK_SECRET
+node index.js
+```
+
+   **Check:**
+   - Window 2 shows `[billing] on`.
+   - Each of the two brokerages first sees "We've updated our terms"; after **I agree** it is in the app.
+   - The exempt brokerage: no banner, no **Add card** anywhere, and its Billing page says "No charge for this account."
+   - The other brokerage: its Billing page says "Free test month until …" (30 days from now) and "From … we'll charge $99 a month
+     until you cancel.", and Stripe has nothing for it yet.
 
 **Check for the whole run:**
-- Window 1 shows every message passed on with `[200]`.
+- Window 1 shows every message passed on with `[200]` (a `[404]` only during the billing-off run in item 9).
 - No email went out that you hadn't approved.
-- The live app is untouched: `<APP_URL>/api/billing/public` still shows `{"enabled":false}`.
+- The live app is untouched: `<APP_URL>/api/billing/public` still shows `"enabled":false` (never `"enabled":true`).
 
 ## 11. Finish the test
 
 1. Close the three windows.
-2. The test brokerages stay only in the test database folder from step 9. Your assistant can delete that folder for you.
+2. Take the test settings out of your computer's settings file, so the copy of Broker Radar on your computer is back to how it was
+   (billing off). Open PowerShell in the app's `server` folder, as in step 8, and run these two lines. They remove every
+   `STRIPE_…`, `BILLING_…`, `FEEDBACK_TO` and `APP_URL` line, keep every other line, and show nothing:
 
-**Check:** `<APP_URL>/api/billing/public` still shows `{"enabled":false}`.
+```powershell
+$kept = [IO.File]::ReadAllLines("$PWD\.env") | Where-Object { $_ -notmatch '^\s*(STRIPE_|BILLING_|FEEDBACK_TO\s*=|APP_URL\s*=)' }
+[IO.File]::WriteAllLines("$PWD\.env", [string[]]@($kept))
+```
+
+3. The test brokerages stay only in the test database folder from step 9. Your assistant can delete that folder for you.
+
+**Check:**
+- This lists the setting **names** left in the file, never their values. It must show `EMAIL_USER` and `EMAIL_PASS`, and none of
+  `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, `BILLING_TESTER_CODE`, `BILLING_EXEMPT_EMAILS`, `FEEDBACK_TO`
+  or `APP_URL`:
+
+```powershell
+Select-String -Path .env -Pattern "^(STRIPE_|BILLING_|APP_URL|FEEDBACK_TO|EMAIL_)" | ForEach-Object { $_.Line.Split("=")[0] } | Sort-Object -Unique
+```
+
+- `<APP_URL>/api/billing/public` still shows `"enabled":false` (never `"enabled":true`).
 
 ---
 
@@ -250,7 +323,8 @@ Do this only when all three are true:
 - you have approved all the wording (step 1).
 
 The live app only ever receives **live** keys. The moment billing switches on there, every brokerage that already exists gets its
-free month, starting that day, and is then asked for a card. Stripe doesn't email these few brokers, so tell them yourself.
+free month, starting that day, and is then asked for a card (an exempt one excepted: it is never asked). Stripe doesn't email
+these few brokers, so tell them yourself.
 
 The billing release must already be deployed to the live app, with your go, as always. Until it is, these settings do nothing.
 
@@ -272,15 +346,16 @@ cancelled.
 
 1. In live mode, go to **Developers → Webhooks → Add endpoint** (or "Add destination").
 2. Endpoint URL: `<APP_URL>/api/billing/webhook`
-3. Select these **five** events, and no others:
+3. API version: choose `2026-09-30.endive`, the version the app is built for (not your account's default, if that differs).
+4. Select these **five** events, and no others:
    - `checkout.session.completed`
    - `customer.subscription.created`
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
    - `customer.updated`
-4. Save. Leave the page open: in step 14 you copy its **signing secret** (it starts with `whsec_`).
+5. Save. Leave the page open: in step 14 you copy its **signing secret** (it starts with `whsec_`).
 
-**Check:** the live endpoint is listed as enabled, with that URL and exactly those five events.
+**Check:** the live endpoint is listed as enabled, with that URL, API version `2026-09-30.endive` and exactly those five events.
 
 ## 14. Put the two live secrets into Secret Manager (the clipboard method)
 
@@ -329,22 +404,43 @@ gcloud secrets versions list STRIPE_WEBHOOK_SECRET --project refi-radar-496318
 Fill in your values, then run the command below. It keeps every setting the app already has and adds these:
 
 - `STRIPE_PRICE_ID`: the **live** price ID from step 12.
-- `BILLING_EXEMPT_EMAILS`: the login address of each brokerage that never pays (your own), separated by commas.
+- `BILLING_EXEMPT_EMAILS`: the login address of each brokerage that never pays (your own). For more than one, put a semicolon
+  between them, like `you@example.com;partner@example.com`. Never a comma: in this command, commas separate the settings.
 - `BILLING_TESTER_CODE`: the private code testers type at sign-up for a free month. Leave it out for no code.
 - `BILLING_TESTER_MAX_USES`: how many brokerages may use the code. If you leave it out, it is 25.
 - `BILLING_TESTER_EXPIRES`: the last day the code works, as `YYYY-MM-DD`. If you leave it out, there is no end date.
 - `FEEDBACK_TO`: the inbox that receives testers' feedback.
 
-The `^;^` at the start tells Google that the settings are separated by semicolons, so the commas inside the exempt list are kept.
-
 ```powershell
-gcloud run services update refi-radar --region us-central1 --project refi-radar-496318 --update-secrets="STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest" --update-env-vars="^;^STRIPE_PRICE_ID=price_REPLACE_ME;BILLING_EXEMPT_EMAILS=you@example.com;BILLING_TESTER_CODE=REPLACE_ME;BILLING_TESTER_MAX_USES=25;BILLING_TESTER_EXPIRES=2026-12-31;FEEDBACK_TO=you@example.com"
+gcloud run services update refi-radar --region us-central1 --project refi-radar-496318 --update-secrets="STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest" --update-env-vars="STRIPE_PRICE_ID=price_REPLACE_ME,BILLING_EXEMPT_EMAILS=you@example.com,BILLING_TESTER_CODE=REPLACE_ME,BILLING_TESTER_MAX_USES=25,BILLING_TESTER_EXPIRES=2026-12-31,FEEDBACK_TO=you@example.com"
 ```
 
-**Check:** open `<APP_URL>/api/billing/public` in your browser. It shows `{"enabled":true}`. The log shows `[billing] on`. The next
-real sign-up appears in Stripe's live dashboard.
+**Check 1, the settings as the live app has them.** This reads them back:
 
-If the page shows `{"enabled":false}`, read the reason in the log (the line starting `[billing] off:`), fix that step, and run the
+```powershell
+gcloud run services describe refi-radar --region us-central1 --project refi-radar-496318 --format="yaml(spec.template.spec.containers[0].env)"
+```
+
+- It lists `STRIPE_PRICE_ID`, `BILLING_EXEMPT_EMAILS`, `BILLING_TESTER_CODE`, `BILLING_TESTER_MAX_USES`, `BILLING_TESTER_EXPIRES`,
+  `FEEDBACK_TO` and `APP_URL`, each with the value you meant. The app's other settings appear too; that is expected.
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (and the app's other secrets, such as `EMAIL_PASS`) appear only with
+  `valueFrom`, `secretKeyRef` and `key: latest`: a name, never the secret itself. If anything that looks like a key shows as a
+  value (it would start `sk_live_`, `whsec_` or `sk-ant-`), stop, don't share your screen, and tell your assistant.
+- The tester code is shown as typed. It isn't a key, but keep it to the testers you choose.
+
+**Check 2, APP_URL.** In that list, `APP_URL` must be the live app's public address, exactly `<APP_URL>` (today
+`https://refi-radar-194747178897.us-central1.run.app`): starting `https://`, never `localhost`. Stripe sends brokers back to this
+address after they add a card, so without it billing stays off (the log says `[billing] off: APP_URL is not set to the app's
+public address`). If it is missing or wrong, set it, then read the settings back again:
+
+```powershell
+gcloud run services update refi-radar --region us-central1 --project refi-radar-496318 --update-env-vars="APP_URL=https://refi-radar-194747178897.us-central1.run.app"
+```
+
+**Check 3, billing is on.** Open `<APP_URL>/api/billing/public` in your browser. It shows `{"enabled":true,"feedback":true}`. The
+log shows `[billing] on`. The next real sign-up appears in Stripe's live dashboard.
+
+If the page shows `"enabled":false`, read the reason in the log (the line starting `[billing] off:`), fix that step, and run the
 command again. To read the log:
 
 ```powershell
@@ -372,4 +468,29 @@ webhook off in Stripe for that time.
 gcloud run services update refi-radar --region us-central1 --project refi-radar-496318 --remove-env-vars=STRIPE_PRICE_ID
 ```
 
-**Check:** `<APP_URL>/api/billing/public` shows `{"enabled":false}`.
+**Check:** `<APP_URL>/api/billing/public` shows `"enabled":false`.
+
+## Rolling back to the version from before billing
+
+If the billing release ever has to be taken back off the live app (the deploy back to the earlier version is your go, as always):
+
+1. **Switch billing off first**, by removing the Stripe settings, so nothing on the live app is still asking for cards or taking
+   Stripe's messages while you roll back. Then cancel in Stripe any subscription that should stop charging.
+
+```powershell
+gcloud run services update refi-radar --region us-central1 --project refi-radar-496318 --remove-env-vars=STRIPE_PRICE_ID --remove-secrets=STRIPE_SECRET_KEY,STRIPE_WEBHOOK_SECRET
+```
+
+   **Check:** `<APP_URL>/api/billing/public` shows `"enabled":false`.
+
+2. Know what the earlier version does differently:
+   - **Removed loan officers come back into view.** The earlier version doesn't know a loan officer was removed: each one shows
+     again as an accepted user, with a login email like `removed:12`. They still can't sign in (their password was taken away).
+     But a client import on the earlier version could match a client to one of them by name, so check imported clients' loan
+     officers. The removal itself is kept, so moving forward to the billing release again hides them again.
+   - **Pending invitations** follow the earlier note on rolling back the sign-up and invitation changes (the auth design of
+     4 November): if the version you go back to is from before those changes too, invitations still waiting to be accepted stop
+     working there, so send them again after rolling back.
+
+**Check:** after the roll back, sign in as yourself and open My Team: the list is what you expect, apart from the `removed:…`
+entries described above.
