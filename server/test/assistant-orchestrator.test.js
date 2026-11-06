@@ -2525,6 +2525,8 @@ test("Task 4 pre-review fixes (C1 chain only through answers, C2 whole-question 
 
 const { SESSION_STARTED } = require("../lib/assistant/history");
 const { GLOSSARY } = require("../lib/assistant/glossary");
+// (Round 2: the greeting no longer asks this. The history stays as a case of any earlier question about tenure, kept from before the
+// release or asked by the model when the user wanted their stage set: the claim screen never reads the history.)
 const GREETING_Q = "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. How long have you been originating?";
 
 test("C4: the synthetic '(Session started.)' opener is inert to the detectors", () => {

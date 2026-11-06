@@ -74,8 +74,7 @@ const orgMix = addOrg("Mix");
 const max = addUser(orgMix, "broker", "max@mix.co", "Max");
 addClientRow(orgMix, max, { name: "Stale Refi", currentRate: 8.0, lastContact: STALE });
 addClientRow(orgMix, max, { name: "Fresh Refi", currentRate: 8.0, lastContact: TODAY });
-// Task 7: a user with no career stage is asked how long they've been originating instead of "Want a market update ...".
-// These four are established, so the briefing tests below end in the standing close (coaching.test.js has the career question).
+// These four are established. (Round 2: no user is asked how long they've been originating any more; coaching.test.js pins that.)
 db.prepare("UPDATE users SET career_stage = 'established' WHERE id IN (?, ?, ?, ?)").run(sam, pat, zoe, max);
 
 // ── harness ──────────────────────────────────────────────────────────────────
@@ -849,6 +848,7 @@ test("turn: Charli's greeting opens the session, so the history starts with the 
 });
 
 test("turn: after the greeting's question the synthetic opener keeps the action backstop where it belongs", async () => {
+  // (round 2: the greeting no longer asks this; the history stands for any question before the user's answer)
   const greeting = "Good morning, Ann. You have 2 opportunities and 1 check-in due; the 30-year is at 6.52%. How long have you been originating?";
   // a plain answer to the greeting's question is not held to the backstop ...
   setClient(fakeClient([say("Nice, that's a long run.")]));

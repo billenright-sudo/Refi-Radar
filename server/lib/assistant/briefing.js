@@ -16,8 +16,8 @@
 //   5. today's calendar: the count and the first one or two events still ahead;
 //   6. open follow-ups (followups.js), at most two clients and none that today's list carries (unless a call booked with them
 //      today has ended), after the calendar's calls have been matched (calendarFollowUps.js);
-//   7. exactly one question: the first follow-up's, else the career question for a user with no stage, else the close
-//      (CLOSE_QUESTION offers to book the list's calls; with no list, CLOSE_NO_CALLS does not).
+//   7. exactly one question: the first follow-up's, else the close (CLOSE_QUESTION offers to book the list's calls; with no
+//      list, CLOSE_NO_CALLS does not). No career question (round 2): the stage is set on the Profile page.
 //
 // Nothing that could hold contact details is spoken: a client name or an event title is read only when speakable() passes it
 // (no "@", no "?", no run of seven or more digits however punctuated, at most 80 characters). A title that fails is "an event";
@@ -39,7 +39,6 @@ const followups = require("./followups");
 const { pickCallList } = require("./callList");
 const { collectCalendarFollowUps } = require("./calendarFollowUps");
 const { isCitation } = require("./orchestrator");
-const { stageById, CAREER_QUESTION } = require("./coaching");
 const { openerFor } = require("./openers");
 const { localToday, addDays } = require("../google/time");
 const { MONTHS, ordinal } = require("../dateLabels");
@@ -399,9 +398,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   // 7. the one question
   const first = shown[0] || null;
   const hasList = Boolean(calls && calls.picks.length);
-  const question = first
-    ? followUpQuestion(first, today)
-    : !stageById(user.career_stage) ? CAREER_QUESTION : hasList ? CLOSE_QUESTION : CLOSE_NO_CALLS;
+  const question = first ? followUpQuestion(first, today) : hasList ? CLOSE_QUESTION : CLOSE_NO_CALLS;
 
   const name = typeof user.first_name === "string" ? user.first_name.trim() : "";
   const body = [

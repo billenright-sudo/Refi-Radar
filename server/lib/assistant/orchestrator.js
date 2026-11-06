@@ -22,12 +22,12 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, withTurnClientNames } = require("./tools");
 const { isGuidelineQuestion } = require("./guidelines");
 const {
-  buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, STAGE_REASK, TOOK_TOO_LONG,
+  buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG,
   ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
-const { CAREER_STAGES, CAREER_QUESTION, stageById, spokenStageLabel } = require("./coaching");
+const { CAREER_STAGES, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
 const { VERDICTS, WHYS, ADVICE_VERDICTS, fitsUnclipped } = require("./judge");
 
@@ -1675,89 +1675,6 @@ function falseSetClaim(sentence, storedStage) {
   return isSetClaim(sentence.replace(SET_STAGE_OBJECT_RE, " "));
 }
 
-// ── The answer to the career question ────────────────────────────────────────
-
-// A user with no stored stage is asked CAREER_QUESTION at the end of the code-authored greeting (routes/assistant.js), so the
-// turn that answers it is known exactly: the user's stored stage is null, and the assistant message right before the user's
-// latest one ends with CAREER_QUESTION. On that turn a reply could claim a stage in endless ways ("Twenty years — Veteran, then.",
-// "Congratulations veteran!"), so it is screened by what the turn did, not by how the reply is phrased:
-//   Tier 1: the user's message is a plain duration code can read (plainYears: "about 20 years", "6 months", "eighteen months",
-//     "a year", "half a year", "two and a half years", "since 2006", "10 plus years" / "10+ years", read like "over 10 years"):
-//     the setCareerStage change is packaged right away by
-//     setCareerStageTool({ years }) (which alone maps years to a stage) with its code-authored read-back, and no model is called;
-//   Tier 2: any other answer that gives a duration (givesDuration: "a while", "forever", "since the crash", "almost ten years",
-//     "a couple of years", "Twenty."), with no read tool cited this turn: the model's reply must be question-shaped or come with
-//     the setCareerStage change; anything else is replaced by STAGE_REASK.
-// An answer that gives no duration ("what are rates today?") is an ordinary turn. STAGE_REASK asks the same question again, so
-// the answer to it is read the same way.
-const answersCareerQuestion = (messages, storedStage) => {
-  const asked = messages[messages.length - 2];
-  if (storedStage !== null || !asked || asked.role !== "assistant") return false;
-  const said = messageText(asked).trim();
-  return said.endsWith(CAREER_QUESTION) || said.endsWith(STAGE_REASK);
-};
-
-const NUMBER_WORD_VALUES = {
-  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
-  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
-  twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70,
-};
-const TENS_WORDS = "twenty|thirty|forty|fifty|sixty|seventy";
-const UNIT_WORDS = "one|two|three|four|five|six|seven|eight|nine";
-const COUNT_WORDS =
-  "(?:(?:" + TENS_WORDS + ")(?:[\\s-](?:" + UNIT_WORDS + "))?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve" +
-  "|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)";
-// What may come before the amount: "I've been originating (for)", "been doing this", "it's been", and the approximations "about",
-// "around", "roughly", "over", "more than"... ("almost", "nearly", "under", "less than" and "close to" are left to Tier 2: their
-// number is not the number of years).
-const DURATION_LEAD =
-  "(?:(?:(?:i(?:['\\u2019]ve|\\s+have)|have|i['\\u2019]m)\\s+)?been\\s+(?:originating|doing\\s+(?:this|it)|at\\s+(?:it|this)" +
-    "|in\\s+(?:the\\s+business|this\\s+business|mortgages|lending))(?:\\s+for)?" +
-  "|it(?:['\\u2019]s|\\s+has|\\s+is)\\s+been|about|around|roughly|approximately|probably|maybe|like|just|over|more\\s+than" +
-  "|a\\s+(?:little|bit)\\s+over|i['\\u2019]d\\s+say|i\\s+would\\s+say|for|oh|so|well)";
-const DURATION_TRAIL =
-  "(?:[\\s,]+(?:now|or\\s+so|give\\s+or\\s+take|in\\s+the\\s+business|in\\s+this\\s+business|in\\s+mortgages|originating" +
-  "|of\\s+originating|total|already|i\\s+think|i\\s+guess))*";
-const PLAIN_DURATION_RE = new RegExp(
-  "^(?:" + DURATION_LEAD + "[\\s,]+)*" +
-  "(?:(\\d+(?:\\.\\d+)?|" + COUNT_WORDS + "|an?|half\\s+an?)(\\s+and\\s+a\\s+half)?(?:\\s*\\+|[\\s-]+plus)?\\s*(years?|yrs?|months?)" +
-  "(\\s+and\\s+a\\s+half)?(?:\\s+plus)?" +
-  "|since\\s+((?:19|20)\\d{2}))" + DURATION_TRAIL + "[\\s.!]*$",
-  "i"
-);
-const GIVES_DURATION_RE = new RegExp(
-  "\\b(?:years?|yrs?|months?|decades?|since|while|forever|ages|long\\s+time|a\\s+(?:few|couple)|half|\\d+|" + COUNT_WORDS + ")\\b", "i"
-);
-const givesDuration = (text) => GIVES_DURATION_RE.test(afterFiller(text));
-
-// "twenty-five" -> 25, "a" -> 1, "half a" -> 0.5, "12" -> 12; null for anything else.
-function amountOf(word) {
-  const w = word.toLowerCase().replace(/\s+/g, " ");
-  if (/^\d+(?:\.\d+)?$/.test(w)) return Number(w);
-  if (/^an?$/.test(w)) return 1;
-  if (/^half an?$/.test(w)) return 0.5;
-  const [tens, unit] = w.split(/[\s-]/);
-  if (!(tens in NUMBER_WORD_VALUES) || (unit !== undefined && !(unit in NUMBER_WORD_VALUES))) return null;
-  return NUMBER_WORD_VALUES[tens] + (unit === undefined ? 0 : NUMBER_WORD_VALUES[unit]);
-}
-
-// The number of years in a plain-duration answer (months / 12; "and a half" adds 0.5 of the unit; "since YYYY" is this UTC
-// year minus YYYY), or null when the message is anything more or less than a plain duration. Tags, filler and a trailing
-// "." / "!" are ignored. Pure (but for "since YYYY", which reads the clock).
-function plainYears(text) {
-  const m = afterFiller(text).match(PLAIN_DURATION_RE);
-  if (!m) return null;
-  const [, amount, halfBefore, unit, halfAfter, sinceYear] = m;
-  if (sinceYear) {
-    const years = new Date().getUTCFullYear() - Number(sinceYear);
-    return years >= 0 ? years : null;
-  }
-  const n = amountOf(amount);
-  if (n === null || (halfBefore && halfAfter)) return null;
-  const count = n + (halfBefore || halfAfter ? 0.5 : 0);
-  return /^m/i.test(unit) ? count / 12 : count;
-}
-
 // ── Tool execution ───────────────────────────────────────────────────────────
 
 // Error results carry a parenthesised label like "(not found)": those are never cited.
@@ -2769,18 +2686,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
   const jokeTopic = ctx && typeof ctx.jokeTopic === "string" && ctx.jokeTopic ? ctx.jokeTopic : randomJokeTopic();
   const system = buildCharliSystem(ctx && ctx.user, { jokeTopic });
 
-  // The answer to the greeting's career question (answersCareerQuestion). Tier 1: a plain duration is packaged by code, with
-  // no model call (a zero-token turn, metered like the greeting). Tier 2 (`careerAnswerTurn`) screens the model's reply below.
-  const careerAnswer = answersCareerQuestion(messages, storedStage);
-  if (careerAnswer) {
-    const years = plainYears(userText);
-    if (years !== null) {
-      const out = tools.setCareerStageTool({ years }, ctx);
-      if (out && out.sideEffect) return finish(readBack(out), [], out.sideEffect, changeDetails(out));
-    }
-  }
-  const careerAnswerTurn = careerAnswer && givesDuration(userText);
-
   // The one way this turn asks the judge about a reply (design §1): { verdict, why } (askJudge), or FACT with no call when there is
   // no judge, no time left for one (the deadline less the minCallMs margin), or a reply, user message or previous message of
   // Charlie's that judge.js would cut (it would judge the head alone: rulings T1-1, T2-1 and T2-3); a judge that was not asked is
@@ -2876,9 +2781,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       if ((afterOffer || actionTurn) && offeredActClaimed(text, reads, actionTurn)) {
         return finish(NOTHING_CHANGED);
       }
-      // Tier 2 of the career answer: a duration code could not read, no read tool cited, and no setCareerStage change handed
-      // up (a turn that ends in text carries none): only a question may reach the user, anything else is the re-ask.
-      if (careerAnswerTurn && sources.length === 0 && !isQuestionShaped(text)) return finish(STAGE_REASK);
       // I3: when the glossary is the only thing cited, the reply is the definition(s), code-authored from what explainTerm
       // returned (a term it did not know adds the can't-verify line), and the model's text is discarded: a glossary citation
       // must not carry a claim about the book. (On a turn that also cites a book source the model's text stands, and its figures

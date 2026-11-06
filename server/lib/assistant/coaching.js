@@ -69,15 +69,14 @@ const BLOCKS = {
     "re-ranked by arithmetic of your own, spoken as first this, then that, never a written list, and then the " +
     "fastest path to action: the one change you can prepare for them to confirm. " + ALWAYS,
 
-  // No stage recorded. The first paragraph is the instruction that makes Charli record one; the staged blocks
-  // deliberately do not have it.
+  // No stage recorded (round 2, 2026-11-05): the user sets it on the Profile page, so Charli never asks for it. The first
+  // paragraph says so; the staged blocks deliberately do not have it. A change the user asks for still goes through
+  // setCareerStageTool, whose own description says how.
   none:
-    "The user's career stage isn't set. The greeting already asked how long they've been originating; when they " +
-    "answer with a number of years, call setCareerStageTool with `years`. Never assume or infer a stage.\n\n" +
-    "Until it is set, coach in the balanced way for a Developing user: friendly and brisk, a few words on a less " +
-    "common term, the next step, and a talk track only when it would help. Use only a number of years they " +
-    "actually said: if they give anything else (the year they started, \"a few\"), ask how many years instead of " +
-    "working it out. Do not ask the question again yourself. " + ALWAYS,
+    "The user's career stage isn't set (they can set it on their Profile page). Never assume or infer a stage, and never ask " +
+    "for it or how long they've been originating unless they ask you to set it.\n\n" +
+    "Until it is set, coach in a balanced way, without assuming a stage: friendly and brisk, a few words on a less " +
+    "common term, the next step, and a talk track only when it would help. " + ALWAYS,
 };
 
 // The coaching block appended to CHARLI_SYSTEM for a user at `stageId`. Anything that is not one of the four ids
@@ -87,9 +86,6 @@ const coachingStyle = (stageId) => {
   return stage ? BLOCKS[stage.id] : BLOCKS.none;
 };
 
-// The one question the greeting of a user with no stage asks (routes/assistant.js). The answer is mapped to a stage by the
-// model calling setCareerStageTool (the null block in coachingStyle); what Charli may SAY about the stage is screened by
-// claimsStage in the orchestrator, against the stored stage, however the conversation went.
-const CAREER_QUESTION = "Quick question before we dive in — how long have you been originating?";
-
-module.exports = { CAREER_STAGES, MAX_YEARS, CAREER_QUESTION, stageById, stageForYears, spokenStageLabel, coachingStyle };
+// What Charli may SAY about the stage is screened by claimsStage in the orchestrator, against the stored stage, however the
+// conversation went. (Round 2: the greeting no longer asks a career question; the stage comes from the Profile page.)
+module.exports = { CAREER_STAGES, MAX_YEARS, stageById, stageForYears, spokenStageLabel, coachingStyle };

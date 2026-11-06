@@ -40,10 +40,6 @@ const EVENT_CHANGE_UNSUPPORTED = "I can't change events already on your calendar
 // One response asked for more than one change at once; confirmations happen one at a time.
 const ONE_AT_A_TIME = "Let's do those one at a time — which first?";
 
-// The user answered the greeting's career question with a duration code could not read, and the model replied with neither
-// a question nor the setCareerStage change: whatever it said, nothing was saved, so the question is asked again.
-const STAGE_REASK = "Sorry — I didn't get that saved. About how many years have you been originating?";
-
 // There was no usable user message to answer (empty history, blank transcript, or the last
 // message wasn't the user's), so no model call is made.
 const DIDNT_CATCH = "I didn't catch that — could you say it again?";
@@ -228,6 +224,6 @@ const JOKE_TOPICS = Object.freeze([
 ]);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG, STAGE_REASK,
+  CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 };

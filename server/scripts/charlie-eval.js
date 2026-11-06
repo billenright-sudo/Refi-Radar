@@ -107,7 +107,7 @@ const lastUserTextOf = (kase) => {
 // The code-authored lines, by name: a reply that is exactly one of these is code's, not the model's.
 const FIXED_LINE_NAMES = [
   "CANT_VERIFY", "GUIDELINE_HANDOFF", "ADVICE_HANDOFF", "NO_LIVE_DATA", "NOTHING_CHANGED", "BOOKING_ASK", "EVENT_CHANGE_UNSUPPORTED",
-  "ONE_AT_A_TIME", "DIDNT_CATCH", "ERROR_TURN", "TOOK_TOO_LONG", "STAGE_REASK", "GOOGLE_NOT_CONNECTED", "GOOGLE_RECONNECT",
+  "ONE_AT_A_TIME", "DIDNT_CATCH", "ERROR_TURN", "TOOK_TOO_LONG", "GOOGLE_NOT_CONNECTED", "GOOGLE_RECONNECT",
   "GOOGLE_UNAVAILABLE", "NMLS_NEEDED", "NO_SEND", "NO_SENT_PAST", "LIVE_UNCLEAR",
 ];
 const fixedLineName = (reply) => {

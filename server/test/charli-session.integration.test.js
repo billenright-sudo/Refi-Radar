@@ -18,7 +18,6 @@ const cookieParser = require("cookie-parser");
 
 const db = require("../db");
 const { signToken } = require("../middleware/auth");
-const { CAREER_QUESTION } = require("../lib/assistant/coaching");
 const assistantRoutes = require("../routes/assistant");
 
 const LIVE = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
@@ -121,7 +120,7 @@ const me = async () => (await (await fetch(base + "/api/auth/me", { headers: { c
 
 // ── the session, step by step ────────────────────────────────────────────────
 
-test("seam: greeting, career-stage answer (Tier 1), a logged contact and its retry, a thank-you, a cancelled new client", async () => {
+test("seam: greeting, an asked-for career-stage change, a logged contact and its retry, a thank-you, a cancelled new client", async () => {
   const { session, spoken, state } = newSession({ careerStage: null });
 
   // 1. open(): the code-authored greeting, with sources, and no model call
@@ -131,7 +130,7 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal(greeting.role, "assistant");
   assert.equal(greeting.kind, "message");
   assert.ok(greeting.content.startsWith(assistantRoutes.openerFor({ localHour: 9, localDate: GREETING_DATE, name: "Ann" })), greeting.content);
-  assert.ok(greeting.content.endsWith(CAREER_QUESTION), "a user with no stage is asked the career question");
+  assert.doesNotMatch(greeting.content, /originating|how long/i, "round 2: a user with no stage is never asked the career question");
   assert.ok(greeting.sources.length > 0 && greeting.sources.every((s) => typeof s === "string" && s), "the greeting cites its tools");
   assert.deepEqual(spoken, [greeting.content]);
   assert.equal(model.calls.length, 0, "the greeting costs no model call");
@@ -139,14 +138,15 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal(stageInDb(), null);
   assert.deepEqual(usageRows().map((r) => [r.kind, r.input_tokens, r.output_tokens]), [["turn", 0, 0]], "metered, at zero tokens");
 
-  // 2. "about 20 years": Tier 1 packages the stage with no model call; nothing is saved until the yes
-  assert.deepEqual(await session.submit("about 20 years"), { ok: true, action: "turn" });
+  // 2. the user asks to set the stage: the model's setCareerStageTool call is handed up; nothing is saved until the yes
+  model.queue.push(useTool("setCareerStageTool", { years: 20 }));
+  assert.deepEqual(await session.submit("set my career stage, I've been originating about 20 years"), { ok: true, action: "turn" });
   const stageChange = state().pending;
   assert.deepEqual({ ...stageChange.sideEffect, confirmId: undefined }, { type: "setCareerStage", stage: "veteran", confirmId: undefined });
   assert.match(stageChange.sideEffect.confirmId, UUID);
   assert.equal(stageChange.readBack, "Just to confirm — set your career stage to Veteran, ten or more years?");
   assert.deepEqual(stageChange.details, [{ label: "Career stage", value: "Veteran (10+ years)" }]);
-  assert.equal(model.calls.length, 0, "Tier 1: zero model calls");
+  assert.equal(model.calls.length, 1, "one model call: its tool call");
   assert.equal(stageInDb(), null, "nothing written before the yes");
   assert.equal(spoken.at(-1), stageChange.readBack);
 
@@ -157,13 +157,13 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal((await me()).careerStage, "veteran");
   assert.equal(stageInDb(), "veteran");
   assert.deepEqual(net.confirms.map((c) => c.sent.sideEffect), [stageChange.sideEffect], "the sideEffect went back verbatim, confirmId included");
-  assert.equal(model.calls.length, 0, "the yes never reached /turn");
+  assert.equal(model.calls.length, 1, "the yes never reached /turn");
 
   // 3. "log a contact for the Chens": findClient, then logContactTool -> a pending change; the yes writes it once
   model.queue.push(useTool("findClient", { query: "chen" }), (p) => useTool("logContactTool", { clientId: toolResult(p).data.matches[0].id }, "toolu_2"));
   assert.deepEqual(await session.submit("log a contact for the Chens"), { ok: true, action: "turn" });
   const contact = state().pending;
-  assert.equal(model.calls.length, 2);
+  assert.equal(model.calls.length, 3);
   assert.deepEqual({ ...contact.sideEffect, confirmId: undefined }, { type: "logContact", clientId: chen, outcome: "reached", notes: "", confirmId: undefined });
   assert.match(contact.sideEffect.confirmId, UUID);
   assert.equal(contact.readBack, "Just to confirm — log a contact for Robert & Linda Chen?");
@@ -176,7 +176,7 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal(state().turns.at(-1).content, "Done — I logged a contact for Robert & Linda Chen.");
   assert.equal(state().pending, null);
   assert.notEqual(lastContactInDb(), STALE, "the contact was logged");
-  assert.equal(model.calls.length, 2);
+  assert.equal(model.calls.length, 3);
 
   // ... and the same sideEffect sent again (a retry) is a dedupe: nothing is written a second time
   db.prepare("UPDATE clients SET last_contact = ? WHERE id = ?").run(SENTINEL, chen);
@@ -228,7 +228,7 @@ test("seam: greeting, career-stage answer (Tier 1), a logged contact and its ret
   assert.equal(clientCount(), 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM clients WHERE name = 'Jane Doe'").get().n, 0);
   assert.equal(net.confirms.length, 2, "only the stage and the contact were ever confirmed");
-  assert.equal(model.calls.length, 5, "four of Charlie's and, after the Done line, the judge's (residual R2)");
+  assert.equal(model.calls.length, 6, "five of Charlie's and, after the Done line, the judge's (residual R2)");
   assert.equal(model.queue.length, 0, "every scripted answer was used");
 });
 

@@ -16,7 +16,6 @@ const db = require("../db");
 const refi = require("../lib/refi");
 const fu = require("../lib/assistant/followups");
 const { recordSnapshot } = require("../lib/rateHistory");
-const { CAREER_QUESTION } = require("../lib/assistant/coaching");
 const { openerFor } = require("../lib/assistant/openers");
 const assistantRoutes = require("../routes/assistant");
 const { buildBriefing, speakable, DROP_THRESHOLD, CLOSE_QUESTION, CLOSE_NO_CALLS, COUPLE_OF_CALLS } = require("../lib/assistant/briefing");
@@ -208,7 +207,7 @@ test("a quiet day (every move under 0.05) is one short market sentence", async (
   recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.54, rate_15yr_fixed: 5.93 }), "2026-10-28", "fred");
   const r = await brief(nellId);
   const opener = openerFor({ localHour: 8, localDate: TODAY, name: "Nell" });
-  assert.equal(r.reply, `${opener} The 30-year is at 6.52%, little changed since October 28th, as of October 29th. ${CAREER_QUESTION}`);
+  assert.equal(r.reply, `${opener} The 30-year is at 6.52%, little changed since October 28th, as of October 29th. ${CLOSE_NO_CALLS}`);
 });
 
 test("with no earlier observation there is no move, only the rate as of its observation date", async () => {
@@ -635,9 +634,12 @@ test("with two open follow-ups the briefing says it has a couple, asks only the 
   assert.deepStrictEqual(counts, { [ids.owen]: 1, [ids.lucy]: 1, [ids.grace]: 0 });
 });
 
-test("with no follow-up the close is the career question for a user with no stage, else the standing close", async () => {
+// Round 2: the stage is set on the Profile page, so the briefing never asks how long the user has been originating.
+test("with no follow-up the close is the standing one for every user, with a stage or without (no career question)", async () => {
   seedBook();
-  assert.ok((await brief(nellId)).reply.endsWith(CAREER_QUESTION));
+  const unstaged = (await brief(nellId)).reply;
+  assert.ok(unstaged.endsWith(CLOSE_NO_CALLS), unstaged);   // Nell has no clients of her own: nothing to offer to book
+  assert.doesNotMatch(unstaged, /originating|how long/i, unstaged);
   assert.ok((await brief(annId)).reply.endsWith(CLOSE_QUESTION));
   assert.equal(CLOSE_QUESTION, "Want a full sweep, an update on a client, or should I get those calls on your calendar?");
 });

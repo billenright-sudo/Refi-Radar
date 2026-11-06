@@ -1329,11 +1329,11 @@ test("stage change that fails is a notice; the stage stays, a pending read-back 
   assert.equal(server.calls.length, before);
 });
 
-test("a career-stage change confirmed by voice (the greeting's question) refreshes the shown stage too", async () => {
+test("a career-stage change confirmed by voice (the user asked Charlie to set it) refreshes the shown stage too", async () => {
   const { session, server } = setup({
     routes: {
       "POST /api/assistant/turn": queue(
-        turnReply("Quick question before we dive in — how long have you been originating?"),
+        turnReply("Good morning, Ann. Want a full sweep, an update on a client, or should I get those calls on your calendar?"),
         turnReply("So that's Veteran (10+ years) — shall I set that?", { sideEffect: STAGE_SIDE_EFFECT }),
       ),
       "POST /api/assistant/confirm": () => reply(200, { success: true, result: { stage: "veteran", label: "Veteran (10+ years)" }, reply: "Done — your career stage is set to Veteran, ten or more years." }),
@@ -1341,7 +1341,7 @@ test("a career-stage change confirmed by voice (the greeting's question) refresh
   });
   server.calls.length = 0;
   await session.open();
-  await session.submit("about 20 years");
+  await session.submit("set my career stage, I've been originating about 20 years");
   assert.deepEqual(session.getState().pending.sideEffect, STAGE_SIDE_EFFECT);
 
   const meCallsBefore = server.calls.filter((c) => c.url === "/api/auth/me").length;
