@@ -1,17 +1,15 @@
 "use strict";
-// Refi-math tests. The scoring logic lives in client/src/App.jsx (analyze + helpers).
-// We evaluate the real helper section out of that file so the tests track the shipped
+// Refi-math tests. The scoring logic lives in client/src/refiAnalysis.mjs (analyze + helpers).
+// We evaluate the real module source (exports stripped) so the tests track the shipped
 // code, and assert against hand-computed known answers. Run with: cd server && npm test
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 
-const SRC = fs.readFileSync(path.join(__dirname, "..", "..", "client", "src", "App.jsx"), "utf8");
-const start = SRC.indexOf("const calcPayment");
-const end = SRC.indexOf("const $c");
-assert.ok(start !== -1 && end > start, "could not locate the helper section in App.jsx");
-const helpers = SRC.slice(start, end);
+const SRC = fs.readFileSync(path.join(__dirname, "..", "..", "client", "src", "refiAnalysis.mjs"), "utf8");
+assert.ok(SRC.includes("export const calcPayment") && SRC.includes("export const analyze"), "could not locate the helpers in refiAnalysis.mjs");
+const helpers = SRC.replace(/^export /gm, "");
 // The helper consts live only inside the eval scope; return the two we test.
 const { analyze, calcPayment } = eval(helpers + "\n; ({ analyze, calcPayment });");
 
@@ -54,11 +52,12 @@ test("lower credit / higher LTV gets a relative LLPA add-on over top-tier", () =
   assert.equal(a.effRate, 6.711);
 });
 
-test("5/1 ARM uses the ARM rate with absolute LLPA (no top-tier series)", () => {
+test("5/1 ARM is priced as a move to a 30-year fixed (top-tier anchor + relative LLPA), as the server ARM-to-fixed lens is", () => {
   const a = analyze({ loanType: "5_1_arm", currentRate: 8.25, loanBalance: 560000, propertyValue: 720000, creditScore: 720 }, RATES);
-  assert.equal(a.baseLabel, "market");
-  assert.equal(a.rateAdj, 0.375);
-  assert.equal(a.effRate, 6.185);
+  assert.equal(a.armToFixed, true);
+  assert.equal(a.baseLabel, "top-tier");
+  assert.equal(a.rateAdj, 0.25, "720 FICO at 77.8% LTV: (1.25 - 0.25 embedded) / 4");
+  approx(a.effRate, 6.711, 1e-9, "top-tier 6.461 + 0.25");
   assert.equal(a.priority, "high");
 });
 

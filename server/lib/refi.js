@@ -204,7 +204,9 @@ function sweepClient(raw, rates, now = new Date()) {
 
 function runSweep(clients, rates, now = new Date()) {
   const rows = (clients || []).map((c) => sweepClient(c, rates, now));
-  const opportunities = rows.filter((r) => r.best);
+  // Ranked as the call list and Charlie rank them (priority, then dollar impact), the name breaking a tie; the Sweeps page shows this order.
+  const opportunities = rows.filter((r) => r.best).sort((a, b) =>
+    (PRIORITY_RANK[b.best.priority] - PRIORITY_RANK[a.best.priority]) || (impact(b.best) - impact(a.best)) || String(a.name).localeCompare(String(b.name)));
   const checkIns = rows.filter((r) => r.checkIn.due);
   const byLens = {};
   for (const r of rows) for (const o of r.opportunities) byLens[o.lens] = (byLens[o.lens] || 0) + 1;
