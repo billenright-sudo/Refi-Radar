@@ -7,7 +7,7 @@ import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
-import { emailChangedNotice } from "./profile/profile.mjs";
+import { emailChangedNotice, loadProfile, profilePrompt, nextProfilePrompt, stillNeededLine, PROFILE_WELCOME } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
@@ -494,6 +494,16 @@ const NoticeBanner = ({ notice, onClose }) => notice && (
     <button onClick={onClose} aria-label="Dismiss" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex", flexShrink: 0 }}>
       <Icon name="x" size={14} color={notice.bad ? C.red : C.green} />
     </button>
+  </div>
+);
+
+// Profile first (round 2, item 2): at the top of the Profile page when the sign-in found the profile incomplete. It names what is still
+// needed and goes as soon as nothing is; "Skip for now" goes Home for the rest of this page visit. DRAFT wording for Bill.
+const ProfilePrompt = ({ missing, onSkip }) => (
+  <div role="status" data-testid="profile-prompt" style={{ ...card, padding: "1.1rem", maxWidth: 720, marginBottom: "1.25rem" }}>
+    <div style={{ fontSize: 14, fontWeight: 600, color: C.text, lineHeight: 1.5 }}>{PROFILE_WELCOME}</div>
+    <div style={{ fontSize: 13, color: C.mutedHi, lineHeight: 1.5, marginTop: 4 }}>{stillNeededLine(missing)}</div>
+    <button onClick={onSkip} data-testid="profile-prompt-skip" style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, padding: 0, marginTop: 10 }}>Skip for now</button>
   </div>
 );
 
@@ -2484,6 +2494,8 @@ export default function App() {
   const [selectedLO, setSelectedLO] = useState(null);
   const [googleNotice, setGoogleNotice] = useState(null);   // the line for the Profile page after Google sent the browser back
   const [emailNotice, setEmailNotice] = useState(null);     // { text, bad } after the emailed confirm link sent the browser back
+  const [profileAsk, setProfileAsk] = useState(null);       // what the profile still lacks (the Profile page's banner), null when nothing is asked
+  const profileSkippedBy = useRef(null);                     // the user id that chose "Skip for now": no more asking this page visit
 
   // Google's consent screen sends the browser back to /?google=connected|denied|scope|error: open the Profile page (where the Google
   // connection is) with that line, once, and take the parameter out of the address so a reload does not repeat it.
@@ -2552,8 +2564,10 @@ export default function App() {
   }, [refreshBilling]);
 
   // After sign-in (or /me): read the billing status, then show the app or a gate. Back from Stripe: read it up to 10 times, a second
-  // apart, while the access is still closed (M5: the webhook may land a moment later than the broker does).
-  const enterApp = useCallback(async () => {
+  // apart, while the access is still closed (M5: the webhook may land a moment later than the broker does). Then, with the gate open,
+  // the profile once (round 2, item 2): anything missing lands on the Profile page under its banner instead of Home; a complete
+  // profile, a failed read or an earlier "Skip for now" (this page visit) leaves the landing as it was. `who` is the signed-in user.
+  const enterApp = useCallback(async (who) => {
     let st = await readBilling();
     if (billingReturn.current === "done" && st) {
       setFinishing(true);
@@ -2564,6 +2578,13 @@ export default function App() {
       setFinishing(false);
     }
     billingReturn.current = null;
+    const role = st?.role ?? who?.role;
+    let ask = null;
+    if (gateScreen(st?.access, role, st?.billing) === null && !(who && profileSkippedBy.current === who.id)) {
+      ask = profilePrompt(await loadProfile(fetch), role);
+    }
+    setProfileAsk(ask);
+    if (ask) setView("profile");
     setBillingState(st);
     setBannerShut(false);
     setAuthState("authenticated");
@@ -2607,7 +2628,7 @@ export default function App() {
       .then(async (res) => {
         if (res.status === 401) { setAuthState("unauthenticated"); return; }
         const data = await res.json();
-        if (data.user) { setUser(data.user); await enterApp(); }
+        if (data.user) { setUser(data.user); await enterApp(data.user); }
         else { setAuthState("unauthenticated"); }
       })
       .catch(() => setAuthState("unauthenticated"));
@@ -2623,9 +2644,9 @@ export default function App() {
 
   const handleLogin = (userData) => {
     setUser(userData);
-    setAuthState("loading");   // the loading screen stays up until the billing status is read
-    enterApp();
-    setView(DEFAULT_VIEW);
+    setAuthState("loading");   // the loading screen stays up until the billing status (and the profile) is read
+    enterApp(userData);
+    setView(DEFAULT_VIEW);     // set now; enterApp's later "profile" (an incomplete profile) comes after it
     setPanelOpen(false);
     setGoogleNotice(null);   // a Google result from before this sign-in is stale
     setEmailNotice(null);    // and so is the line about the emailed link: they have signed in
@@ -2655,6 +2676,7 @@ export default function App() {
     endKeptSession();
     setUser(null);
     setBillingState(null);
+    setProfileAsk(null);
     setAuthState("unauthenticated");
     setAuthView("login");
     setClients([]);
@@ -2665,6 +2687,19 @@ export default function App() {
   const handleUserChanged = useCallback((patch) => {
     setUser((u) => (u && Object.keys(patch).some((k) => u[k] !== patch[k]) ? { ...u, ...patch } : u));
   }, []);
+
+  // The Profile page took the profile (a read or a save): the banner follows what is still missing, and goes once nothing is.
+  const userRole = user?.role;
+  const handleProfileTaken = useCallback((profile) => {
+    setProfileAsk((ask) => nextProfilePrompt(ask, profile, userRole));
+  }, [userRole]);
+
+  // "Skip for now": Home, and no more asking for the rest of this page visit (in memory only).
+  const skipProfile = () => {
+    profileSkippedBy.current = user?.id ?? null;
+    setProfileAsk(null);
+    setView(DEFAULT_VIEW);
+  };
 
   const gate = authState === "authenticated" ? gateScreen(billingState?.access, billingState?.role ?? user?.role, billingState?.billing) : null;
   const appOpen = authState === "authenticated" && !gate;
@@ -2847,7 +2882,8 @@ export default function App() {
             {view === "home"          && <CharliView key={today} mode="home" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} onStale={renderAgain} />}
             {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
-            {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} />}
+            {view === "profile"       && profileAsk && <ProfilePrompt missing={profileAsk} onSkip={skipProfile} />}
+            {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} onProfile={handleProfileTaken} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}

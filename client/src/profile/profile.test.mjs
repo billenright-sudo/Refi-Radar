@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   validName, cleanName, validEmail, loadProfile, saveName, requestEmailChange, saveStage, saveNmls, emailChangedNotice,
   loadConnection, connectArive, disconnectArive, utcTextToDate,
-  BAD_NAME, TOO_MANY,
+  BAD_NAME, TOO_MANY, profileMissing, stillNeededLine, profilePrompt, nextProfilePrompt, PROFILE_WELCOME,
 } from "./profile.mjs";
 
 const reply = (status, body) => ({ status, body });
@@ -281,4 +281,51 @@ test("emailChangedNotice: ?emailChanged=1 is the success line and =0 the failure
   for (const search of ["", "?", "?emailChanged=", "?emailChanged=2", "?emailChanged=true", "?emailchanged=1", "?google=connected", null, undefined, 1]) {
     assert.equal(emailChangedNotice(search), null, JSON.stringify(search));
   }
+});
+
+// ── Round 2, items 1 and 2: profile first ──
+// What counts as a complete profile: the career stage and the user's own NMLS ID for everyone, and the company's NMLS ID for a
+// broker too. Google Calendar and ARIVE are optional. The missing items come back in this order, worded as the banner says them.
+const STAGE = "how long you've been originating";
+const OWN = "your NMLS ID";
+const COMPANY = "your company's NMLS ID";
+const COMPLETE = { ...PROFILE, careerStage: "veteran", nmlsId: "123456", orgNmlsId: "654321" };
+
+test("profileMissing: nothing for a complete profile; each missing item, in order; the company's ID only for a broker", () => {
+  assert.deepEqual(profileMissing(COMPLETE, "broker"), []);
+  assert.deepEqual(profileMissing(COMPLETE, "lo"), []);
+  assert.deepEqual(profileMissing({ ...COMPLETE, orgNmlsId: null }, "lo"), [], "a loan officer never needs the company's ID");
+  assert.deepEqual(profileMissing({ ...COMPLETE, orgNmlsId: null }, "broker"), [COMPANY]);
+  assert.deepEqual(profileMissing({ ...COMPLETE, careerStage: null }, "lo"), [STAGE]);
+  assert.deepEqual(profileMissing({ ...COMPLETE, nmlsId: null }, "lo"), [OWN]);
+  assert.deepEqual(profileMissing({ ...COMPLETE, careerStage: null, nmlsId: null, orgNmlsId: null }, "broker"), [STAGE, OWN, COMPANY]);
+  assert.deepEqual(profileMissing({ ...COMPLETE, careerStage: null, nmlsId: null, orgNmlsId: null }, "lo"), [STAGE, OWN]);
+  // blank text is not set; an unknown role is held to the loan officer's list
+  assert.deepEqual(profileMissing({ ...COMPLETE, careerStage: "", nmlsId: "  ", orgNmlsId: "" }, "broker"), [STAGE, OWN, COMPANY]);
+  assert.deepEqual(profileMissing({ ...COMPLETE, orgNmlsId: null }, undefined), []);
+  // the shape GET /api/profile answers with, with nothing set yet (careerStage, nmlsId and orgNmlsId are null)
+  assert.deepEqual(profileMissing({ ...PROFILE, careerStage: null, nmlsId: null, orgNmlsId: null, canEditOrg: true }, "broker"), [STAGE, OWN, COMPANY]);
+  // anything that is not a profile is treated as nothing set
+  assert.deepEqual(profileMissing(null, "broker"), [STAGE, OWN, COMPANY]);
+});
+
+test("stillNeededLine and the welcome line: the banner's words", () => {
+  assert.equal(PROFILE_WELCOME, "Welcome to Broker Radar — finish your profile so Charlie can coach you and sign your emails.");
+  assert.equal(stillNeededLine([STAGE, OWN, COMPANY]), "Still needed: how long you've been originating · your NMLS ID · your company's NMLS ID.");
+  assert.equal(stillNeededLine([OWN]), "Still needed: your NMLS ID.");
+});
+
+test("profilePrompt: the landing's read -> the missing items to prompt for, or null (a failed read lands on Home, as today)", () => {
+  assert.deepEqual(profilePrompt({ ok: true, data: { ...COMPLETE, nmlsId: null } }, "lo"), [OWN]);
+  assert.equal(profilePrompt({ ok: true, data: COMPLETE }, "broker"), null);
+  assert.equal(profilePrompt({ ok: false, error: "Couldn't load your profile. Try again." }, "broker"), null);
+  assert.equal(profilePrompt(null, "broker"), null);
+});
+
+test("nextProfilePrompt: follows what the Profile page reports; gone for good once the profile is complete; never starts one", () => {
+  const prompt = [STAGE, OWN, COMPANY];
+  assert.deepEqual(nextProfilePrompt(prompt, { ...COMPLETE, nmlsId: null, orgNmlsId: null }, "broker"), [OWN, COMPANY]);
+  assert.deepEqual(nextProfilePrompt([OWN, COMPANY], { ...COMPLETE, orgNmlsId: null }, "broker"), [COMPANY]);
+  assert.equal(nextProfilePrompt([COMPANY], COMPLETE, "broker"), null, "complete: the banner goes");
+  assert.equal(nextProfilePrompt(null, { ...COMPLETE, nmlsId: null }, "broker"), null, "no banner showing (or skipped): none appears");
 });

@@ -11,7 +11,8 @@ import ConnectionsCard from "./ConnectionsCard.jsx";
 // Props: user (from /api/auth/me), ui = { C, card, mono, Icon } (App's design tokens), onUserChanged(patch) (called with
 // { firstName, lastName, email, careerStage } whenever the profile is taken from the server, so App's copy of the user follows),
 // notice (optional: one line to show at the top when the page opens, e.g. where Google sent the browser back to;
-// onNoticeShown() is called once it has been taken, so App can forget it).
+// onNoticeShown() is called once it has been taken, so App can forget it), onProfile(profile) (optional: called with the whole
+// profile each time it is taken, so App's profile-first banner can follow what is still missing).
 
 const ROLES = { broker: "Broker", lo: "Loan officer" };
 
@@ -171,7 +172,7 @@ const StageSection = ({ profile, ui, onSave }) => {
 
 // ── the page ──
 
-export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeShown }) {
+export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeShown, onProfile }) {
   const { C, Icon } = ui;
   const [profile, setProfile] = useState(null);   // null: not loaded (yet) | what GET /api/profile answered, kept up to date by saves
   const [loadError, setLoadError] = useState(null);
@@ -185,6 +186,7 @@ export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeS
     profileRef.current = next;
     setProfile(next);
     if (onUserChanged) onUserChanged({ firstName: next.firstName, lastName: next.lastName, email: next.email, careerStage: next.careerStage });
+    if (onProfile) onProfile(next);
   };
 
   // One read. A failed re-read leaves what is shown as it was (only the first read that fails says so).

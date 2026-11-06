@@ -149,6 +149,47 @@ export function utcTextToDate(text) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+// ── profile first (round 2, items 1 and 2) ──
+// After a sign-in (and on boot with a session), with the billing gate open, App reads the profile once: anything missing opens the
+// Profile page instead of Home, under a banner that names what is still needed (DRAFT wording for Bill). A failed read lands on Home.
+
+export const PROFILE_WELCOME = "Welcome to Broker Radar — finish your profile so Charlie can coach you and sign your emails.";
+
+const isSet = (value) => typeof value === "string" && value.trim() !== "";
+
+// What a complete profile still lacks, in this order: the career stage and the user's own NMLS ID (everyone), then the company's NMLS
+// ID (a broker only). Google Calendar and ARIVE are optional. `profile` is what GET /api/profile answers with (careerStage, nmlsId and
+// orgNmlsId are null until set); `role` is the user's ("broker" | "lo"). -> string[] (empty when complete)
+export function profileMissing(profile, role) {
+  const p = isObject(profile) ? profile : {};
+  const missing = [];
+  if (!isSet(p.careerStage)) missing.push("how long you've been originating");
+  if (!isSet(p.nmlsId)) missing.push("your NMLS ID");
+  if (role === "broker" && !isSet(p.orgNmlsId)) missing.push("your company's NMLS ID");
+  return missing;
+}
+
+// The banner's second line.
+export function stillNeededLine(missing) {
+  return `Still needed: ${missing.join(" · ")}.`;
+}
+
+// The landing's one read (loadProfile's answer) -> the items to prompt for, or null: a complete profile, and a failed read, land on
+// Home as today.
+export function profilePrompt(res, role) {
+  if (!res || !res.ok) return null;
+  const missing = profileMissing(res.data, role);
+  return missing.length ? missing : null;
+}
+
+// The banner showing (`prompt`) after the Profile page reports `profile`: the items still missing, or null once it is complete. With
+// no banner showing (none was needed at landing, or it was skipped) none appears.
+export function nextProfilePrompt(prompt, profile, role) {
+  if (!prompt) return null;
+  const missing = profileMissing(profile, role);
+  return missing.length ? missing : null;
+}
+
 // ── where the emailed confirm link sends the browser ──
 
 // The line to show from the page's query string ("?emailChanged=1"); null when there is none (or it is not one of the two the
