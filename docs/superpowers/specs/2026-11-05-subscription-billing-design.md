@@ -197,3 +197,21 @@ Added in the final fix wave (2026-11-05), awaiting approval:
   "Remove {first} {last}? They'll be signed out right away and their clients move to you."
 - The answer an exempt brokerage gets if a card page is asked for anyway (the app shows it no card button): "This account has no
   charge."
+
+Added in round 2 (2026-11-05), awaiting approval:
+- The profile-first banner, at the top of the Profile page when a sign-in finds the profile incomplete (billing on or off):
+  "Welcome to Broker Radar — finish your profile so Charlie can coach you and sign your emails." then "Still needed: {items}."
+  ({items} joined with " · ", in this order: "how long you've been originating", "your NMLS ID", and for a broker "your company's
+  NMLS ID"), and the amber text button "Skip for now".
+- The gate for a broker whose free month has already been used (a tester month, or the month billing gave at start-up, that ended
+  with no card; 6.7): heading "Your free month has ended", the returning line "$99 a month, plus $49 for each additional user,
+  starting today, until you cancel.", the button "Add card", then "Download my clients (CSV)", Send feedback (when it has an inbox)
+  and "Sign out".
+- Charlie's instruction for a user with no career stage (not shown to customers; it shapes what Charlie says): "The user's career
+  stage isn't set (they can set it on their Profile page). Never assume or infer a stage, and never ask for it or how long
+  they've been originating unless they ask you to set it." then "Until it is set, coach in a balanced way, without assuming a
+  stage: friendly and brisk, a few words on a less common term, the next step, and a talk track only when it would help." The
+  greeting's "Quick question before we dive in — how long have you been originating?" and the re-ask "Sorry — I didn't get that
+  saved. About how many years have you been originating?" are gone.
+- The confirmation email (6.1.5) keeps its words; its dates are now on the broker's own day (the time zone their browser gave at
+  sign-up, else America/New_York), as "Nov 30, 2026".
