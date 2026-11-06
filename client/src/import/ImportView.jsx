@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useIsPhone } from "../useIsPhone.js";
 import { uploadFile, reviewAgain, confirmImport, withMapping, withStatus, outcomeText, bookText, summaryText, pageOf } from "./importer.mjs";
 
 // The Import page: a broker uploads a CSV or Excel export, looks at what it will do, then imports it. Four steps:
@@ -72,6 +73,7 @@ const Summary = ({ counts, ui: { C, mono } }) => (
 
 const UploadStep = ({ ui, busy, onFile }) => {
   const { C, card, Icon } = ui;
+  const isPhone = useIsPhone();
   const [dragging, setDragging] = useState(false);
   const input = useRef(null);
   const choose = () => { if (!busy) input.current?.click(); };
@@ -87,7 +89,7 @@ const UploadStep = ({ ui, busy, onFile }) => {
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); if (!busy) onFile(e.dataTransfer.files[0]); }}
-        style={{ border: `2px dashed ${dragging ? C.amber : C.border}`, borderRadius: 14, padding: "4rem 2rem", textAlign: "center", cursor: "pointer", background: dragging ? C.amberBg : C.surfaceHi, transition: "all 0.2s", marginBottom: "1.25rem" }}
+        style={{ border: `2px dashed ${dragging ? C.amber : C.border}`, borderRadius: 14, padding: "4rem 2rem", textAlign: "center", cursor: "pointer", background: dragging ? C.amberBg : C.surfaceHi, transition: "all 0.2s", marginBottom: "1.25rem", ...(isPhone ? { padding: "2.5rem 1rem" } : null) }}
       >
         <Icon name="upload" size={36} color={dragging ? C.amber : C.muted} />
         <div style={{ color: dragging ? C.amber : C.muted, fontSize: 16, fontWeight: 600, marginTop: 16, marginBottom: 8 }}>
@@ -142,11 +144,13 @@ const ColumnPicks = ({ review, busy, ui: { C, card }, onPick }) => {
 };
 
 // A "counts as funded" box per loan status found in the file; a ticked one says so. A row whose status is not ticked is skipped.
-const StatusPicks = ({ statuses, busy, ui: { C, card, mono }, onTick }) => (
+const StatusPicks = ({ statuses, busy, ui: { C, card, mono }, onTick }) => {
+  const isPhone = useIsPhone();
+  return (
   <section style={{ ...card, padding: "1.1rem", marginBottom: "1.25rem" }}>
     <Heading title="Loan status" hint="Only funded loans are imported. Tick the statuses that count as funded." C={C} />
     {statuses.map((s) => (
-      <label key={s.value} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0", fontSize: 13, color: C.text, cursor: busy ? "default" : "pointer" }}>
+      <label key={s.value} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0", fontSize: 13, color: C.text, cursor: busy ? "default" : "pointer", ...(isPhone ? { flexWrap: "wrap", gap: "4px 10px" } : null) }}>
         <input
           type="checkbox"
           data-testid={`import-status-${s.value}`}
@@ -160,7 +164,8 @@ const StatusPicks = ({ statuses, busy, ui: { C, card, mono }, onTick }) => (
       </label>
     ))}
   </section>
-);
+  );
+};
 
 // The rows, 50 a page: what the import will do with each (and the book it lands in), the name and the flags.
 const RowsTable = ({ results, page, onPage, ui: { C, card, mono } }) => {

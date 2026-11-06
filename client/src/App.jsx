@@ -4,6 +4,8 @@ import { returnNotice } from "./charli/google.mjs";
 import { endKeptSession } from "./charli/keep.mjs";
 import { localDateOf } from "./charli/session.mjs";
 import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
+import { gridCols } from "./layout.mjs";
+import { useIsPhone } from "./useIsPhone.js";
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
@@ -157,6 +159,8 @@ const C = {
   blue: "#60a5fa", purple: "#a78bfa",
 };
 
+// Phone-only style additions: the desktop style object is untouched, a phone adds to it.
+const ph = (isPhone, extra) => (isPhone ? extra : null);
 const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: "1.5rem" };
 const mono = { fontFamily: "'JetBrains Mono', monospace" };
 const inputStyle = { background: C.surfaceHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", color: C.text, fontFamily: "inherit", fontSize: 14, width: "100%", outline: "none", boxSizing: "border-box" };
@@ -225,6 +229,7 @@ const TreasurySparkline = ({ history }) => {
 };
 
 const TreasuryWidget = ({ treasury }) => {
+  const isPhone = useIsPhone();
   if (!treasury) return null;
   const { current, previous, history } = treasury;
   const delta = current && previous ? (current.value - previous.value) : null;
@@ -232,7 +237,7 @@ const TreasuryWidget = ({ treasury }) => {
   const deltaColor = isUp ? C.red : isDown ? C.green : C.muted;
   const deltaLabel = delta !== null ? `${isUp ? "▲" : "▼"} ${Math.abs(delta).toFixed(2)}` : "";
   return (
-    <div style={{ ...card, background: "#0d0a1f", borderColor: "#2a1f4a", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+    <div style={{ ...card, background: "#0d0a1f", borderColor: "#2a1f4a", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem", ...ph(isPhone, { flexWrap: "wrap", gap: "1rem" }) }}>
       <div>
         <div style={{ color: C.purple, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 6 }}>📈 10-Year Treasury Yield</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
@@ -241,7 +246,7 @@ const TreasuryWidget = ({ treasury }) => {
         </div>
         <div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>{current?.date} · Federal Reserve (FRED)</div>
       </div>
-      <div style={{ textAlign: "right" }}>
+      <div style={{ textAlign: isPhone ? "left" : "right" }}>
         <div style={{ color: C.muted, fontSize: 11, marginBottom: 8 }}>30-day trend</div>
         <TreasurySparkline history={history} />
         <div style={{ color: C.muted, fontSize: 11, marginTop: 6 }}>Mortgage rates follow the 10-yr</div>
@@ -254,6 +259,7 @@ const TreasuryWidget = ({ treasury }) => {
 // Notification Bell
 // ---------------------------------------------------------------------------
 const NotificationBell = () => {
+  const isPhone = useIsPhone();
   const [unreadCount, setUnreadCount] = useState(0);
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
@@ -335,7 +341,7 @@ const NotificationBell = () => {
         )}
       </button>
       {open && (
-        <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 360, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 1000 }}>
+        <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", width: isPhone ? "calc(100vw - 32px)" : 360, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 1000 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
             <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Notifications</span>
             {unreadCount > 0 && (
@@ -366,8 +372,8 @@ const NotificationBell = () => {
 // ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
-const RefiRadarLogo = () => (
-  <div style={{ marginBottom: "1.5rem" }}>
+const RefiRadarLogo = ({ compact }) => (
+  <div style={compact ? { width: 88, flexShrink: 0 } : { marginBottom: "1.5rem" }}>
     <svg width="204" height="96" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" style={{ display: "block", width: "100%" }}>
       <rect x="0" y="0" width="680" height="320" rx="12" fill="#15294f"/>
       <g transform="translate(340, 155)">
@@ -399,7 +405,7 @@ const RefiRadarLogo = () => (
   </div>
 );
 
-const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn, feedbackOn }) => {
+const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn, feedbackOn, isPhone, drawerOpen }) => {
   const { main: nav, broker: brokerNav, bottom: bottomNav } = navGroups(user?.role, { billing: billingOn });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
@@ -412,7 +418,11 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn, feedback
   const shortName = user ? (user.lastName ? `${user.firstName} ${user.lastName[0]}.` : user.firstName) : "";
 
   return (
-    <aside style={{ width: 220, minHeight: "100vh", background: C.bg, borderRight: `1px solid ${C.border}`, padding: "1.5rem 1rem", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+    <aside
+      aria-hidden={isPhone && !drawerOpen ? true : undefined}
+      data-testid="sidebar"
+      style={{ width: 220, minHeight: "100vh", background: C.bg, borderRight: `1px solid ${C.border}`, padding: "1.5rem 1rem", display: "flex", flexDirection: "column", flexShrink: 0,
+        ...ph(isPhone, { position: "fixed", top: 0, bottom: 0, left: drawerOpen ? 0 : -320, zIndex: 200, width: "min(80vw, 280px)", minHeight: 0, overflowY: "auto", visibility: drawerOpen ? "visible" : "hidden", transition: "left 0.2s ease, visibility 0.2s" }) }}>
       <RefiRadarLogo />
       {nav.map(({ id, label, icon }) => {
         const active = view === id || (view === "client-detail" && id === "clients") || (view === "edit" && id === "clients");
@@ -444,7 +454,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn, feedback
 
       <div style={{ marginTop: "auto" }}>
         {feedbackOpen && feedbackOn && (
-          <div style={{ position: "fixed", left: 236, bottom: 20, width: 340, maxWidth: "calc(100vw - 252px)", zIndex: 60 }}>
+          <div style={isPhone ? { position: "fixed", left: 16, bottom: 16, width: "calc(100vw - 32px)", zIndex: 60 } : { position: "fixed", left: 236, bottom: 20, width: 340, maxWidth: "calc(100vw - 252px)", zIndex: 60 }}>
             <FeedbackPanel page={view} onClose={() => setFeedbackOpen(false)} />
           </div>
         )}
@@ -510,8 +520,10 @@ const ProfilePrompt = ({ missing, onSkip }) => (
 // ---------------------------------------------------------------------------
 // Auth pages
 // ---------------------------------------------------------------------------
-const AuthCard = ({ children }) => (
-  <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
+const AuthCard = ({ children }) => {
+  const isPhone = useIsPhone();
+  return (
+  <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: isPhone ? "1rem" : "2rem" }}>
     <div style={{ width: "100%", maxWidth: 440 }}>
       <div style={{ marginBottom: "2rem", textAlign: "center" }}>
         <RefiRadarLogo />
@@ -521,7 +533,8 @@ const AuthCard = ({ children }) => (
       </div>
     </div>
   </div>
-);
+  );
+};
 
 const AuthField = ({ label, type = "text", value, onChange, placeholder, disabled, readOnly }) => (
   <div style={{ marginBottom: "1rem" }}>
@@ -561,9 +574,10 @@ const TermsTick = ({ checked, onChange, disabled }) => (
 // The Terms of Service or Privacy Policy, for /terms and /privacy: open to anyone, signed in or not, and only while billing is on
 // (legalPageFor; with billing off those paths are the normal app).
 const LegalPage = ({ doc, title }) => {
+  const isPhone = useIsPhone();
   const back = () => { if (window.history.length > 1) window.history.back(); else window.location.assign("/"); };
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", padding: "2rem" }}>
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", padding: isPhone ? "1rem" : "2rem" }}>
       <div style={{ width: "100%", maxWidth: 720 }}>
         <div style={{ marginBottom: "2rem", textAlign: "center" }}>
           <RefiRadarLogo />
@@ -644,6 +658,7 @@ const LoginPage =({ onLogin, goRegister, goForgot }) => {
 };
 
 const RegisterPage = ({ goLogin, enabled }) => {
+  const isPhone = useIsPhone();
   const extras = registerExtras(enabled);
   const [terms, setTerms] = useState(false);
   const [testerCode, setTesterCode] = useState("");
@@ -697,7 +712,7 @@ const RegisterPage = ({ goLogin, enabled }) => {
       )}
       {extras.showPrice && <PriceLine />}
       <form onSubmit={submit}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 1rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: gridCols(2, isPhone), gap: "0 1rem" }}>
           <AuthField label="First Name" value={form.firstName} onChange={e => set("firstName", e.target.value)} placeholder="Jane" disabled={loading} />
           <AuthField label="Last Name" value={form.lastName} onChange={e => set("lastName", e.target.value)} placeholder="Smith" disabled={loading} />
         </div>
@@ -1137,17 +1152,22 @@ const ResetPasswordPage = ({ token, onDone, goForgot }) => {
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
-const StatCard = ({ label, value, sub, accent }) => (
-  <div style={{ ...card, flex: 1 }}>
+const StatCard = ({ label, value, sub, accent }) => {
+  const isPhone = useIsPhone();
+  return (
+  <div style={{ ...card, flex: 1, ...ph(isPhone, { padding: "1rem", minWidth: 0 }) }}>
     <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
-    <div style={{ ...mono, fontSize: 28, fontWeight: 700, color: accent || C.text, marginBottom: 4 }}>{value}</div>
+    <div style={{ ...mono, fontSize: 28, fontWeight: 700, color: accent || C.text, marginBottom: 4, ...ph(isPhone, { fontSize: 20, overflowWrap: "anywhere" }) }}>{value}</div>
     {sub && <div style={{ color: C.muted, fontSize: 13 }}>{sub}</div>}
   </div>
-);
+  );
+};
 
-const OpportunityRow = ({ client, a, onClick }) => (
-  <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: "1rem", padding: "1rem 1.25rem", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surfaceHi, marginBottom: 8, cursor: "pointer" }}>
-    <div style={{ flex: 1 }}>
+const OpportunityRow = ({ client, a, onClick }) => {
+  const isPhone = useIsPhone();
+  return (
+  <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: "1rem", padding: "1rem 1.25rem", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surfaceHi, marginBottom: 8, cursor: "pointer", ...ph(isPhone, { flexWrap: "wrap", gap: "0.5rem 0.75rem", padding: "0.9rem 1rem" }) }}>
+    <div style={{ flex: 1, ...ph(isPhone, { flex: "1 1 100%", minWidth: 0 }) }}>
       <div style={{ fontWeight: 600, color: C.text, marginBottom: 2 }}>{client.name}</div>
       <div style={{ fontSize: 13, color: C.muted }}>{LOAN_LABELS[client.loanType]} · {$c(client.loanBalance)} balance</div>
     </div>
@@ -1158,7 +1178,8 @@ const OpportunityRow = ({ client, a, onClick }) => (
     <PriorityBadge priority={a.priority} good={a.good} />
     <div style={{ color: C.muted }}>›</div>
   </div>
-);
+  );
+};
 
 const OrgStatsCard = ({ billingOn }) => {
   const [stats, setStats] = useState(null);
@@ -1199,6 +1220,7 @@ const OrgStatsCard = ({ billingOn }) => {
 // Portfolio Equity Card (dashboard)
 // ---------------------------------------------------------------------------
 const PortfolioEquityCard = ({ clients, clientsLoading }) => {
+  const isPhone = useIsPhone();
   if (clientsLoading) return null;
   if (!clients || clients.length === 0) return null;
 
@@ -1218,14 +1240,14 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
 
   return (
     <div style={{ ...card, background: "#0a1628", borderColor: "#1e3a5f", marginBottom: "2rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", ...ph(isPhone, { flexWrap: "wrap", gap: 8 }) }}>
         <div style={{ color: C.blue, fontSize: 12, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase" }}>
           🏡 Portfolio Equity Snapshot · 3.5% Annual Appreciation
         </div>
         <div style={{ color: C.muted, fontSize: 12 }}>{clients.length} clients</div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "1.5rem", marginBottom: "1.25rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: gridCols(4, isPhone), gap: "1.5rem", marginBottom: "1.25rem", ...ph(isPhone, { gap: "1rem" }) }}>
         {[
           ["Total Equity Today",      $c(totalEquityNow),  C.blue,   "combined across portfolio"],
           ["Projected in 5 Years",    $c(totalEquity5yr),  C.purple, `+${$c(gain5yr)} projected gain`],
@@ -1253,7 +1275,7 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
             );
           })}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.muted, marginTop: 4 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.muted, marginTop: 4, ...ph(isPhone, { flexWrap: "wrap", gap: "4px 12px" }) }}>
           <span><span style={{ color: C.green }}>■</span> &lt;75% LTV (strong)</span>
           <span><span style={{ color: C.amber }}>■</span> 75–85% (watch)</span>
           <span><span style={{ color: C.red }}>■</span> &gt;85% (PMI / high risk)</span>
@@ -1264,6 +1286,7 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
 };
 
 const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn }) => {
+  const isPhone = useIsPhone();
   const topOpps = scored.filter(c => c.a?.good).slice(0, 5);
   const hour = new Date().getHours();
   const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
@@ -1271,7 +1294,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "2rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "2rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12, marginBottom: "1.25rem" }) }}>
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 700, color: C.text, marginBottom: 4 }}>{greeting}</h1>
           <div style={{ color: C.muted, fontSize: 14 }}>{new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</div>
@@ -1286,7 +1309,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
 
       <TreasuryWidget treasury={treasury} />
 
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
+      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem", ...ph(isPhone, { display: "grid", gridTemplateColumns: gridCols(4, true) }) }}>
         <StatCard label="Refi Opportunities" value={ratesLoading || clientsLoading ? "—" : refiReady.length} sub="clients ready today" accent={refiReady.length > 0 ? C.amber : C.muted} />
         <StatCard label="Potential Monthly Savings" value={ratesLoading || clientsLoading ? "—" : $c(totalSavings / 12)} sub="across all opportunities" accent={C.green} />
         <StatCard label="Total Portfolio" value={clientsLoading ? "—" : scored.length} sub="clients tracked" />
@@ -1301,7 +1324,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         const avgLtv        = scored.reduce((s, c) => s + equityAt(c, 0).ltvPct, 0) / scored.length;
         const ltvColor      = avgLtv > 85 ? C.red : avgLtv > 75 ? C.amber : C.green;
         return (
-          <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem" }}>
+          <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem", ...ph(isPhone, { display: "grid", gridTemplateColumns: gridCols(4, true) }) }}>
             <StatCard label="🏡 Portfolio Equity" value={$c(totalEquity)} sub="combined today · 3.5%/yr" accent={C.blue} />
             <StatCard label="📈 Equity in 5 Years" value={$c(equity5yr)} sub={`+${$c(equity5yr - totalEquity)} projected gain`} accent={C.purple} />
             <StatCard label="💰 Cash-Out Potential" value={$c(totalCashOut)} sub="available at 80% LTV" accent={C.green} />
@@ -1349,6 +1372,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
 // Client Row (clickable horizontal card — matches original "opportunity" style)
 // ---------------------------------------------------------------------------
 const ClientRow = ({ client: c, onClick }) => {
+  const isPhone = useIsPhone();
   const a = c.a;
   const stripe = a?.good ? (a.priority === "high" ? C.red : C.amber) : C.border;
   const hasSavings = a && a.monthlySavings > 0;
@@ -1367,9 +1391,10 @@ const ClientRow = ({ client: c, onClick }) => {
         borderLeft: `3px solid ${stripe}`,
         background: C.surfaceHi,
         cursor: "pointer",
+        ...ph(isPhone, { flexWrap: "wrap", gap: "0.5rem 0.75rem", padding: "0.9rem 1rem" }),
       }}
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 0, ...ph(isPhone, { flex: "1 1 100%" }) }}>
         <div style={{ fontWeight: 600, color: C.text, marginBottom: 2, fontSize: 15 }}>{c.name}</div>
         <div style={{ fontSize: 13, color: C.muted }}>
           {LOAN_LABELS[c.loanType]} · {$c(c.loanBalance)} balance · {$r(c.currentRate)}
@@ -1400,6 +1425,7 @@ const ClientRow = ({ client: c, onClick }) => {
 // Clients list (with search)
 // ---------------------------------------------------------------------------
 const Clients = ({ scored, setSelected, setView }) => {
+  const isPhone = useIsPhone();
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
 
@@ -1412,7 +1438,7 @@ const Clients = ({ scored, setSelected, setView }) => {
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text }}>All Clients</h1>
         <div style={{ display: "flex", gap: 8 }}>
           {[["all", "All"], ["refi", "Refi Ready"], ["watch", "Monitoring"]].map(([id, label]) => (
@@ -1463,6 +1489,7 @@ const Clients = ({ scored, setSelected, setView }) => {
 // Client Detail (with edit + delete)
 // ---------------------------------------------------------------------------
 const ClientDetail = ({ client, rates, setView, onDelete }) => {
+  const isPhone = useIsPhone();
   const a = analyze(client, rates);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -1487,14 +1514,14 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
         <Icon name="arrow" size={14} /> Back to Clients
       </button>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
-        <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>
+        <div style={ph(isPhone, { minWidth: 0, overflowWrap: "anywhere" })}>
           <h1 style={{ fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 4 }}>{client.name}</h1>
           {client.closeDate && (
             <div style={{ color: C.muted, fontSize: 14 }}>Closed {new Date(client.closeDate + "T12:00:00").toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</div>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", ...ph(isPhone, { flexWrap: "wrap" }) }}>
           {a && <PriorityBadge priority={a.priority} good={a.good} />}
           <button
             onClick={() => setView("edit")}
@@ -1507,7 +1534,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
               <Icon name="trash" size={14} color={C.red} /> Delete
             </button>
           ) : (
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", ...ph(isPhone, { flexWrap: "wrap" }) }}>
               <span style={{ color: C.muted, fontSize: 13 }}>Confirm?</span>
               <button onClick={handleDelete} disabled={deleting} style={{ background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: deleting ? 0.6 : 1 }}>{deleting ? "…" : "Yes, delete"}</button>
               <button onClick={() => setConfirmDelete(false)} style={{ ...btnGhost, padding: "8px 12px", fontSize: 13 }}>Cancel</button>
@@ -1516,11 +1543,11 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem", ...ph(isPhone, { flexDirection: "column" }) }}>
         {[["phone", "Phone", client.phone || "—"], ["mail", "Email", client.email || "—"], ["star", "Credit Score", client.creditScore || "—"]].map(([icon, label, val]) => (
           <div key={label} style={{ ...card, flex: 1, display: "flex", alignItems: "center", gap: 10 }}>
             <Icon name={icon} size={16} color={C.amber} />
-            <div>
+            <div style={ph(isPhone, { minWidth: 0, overflowWrap: "anywhere" })}>
               <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
               <div style={{ color: C.text, fontSize: 14, fontWeight: 600 }}>{val}</div>
             </div>
@@ -1530,7 +1557,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
 
       <div style={{ ...card, marginBottom: "1.5rem" }}>
         <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Current Loan Details</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: gridCols(3, isPhone), gap: "1rem" }}>
           {[
             ["Loan Type", LOAN_LABELS[client.loanType]],
             ["Current Rate", $r(client.currentRate)],
@@ -1552,7 +1579,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
           <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>
             {a.good ? "Refi Opportunity Analysis" : "Refi Analysis"}
           </h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1.25rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: gridCols(3, isPhone), gap: "1.25rem" }}>
             {[
               ["Est. Client Rate",    $r(a.effRate),                     C.blue],
               ["Rate Savings",        `${a.rateDelta.toFixed(2)}%`,      a.rateDelta >= 0.5 ? C.green : C.muted],
@@ -1592,7 +1619,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
 
         return (
           <div style={{ ...card, marginTop: "1.5rem", background: "#0a1628", borderColor: "#1e3a5f" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", ...ph(isPhone, { flexWrap: "wrap", gap: 4 }) }}>
               <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                 🏡 Equity Projection
               </h3>
@@ -1601,7 +1628,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
 
             {/* Current equity bar */}
             <div style={{ marginBottom: "1.5rem" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, ...ph(isPhone, { flexWrap: "wrap", gap: 8 }) }}>
                 <div>
                   <span style={{ ...mono, fontSize: 28, fontWeight: 700, color: C.blue }}>{$c(now.equity)}</span>
                   <span style={{ color: C.muted, fontSize: 14, marginLeft: 8 }}>current equity ({now.equityPct.toFixed(1)}%)</span>
@@ -1621,7 +1648,8 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
             </div>
 
             {/* Projection table */}
-            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "1.25rem" }}>
+            <div style={ph(isPhone, { overflowX: "auto" })}>
+            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "1.25rem", ...ph(isPhone, { minWidth: 520 }) }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${C.border}` }}>
                   {["", "Property Value", "Loan Balance", "Equity", "LTV", "Cash-Out @ 80%"].map(h => (
@@ -1645,6 +1673,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
                 })}
               </tbody>
             </table>
+            </div>
 
             {/* PMI milestone */}
             {pmiMonths !== null && (
@@ -1706,9 +1735,11 @@ const ClientCalls = ({ clientId }) => {
 // ---------------------------------------------------------------------------
 // Rate Watch
 // ---------------------------------------------------------------------------
-const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, treasury }) => (
+const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, treasury }) => {
+  const isPhone = useIsPhone();
+  return (
   <div style={{ animation: "fadeIn 0.35s ease", maxWidth: 640 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text }}>Rate Watch</h1>
       <button onClick={fetchRates} disabled={ratesLoading} style={{ ...btnPrimary, display: "flex", alignItems: "center", gap: 8, opacity: ratesLoading ? 0.6 : 1 }}>
         <Icon name="refresh" size={14} color="#000" />
@@ -1723,7 +1754,7 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
     )}
     {rates && (
       <div style={{ ...card, background: C.amberBg, borderColor: "#3a2800" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1rem", ...ph(isPhone, { flexWrap: "wrap", gap: 4 }) }}>
           <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
             {rates.source?.startsWith("Estimated") ? "Estimated Rates" : "Daily Mortgage Rates"}
           </span>
@@ -1739,7 +1770,8 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
       </div>
     )}
   </div>
-);
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Shared client form (Add + Edit)
@@ -1762,6 +1794,7 @@ function clientToForm(c) {
 }
 
 const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
+  const isPhone = useIsPhone();
   const [form, setForm] = useState(initial || EMPTY_FORM);
   const [errors, setErrors] = useState({});
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1793,7 +1826,7 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
     <div style={{ animation: "fadeIn 0.35s ease", maxWidth: 620 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: "1.5rem" }}>{title}</h1>
       <div style={{ ...card }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.25rem", marginBottom: "1.25rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: gridCols(2, isPhone), gap: "1.25rem", marginBottom: "1.25rem" }}>
           {field("name", "Full Name", "John & Jane Smith")}
           {field("email", "Email", "jsmith@email.com", "email")}
           {field("phone", "Phone", "(555) 000-0000", "tel")}
@@ -1931,6 +1964,7 @@ const EditClient = ({ client, setClients, setSelected, setView }) => {
 // My Team view (broker only)
 // ---------------------------------------------------------------------------
 const MyTeam = ({ setView, setSelectedLO, billingOn }) => {
+  const isPhone = useIsPhone();
   const [los, setLos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showInvite, setShowInvite] = useState(false);
@@ -1994,7 +2028,7 @@ const MyTeam = ({ setView, setSelectedLO, billingOn }) => {
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text }}>My Team</h1>
         <button onClick={() => { setShowInvite(p => !p); setInviteSuccess(""); setInviteError(""); }} style={{ ...btnPrimary, display: "flex", alignItems: "center", gap: 8 }}>
           <Icon name="plus" size={14} color="#000" /> Invite Loan Officer
@@ -2015,7 +2049,7 @@ const MyTeam = ({ setView, setSelectedLO, billingOn }) => {
             </div>
           )}
           <form onSubmit={sendInvite}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
+            <div style={{ display: "grid", gridTemplateColumns: gridCols(3, isPhone), gap: "1rem", marginBottom: "1rem" }}>
               <div>
                 <label style={{ display: "block", fontSize: 12, color: C.muted, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>First Name</label>
                 <input value={inviteForm.firstName} onChange={e => setF("firstName", e.target.value)} style={inputStyle} placeholder="Jane" disabled={inviting} />
@@ -2044,13 +2078,13 @@ const MyTeam = ({ setView, setSelectedLO, billingOn }) => {
           {removeError}
         </div>
       )}
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <div style={{ ...card, padding: 0, overflow: "hidden", ...ph(isPhone, { overflowX: "auto" }) }}>
         {loading ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.muted }}>Loading team…</div>
         ) : los.length === 0 ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.muted }}>No loan officers yet. Invite your first LO above.</div>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", ...ph(isPhone, { minWidth: 620 }) }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${C.border}` }}>
                 {["Name", "Email", "Clients", "Status", "Action"].map(h => (
@@ -2100,6 +2134,7 @@ const MyTeam = ({ setView, setSelectedLO, billingOn }) => {
 // LO Portal view (broker only)
 // ---------------------------------------------------------------------------
 const LOPortal = ({ lo, rates, setView }) => {
+  const isPhone = useIsPhone();
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [alertedClients, setAlertedClients] = useState({});
@@ -2148,13 +2183,13 @@ const LOPortal = ({ lo, rates, setView }) => {
         <div style={{ color: C.muted, fontSize: 14 }}>{lo.clientCount ?? clients.length} clients</div>
       </div>
 
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <div style={{ ...card, padding: 0, overflow: "hidden", ...ph(isPhone, { overflowX: "auto" }) }}>
         {loading ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.muted }}>Loading clients…</div>
         ) : scored.length === 0 ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.muted }}>This LO has no clients yet.</div>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", ...ph(isPhone, { minWidth: 760 }) }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${C.border}` }}>
                 {["Client", "Loan Type", "Current Rate", "Monthly Savings", "Status", "Action"].map(h => (
@@ -2220,6 +2255,7 @@ const fmtHeadline = (o) =>
   o.unit === "%" ? `${(+o.headline).toFixed(2)}%` : (o.unit === "$/mo" ? `${$c(o.headline)}/mo` : $c(o.headline));
 
 const SweepsView = ({ rates, clients, setSelected, setView }) => {
+  const isPhone = useIsPhone();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -2245,7 +2281,7 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
 
   return (
     <div style={{ animation: "fadeIn 0.3s ease", maxWidth: 960 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Sweeps</h1>
           <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Scans your whole book for refinance, cash-out, ARM, and term opportunities — plus 6-month check-ins.</div>
@@ -2283,9 +2319,9 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
               {data.opportunities.map((r) => {
                 const o = r.best; const m = LENS_META[o.lens]; const p = PRI_BADGE[o.priority];
                 return (
-                  <div key={r.clientId} onClick={() => openClient(r.clientId)} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${o.priority === "high" ? "#3a5a8a" : C.border}`, borderRadius: 11, padding: "13px 16px", cursor: "pointer" }}>
+                  <div key={r.clientId} onClick={() => openClient(r.clientId)} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${o.priority === "high" ? "#3a5a8a" : C.border}`, borderRadius: 11, padding: "13px 16px", cursor: "pointer", ...ph(isPhone, { flexWrap: "wrap", gap: "8px 10px", padding: "12px" }) }}>
                     <span style={{ background: m.bg, color: m.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{m.label}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ flex: 1, minWidth: 0, ...ph(isPhone, { flex: "1 1 100%", order: 1 }) }}>
                       <div style={{ fontSize: 14, fontWeight: 600 }}>{r.name}{r.opportunities.length > 1 && <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>  +{r.opportunities.length - 1} more</span>}</div>
                       <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>{o.detail}</div>
                     </div>
@@ -2303,8 +2339,8 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {data.checkIns.map((r) => (
-                <div key={r.clientId} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 11, padding: "12px 16px" }}>
-                  <div style={{ flex: 1 }}>
+                <div key={r.clientId} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 11, padding: "12px 16px", ...ph(isPhone, { flexWrap: "wrap", gap: 10 }) }}>
+                  <div style={{ flex: 1, ...ph(isPhone, { minWidth: 0 }) }}>
                     <div style={{ fontSize: 14, fontWeight: 600, cursor: "pointer" }} onClick={() => openClient(r.clientId)}>{r.name}</div>
                     <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Last touch ~{r.checkIn.monthsSince} months ago</div>
                   </div>
@@ -2373,6 +2409,7 @@ const FeedbackPanel = ({ page, onClose }) => {
 };
 
 const BillingGate = ({ screen, onSignOut, onRecheck, feedbackOn }) => {
+  const isPhone = useIsPhone();
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2408,7 +2445,7 @@ const BillingGate = ({ screen, onSignOut, onRecheck, feedbackOn }) => {
         <div style={para}>{SPEC_LINE}</div>
         {errorBox(error)}
         <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Add card and start trial</button>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>{exportLink}{feedbackButton}{signOut}</div>
         {feedbackPanel}
       </>)}
       {screen === "free_ended" && (<>
@@ -2416,7 +2453,7 @@ const BillingGate = ({ screen, onSignOut, onRecheck, feedbackOn }) => {
         <div style={para}>{RETURNING_LINE}</div>
         {errorBox(error)}
         <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Add card</button>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>{exportLink}{feedbackButton}{signOut}</div>
         {feedbackPanel}
       </>)}
       {screen === "ended" && (<>
@@ -2424,7 +2461,7 @@ const BillingGate = ({ screen, onSignOut, onRecheck, feedbackOn }) => {
         <div style={para}>{RETURNING_LINE}</div>
         {errorBox(error)}
         <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Restart subscription</button>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>{exportLink}{feedbackButton}{signOut}</div>
         {feedbackPanel}
       </>)}
       {screen === "lo_locked" && (<>
@@ -2465,6 +2502,17 @@ const BillingView = ({ billing, onRefresh }) => {
 };
 
 export default function App() {
+  const isPhone = useIsPhone();
+  const [navOpen, setNavOpen] = useState(false);   // phone only: the Sidebar as a drawer
+  useEffect(() => {
+    if (!isPhone) setNavOpen(false);
+  }, [isPhone]);
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setNavOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
   const [billingPublicOn, setBillingPublicOn] = useState(false);   // GET /api/billing/public, read once at boot; a failure means off
@@ -2890,13 +2938,20 @@ export default function App() {
       <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
       <NoticeBanner notice={billingBanner} onClose={() => setBannerShut(true)} />
       <div style={{ display: "flex", minHeight: "100vh" }}>
-        <Sidebar view={view} setView={setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} billingOn={user?.role === "broker" && billingOn} feedbackOn={feedbackOn} />
+        {isPhone && navOpen && <div data-testid="nav-backdrop" onClick={() => setNavOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 190 }} />}
+        <Sidebar isPhone={isPhone} drawerOpen={navOpen} view={view} setView={isPhone ? (v) => { setView(v); setNavOpen(false); } : setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} billingOn={user?.role === "broker" && billingOn} feedbackOn={feedbackOn} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {/* Header bar */}
-          <header style={{ height: 52, background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 2rem", flexShrink: 0 }}>
+          <header style={{ height: 52, background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 2rem", flexShrink: 0, ...ph(isPhone, { justifyContent: "space-between", padding: "0 12px 0 4px", gap: 8 }) }}>
+            {isPhone && (
+              <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+                <button onClick={() => setNavOpen(true)} aria-label="Open menu" aria-expanded={navOpen} data-testid="nav-menu" style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: C.text, fontSize: 24, lineHeight: 1, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>☰</button>
+                <RefiRadarLogo compact />
+              </div>
+            )}
             <NotificationBell />
           </header>
-          <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden" }}>
+          <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden", ...ph(isPhone, { padding: "1.25rem 16px 5.5rem", minWidth: 0 }) }}>
             {view === "home"          && <CharliView key={today} mode="home" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} onStale={renderAgain} />}
             {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}

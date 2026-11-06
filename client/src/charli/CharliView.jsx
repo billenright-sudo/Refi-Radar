@@ -4,13 +4,14 @@ import { keptSession } from "./keep.mjs";
 import { createReplay, shouldClear } from "./replay.mjs";
 import { createAudio, transcribe } from "./audio.js";
 import { stripItems } from "./strip.mjs";
+import { useIsPhone } from "../useIsPhone.js";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
 //
 // Props: rates (today's rates, from App), user (from /api/auth/me), ui = { C, card, mono, Icon } (App's design tokens),
 //   mode      "home" (default): Charlie's page, the main page. The briefing written out in the centre, a large Talk button, Brief me,
-//             the strip of today's facts under it (hidden on a narrow screen), then the rest of the conversation.
+//             the strip of today's facts under it (wraps on a phone), then the rest of the conversation.
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
 //   onNavigate(viewId)  home: a strip item was tapped (App opens that page)
 //   onClose()           panel: the close button or Escape (App takes the drawer away)
@@ -49,7 +50,7 @@ const Sources = ({ turn, ui: { C, mono }, style }) => (
   )
 );
 
-const Turn = ({ turn, ui }) => {
+const Turn = ({ turn, ui, isPhone }) => {
   const { C } = ui;
   if (turn.kind === "notice") {
     return <div style={{ color: C.muted, fontSize: 12.5, fontStyle: "italic", padding: "2px 6px" }}>{turn.content}</div>;
@@ -66,7 +67,7 @@ const Turn = ({ turn, ui }) => {
       <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, letterSpacing: "0.4px", textTransform: "uppercase", margin: "0 6px 3px" }}>
         {mine ? "You" : "Charlie"}
       </div>
-      <div data-testid={mine ? "charli-user-turn" : failed ? "charli-error-turn" : "charli-turn"} style={{ ...bubble, borderRadius: 12, padding: "10px 14px", fontSize: 14, lineHeight: 1.5, maxWidth: "88%", whiteSpace: "pre-wrap" }}>
+      <div data-testid={mine ? "charli-user-turn" : failed ? "charli-error-turn" : "charli-turn"} style={{ ...bubble, borderRadius: 12, padding: "10px 14px", fontSize: 14, lineHeight: 1.5, maxWidth: "88%", whiteSpace: "pre-wrap", ...(isPhone ? { overflowWrap: "anywhere" } : null) }}>
         {turn.content}
         {!mine && <Sources turn={turn} ui={ui} style={{ marginTop: 8 }} />}
       </div>
@@ -134,6 +135,7 @@ const Strip = ({ items, onOpen, ui: { C, mono } }) => items.length > 0 && (
 export default function CharliView({ rates, user, ui, mode = "home", onNavigate, onClose, onStale }) {
   const { C, card, mono, Icon } = ui;
   const panel = mode === "panel";
+  const isPhone = useIsPhone();
 
   const [paused, setPaused] = useState(false);
   const [mic, setMic] = useState("off");   // off | starting | live | denied | unavailable | error ("off" until Talk is tapped)
@@ -328,7 +330,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
 
   const listening = mic === "live" && !paused;
   const talkLabel = listening ? "Stop listening" : mic === "starting" && !paused ? "Starting…" : "Talk";
-  const talkSize = panel ? {} : { fontSize: 18, padding: "16px 40px", borderRadius: 14, gap: 10 };
+  const talkSize = panel ? {} : { fontSize: 18, padding: "16px 40px", borderRadius: 14, gap: 10, ...(isPhone ? { padding: "14px 28px" } : null) };
   const talkStyle = listening
     ? { ...ghost, ...talkSize, background: C.greenBg, color: C.green, border: `1px solid ${C.green}` }
     : { ...primary, ...talkSize };
@@ -338,7 +340,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     </button>
   );
   const briefButton = snap.briefing && (
-    <button data-testid="charli-brief" type="button" disabled={paused} onClick={briefMe} style={{ ...ghost, ...(panel ? {} : { fontSize: 15, padding: "14px 26px", borderRadius: 14 }), opacity: paused ? 0.5 : 1, cursor: paused ? "default" : "pointer" }}>
+    <button data-testid="charli-brief" type="button" disabled={paused} onClick={briefMe} style={{ ...ghost, ...(panel ? {} : { fontSize: 15, padding: "14px 26px", borderRadius: 14, ...(isPhone ? { padding: "14px 20px" } : null) }), opacity: paused ? 0.5 : 1, cursor: paused ? "default" : "pointer" }}>
       Brief me
     </button>
   );
@@ -381,7 +383,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
       {snap.turns.length === 0 && (
         <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
       )}
-      {turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} />)}
+      {turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} isPhone={isPhone} />)}
     </div>
   );
 
@@ -436,7 +438,6 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     <style>{`
       @keyframes charliPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(1.5); } }
       .charli-strip { display: flex; flex-wrap: wrap; gap: 10px; }
-      @media (max-width: 639px) { .charli-strip { display: none; } }
     `}</style>
   );
 
@@ -481,8 +482,8 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     <div style={{ animation: "fadeIn 0.3s ease", maxWidth: 820, margin: "0 auto" }}>
       {styles}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: "1.25rem" }}>
-        <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: "1.25rem", ...(isPhone ? { flexWrap: "wrap", gap: 12 } : null) }}>
+        <div style={isPhone ? { flex: "1 1 220px", minWidth: 0 } : undefined}>
           <h1 style={{ fontSize: 22, fontWeight: 700, display: "flex", alignItems: "center", gap: 10 }}>
             <Icon name="mic" size={20} color={C.amber} />Charlie
           </h1>
@@ -496,10 +497,10 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
       {statusRow}
       {banners}
 
-      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1.75rem 1.75rem 1.5rem", textAlign: "center" }}>
+      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1.75rem 1.75rem 1.5rem", textAlign: "center", ...(isPhone ? { padding: "1.1rem 1rem" } : null) }}>
         {briefingTurn ? (
           <>
-            <div style={{ fontSize: 17, lineHeight: 1.65, textAlign: "left", whiteSpace: "pre-wrap" }}>{briefingTurn.content}</div>
+            <div style={{ fontSize: 17, lineHeight: 1.65, textAlign: "left", whiteSpace: "pre-wrap", ...(isPhone ? { fontSize: 16, overflowWrap: "anywhere" } : null) }}>{briefingTurn.content}</div>
             <Sources turn={briefingTurn} ui={ui} style={{ marginTop: 12, justifyContent: "flex-start" }} />
           </>
         ) : snap.turns.length === 0 ? (
