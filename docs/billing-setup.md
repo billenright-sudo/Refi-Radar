@@ -232,9 +232,10 @@ Use addresses you control. Test cards take any future expiry date, any CVC and a
 
 1. **Sign up and add a card.** At http://localhost:5173, sign up a new brokerage, tick the terms, choose **Start your free trial**,
    then **Add card and start trial**. On Stripe's page, use card `4242 4242 4242 4242`.
-   **Check:** you land back on the app's Home page. In Stripe (test mode), **Customers** shows the brokerage with a trialing
-   subscription, quantity 1, $99 a month, first charge in 14 days. The app's Billing page says the same, and our confirmation
-   email arrives with the wording you approved.
+   **Check:** you land back in the app on the **Profile** page, under the banner "Welcome to Broker Radar — finish your profile so
+   Charlie can coach you and sign your emails." with "Still needed: …" (a new brokerage hasn't filled in its profile yet). In
+   Stripe (test mode), **Customers** shows the brokerage with a trialing subscription, quantity 1, $99 a month, first charge in 14
+   days. The app's Billing page says the same, and our confirmation email arrives with the wording you approved.
 2. **Add a user.** Invite a loan officer and accept the invitation.
    **Check:** in Stripe the subscription's quantity is now 2, and the app's Billing page shows $99 + 1 additional user × $49 = $148
    a month.
@@ -242,8 +243,10 @@ Use addresses you control. Test cards take any future expiry date, any CVC and a
    paying for them"; answer OK.
    **Check:** in Stripe the subscription's quantity is back to 1, and the app's Billing page shows "Brokerage $99 a month".
 4. **The tester code.** Sign up a second brokerage with the tester code `test-month`, and choose **Start testing** (no card).
-   **Check:** you are in the app at once. In Stripe, the second brokerage has a trialing subscription with no card, ending in 30
-   days. The app's Billing page shows that end date and "From … we'll charge $99 a month until you cancel."
+   **Check:** you are in the app at once, on the **Profile** page under the same welcome banner. Choose **Skip for now**: you go to
+   Home, and the app doesn't send you back to Profile until you reload the page. In Stripe, the second brokerage has a trialing
+   subscription with no card, ending in 30 days. The app's Billing page shows that end date and "From … we'll charge $99 a month
+   until you cancel."
 5. **A tester adds a card.** In the second brokerage, go to Billing → **Manage billing**, and add card `4242 4242 4242 4242`. Then,
    in Stripe, open that brokerage's subscription and choose **end trial now**.
    **Check:** Stripe shows a paid invoice for $99 for that brokerage, and the app's Billing page now says "Next charge on …".
@@ -280,7 +283,8 @@ node index.js
 
    **Check:**
    - Window 2 shows `[billing] on`.
-   - Each of the two brokerages first sees "We've updated our terms"; after **I agree** it is in the app.
+   - Each of the two brokerages first sees "We've updated our terms"; after **I agree** it is in the app, on the Profile page
+     under the welcome banner (neither has filled in its profile yet).
    - The exempt brokerage: no banner, no **Add card** anywhere, and its Billing page says "No charge for this account."
    - The other brokerage: its Billing page says "Free test month until …" (30 days from now) and "From … we'll charge $99 a month
      until you cancel.", and Stripe has nothing for it yet.
@@ -425,7 +429,7 @@ aren't secrets. If anything that looks like a key shows up anyway (it would star
 close the window, don't copy anything from it, and tell your assistant.
 
 ```powershell
-$show = @("STRIPE_PRICE_ID","BILLING_TESTER_CODE","BILLING_TESTER_MAX_USES","BILLING_TESTER_EXPIRES","BILLING_EXEMPT_EMAILS","FEEDBACK_TO","APP_URL","EMAIL_USER"); (gcloud run services describe refi-radar --region us-central1 --project refi-radar-496318 --format=json | Out-String | ConvertFrom-Json).spec.template.spec.containers[0].env | ForEach-Object { if ($show -contains $_.name) { "$($_.name) = $($_.value)" } elseif ($_.valueFrom) { "$($_.name) (from Secret Manager)" } else { $_.name } }
+$show = @("STRIPE_PRICE_ID","BILLING_TESTER_CODE","BILLING_TESTER_MAX_USES","BILLING_TESTER_EXPIRES","BILLING_EXEMPT_EMAILS","FEEDBACK_TO","APP_URL","EMAIL_USER"); (gcloud run services describe refi-radar --region us-central1 --project refi-radar-496318 --format=json | Out-String | ConvertFrom-Json).spec.template.spec.containers[0].env | ForEach-Object { if ($_.valueFrom) { "$($_.name) (from Secret Manager)" } elseif ($show -contains $_.name) { "$($_.name) = $($_.value)" } else { $_.name } }
 ```
 
 **Check:**
@@ -433,7 +437,8 @@ $show = @("STRIPE_PRICE_ID","BILLING_TESTER_CODE","BILLING_TESTER_MAX_USES","BIL
   `BILLING_TESTER_CODE`, `BILLING_TESTER_MAX_USES`, `BILLING_TESTER_EXPIRES`, `BILLING_EXEMPT_EMAILS`, `FEEDBACK_TO`, `APP_URL`
   and `EMAIL_USER` (the app's mailbox address).
 - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (and the app's other secrets, such as `EMAIL_PASS`) show as
-  `NAME (from Secret Manager)`: a name, never the secret itself.
+  `NAME (from Secret Manager)`: a name, never the secret itself. Any setting kept in Secret Manager shows this way, even one of
+  the eight above.
 - Every other line is a setting's name on its own, with no value. That is expected.
 - The tester code is shown as typed. It isn't a key, but keep it to the testers you choose.
 
