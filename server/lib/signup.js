@@ -45,8 +45,10 @@ function signupFor(db, token, nowMs) {
 // With billing on (`billingOn`, and the billing `config` for the tester code's limits) the organization starts with billing_status
 // 'none' (no card yet). A tester request also gets the free test month and is counted against the code, but only if the code still
 // has a place (testerSlotOpen, asked again inside this transaction: several people can ask with the code while only one place is
-// left, spec §6.1.4, H10); otherwise it is a normal sign-up and is asked for a card. With billing off the
-// billing columns are left as they were before billing (billing_status NULL).
+// left, spec §6.1.4, H10); otherwise it is a normal sign-up and is asked for a card. An address on the exempt list
+// (config.exemptEmails) makes the organization exempt at once (round 2, item 7: not only from the next start-up), with no tester
+// month, so it uses up no place on the code. With billing off the billing columns are left as they were before billing
+// (billing_status NULL).
 function completeSignup(db, token, nowMs, { billingOn = false, config = null } = {}) {
   return db.transaction(() => {
     const req = signupFor(db, token, nowMs);
@@ -54,9 +56,10 @@ function completeSignup(db, token, nowMs, { billingOn = false, config = null } =
     const orgId = Number(db.prepare("INSERT INTO organizations (name, plan, trial_ends) VALUES (?, 'trial', ?)")
       .run(req.org_name, new Date(nowMs + TRIAL_MS).toISOString()).lastInsertRowid);
     if (billingOn) {
-      const tester = req.tester === 1 && testerSlotOpen(db, config, nowMs);
-      db.prepare("UPDATE organizations SET billing_status = 'none', billing_tester_until = ?, billing_via_tester_code = ? WHERE id = ?")
-        .run(tester ? nowMs + TESTER_DAYS * DAY_MS : null, tester ? 1 : 0, orgId);
+      const exempt = ((config && config.exemptEmails) || []).some((e) => String(e).trim().toLowerCase() === req.email);
+      const tester = !exempt && req.tester === 1 && testerSlotOpen(db, config, nowMs);
+      db.prepare("UPDATE organizations SET billing_status = 'none', billing_tester_until = ?, billing_via_tester_code = ?, billing_exempt = ? WHERE id = ?")
+        .run(tester ? nowMs + TESTER_DAYS * DAY_MS : null, tester ? 1 : 0, exempt ? 1 : 0, orgId);
     }
     const userId = Number(db.prepare(`
       INSERT INTO users (org_id, role, first_name, last_name, email, password_hash, invite_accepted)

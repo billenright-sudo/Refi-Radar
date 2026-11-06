@@ -167,8 +167,10 @@ Add-Content -Path .env -Value "`nAPP_URL=http://localhost:5173"
 
 5. Add the two addresses the test run uses (neither is a secret):
    - `BILLING_EXEMPT_EMAILS`: the brokerage that never pays, tested in step 10. Use an address you control and will use **only**
-     for that one test brokerage (with Gmail, `yourname+exempt@gmail.com` arrives in your usual inbox). Any test brokerage signed
-     up with this address becomes exempt.
+     for that one test brokerage (with Gmail, `yourname+exempt@gmail.com` arrives in your usual inbox). A brokerage signed up with
+     this address while billing is on is exempt from the moment its account is created: it is never asked for a card and gets no
+     test month, even with the tester code. One signed up while billing is off becomes exempt the next time the app starts with
+     billing on (step 10, item 9).
    - `FEEDBACK_TO`: the inbox that receives Send feedback. Your usual address is fine.
 
    Replace both example addresses, then run:

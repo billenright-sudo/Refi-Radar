@@ -392,6 +392,28 @@ test("the 26th tester sign-up with a limit of 25 gets the normal card ask (re-ch
   assert.strictEqual(testerOrgs(), 25);
 });
 
+// Round 2, item 7: an address on BILLING_EXEMPT_EMAILS is exempt from the moment its brokerage is created, not only from the next
+// start-up: no card ask, no tester month (even with the code: it would use up a place for nothing), nothing at Stripe.
+test("an exempt address is exempt at sign-up: billing_exempt = 1, no tester month even with the code, nothing at Stripe, the app opens", async () => {
+  app.set("billingConfig", { ...CONFIG, exemptEmails: ["tia@x.test"] });
+  const token = await signupToken({ email: "TIA@x.test", testerCode: CODE });
+  const r = await complete(token);
+  assert.deepStrictEqual([r.status, r.data.success, r.data.tester, r.data.user.email], [200, true, false, "tia@x.test"]);
+  const org = orgRow(r.data.user.orgId);
+  assert.deepStrictEqual(
+    [org.billing_exempt, org.billing_status, org.billing_tester_until, org.billing_via_tester_code],
+    [1, "none", null, 0],
+  );
+  assert.strictEqual(testerOrgs(), 0, "no tester place used");
+  assert.strictEqual((await clients(r.cookie)).status, 200, "in, with no card and no month");
+  // an address that is not on the list signs up as before: asked for a card
+  const other = await complete(await signupToken({ email: "ola@x.test" }));
+  assert.deepStrictEqual([orgRow(other.data.user.orgId).billing_exempt, (await clients(other.cookie)).status], [0, 402]);
+  await settle();
+  assert.deepStrictEqual(calls, [], "nothing reached Stripe");
+  assert.deepStrictEqual(confirmations, [], "and no confirmation email");
+});
+
 test("complete records both acceptances (versions, time, IP); a failing tester subscription leaves the month working", async (t) => {
   const logged = [];
   for (const m of ["error", "warn", "log"]) t.mock.method(console, m, (...args) => { logged.push(args.map(String).join(" ")); });
