@@ -57,7 +57,7 @@ router.post("/", billingOn, express.raw({ type: "application/json", limit: "1mb"
     await runFollowUps({ db, gateway, send, config }, result.followUps);
     // Any event for the organization retries a second subscription still recorded for it, unless this event's own follow-ups just did.
     const handled = result.followUps.some((f) => f.type === "cancel_duplicate" && f.orgId === orgId);
-    if (orgId != null && !handled) await retryPendingDuplicate(db, gateway, orgId);
+    if (orgId != null && !handled) await retryPendingDuplicate(db, gateway, orgId, send);
   } catch (err) {
     console.error(`[billing] follow-ups failed for org ${orgId}:`, err?.message);
   }

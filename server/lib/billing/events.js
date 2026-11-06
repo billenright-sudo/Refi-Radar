@@ -142,6 +142,10 @@ function applyCheckout(db, org, session, eventMs) {
   const subscriptionId = idOf(session.subscription);
   const customerId = idOf(session.customer);
   if (holdsAnotherLive(org, subscriptionId)) return recordDuplicate(db, org, subscriptionId);
+  // A subscription recorded as a second one (H1) is never taken on from a Checkout: the stored status is its first's (ended, or
+  // stale) and says nothing about this one, and a retry seeing it as the organization's own with that status could cancel the only
+  // subscription the brokerage has (M1). The retry's own read of Stripe adopts it if Stripe still has it going (followUps.js).
+  if (subscriptionId && duplicateIds(org.billing_duplicate_pending).includes(subscriptionId)) return ignored();
   if (olderThanApplied(org, eventMs)) return ignored();
   // A new subscription replacing an ended one: the old item and quantity are not its own, so they go until its event arrives.
   const replaced = subscriptionId && subscriptionId !== org.stripe_subscription_id ? 1 : 0;

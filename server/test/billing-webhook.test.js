@@ -35,11 +35,13 @@ const NOW = T0 * 1000;
 const TRIAL_END = T0 + 14 * DAY;
 
 // The fake gateway: the signature check is the real stripe package's (offline HMAC); everything that would reach Stripe is recorded.
-let calls, cancelImpl, quantityImpl;
+// retrieveImpl answers a subscription read (Stripe's own view of one); by default Stripe has none, as for an id it doesn't know.
+let calls, cancelImpl, quantityImpl, retrieveImpl;
 const gateway = {
   constructEvent: (raw, sig, secret) => Stripe.webhooks.constructEvent(raw, sig, secret),
   cancelAndRefund: async (id, opts) => { calls.push(["cancelAndRefund", id, opts]); return cancelImpl(id, opts); },
   setQuantity: async (args) => { calls.push(["setQuantity", args]); return quantityImpl(args); },
+  retrieveSubscription: async (id) => { calls.push(["retrieveSubscription", id]); return retrieveImpl(id); },
 };
 let sent, sendImpl;
 const send = async (args) => { sent.push(args); return sendImpl(args); };
@@ -59,6 +61,7 @@ beforeEach(() => {
   calls = []; sent = [];
   cancelImpl = async () => ({ cancelled: true, refunded: false });
   quantityImpl = async () => {};
+  retrieveImpl = async () => { throw new Error("No such subscription"); };
   sendImpl = async () => true;
   app.set("billingConfig", { ...CONFIG });
   app.set("billingGateway", gateway);
@@ -395,6 +398,8 @@ test("a recorded second subscription that becomes the organization's only one is
   await post(event("customer.subscription.created", subscription(other, { id: "sub_P" }), T0 + 10));
   cancelImpl = async () => { throw new Error("refund failed"); };
   await post(event("customer.subscription.created", subscription(other, { id: "sub_Q" }), T0 + 20));
+  // Stripe's own view from now on: our cancel went through (only its refund failed)
+  retrieveImpl = async (id) => subscription(other, { id, status: "canceled" });
   await post(event("customer.subscription.deleted", subscription(other, { id: "sub_P", status: "canceled" }), T0 + 30));
   storeSubscription(db, other, subscription(other, { id: "sub_Q", status: "canceled" }), (T0 + 40) * 1000);
   assert.deepStrictEqual([orgRow(other).stripe_subscription_id, orgRow(other).billing_duplicate_pending], ["sub_Q", "sub_Q"]);
@@ -403,6 +408,97 @@ test("a recorded second subscription that becomes the organization's only one is
   await retryPendingDuplicate(db, gateway, other);
   assert.deepStrictEqual(cancels(), [["cancelAndRefund", "sub_Q", { recorded: true }]]);
   assert.strictEqual(orgRow(other).billing_duplicate_pending, null);
+});
+
+test("M1: the retry on the first subscription's deleted event adopts a recorded second one Stripe still has live; never cancels it", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "log", () => {});
+  const cancels = () => calls.filter((c) => c[0] === "cancelAndRefund");
+  // times in the past, as Stripe's always are: the retry's own read of Stripe is newer than every event applied
+  const orgId = addOrg({ seats: 2 });
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_S1", item: { id: "si_S1", quantity: 2 } }), T0 - 300));
+
+  // S2 is recorded as a second subscription and its cancel keeps failing
+  cancelImpl = async () => { throw new Error("cancel failed"); };
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_S2", item: { id: "si_S2", quantity: 2 } }), T0 - 200));
+  await post(event("invoice.paid", { id: "in_m1", object: "invoice", customer: `cus_${orgId}` }, T0 - 150));
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, "sub_S2");
+  assert.strictEqual(cancels().length, 2, "while S1 is live, S2 is a second subscription and is cancelled (here: tried)");
+
+  // S1 ends. The retry that its deleted event drives must not cancel S2, even with a gateway that would now succeed: Stripe still
+  // has S2 live, so it is the brokerage's only subscription and is adopted
+  cancelImpl = async () => ({ cancelled: true, refunded: true });
+  retrieveImpl = async (id) => (id === "sub_S2"
+    ? subscription(orgId, { id: "sub_S2", status: "active", trial_end: null, item: { id: "si_S2", quantity: 2 } })
+    : assert.fail(`no read of ${id}`));
+  calls = [];
+  const r = await post(event("customer.subscription.deleted", subscription(orgId, { id: "sub_S1", status: "canceled", item: { id: "si_S1" } }), T0 - 100));
+  assert.deepStrictEqual([r.status, r.data], [200, { received: true }]);
+  assert.deepStrictEqual(cancels(), [], "S2 is neither cancelled nor refunded");
+  assert.deepStrictEqual(calls, [["retrieveSubscription", "sub_S2"]]);
+  const o = orgRow(orgId);
+  assert.deepStrictEqual([o.stripe_subscription_id, o.stripe_item_id, o.billing_status, o.billing_duplicate_pending], ["sub_S2", "si_S2", "active", null]);
+  assert.deepStrictEqual(accessFor({ config: CONFIG, org: o, termsOk: true, nowMs: NOW }), { ok: true }, "the brokerage keeps working");
+  // later events change nothing about that
+  await post(event("invoice.paid", { id: "in_m1_after", object: "invoice", customer: `cus_${orgId}` }, T0 - 50));
+  assert.deepStrictEqual(cancels(), []);
+
+  // the same sequence where our cancel of S2 went through but its refund failed: Stripe has it ended, so the retry still owes (and
+  // makes) the refund, the gateway refunding only one carrying our cancel's mark (ruling 16)
+  const two = addOrg();
+  await post(event("customer.subscription.created", subscription(two, { id: "sub_T1" }), T0 - 300));
+  cancelImpl = async () => { throw new Error("refund failed"); };
+  await post(event("customer.subscription.created", subscription(two, { id: "sub_T2" }), T0 - 200));
+  retrieveImpl = async (id) => subscription(two, { id, status: "canceled" });
+  cancelImpl = async () => ({ cancelled: false, refunded: true });
+  calls = [];
+  await post(event("customer.subscription.deleted", subscription(two, { id: "sub_T1", status: "canceled" }), T0 - 100));
+  assert.deepStrictEqual(calls, [["retrieveSubscription", "sub_T2"], ["cancelAndRefund", "sub_T2", { recorded: true }]]);
+  assert.deepStrictEqual([orgRow(two).stripe_subscription_id, orgRow(two).billing_status, orgRow(two).billing_duplicate_pending], ["sub_T1", "canceled", null]);
+
+  // a read that fails keeps the record and cancels nothing; the next event tries again
+  const three = addOrg();
+  await post(event("customer.subscription.created", subscription(three, { id: "sub_U1" }), T0 - 300));
+  cancelImpl = async () => { throw new Error("cancel failed"); };
+  await post(event("customer.subscription.created", subscription(three, { id: "sub_U2" }), T0 - 200));
+  retrieveImpl = async () => { throw new Error("stripe down"); };
+  cancelImpl = async () => ({ cancelled: true, refunded: true });
+  calls = [];
+  await post(event("customer.subscription.deleted", subscription(three, { id: "sub_U1", status: "canceled" }), T0 - 100));
+  assert.deepStrictEqual(cancels(), []);
+  assert.strictEqual(orgRow(three).billing_duplicate_pending, "sub_U2");
+  retrieveImpl = async (id) => subscription(three, { id, status: "trialing" });
+  await post(event("invoice.paid", { id: "in_u", object: "invoice", customer: `cus_${three}` }, T0 - 50));
+  assert.deepStrictEqual(cancels(), []);
+  assert.deepStrictEqual([orgRow(three).stripe_subscription_id, orgRow(three).billing_status, orgRow(three).billing_duplicate_pending], ["sub_U2", "trialing", null]);
+});
+
+test("M1: a late Checkout for a recorded second subscription never makes it the organization's while the stored status is stale", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "log", () => {});
+  const cancels = () => calls.filter((c) => c[0] === "cancelAndRefund");
+  const orgId = addOrg();
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_C1" }), T0 - 300));
+  cancelImpl = async () => { throw new Error("cancel failed"); };
+  await post(event("customer.subscription.created", subscription(orgId, { id: "sub_C2" }), T0 - 250));
+  assert.strictEqual(orgRow(orgId).billing_duplicate_pending, "sub_C2");
+  // C1 ends while Stripe can't be read, so the retry can't tell what C2 is yet
+  retrieveImpl = async () => { throw new Error("stripe down"); };
+  await post(event("customer.subscription.deleted", subscription(orgId, { id: "sub_C1", status: "canceled" }), T0 - 200));
+  // C2's Checkout arrives late: the stored status ("canceled", C1's) says nothing about C2, so C2 is not taken on from it
+  cancelImpl = async () => ({ cancelled: true, refunded: true });
+  calls = [];
+  const r = await post(event("checkout.session.completed", checkoutSession(orgId, { id: "cs_C2", subscription: "sub_C2" }), T0 - 150));
+  assert.deepStrictEqual([r.status, r.data], [200, { received: true }]);
+  let o = orgRow(orgId);
+  assert.deepStrictEqual([o.stripe_subscription_id, o.billing_status, o.billing_duplicate_pending], ["sub_C1", "canceled", "sub_C2"]);
+  assert.deepStrictEqual(cancels(), [], "nothing cancelled on a stale status");
+  // once Stripe answers, the re-read adopts it
+  retrieveImpl = async (id) => subscription(orgId, { id, status: "active", trial_end: null });
+  await post(event("invoice.paid", { id: "in_c2", object: "invoice", customer: `cus_${orgId}` }, T0 - 100));
+  o = orgRow(orgId);
+  assert.deepStrictEqual([o.stripe_subscription_id, o.billing_status, o.billing_duplicate_pending], ["sub_C2", "active", null]);
+  assert.deepStrictEqual(cancels(), []);
 });
 
 test("the webhook answers once its follow-ups have run, and still 200 when one fails (ruling 9)", async (t) => {

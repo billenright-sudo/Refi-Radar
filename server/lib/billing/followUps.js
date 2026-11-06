@@ -5,7 +5,7 @@
 // the error's own message; we never add a Stripe id, an address, an object or a secret to a log line, but Stripe's own message can
 // name one of its ids.
 const { seatCount, syncSeats } = require("./seats");
-const { CONFIRMABLE, LIVE, duplicateIds } = require("./events");
+const { CONFIRMABLE, LIVE, duplicateIds, storeSubscription } = require("./events");
 const { BASE_CENTS, ADDITIONAL_CENTS, monthlyTotalCents } = require("./config");
 
 const money = (cents) => (cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`);
@@ -64,12 +64,21 @@ function dropDuplicate(db, orgId, subscriptionId) {
   db.prepare("UPDATE organizations SET billing_duplicate_pending = ? WHERE id = ?").run(rest.length ? rest.join(" ") : null, orgId);
 }
 
-// Works on the second subscriptions recorded for the organization (H1, billing_duplicate_pending) and nothing else: each is cancelled
-// if still live and its latest paid invoice refunded unless already refunded (the gateway's recorded-duplicate rules), then its
-// record is cleared. A failure keeps the record and is logged, so the next webhook event for the organization (or the billing status
-// call) tries again. A recorded id that is the organization's own live subscription now (adopted after its first ended) is never
-// cancelled: it is only taken off the record. Never throws.
-async function retryPendingDuplicate(db, gateway, orgId) {
+// Stripe's own end states: a subscription in one of them never charges or starts again (the gateway's rule too).
+const OVER_AT_STRIPE = new Set(["canceled", "incomplete_expired"]);
+
+// Works on the second subscriptions recorded for the organization (H1, billing_duplicate_pending) and nothing else. For each, the
+// organization's stored row is read again (an event may have changed it since the list was read), and then:
+//   - it is the organization's own live subscription now (adopted after its first ended): only taken off the record;
+//   - the organization holds a different live subscription: it really is a second one, so it is cancelled if still live and its
+//     latest paid invoice refunded unless already refunded (the gateway's recorded-duplicate rules), then taken off the record;
+//   - otherwise (the first has ended, or the stored status is stale) Stripe's own view decides (M1), so a retry never cancels the
+//     only subscription a brokerage has: one Stripe still has going is adopted, stored by the webhook's own rules as of this read
+//     (taken off the record, and its follow-ups run: the user count, and the confirmation when `send` is given); one that has ended
+//     at Stripe goes to cancelAndRefund, which refunds it only if it carries our cancel's mark (ruling 16).
+// A failure (a read included) keeps the record and is logged, so the next webhook event for the organization (or the billing status
+// call) tries again. Never throws.
+async function retryPendingDuplicate(db, gateway, orgId, send) {
   if (orgId == null || retrying.has(orgId)) return;
   const row = db.prepare("SELECT billing_duplicate_pending FROM organizations WHERE id = ?").get(orgId);
   const ids = duplicateIds(row?.billing_duplicate_pending);
@@ -78,12 +87,28 @@ async function retryPendingDuplicate(db, gateway, orgId) {
   try {
     for (const subscriptionId of ids) {
       try {
-        // read again for each: an event may have made it the organization's own subscription since the list was read
-        const own = db.prepare("SELECT stripe_subscription_id, billing_status FROM organizations WHERE id = ?").get(orgId);
-        if (own?.stripe_subscription_id === subscriptionId && LIVE.has(own.billing_status)) {
+        const own = db.prepare("SELECT stripe_subscription_id, billing_status, billing_event_at FROM organizations WHERE id = ?").get(orgId);
+        const ownLive = Boolean(own?.stripe_subscription_id) && LIVE.has(own.billing_status);
+        if (ownLive && own.stripe_subscription_id === subscriptionId) {
           dropDuplicate(db, orgId, subscriptionId);
           console.log(`[billing] second subscription for org ${orgId} is now its only one: kept, not cancelled`);
           continue;
+        }
+        if (!ownLive) {
+          const subscription = await gateway.retrieveSubscription(subscriptionId);
+          if (!subscription || typeof subscription.status !== "string") throw new Error("the subscription couldn't be read");
+          if (!OVER_AT_STRIPE.has(subscription.status)) {
+            // A fresh read is newer than every event applied before it, even one stamped by a Stripe clock a little ahead of ours.
+            const readMs = Math.max(Math.floor(Date.now() / 1000) * 1000, own?.billing_event_at ?? 0);
+            const followUps = storeSubscription(db, orgId, subscription, readMs);
+            const now = db.prepare("SELECT stripe_subscription_id FROM organizations WHERE id = ?").get(orgId);
+            if (now?.stripe_subscription_id !== subscriptionId) throw new Error("the subscription couldn't be stored yet");
+            // A live one came off the record in that write; one still unpaid or paused does too: we never ended it, so no refund is owed.
+            dropDuplicate(db, orgId, subscriptionId);
+            console.log(`[billing] second subscription for org ${orgId} is its only one now: adopted, not cancelled`);
+            await runFollowUps({ db, gateway, send }, followUps.filter((f) => f.type !== "cancel_duplicate" && (send || f.type !== "confirm")));
+            continue;
+          }
         }
         const result = await gateway.cancelAndRefund(subscriptionId, { recorded: true });
         dropDuplicate(db, orgId, subscriptionId);
@@ -102,7 +127,7 @@ async function runFollowUps({ db, gateway, send }, followUps) {
   for (const followUp of followUps || []) {
     try {
       if (followUp.type === "cancel_duplicate") {
-        await retryPendingDuplicate(db, gateway, followUp.orgId);
+        await retryPendingDuplicate(db, gateway, followUp.orgId, send);
       } else if (followUp.type === "sync_seats") {
         await syncSeats(db, gateway, followUp.orgId);
       } else if (followUp.type === "confirm") {

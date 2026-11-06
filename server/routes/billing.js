@@ -130,7 +130,7 @@ async function repair({ config, gateway, send }, orgId, nowMs) {
   }
   if (!followUps.some((f) => f.type === "cancel_duplicate")) {
     try {
-      await retryPendingDuplicate(db, gateway, orgId);   // its first read is outside its own try
+      await retryPendingDuplicate(db, gateway, orgId, send);   // its first read is outside its own try
     } catch (err) {
       console.error(`[billing] cancel_duplicate failed for org ${orgId}:`, err?.message);
     }
