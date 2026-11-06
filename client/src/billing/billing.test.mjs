@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gateScreen, bannerText, money, totalLine, billingLines, chipLabel, formatDate } from "./billing.mjs";
+import { gateScreen, bannerText, money, totalLine, billingLines, chipLabel, formatDate, registerExtras, removeConfirmText } from "./billing.mjs";
 
 const NOW = Date.UTC(2026, 10, 5, 12);
 const at = (m, d, y = 2026) => Date.UTC(y, m - 1, d, 12);
@@ -72,4 +72,17 @@ test("chipLabel: billing status words", () => {
   assert.equal(chipLabel("none", null), "Not started");
   assert.equal(chipLabel("canceled", null), "Ended");
   assert.equal(chipLabel("exempt", null), "No charge");
+});
+
+test("registerExtras: all on when billing is on, all off otherwise", () => {
+  assert.deepEqual(registerExtras(true), { showPrice: true, showTerms: true, showTesterCode: true });
+  assert.deepEqual(registerExtras(false), { showPrice: false, showTerms: false, showTesterCode: false });
+  assert.deepEqual(registerExtras(undefined), { showPrice: false, showTerms: false, showTesterCode: false });
+});
+
+test("removeConfirmText: accepted and pending", () => {
+  assert.equal(removeConfirmText({ inviteAccepted: true, firstName: "Jane", lastName: "Smith", email: "j@x.com" }),
+    "Remove Jane Smith? They'll be signed out right away, their clients move to you, and you'll stop paying for them.");
+  assert.equal(removeConfirmText({ inviteAccepted: false, firstName: "Jane", lastName: "Smith", email: "j@x.com" }),
+    "Cancel the invitation to j@x.com?");
 });

@@ -10,7 +10,9 @@ import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
-import { gateScreen, bannerText, billingLines, chipLabel, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE } from "./billing/billing.mjs";
+import { gateScreen, bannerText, billingLines, chipLabel, registerExtras, removeConfirmText, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE } from "./billing/billing.mjs";
+import * as termsDoc from "./legal/terms.mjs";
+import * as privacyDoc from "./legal/privacy.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -510,7 +512,55 @@ const AuthField = ({ label, type = "text", value, onChange, placeholder, disable
   </div>
 );
 
-const LoginPage = ({ onLogin, goRegister, goForgot }) => {
+const PRICE_LINE = "14 days free, then $99 a month, plus $49 for each additional user. Cancel anytime.";
+
+// The sign-up price line, shown above the fields only when billing is on.
+const PriceLine = () => (
+  <div style={{ fontSize: 11, color: C.muted, marginBottom: "1rem" }}>{PRICE_LINE}</div>
+);
+
+// "I agree to the Terms of Service and Privacy Policy": a plain checkbox; the two names open the documents in a new tab.
+const TermsTick = ({ checked, onChange, disabled }) => (
+  <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13, color: C.mutedHi, marginBottom: "1rem", cursor: "pointer" }}>
+    <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} disabled={disabled} style={{ marginTop: 3, accentColor: C.amber }} />
+    <span>
+      I agree to the{" "}
+      <a href="/terms" target="_blank" rel="noopener noreferrer" style={{ color: C.amber }}>Terms of Service</a>
+      {" "}and{" "}
+      <a href="/privacy" target="_blank" rel="noopener noreferrer" style={{ color: C.amber }}>Privacy Policy</a>
+    </span>
+  </label>
+);
+
+// The Terms of Service or Privacy Policy, for /terms and /privacy: open to anyone, signed in or not.
+const legalDocFor = (pathname) => (pathname === "/terms" ? termsDoc : pathname === "/privacy" ? privacyDoc : null);
+const LegalPage = ({ doc, title }) => {
+  const back = () => { if (window.history.length > 1) window.history.back(); else window.location.assign("/"); };
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", padding: "2rem" }}>
+      <div style={{ width: "100%", maxWidth: 720 }}>
+        <div style={{ marginBottom: "2rem", textAlign: "center" }}>
+          <RefiRadarLogo />
+        </div>
+        <div style={{ ...card }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 4 }}>{title}</h1>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: "1.5rem" }}>Version {doc.VERSION}</div>
+          {doc.SECTIONS.map(sec => (
+            <div key={sec.heading} style={{ marginBottom: "1.25rem" }}>
+              <h2 style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 8 }}>{sec.heading}</h2>
+              {sec.paragraphs.map((para, i) => (
+                <p key={i} style={{ fontSize: 13, color: C.mutedHi, lineHeight: 1.6, marginBottom: 8 }}>{para}</p>
+              ))}
+            </div>
+          ))}
+          <button onClick={back} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>Back</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const LoginPage =({ onLogin, goRegister, goForgot }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -567,7 +617,10 @@ const LoginPage = ({ onLogin, goRegister, goForgot }) => {
   );
 };
 
-const RegisterPage = ({ goLogin }) => {
+const RegisterPage = ({ goLogin, enabled }) => {
+  const extras = registerExtras(enabled);
+  const [terms, setTerms] = useState(false);
+  const [testerCode, setTesterCode] = useState("");
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", password: "", orgName: "" });
   const [sentTo, setSentTo] = useState(null);   // set once the server took the request: nothing is signed in until the emailed link is opened
   const [loading, setLoading] = useState(false);
@@ -582,7 +635,9 @@ const RegisterPage = ({ goLogin }) => {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(extras.showTerms
+          ? { ...form, acceptTerms: terms, ...(testerCode.trim() ? { testerCode: testerCode.trim() } : {}) }
+          : form),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.message || data.error || "Registration failed"); return; }
@@ -616,6 +671,7 @@ const RegisterPage = ({ goLogin }) => {
           <Icon name="alert" size={14} color={C.red} /> {error}
         </div>
       )}
+      {extras.showPrice && <PriceLine />}
       <form onSubmit={submit}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 1rem" }}>
           <AuthField label="First Name" value={form.firstName} onChange={e => set("firstName", e.target.value)} placeholder="Jane" disabled={loading} />
@@ -625,6 +681,8 @@ const RegisterPage = ({ goLogin }) => {
         <AuthField label="Password" type="password" value={form.password} onChange={e => set("password", e.target.value)} placeholder="Choose a strong password" disabled={loading} />
         <AuthField label="Brokerage Name" value={form.orgName} onChange={e => set("orgName", e.target.value)} placeholder="Premier Mortgage Group" disabled={loading} />
         <div style={{ fontSize: 11, color: C.muted, marginBottom: "1rem" }}>Your company name — e.g. Premier Mortgage Group</div>
+        {extras.showTesterCode && <AuthField label="Tester code (optional)" value={testerCode} onChange={e => setTesterCode(e.target.value)} disabled={loading} />}
+        {extras.showTerms && <TermsTick checked={terms} onChange={setTerms} disabled={loading} />}
         <button type="submit" disabled={loading} style={{ ...btnPrimary, width: "100%", opacity: loading ? 0.6 : 1 }}>
           {loading ? "Sending…" : "Start 14-Day Free Trial"}
         </button>
@@ -639,7 +697,9 @@ const RegisterPage = ({ goLogin }) => {
   );
 };
 
-const AcceptInvitePage = ({ token, onLogin }) => {
+const AcceptInvitePage = ({ token, onLogin, enabled }) => {
+  const extras = registerExtras(enabled);
+  const [terms, setTerms] = useState(false);
   const [inviteInfo, setInviteInfo] = useState(null);
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [inviteError, setInviteError] = useState("");
@@ -686,7 +746,7 @@ const AcceptInvitePage = ({ token, onLogin }) => {
       const res = await fetch("/api/auth/accept-invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, password }),
+        body: JSON.stringify(extras.showTerms ? { token, password, acceptTerms: terms } : { token, password }),
       });
       const data = await res.json();
       if (res.status === 410) { setInviteError(data.error || "This invitation has expired or was already used."); setCanRetry(false); return; }   // used or replaced since the page opened
@@ -740,6 +800,7 @@ const AcceptInvitePage = ({ token, onLogin }) => {
       <form onSubmit={submit}>
         <AuthField label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Choose a strong password" disabled={submitting} />
         <AuthField label="Confirm Password" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Repeat password" disabled={submitting} />
+        {extras.showTerms && <TermsTick checked={terms} onChange={setTerms} disabled={submitting} />}
         <button type="submit" disabled={submitting} style={{ ...btnPrimary, width: "100%", opacity: submitting ? 0.6 : 1 }}>
           {submitting ? "Joining…" : "Set Password & Join"}
         </button>
@@ -761,6 +822,7 @@ const FinishSignupPage = ({ token, onDone, goRegister }) => {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [testerUser, setTesterUser] = useState(null);   // set when the new account got a free test month: a card says so before the app opens
 
   const checkLink = useCallback(async () => {
     setLoadingInfo(true);
@@ -803,13 +865,22 @@ const FinishSignupPage = ({ token, onDone, goRegister }) => {
       const data = await res.json();
       if (res.status === 410) { setLinkError(data.error || "This link has expired or was already used."); setCanRetry(false); return; }   // used or replaced since the page opened
       if (!res.ok) { setSubmitError(data.error || "Couldn't create your account — please try again"); return; }
-      onDone(data.user);
+      if (data.tester) setTesterUser(data.user); else onDone(data.user);
     } catch {
       setSubmitError("Network error — please try again");
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (testerUser) {
+    return (
+      <AuthCard>
+        <div role="status" style={{ color: C.text, fontSize: 14, lineHeight: 1.6, marginBottom: "1.25rem", textAlign: "center" }}>Your free test month starts now — no card needed. We'll ask for a card before it ends.</div>
+        <button onClick={() => onDone(testerUser)} style={{ ...btnPrimary, width: "100%" }}>Start testing</button>
+      </AuthCard>
+    );
+  }
 
   if (loadingInfo) {
     return (
@@ -1842,6 +1913,7 @@ const MyTeam = ({ setView, setSelectedLO }) => {
   const [inviting, setInviting] = useState(false);
   const [inviteSuccess, setInviteSuccess] = useState("");
   const [inviteError, setInviteError] = useState("");
+  const [removeError, setRemoveError] = useState("");
 
   useEffect(() => {
     fetch("/api/org/los")
@@ -1877,6 +1949,23 @@ const MyTeam = ({ setView, setSelectedLO }) => {
   };
 
   const setF = (k, v) => setInviteForm(p => ({ ...p, [k]: v }));
+
+  // Remove an accepted loan officer or cancel a pending invitation, after a confirm; then the list is read again.
+  const removeLo = async (lo) => {
+    if (lo.role === "broker") return;
+    if (!window.confirm(removeConfirmText(lo))) return;
+    setRemoveError("");
+    try {
+      const res = await fetch(`/api/org/los/${lo.id}`, { method: "DELETE" });
+      let data = null;
+      try { data = await res.json(); } catch { /* no body */ }
+      if (!res.ok) { setRemoveError((data && (data.message || data.error)) || "Couldn't remove that person — please try again"); return; }
+      const r2 = await fetch("/api/org/los");
+      if (r2.ok) { const d2 = await r2.json(); setLos(Array.isArray(d2.los) ? d2.los : []); }
+    } catch {
+      setRemoveError("Network error — please try again");
+    }
+  };
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
@@ -1925,6 +2014,11 @@ const MyTeam = ({ setView, setSelectedLO }) => {
         </div>
       )}
 
+      {removeError && (
+        <div style={{ background: C.redBg, border: `1px solid #4a1414`, borderRadius: 8, padding: "10px 14px", color: C.red, fontSize: 13, marginBottom: "1rem" }}>
+          {removeError}
+        </div>
+      )}
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
         {loading ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.muted }}>Loading team…</div>
@@ -1958,6 +2052,14 @@ const MyTeam = ({ setView, setSelectedLO }) => {
                     >
                       View Portal
                     </button>
+                    {lo.role !== "broker" && (
+                      <button
+                        onClick={() => removeLo(lo)}
+                        style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13, marginLeft: 12 }}
+                      >
+                        {lo.inviteAccepted ? "Remove" : "Cancel invitation"}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -2289,7 +2391,8 @@ const BillingView = ({ billing, onRefresh }) => {
 export default function App() {
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
-  const [billingState, setBillingState] = useState(null);   // { access, billing, role } from /api/billing/status; null = unknown (the app shows)
+  const [billingPublicOn, setBillingPublicOn] = useState(false);   // GET /api/billing/public, read once at boot; a failure means off
+  const [billingState, setBillingState] = useState(null);  // { access, billing, role } from /api/billing/status; null = unknown (the app shows)
   const [finishing, setFinishing] = useState(false);        // back from Stripe (?billing=done), waiting for the subscription to land
   const [bannerShut, setBannerShut] = useState(false);
   const billingReturn = useRef(null);                       // "done" | "cancelled" from the address, until the next status read uses it
@@ -2345,6 +2448,13 @@ export default function App() {
     url.searchParams.delete("emailChanged");
     window.history.replaceState({}, "", url.pathname + url.search + url.hash);
     if (found) setEmailNotice(found);
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/billing/public")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setBillingPublicOn(Boolean(d && d.enabled)))
+      .catch(() => {});
   }, []);
 
   // Billing status for the signed-in user; null when it can't be read (network, 5xx): the app then shows, the server gate still guards.
@@ -2572,6 +2682,17 @@ export default function App() {
     .client-tile:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
   `;
 
+  // The legal pages come before any sign-in check, and show for signed-in people too.
+  const legalDoc = legalDocFor(window.location.pathname);
+  if (legalDoc) {
+    return (
+      <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
+        <style>{globalStyles}</style>
+        <LegalPage doc={legalDoc} title={window.location.pathname === "/terms" ? "Terms of Service" : "Privacy Policy"} />
+      </div>
+    );
+  }
+
   // Loading spinner
   if (authState === "loading") {
     return (
@@ -2594,13 +2715,13 @@ export default function App() {
         {authView === "finish-signup" && signupToken
           ? <FinishSignupPage token={signupToken} onDone={handleSignupDone} goRegister={() => setAuthView("register")} />
           : authView === "accept-invite" && inviteToken
-          ? <AcceptInvitePage token={inviteToken} onLogin={handleLogin} />
+          ? <AcceptInvitePage token={inviteToken} onLogin={handleLogin} enabled={billingPublicOn} />
           : authView === "reset" && resetToken
           ? <ResetPasswordPage token={resetToken} onDone={handleResetDone} goForgot={goForgot} />
           : authView === "forgot"
           ? <ForgotPasswordPage goLogin={() => setAuthView("login")} initialEmail={forgotEmail} />
           : authView === "register"
-          ? <RegisterPage goLogin={() => setAuthView("login")} />
+          ? <RegisterPage goLogin={() => setAuthView("login")} enabled={billingPublicOn} />
           : <LoginPage onLogin={handleLogin} goRegister={() => setAuthView("register")} goForgot={goForgot} />
         }
       </div>

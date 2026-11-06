@@ -73,3 +73,15 @@ export function chipLabel(plan, trialEnds) {
     default: return ENDED.has(plan) ? "Ended" : String(plan);
   }
 }
+
+// Which sign-up extras show: all of them when billing is on, none when it is off.
+export function registerExtras(enabled) {
+  const on = Boolean(enabled);
+  return { showPrice: on, showTerms: on, showTesterCode: on };
+}
+
+// The question before removing a loan officer (accepted) or cancelling an invitation (pending).
+export function removeConfirmText(lo) {
+  if (lo.inviteAccepted) return `Remove ${lo.firstName} ${lo.lastName}? They'll be signed out right away, their clients move to you, and you'll stop paying for them.`;
+  return `Cancel the invitation to ${lo.email}?`;
+}
