@@ -62,7 +62,7 @@ const GOOGLE_UNAVAILABLE = "I couldn't reach Google just now — try that again 
 const NMLS_NEEDED = "Before I write to clients, add your NMLS ID on your Profile page — it goes in every email signature.";
 // The client has no usable address on the record (a draft goes to the address on file and nowhere else). `name` is the client's name.
 const noEmailLine = (name) => `There's no email on file for ${name} — add one to their record and ask me again.`;
-// The broker ticked "Do not email this client" (DRAFT wording for Bill, 2026-11-06).
+// The broker ticked "Do not email this client" (wording approved by Bill, 2026-11-06).
 const doNotEmailLine = (name) => `${name} is marked do not email — give them a call instead.`;
 // Charli never sends email (the broker sends it from their own mail app): what code says when the user asks her to send it, or
 // whether she sent it, and the turn sets up no email.
