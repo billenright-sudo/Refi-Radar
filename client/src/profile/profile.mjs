@@ -190,6 +190,20 @@ export function nextProfilePrompt(prompt, profile, role) {
   return missing.length ? missing : null;
 }
 
+// Whether the landing reads the profile at all: only with the billing gate open (`gateOpen`, true), and not for the user who chose
+// "Skip for now" this page visit (`skippedBy` is that user's id, or null; `userId` is the signed-in user's).
+export function profileCheckDue({ gateOpen, userId, skippedBy } = {}) {
+  return gateOpen === true && !(userId != null && userId === skippedBy);
+}
+
+// The landing decision, after a sign-in, on boot, and when the terms gate opens: { view: "profile", ask } when the check was due
+// and the read (`res`, loadProfile's answer, or null when it was not made) found something missing; else { view: null, ask: null },
+// and the landing stays where it was (Home, or the page a link asked for). A failed read lands on Home, as today.
+export function profileLanding({ gateOpen, userId, skippedBy, res, role } = {}) {
+  const ask = profileCheckDue({ gateOpen, userId, skippedBy }) ? profilePrompt(res, role) : null;
+  return ask ? { view: "profile", ask } : { view: null, ask: null };
+}
+
 // ── where the emailed confirm link sends the browser ──
 
 // The line to show from the page's query string ("?emailChanged=1"); null when there is none (or it is not one of the two the

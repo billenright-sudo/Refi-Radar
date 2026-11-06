@@ -6,6 +6,7 @@ import {
   validName, cleanName, validEmail, loadProfile, saveName, requestEmailChange, saveStage, saveNmls, emailChangedNotice,
   loadConnection, connectArive, disconnectArive, utcTextToDate,
   BAD_NAME, TOO_MANY, profileMissing, stillNeededLine, profilePrompt, nextProfilePrompt, PROFILE_WELCOME,
+  profileCheckDue, profileLanding,
 } from "./profile.mjs";
 
 const reply = (status, body) => ({ status, body });
@@ -328,4 +329,30 @@ test("nextProfilePrompt: follows what the Profile page reports; gone for good on
   assert.deepEqual(nextProfilePrompt([OWN, COMPANY], { ...COMPLETE, orgNmlsId: null }, "broker"), [COMPANY]);
   assert.equal(nextProfilePrompt([COMPANY], COMPLETE, "broker"), null, "complete: the banner goes");
   assert.equal(nextProfilePrompt(null, { ...COMPLETE, nmlsId: null }, "broker"), null, "no banner showing (or skipped): none appears");
+});
+
+// Fix pass (Ruling 36, item 7): the landing decision as one pure helper. After a sign-in, on boot, and when the terms gate opens
+// (item 3), App reads the profile only when the check is due, and lands on Profile only when that read finds something missing.
+test("profileCheckDue: only with the gate open, and never for the user who chose Skip for now this page visit", () => {
+  assert.equal(profileCheckDue({ gateOpen: true, userId: 7, skippedBy: null }), true);
+  assert.equal(profileCheckDue({ gateOpen: true, userId: 7, skippedBy: 8 }), true, "another user's skip is not this user's");
+  assert.equal(profileCheckDue({ gateOpen: true, userId: 7, skippedBy: 7 }), false, "this user skipped");
+  assert.equal(profileCheckDue({ gateOpen: false, userId: 7, skippedBy: null }), false, "a gate page is showing");
+  assert.equal(profileCheckDue({ gateOpen: true, userId: null, skippedBy: null }), true, "an unknown user is still asked");
+  assert.equal(profileCheckDue({ gateOpen: "yes", userId: 7, skippedBy: null }), false, "only a true opens it");
+  assert.equal(profileCheckDue({}), false);
+});
+
+test("profileLanding: Profile with the missing items when the check is due and the read finds any; else the landing stays", () => {
+  const read = (data) => ({ ok: true, data });
+  const incomplete = read({ ...COMPLETE, nmlsId: null, orgNmlsId: null });
+  const open = { gateOpen: true, userId: 7, skippedBy: null };
+  assert.deepEqual(profileLanding({ ...open, res: incomplete, role: "broker" }), { view: "profile", ask: [OWN, COMPANY] });
+  assert.deepEqual(profileLanding({ ...open, res: incomplete, role: "lo" }), { view: "profile", ask: [OWN] });
+  const stays = { view: null, ask: null };
+  assert.deepEqual(profileLanding({ ...open, res: read(COMPLETE), role: "broker" }), stays, "complete");
+  assert.deepEqual(profileLanding({ ...open, res: { ok: false, error: "Couldn't load your profile. Try again." }, role: "broker" }), stays, "a failed read lands on Home, as today");
+  assert.deepEqual(profileLanding({ ...open, res: null, role: "broker" }), stays, "not read");
+  assert.deepEqual(profileLanding({ ...open, skippedBy: 7, res: incomplete, role: "broker" }), stays, "skipped by this user");
+  assert.deepEqual(profileLanding({ ...open, gateOpen: false, res: incomplete, role: "broker" }), stays, "the gate is in the way");
 });

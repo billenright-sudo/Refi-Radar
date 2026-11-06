@@ -7,7 +7,7 @@ import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
-import { emailChangedNotice, loadProfile, profilePrompt, nextProfilePrompt, stillNeededLine, PROFILE_WELCOME } from "./profile/profile.mjs";
+import { emailChangedNotice, loadProfile, profileCheckDue, profileLanding, nextProfilePrompt, stillNeededLine, PROFILE_WELCOME } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
@@ -2563,10 +2563,19 @@ export default function App() {
     return () => { watch.stop(); window.fetch = original; };
   }, [refreshBilling]);
 
+  // Profile first (round 2, item 2): with the billing status `st` read for the signed-in user `who`, one profile read when the check is
+  // due (profileCheckDue: the gate open, no "Skip for now" by this user this page visit), and the landing it decides (profileLanding:
+  // Profile under its banner when something is missing; otherwise the landing stays). -> { view, ask }
+  const profileLandingFor = useCallback(async (who, st) => {
+    const role = st?.role ?? who?.role;
+    const check = { gateOpen: gateScreen(st?.access, role, st?.billing) === null, userId: who?.id ?? null, skippedBy: profileSkippedBy.current };
+    const res = profileCheckDue(check) ? await loadProfile(fetch) : null;
+    return profileLanding({ ...check, res, role });
+  }, []);
+
   // After sign-in (or /me): read the billing status, then show the app or a gate. Back from Stripe: read it up to 10 times, a second
-  // apart, while the access is still closed (M5: the webhook may land a moment later than the broker does). Then, with the gate open,
-  // the profile once (round 2, item 2): anything missing lands on the Profile page under its banner instead of Home; a complete
-  // profile, a failed read or an earlier "Skip for now" (this page visit) leaves the landing as it was. `who` is the signed-in user.
+  // apart, while the access is still closed (M5: the webhook may land a moment later than the broker does). Then the profile check
+  // above, before the app shows, so Home never flashes first. `who` is the signed-in user.
   const enterApp = useCallback(async (who) => {
     let st = await readBilling();
     if (billingReturn.current === "done" && st) {
@@ -2578,17 +2587,26 @@ export default function App() {
       setFinishing(false);
     }
     billingReturn.current = null;
-    const role = st?.role ?? who?.role;
-    let ask = null;
-    if (gateScreen(st?.access, role, st?.billing) === null && !(who && profileSkippedBy.current === who.id)) {
-      ask = profilePrompt(await loadProfile(fetch), role);
-    }
-    setProfileAsk(ask);
-    if (ask) setView("profile");
+    const land = await profileLandingFor(who, st);
+    setProfileAsk(land.ask);
+    if (land.view) setView(land.view);
     setBillingState(st);
     setBannerShut(false);
     setAuthState("authenticated");
-  }, [readBilling]);
+  }, [readBilling, profileLandingFor]);
+
+  // "I agree" on the terms page (fix pass, Ruling 36 item 3): the status is read again and, when the gate opens, the same profile
+  // check as a sign-in runs before the app shows. This is every pre-billing user's first visit after billing is switched on.
+  // An unreadable status leaves the gate as it was (refreshBilling's rule).
+  const recheckAfterTerms = useCallback(async () => {
+    const st = await readBilling();
+    if (!st) return st;
+    const land = await profileLandingFor(user, st);
+    setProfileAsk(land.ask);
+    if (land.view) setView(land.view);
+    setBillingState(st);
+    return st;
+  }, [readBilling, profileLandingFor, user]);
 
   // Check for a password-reset link first, then an accept-invite token. The reset link is <site>/#reset=<token>: the token is in the
   // fragment so it never reaches the server's request log. It is taken out of the address at once, so it does not stay in the address
@@ -2852,7 +2870,7 @@ export default function App() {
     return (
       <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
         <style>{globalStyles}</style>
-        <BillingGate screen={gate} onSignOut={handleLogout} onRecheck={refreshBilling} feedbackOn={feedbackOn} />
+        <BillingGate screen={gate} onSignOut={handleLogout} onRecheck={recheckAfterTerms} feedbackOn={feedbackOn} />
       </div>
     );
   }
