@@ -187,6 +187,20 @@ function billingConfirmationMessage({ firstName, orgName, kind, endDate, totalLi
   };
 }
 
+// The note a user wrote in the app's "Send feedback" panel, for the owner's inbox (FEEDBACK_TO). Everything a person typed is escaped;
+// the message keeps its line breaks. Nothing secret goes in: no password, token or session.
+function feedbackMessage({ brokerage, name, role, page, message }) {
+  const when = new Date().toISOString();
+  return {
+    subject: `Broker Radar feedback from ${brokerage}`,
+    html: `
+      <p><strong>${escapeHtml(name)}</strong> (${escapeHtml(role)}) at <strong>${escapeHtml(brokerage)}</strong> sent feedback from the <strong>${escapeHtml(page)}</strong> page.</p>
+      <p>Sent ${escapeHtml(when)}</p>
+      <p>${escapeHtml(message).replace(/\r?\n/g, "<br>")}</p>
+    `,
+  };
+}
+
 // Sends one of the messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
 // the send fails; the caller decides what to do (the routes never tell the page, which must not reveal whether an account exists).
 // A reset message carries the secret link, so only err.message is logged, never the message, the link or the token.
@@ -225,10 +239,15 @@ function sendBillingConfirmation({ to, firstName, orgName, kind, endDate, totalL
   return deliverPasswordMail(to, () => billingConfirmationMessage({ firstName, orgName, kind, endDate, totalLine }), "billing-confirmation");
 }
 
+function sendFeedback({ to, brokerage, name, role, page, message }) {
+  return deliverPasswordMail(to, () => feedbackMessage({ brokerage, name, role, page, message }), "feedback");
+}
+
 module.exports = {
   sendInvite, inviteLink, sendRefiAlert, sendEmailChange, APP_URL,
   emailLinksWork, mailReady,
   passwordResetMessage, passwordChangedMessage, sendPasswordReset, sendPasswordChanged,
   signupMessage, alreadyRegisteredMessage, sendSignup, sendAlreadyRegistered,
   billingConfirmationMessage, sendBillingConfirmation,
+  feedbackMessage, sendFeedback,
 };

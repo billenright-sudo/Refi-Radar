@@ -5,6 +5,7 @@ import { endKeptSession } from "./charli/keep.mjs";
 import { localDateOf } from "./charli/session.mjs";
 import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
 import { loadCalls } from "./calls.mjs";
+import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
@@ -397,6 +398,7 @@ const RefiRadarLogo = () => (
 
 const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
   const { main: nav, broker: brokerNav, bottom: bottomNav } = navGroups(user?.role, { billing: billingOn });
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const isBrokerActive = (id) => {
     if (id === "team") return view === "team" || view === "lo-portal";
@@ -438,6 +440,11 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
       )}
 
       <div style={{ marginTop: "auto" }}>
+        {feedbackOpen && (
+          <div style={{ position: "fixed", left: 236, bottom: 20, width: 340, maxWidth: "calc(100vw - 252px)", zIndex: 60 }}>
+            <FeedbackPanel page={view} onClose={() => setFeedbackOpen(false)} />
+          </div>
+        )}
         {bottomNav.map(({ id, label, icon }) => {
           const active = view === id;
           return (
@@ -447,6 +454,12 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
             </button>
           );
         })}
+        {user && (
+          <button onClick={() => setFeedbackOpen((open) => !open)} data-testid="nav-feedback" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 9, background: feedbackOpen ? C.surfaceHi : "transparent", color: feedbackOpen ? C.text : C.muted, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: feedbackOpen ? 600 : 400, marginBottom: 4, width: "100%", textAlign: "left" }}>
+            <Icon name="edit" size={16} color={feedbackOpen ? C.amber : C.muted} />
+            Send feedback
+          </button>
+        )}
         {user && (
           <div style={{ padding: "10px 8px", borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <button onClick={() => setView("profile")} title="Your profile" aria-label={`Your profile, ${shortName}, ${user.role}`} data-testid="sidebar-profile" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, margin: "-4px 0 -4px -4px", padding: 4, borderRadius: 9, background: view === "profile" ? C.surfaceHi : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: "inherit" }}>
@@ -2313,7 +2326,42 @@ async function openStripe(path) {
   window.location.assign(data.url);
 }
 
+// The "Send feedback" panel (every signed-in user, also on the lock pages): a textarea and Send. `page` is the view id or gate screen name.
+const FeedbackPanel = ({ page, onClose }) => {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+  const submit = async () => {
+    const problem = feedbackCanSend(text);
+    if (problem) { setError(problem); return; }
+    setBusy(true); setError("");
+    try {
+      const res = await fetch("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text, page }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.error || "Something went wrong. Please try again.");
+      setSent(true); setText("");
+    } catch (e) { setError(e.message || "Something went wrong. Please try again."); }
+    setBusy(false);
+  };
+  return (
+    <div style={{ ...card, padding: "1rem" }} data-testid="feedback-panel">
+      {sent ? (
+        <div role="status" style={{ color: C.green, fontSize: 14, lineHeight: 1.5, marginBottom: 12 }}>{FEEDBACK_THANKS}</div>
+      ) : (<>
+        {errorBox(error)}
+        <textarea value={text} onChange={(e) => { setText(e.target.value); setError(""); }} rows={5} maxLength={FEEDBACK_MAX + 500} aria-label="Your feedback" placeholder="What's on your mind?" style={{ width: "100%", boxSizing: "border-box", background: C.bg, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontFamily: "inherit", fontSize: 13.5, resize: "vertical", marginBottom: 12 }} />
+      </>)}
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {!sent && <button onClick={submit} disabled={busy} style={{ ...btnPrimary, padding: "8px 18px", opacity: busy ? 0.6 : 1 }}>Send</button>}
+        <button onClick={onClose} style={textButton}>{sent ? "Close" : "Cancel"}</button>
+      </div>
+    </div>
+  );
+};
+
 const BillingGate = ({ screen, onSignOut, onRecheck }) => {
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const go = async (work) => {
@@ -2331,6 +2379,8 @@ const BillingGate = ({ screen, onSignOut, onRecheck }) => {
   const para = { color: C.muted, fontSize: 14, lineHeight: 1.6, marginBottom: "1.25rem" };
   const exportLink = <a href={EXPORT_URL} download style={{ ...textButton, textDecoration: "none" }}>Download my clients (CSV)</a>;
   const signOut = <button onClick={onSignOut} style={textButton}>Sign out</button>;
+  const feedbackButton = <button onClick={() => setFeedbackOpen((open) => !open)} style={textButton}>Send feedback</button>;
+  const feedbackPanel = feedbackOpen && <div style={{ marginTop: "1rem" }}><FeedbackPanel page={screen} onClose={() => setFeedbackOpen(false)} /></div>;
   return (
     <AuthCard>
       {screen === "terms" && (<>
@@ -2345,18 +2395,21 @@ const BillingGate = ({ screen, onSignOut, onRecheck }) => {
         <div style={para}>{SPEC_LINE}</div>
         {errorBox(error)}
         <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Add card and start trial</button>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{signOut}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
+        {feedbackPanel}
       </>)}
       {screen === "ended" && (<>
         <div style={heading}>Your subscription has ended</div>
         <div style={para}>{RETURNING_LINE}</div>
         {errorBox(error)}
         <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Restart subscription</button>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{signOut}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
+        {feedbackPanel}
       </>)}
       {screen === "lo_locked" && (<>
         <div style={para}>{LO_LOCKED_LINE}</div>
-        <div style={{ textAlign: "center" }}>{signOut}</div>
+        <div style={{ display: "flex", justifyContent: "center", gap: 20 }}>{feedbackButton}{signOut}</div>
+        {feedbackPanel}
       </>)}
     </AuthCard>
   );

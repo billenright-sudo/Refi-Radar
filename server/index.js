@@ -22,6 +22,7 @@ const profileRoutes = require("./routes/profile");
 const integrationRoutes = require("./routes/integrations");
 const billingWebhookRoutes = require("./routes/billingWebhook");
 const billingRoutes = require("./routes/billing");
+const feedbackRoutes = require("./routes/feedback");
 const { charliModel } = require("./lib/assistant/orchestrator");
 const { startBilling } = require("./lib/billing/startup");
 const { createStripeGateway } = require("./lib/billing/stripeGateway");
@@ -57,6 +58,7 @@ app.use("/api/assistant",     assistantRoutes);
 app.use("/api/voice",         voiceRoutes);
 app.use("/api/google",        googleRoutes);
 app.use("/api/profile",       profileRoutes);
+app.use("/api/feedback",      feedbackRoutes);  // not gated: a locked user can still write to us
 app.use("/api/billing",       billingRoutes);   // not gated: a locked brokerage still adds a card and takes its clients out
 
 // Health check
