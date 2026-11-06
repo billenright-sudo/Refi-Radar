@@ -4,18 +4,24 @@
 export const SPEC_LINE = "$0 today. Your 14-day free trial starts now. From day 15 we'll charge $99 a month, plus $49 for each additional user, until you cancel. Cancel any time in Billing.";
 export const RETURNING_LINE = "$99 a month, plus $49 for each additional user, starting today, until you cancel.";
 export const LO_LOCKED_LINE = "Your brokerage's subscription needs attention. Please contact your broker.";
+// The gate for a broker whose free month (a tester month or the one billing gave at start-up) ended with no card: Checkout charges
+// today, so the page says so (round 2, item 4). DRAFT for Bill.
+export const FREE_ENDED_HEADING = "Your free month has ended";
 const PAST_DUE_LINE = "Your last payment didn't go through. Update your card to keep Broker Radar running.";
 
 const BASE_CENTS = 9900;
 const ADDITIONAL_CENTS = 4900;
 
-// Which gate page replaces the app: null | "terms" | "start_trial" | "ended" | "lo_locked".
-export function gateScreen(access, role) {
+// Which gate page replaces the app: null | "terms" | "start_trial" | "free_ended" | "ended" | "lo_locked". `billing` is the broker's
+// billing object from /api/billing/status: its freeUsed (the one free period is behind the brokerage) turns a card ask into
+// "free_ended", which says the charge starts today (round 2, item 4).
+export function gateScreen(access, role, billing = null) {
   if (!access || access.ok) return null;
   if (access.reason === "terms") return "terms";
   if (access.reason === "needs_card" || access.reason === "ended") {
     if (role !== "broker") return "lo_locked";
-    return access.reason === "ended" ? "ended" : "start_trial";
+    if (access.reason === "ended") return "ended";
+    return billing && billing.freeUsed === true ? "free_ended" : "start_trial";
   }
   return null;
 }

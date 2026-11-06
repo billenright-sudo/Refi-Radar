@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   gateScreen, bannerText, money, totalLine, billingLines, chipLabel, formatDate, registerExtras, removeConfirmText,
-  testerPriceLine, isGateResponse, createGateWatch, stillFinishing, overviewChip, publicFlags,
+  testerPriceLine, isGateResponse, createGateWatch, stillFinishing, overviewChip, publicFlags, FREE_ENDED_HEADING, RETURNING_LINE,
 } from "./billing.mjs";
 
 const NOW = Date.UTC(2026, 10, 5, 12);
@@ -20,6 +20,26 @@ test("gateScreen: open access shows no gate; each reason maps by role", () => {
   assert.equal(gateScreen({ ok: false, reason: "needs_card" }, "lo"), "lo_locked");
   assert.equal(gateScreen({ ok: false, reason: "ended" }, "lo"), "lo_locked");
   assert.equal(gateScreen({ ok: false, reason: "needs_card" }, undefined), "lo_locked");
+});
+
+// Round 2, item 4: a broker whose one free period is behind them (the server's billing.freeUsed) is told the charge starts today,
+// not offered a free trial Checkout won't give. Only for needs_card; a loan officer still sees lo_locked.
+test("gateScreen: needs_card with freeUsed is free_ended for a broker; anything else is as before", () => {
+  const needsCard = { ok: false, reason: "needs_card" };
+  assert.equal(gateScreen(needsCard, "broker", { enabled: true, freeUsed: true }), "free_ended");
+  assert.equal(gateScreen(needsCard, "broker", { enabled: true, freeUsed: false }), "start_trial");
+  assert.equal(gateScreen(needsCard, "broker", { enabled: true }), "start_trial");
+  assert.equal(gateScreen(needsCard, "broker", null), "start_trial");
+  assert.equal(gateScreen(needsCard, "broker", { freeUsed: "yes" }), "start_trial", "only a true counts");
+  assert.equal(gateScreen(needsCard, "lo", { freeUsed: true }), "lo_locked");
+  assert.equal(gateScreen({ ok: false, reason: "ended" }, "broker", { freeUsed: true }), "ended");
+  assert.equal(gateScreen({ ok: false, reason: "terms" }, "broker", { freeUsed: true }), "terms");
+  assert.equal(gateScreen({ ok: true }, "broker", { freeUsed: true }), null);
+});
+
+test("FREE_ENDED_HEADING and the returning line it shows", () => {
+  assert.equal(FREE_ENDED_HEADING, "Your free month has ended");
+  assert.equal(RETURNING_LINE, "$99 a month, plus $49 for each additional user, starting today, until you cancel.");
 });
 
 test("money: no cents when whole", () => {

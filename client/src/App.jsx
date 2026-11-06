@@ -13,7 +13,7 @@ import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, i
 import ImportView from "./import/ImportView.jsx";
 import {
   gateScreen, bannerText, billingLines, registerExtras, removeConfirmText, testerPriceLine, createGateWatch, stillFinishing, overviewChip,
-  publicFlags, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE,
+  publicFlags, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE, FREE_ENDED_HEADING,
 } from "./billing/billing.mjs";
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
@@ -2403,6 +2403,14 @@ const BillingGate = ({ screen, onSignOut, onRecheck, feedbackOn }) => {
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
         {feedbackPanel}
       </>)}
+      {screen === "free_ended" && (<>
+        <div style={heading}>{FREE_ENDED_HEADING}</div>
+        <div style={para}>{RETURNING_LINE}</div>
+        {errorBox(error)}
+        <button onClick={addCard} disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>Add card</button>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>{exportLink}{feedbackButton}{signOut}</div>
+        {feedbackPanel}
+      </>)}
       {screen === "ended" && (<>
         <div style={heading}>Your subscription has ended</div>
         <div style={para}>{RETURNING_LINE}</div>
@@ -2658,7 +2666,7 @@ export default function App() {
     setUser((u) => (u && Object.keys(patch).some((k) => u[k] !== patch[k]) ? { ...u, ...patch } : u));
   }, []);
 
-  const gate = authState === "authenticated" ? gateScreen(billingState?.access, billingState?.role ?? user?.role) : null;
+  const gate = authState === "authenticated" ? gateScreen(billingState?.access, billingState?.role ?? user?.role, billingState?.billing) : null;
   const appOpen = authState === "authenticated" && !gate;
   const billingOn = Boolean(billingState?.billing?.enabled);
 

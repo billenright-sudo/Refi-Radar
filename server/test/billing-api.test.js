@@ -396,7 +396,7 @@ test("no card: gated routes 402 needs_card; /me, /billing/status, /profile, expo
     billing: {
       enabled: true, status: "none", users: 2, baseCents: 9900, additionalCents: 4900, monthlyTotalCents: 14800,
       trialEnd: null, testerUntil: null, periodEnd: null, cancelAtPeriodEnd: false, exempt: false, hasCustomer: false, hasCard: false,
-      banner: null,
+      banner: null, freeUsed: false,
     },
   });
   assert.deepStrictEqual(calls, [], "nothing to sync: no subscription, no Checkout");
@@ -429,6 +429,30 @@ test("no card: gated routes 402 needs_card; /me, /billing/status, /profile, expo
     if (reason) assert.strictEqual(r.data.reason, reason, JSON.stringify(cols));
   }
   assert.ok(orgRow(orgId));
+});
+
+// Round 2, item 4: whether the brokerage's one free period is behind it, so the gate doesn't offer a free trial that Checkout won't
+// give (checkoutPlan's own rule: trial "none"). The broker's billing object only.
+test("status: freeUsed is true once the free period is used (an ended tester or §6.7 month, any subscription before), else false", async () => {
+  const freeUsed = async (cols) => (await get("/api/billing/status", brokerage({ ...cols, billing_synced_at: Date.now() }).broker)).data.billing.freeUsed;
+  assert.strictEqual(await freeUsed({}), false, "a new brokerage: its 14-day trial is still to come");
+  assert.strictEqual(await freeUsed({ billing_tester_until: Date.now() + 5 * DAY_MS }), false, "a month still running");
+  assert.strictEqual(await freeUsed({ billing_tester_until: Date.now() - 1000 }), true, "a month that ended without a card");
+  assert.strictEqual(await freeUsed({ billing_ever_subscribed: 1 }), true, "a brokerage that has had a subscription");
+  assert.strictEqual(await freeUsed({ billing_ever_subscribed: 1, billing_status: "canceled" }), true, "a cancelled one");
+  // the gate's case: locked for a card, with the free month behind it
+  const ended = brokerage({ billing_tester_until: Date.now() - 1000, los: 1 });
+  const st = await get("/api/billing/status", ended.broker);
+  assert.deepStrictEqual([st.data.access, st.data.billing.freeUsed], [{ ok: false, reason: "needs_card" }, true]);
+  // a loan officer never gets it (billing: null)
+  assert.deepStrictEqual((await get("/api/billing/status", ended.los[0])).data.billing, null);
+  // billing off: the broker's object is { enabled: false } as before, nothing more
+  app.set("billingConfig", { ...CONFIG, enabled: false });
+  try {
+    assert.deepStrictEqual((await get("/api/billing/status", ended.broker)).data.billing, { enabled: false });
+  } finally {
+    app.set("billingConfig", { ...CONFIG });
+  }
 });
 
 test("loan officers get 402 like their broker but billing: null and 403 on card, portal, export", async () => {

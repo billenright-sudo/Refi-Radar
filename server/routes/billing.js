@@ -155,6 +155,9 @@ function brokerView(org, nowMs) {
     hasCustomer: Boolean(org.stripe_customer_id),
     hasCard: Boolean(org.billing_has_card),   // a tester month without a card shows the price it would start (I4)
     banner: bannerFor(org, nowMs),
+    // The one free period is behind the brokerage (round 2, item 4): a Checkout now charges today, so the gate says so instead of
+    // offering a free trial. Checkout's own rule (checkoutPlan), so the two never disagree.
+    freeUsed: checkoutPlan(org, nowMs).trial === "none",
   };
 }
 
