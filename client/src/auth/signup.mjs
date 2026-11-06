@@ -1,6 +1,6 @@
 // The sign-up and invite screens' logic, with no DOM and no React (the screens are in App.jsx: RegisterPage, FinishSignupPage and
 // AcceptInvitePage). Server contracts (server/routes/auth.js):
-//   POST /api/auth/register          { firstName, lastName, email, password, orgName } -> 200 { success } (no cookie, no user, for every valid request);
+//   POST /api/auth/register          { firstName, lastName, email, password, orgName, timeZone } -> 200 { success } (no cookie, no user, for every valid request);
 //                                                                                          400 / 429 / 503 { success: false, error } (a line to show as it is)
 //   POST /api/auth/register/check    { token }            -> 200 { success, email, orgName }; 410 { success: false, error }
 //   POST /api/auth/register/complete { token, password }  -> 200 { success, user } and the session cookie (signed in);
@@ -32,6 +32,29 @@ export function inviteTokenFrom(hash, search) {
   if (typeof search !== "string") return null;
   const value = new URLSearchParams(search).get("token");
   return value !== null && TOKEN.test(value) ? value : null;
+}
+
+// The browser's own IANA time zone ("America/Chicago"), sent with the sign-up so the billing email's dates fall on the person's own
+// day; the server keeps it only if it is a real zone. undefined when the browser has none or reading it throws. `intl` is Intl
+// (a test passes a stand-in).
+export function browserTimeZone(intl = globalThis.Intl) {
+  try {
+    const zone = intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof zone === "string" && zone ? zone : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// What the register form sends: the fields, the browser's time zone, and with billing on (`billing`) the terms tick and the tester
+// code, trimmed, only when one was typed.
+export function registerBody(form, { billing = false, terms = false, testerCode = "", timeZone } = {}) {
+  const code = typeof testerCode === "string" ? testerCode.trim() : "";
+  return {
+    ...form,
+    ...(billing ? { acceptTerms: terms, ...(code ? { testerCode: code } : {}) } : {}),
+    ...(timeZone ? { timeZone } : {}),
+  };
 }
 
 // What the register page says after the server accepted the request (same for every address, new or not).

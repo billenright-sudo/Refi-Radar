@@ -7,6 +7,7 @@
 const { seatCount, syncSeats } = require("./seats");
 const { CONFIRMABLE, LIVE, duplicateIds, storeSubscription } = require("./events");
 const { BASE_CENTS, ADDITIONAL_CENTS, monthlyTotalCents } = require("./config");
+const { formatDateIn } = require("../timeZone");
 
 const money = (cents) => (cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`);
 
@@ -18,8 +19,9 @@ function totalLine(users) {
     + `${money(monthlyTotalCents(users))} a month`;
 }
 
-// "Nov 19, 2026", the client's date style. UTC, like every other billing date here (the tester code's expiry day is a UTC day too).
-const formatEndDate = (ms) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+// "Nov 19, 2026", the client's date style, on the broker's own day (round 2, item 5): `timeZone` is users.time_zone, from the sign-up
+// form; none, or one that is not a real zone, is America/New_York. (The app shows the same instant in the browser's own zone.)
+const formatEndDate = (ms, timeZone) => formatDateIn(ms, timeZone);
 
 // Organizations whose confirmation is being sent right now: two events landing together must not send two emails (one instance).
 const confirming = new Set();
@@ -37,7 +39,7 @@ async function sendConfirmation(db, send, orgId) {
     `).get(orgId);
     if (!org || org.billing_confirmation_sent || !CONFIRMABLE.has(org.billing_status) || !org.billing_trial_end) return;
     const broker = db.prepare(
-      "SELECT email, first_name FROM users WHERE org_id = ? AND role = 'broker' AND removed_at IS NULL ORDER BY id LIMIT 1"
+      "SELECT email, first_name, time_zone FROM users WHERE org_id = ? AND role = 'broker' AND removed_at IS NULL ORDER BY id LIMIT 1"
     ).get(orgId);
     if (!broker) return;
     const ok = await send({
@@ -45,7 +47,7 @@ async function sendConfirmation(db, send, orgId) {
       firstName: broker.first_name,
       orgName: org.name,
       kind: org.billing_via_tester_code && !org.billing_has_card ? "tester" : "trial",
-      endDate: formatEndDate(org.billing_trial_end),
+      endDate: formatEndDate(org.billing_trial_end, broker.time_zone),
       totalLine: totalLine(seatCount(db, orgId)),
     });
     if (ok === true) db.prepare("UPDATE organizations SET billing_confirmation_sent = 1 WHERE id = ?").run(orgId);

@@ -13,6 +13,7 @@ const assert = require("node:assert");
 const db = require("../db");
 const { hashToken } = require("../lib/passwordReset");
 const { SIGNUP_TTL_MS, TRIAL_MS, issueSignup, signupFor, completeSignup, purgeExpiredSignups } = require("../lib/signup");
+const { cleanTimeZone } = require("../lib/timeZone");
 
 const NOW = 1_800_000_000_000;
 const REQ = { email: "new@x.test", firstName: " Nia ", lastName: " New ", orgName: " Nia Mortgage ", passwordHash: "bcrypt-hash" };
@@ -97,6 +98,31 @@ test("completeSignup creates nothing when the address got a user another way, or
   assert.strictEqual(completeSignup(db, t2, NOW + SIGNUP_TTL_MS), null);
   assert.strictEqual(count("organizations"), 0);
   assert.strictEqual(count("users"), 0);
+});
+
+// Round 2, item 5: the person's own time zone (the register form sends it), for the dates in the billing email. Only a real IANA
+// zone is kept (its canonical name); anything else is stored as nothing.
+test("cleanTimeZone keeps a real IANA zone (canonical name) and nothing else", () => {
+  assert.strictEqual(cleanTimeZone("America/Chicago"), "America/Chicago");
+  assert.strictEqual(cleanTimeZone("  Asia/Tokyo "), "Asia/Tokyo");
+  assert.strictEqual(cleanTimeZone("america/new_york"), "America/New_York");
+  assert.strictEqual(cleanTimeZone("UTC"), "UTC");
+  for (const bad of [undefined, null, "", "   ", "Mars/Olympus", "Not a zone", "+05:00", "-0800", "A".repeat(65), 42, {}, ["UTC"]]) {
+    assert.strictEqual(cleanTimeZone(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("issueSignup keeps the request's time zone (a bad one as null); completeSignup copies it to the broker", () => {
+  reset();
+  const t = issueSignup(db, { ...REQ, timeZone: "America/Chicago" }, NOW);
+  assert.strictEqual(db.prepare("SELECT time_zone FROM signup_requests WHERE email = ?").get("new@x.test").time_zone, "America/Chicago");
+  assert.strictEqual(completeSignup(db, t, NOW).time_zone, "America/Chicago");
+  for (const [given, kept] of [[undefined, null], ["Mars/Olympus", null], ["asia/tokyo", "Asia/Tokyo"]]) {
+    reset();
+    const token = issueSignup(db, { ...REQ, timeZone: given }, NOW);
+    assert.strictEqual(db.prepare("SELECT time_zone FROM signup_requests").get().time_zone, kept, String(given));
+    assert.strictEqual(completeSignup(db, token, NOW, { billingOn: true, config: { exemptEmails: [] } }).time_zone, kept, String(given));
+  }
 });
 
 test("purgeExpiredSignups deletes only expired requests", () => {

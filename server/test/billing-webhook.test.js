@@ -570,6 +570,25 @@ test("a quantity that differs from the user count is pushed back (H2)", async ()
   assert.strictEqual(orgRow(inStep).billing_quantity, 3);
 });
 
+// Round 2, item 5: the email's date is the broker's own day (users.time_zone, from the sign-up form), as the app shows it, not UTC's.
+test("the confirmation's end date is in the broker's time zone; none or a bad one is America/New_York", async () => {
+  // Nov 20, 2026, 03:30 UTC: still Nov 19 in New York and Los Angeles, already Nov 20 in Tokyo (and in UTC, which it used to say)
+  const INSTANT = Date.UTC(2026, 10, 20, 3, 30);
+  assert.strictEqual(formatEndDate(INSTANT, "Asia/Tokyo"), "Nov 20, 2026");
+  assert.strictEqual(formatEndDate(INSTANT, "America/Los_Angeles"), "Nov 19, 2026");
+  for (const missing of [undefined, null, "", "Mars/Olympus", "+05:00", 42]) {
+    assert.strictEqual(formatEndDate(INSTANT, missing), "Nov 19, 2026", JSON.stringify(missing));
+  }
+  const end = INSTANT / 1000;
+  for (const [zone, date] of [["Asia/Tokyo", "Nov 20, 2026"], ["America/Los_Angeles", "Nov 19, 2026"], [null, "Nov 19, 2026"], ["Bad/Zone", "Nov 19, 2026"]]) {
+    const orgId = addOrg();
+    db.prepare("UPDATE users SET time_zone = ? WHERE org_id = ? AND role = 'broker'").run(zone, orgId);
+    const sub = subscription(orgId, { trial_end: end, item: { current_period_end: end } });
+    await runFollowUps({ db, gateway, send, config: CONFIG }, storeSubscription(db, orgId, sub, NOW));
+    assert.strictEqual(sent.at(-1).endDate, date, String(zone));
+  }
+});
+
 test("the first subscription sends one confirmation email with the end date and price; never twice; a failed send retries next event (H6)", async (t) => {
   const orgId = addOrg({ seats: 2 });
   const broker = db.prepare("SELECT * FROM users WHERE org_id = ? AND role = 'broker'").get(orgId);
@@ -653,6 +672,7 @@ test("the first subscription sends one confirmation email with the end date and 
   assert.ok(!/RefiRadar/.test(trial.html + trial.subject + testMonth.html + testMonth.subject));
 
   assert.strictEqual(formatEndDate(Date.UTC(2026, 10, 19, 15)), "Nov 19, 2026");
+  assert.strictEqual(formatEndDate(Date.UTC(2026, 10, 30, 15), "America/Chicago"), "Nov 30, 2026");
   assert.strictEqual(totalLine(1), "Brokerage $99 a month");
   assert.strictEqual(totalLine(2), "Brokerage $99 + 1 additional user × $49 = $148 a month");
   assert.strictEqual(totalLine(5), "Brokerage $99 + 4 additional users × $49 = $295 a month");

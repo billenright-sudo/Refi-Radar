@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const { hashToken } = require("./passwordReset");
 const { TESTER_DAYS } = require("./billing/config");
 const { testerSlotOpen } = require("./billing/seats");
+const { cleanTimeZone } = require("./timeZone");
 
 const SIGNUP_TTL_MS = 24 * 60 * 60 * 1000;
 const TRIAL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -14,18 +15,19 @@ const TOKEN_RE = /^[0-9a-f]{64}$/;
 // Stores the request and returns its token (to be mailed, never logged). One row per address: asking again replaces the row,
 // so the older link stops working at once. The email is lower-cased and the names trimmed. With billing on, the request also
 // carries the Terms and Privacy versions the person agreed to and whether they gave a usable tester code (spec §6.1); with billing
-// off these stay at "none" (0 and NULL).
-function issueSignup(db, { email, firstName, lastName, orgName, passwordHash, tester = false, termsVersion = null, privacyVersion = null }, nowMs) {
+// off these stay at "none" (0 and NULL). `timeZone` is the browser's own (the form sends it): only a real IANA zone is kept
+// (cleanTimeZone), anything else is NULL.
+function issueSignup(db, { email, firstName, lastName, orgName, passwordHash, tester = false, termsVersion = null, privacyVersion = null, timeZone = null }, nowMs) {
   const token = crypto.randomBytes(32).toString("hex");
   db.prepare(`
-    INSERT INTO signup_requests (email, token_hash, first_name, last_name, org_name, password_hash, expires_at, tester, terms_version, privacy_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signup_requests (email, token_hash, first_name, last_name, org_name, password_hash, expires_at, tester, terms_version, privacy_version, time_zone)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(email) DO UPDATE SET token_hash = excluded.token_hash, first_name = excluded.first_name,
       last_name = excluded.last_name, org_name = excluded.org_name, password_hash = excluded.password_hash,
       expires_at = excluded.expires_at, tester = excluded.tester, terms_version = excluded.terms_version,
-      privacy_version = excluded.privacy_version
+      privacy_version = excluded.privacy_version, time_zone = excluded.time_zone
   `).run(email.trim().toLowerCase(), hashToken(token), firstName.trim(), lastName.trim(), orgName.trim(), passwordHash, nowMs + SIGNUP_TTL_MS,
-    tester ? 1 : 0, termsVersion, privacyVersion);
+    tester ? 1 : 0, termsVersion, privacyVersion, cleanTimeZone(timeZone));
   return token;
 }
 
@@ -62,9 +64,9 @@ function completeSignup(db, token, nowMs, { billingOn = false, config = null } =
         .run(tester ? nowMs + TESTER_DAYS * DAY_MS : null, tester ? 1 : 0, exempt ? 1 : 0, orgId);
     }
     const userId = Number(db.prepare(`
-      INSERT INTO users (org_id, role, first_name, last_name, email, password_hash, invite_accepted)
-      VALUES (?, 'broker', ?, ?, ?, ?, 1)
-    `).run(orgId, req.first_name, req.last_name, req.email, req.password_hash).lastInsertRowid);
+      INSERT INTO users (org_id, role, first_name, last_name, email, password_hash, invite_accepted, time_zone)
+      VALUES (?, 'broker', ?, ?, ?, ?, 1, ?)
+    `).run(orgId, req.first_name, req.last_name, req.email, req.password_hash, cleanTimeZone(req.time_zone)).lastInsertRowid);
     db.prepare("DELETE FROM signup_requests WHERE email = ?").run(req.email);
     return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
   })();

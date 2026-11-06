@@ -9,7 +9,7 @@ import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
-import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./auth/signup.mjs";
+import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
 import {
   gateScreen, bannerText, billingLines, registerExtras, removeConfirmText, testerPriceLine, createGateWatch, stillFinishing, overviewChip,
@@ -651,9 +651,7 @@ const RegisterPage = ({ goLogin, enabled }) => {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(extras.showTerms
-          ? { ...form, acceptTerms: terms, ...(testerCode.trim() ? { testerCode: testerCode.trim() } : {}) }
-          : form),
+        body: JSON.stringify(registerBody(form, { billing: extras.showTerms, terms, testerCode, timeZone: browserTimeZone() })),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.message || data.error || "Registration failed"); return; }

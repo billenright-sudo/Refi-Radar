@@ -2,7 +2,7 @@
 // The sign-up and invite screens' logic, with no DOM and no React (the screens are in App.jsx).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./signup.mjs";
+import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./signup.mjs";
 
 const HEX = "a".repeat(64);
 
@@ -50,4 +50,24 @@ test("inviteCheckOutcome: ok carries the four fields; only a 410 is final", () =
   assert.equal(inviteCheckOutcome(429, { error: "Too many" }).kind, "retry");
   assert.equal(inviteCheckOutcome(429, { error: "Too many" }).text, "Too many");
   assert.equal(inviteCheckOutcome(200, { email: "a@x" }).kind, "retry");
+});
+
+// Round 2, item 5: the form sends the browser's own time zone, so the billing email's dates are the person's own day. The server
+// keeps it only if it is a real IANA zone; the page sends what the browser says, or nothing.
+test("browserTimeZone: the browser's resolved zone, or undefined when there is none or reading it throws", () => {
+  assert.equal(browserTimeZone({ DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: "America/Chicago" }) }) }), "America/Chicago");
+  assert.equal(browserTimeZone({ DateTimeFormat: () => ({ resolvedOptions: () => ({}) }) }), undefined);
+  assert.equal(browserTimeZone({ DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: "" }) }) }), undefined);
+  assert.equal(browserTimeZone({ DateTimeFormat: () => { throw new Error("no Intl"); } }), undefined);
+  assert.equal(browserTimeZone(null), undefined, "no Intl at all");
+  assert.equal(typeof browserTimeZone(), "string", "this machine's own Intl answers");
+});
+
+test("registerBody: the form plus timeZone; with billing on also the tick and a trimmed tester code (none when blank)", () => {
+  const form = { firstName: "Nia", lastName: "New", email: "nia@x.test", password: "password123", orgName: "Nia Mortgage" };
+  assert.deepEqual(registerBody(form, { billing: false, terms: true, testerCode: "code", timeZone: "America/Denver" }), { ...form, timeZone: "America/Denver" });
+  assert.deepEqual(registerBody(form, { billing: false, timeZone: undefined }), { ...form });
+  assert.deepEqual(registerBody(form, { billing: true, terms: true, testerCode: "  early-bird ", timeZone: "Asia/Tokyo" }),
+    { ...form, acceptTerms: true, testerCode: "early-bird", timeZone: "Asia/Tokyo" });
+  assert.deepEqual(registerBody(form, { billing: true, terms: false, testerCode: "   ", timeZone: "UTC" }), { ...form, acceptTerms: false, timeZone: "UTC" });
 });

@@ -347,6 +347,11 @@ if (!billingSignupCols.some((c) => c.name === "tester")) db.exec("ALTER TABLE si
 if (!billingSignupCols.some((c) => c.name === "terms_version")) db.exec("ALTER TABLE signup_requests ADD COLUMN terms_version TEXT");
 if (!billingSignupCols.some((c) => c.name === "privacy_version")) db.exec("ALTER TABLE signup_requests ADD COLUMN privacy_version TEXT");
 
+// The person's own IANA time zone, from the sign-up form (lib/timeZone.js), kept with the request and copied to the new broker, so the
+// billing confirmation email writes its dates in their day. NULL when the form sent none or a bad one (the email then uses New York).
+if (!billingSignupCols.some((c) => c.name === "time_zone")) db.exec("ALTER TABLE signup_requests ADD COLUMN time_zone TEXT");
+if (!db.prepare("PRAGMA table_info(users)").all().some((c) => c.name === "time_zone")) db.exec("ALTER TABLE users ADD COLUMN time_zone TEXT");
+
 // stripe_events: the ids of webhook events already handled, so Stripe's retries and replays do nothing twice.
 // terms_acceptances: which version of the Terms / Privacy Policy each user agreed to, when, and from which address.
 // feedback: notes sent from inside the app.

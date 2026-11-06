@@ -10,6 +10,7 @@ const email = require("../email");
 const { sendInvite } = email;
 const { userForReset, issueReset, completeReset, createSendCounter, hashToken } = require("../lib/passwordReset");
 const { issueSignup, signupFor, completeSignup, purgeExpiredSignups } = require("../lib/signup");
+const { cleanTimeZone } = require("../lib/timeZone");
 const { stageById } = require("../lib/assistant/coaching");
 const { syncSeats, testerCodeUsable } = require("../lib/billing/seats");
 const { pushBeforeAnswer } = require("../lib/billing/bounded");
@@ -184,7 +185,7 @@ async function sendAfterAnswer(kind, send, args) {
 // used to find out who has an account. Everything that depends on the address (the lookup, the password hash, storing the request,
 // the email) happens after the answer, the /forgot pattern: a slow or failing step that only one kind of address takes would show.
 // With billing on, the form also carries `acceptTerms` (the tick, required) and an optional `testerCode`; with billing off both are
-// ignored completely.
+// ignored completely. The form's `timeZone` (the browser's own) is kept only when it is a real IANA zone, never a reason for a 400.
 router.post("/register", registerLimiter, (req, res) => {
   const body = req.body ?? {};
   const text = (value) => (typeof value === "string" ? value.trim() : "");
@@ -192,6 +193,7 @@ router.post("/register", registerLimiter, (req, res) => {
   const lastName = text(body.lastName);
   const orgName = text(body.orgName);
   const mail = text(body.email);
+  const timeZone = cleanTimeZone(body.timeZone);
   const { password } = body;   // never trimmed
   if (!firstName || !lastName || !orgName || !mail || typeof password !== "string" || !password) {
     return res.status(400).json({ success: false, error: "All fields required" });
@@ -265,7 +267,7 @@ router.post("/register", registerLimiter, (req, res) => {
         sendAfterAnswer("already-registered", sendTaken, { to: existing.email, firstName: existing.first_name });
         return;
       }
-      const token = issueSignup(db, { email: key, firstName, lastName, orgName, passwordHash, tester, ...agreed }, now);
+      const token = issueSignup(db, { email: key, firstName, lastName, orgName, passwordHash, tester, timeZone, ...agreed }, now);
       // The token goes in the URL fragment (#), which a browser never sends to a server, so the link can't land in a request log.
       sendAfterAnswer("sign-up", sendNew, { to: key, firstName, orgName, link: `${email.APP_URL}/#signup=${token}` });
     } catch (err) {

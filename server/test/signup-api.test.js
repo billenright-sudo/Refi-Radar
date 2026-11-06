@@ -493,6 +493,22 @@ test("register/complete: signs in as the new broker, with a 14-day trial, and wo
   assert.strictEqual((await complete(newer)).status, 200, "the newest link works");
 });
 
+test("register: the form's timeZone is kept on the request when it is a real zone, and the new broker gets it", async () => {
+  const zoneOf = (mail) => db.prepare("SELECT time_zone FROM signup_requests WHERE email = ?").get(mail).time_zone;
+  const kept = await signupToken({ email: "zone@x.test", timeZone: "America/Denver" });
+  assert.strictEqual(zoneOf("zone@x.test"), "America/Denver");
+  for (const [i, bad] of ["Mars/Olympus", "", 42, null].entries()) {
+    await signupToken({ email: `nozone${i}@x.test`, timeZone: bad });
+    assert.strictEqual(zoneOf(`nozone${i}@x.test`), null, JSON.stringify(bad));
+  }
+  await signupToken({ email: "nofield@x.test" });
+  assert.strictEqual(zoneOf("nofield@x.test"), null, "no field at all");
+  const r = await complete(kept);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(db.prepare("SELECT time_zone FROM users WHERE id = ?").get(r.data.user.id).time_zone, "America/Denver");
+  assert.ok(!("timeZone" in r.data.user), "the answer's user is as before");
+});
+
 test("register/complete: the password chosen at sign-up is required; a wrong or missing one is 400, creates nothing, and the link still works", async () => {
   const WRONG = { success: false, error: "That isn't the password you chose when you signed up. Try again, or start again to choose a new one." };
   const token = await signupToken();
