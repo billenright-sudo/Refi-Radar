@@ -436,7 +436,7 @@ test("runTurn as a New user and as a Veteran user: identical tool calls, args, s
   for (const stage of [...IDS, null]) runs[String(stage)] = await runAs(stage);
   const { r: baseline, calls: baselineCalls } = runs.new;
   assert.equal(baseline.reply, "The thirty-year fixed is at 6.52 percent, and Robert and Linda Chen owe $485,000 at 7.85 percent.");
-  assert.deepStrictEqual(baseline.sources, ["live rates 2026-10-21", "client record"]);
+  assert.deepStrictEqual(baseline.sources, ["daily rates 2026-10-21", "client record"]);
   for (const [key, { r, calls }] of Object.entries(runs)) {
     assert.deepStrictEqual(r, baseline, `${key}: reply, sources, usage and sideEffect are the same`);
     assert.deepStrictEqual(withoutSystem(calls), withoutSystem(baselineCalls), `${key}: every request but its system prompt is the same`);
@@ -893,7 +893,7 @@ test("round 2: a user with no career stage is never asked how long they've been 
   assert.ok(!r.data.reply.includes(OLD_CAREER_QUESTION), r.data.reply);
   assert.doesNotMatch(r.data.reply, /originating|career stage|how long/i, r.data.reply);
   assert.equal(questionMarks(r.data.reply), 1, "the greeting asks exactly one thing");
-  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21", "sweep engine"]);
+  assert.deepStrictEqual(r.data.sources, ["daily rates 2026-10-21", "sweep engine"]);
   assert.equal(r.data.briefing.kind, "morning");
   assert.equal(r.data.briefing.followUp, null);
   assert.equal("error" in r.data, false);

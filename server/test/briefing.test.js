@@ -147,7 +147,7 @@ test("sections come in order: market, call list, calendar, then the one question
   assert.equal(questionMarks(r.reply), 1, r.reply);
   assert.ok(r.reply.endsWith(CLOSE_QUESTION), r.reply);
   assert.ok(r.reply.includes("Team sync at 9:00 AM"), r.reply);
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-29", "sweep engine", "google calendar 2026-10-30"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-29", "sweep engine", "google calendar 2026-10-30"]);
 });
 
 test("the strip carries the 30-year, its move and as-of date, the user's own counts and the next event (null when unknown)", async () => {

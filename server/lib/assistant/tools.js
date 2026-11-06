@@ -81,7 +81,7 @@ function getMarketUpdate(_args, ctx) {
   const { current, deltas, hasHistory, since, sinceDate } = getMovement(rates);
   return {
     data: { rates: twoDecimals(current), deltas: twoDecimals(deltas), hasHistory, since, sinceDate },
-    source: `live rates ${date}`,
+    source: `daily rates ${date}`,
   };
 }
 

@@ -303,7 +303,7 @@ test("a failed glossary lookup does not affect a turn that another tool grounded
     ]),
   });
   assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent, and I can't verify what a buydown is.");
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
 });
 
 test("the model defining a term WITHOUT calling the tool is the can't-verify line, book noun or not", async () => {
@@ -389,7 +389,7 @@ test("I3: a turn that also cites a book source keeps the model's text and the fi
     client: fakeClient([both(), say("The thirty-year fixed is at 6.52 percent, and LTV is the loan balance over the home's value.")]),
   });
   assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent, and LTV is the loan balance over the home's value.");
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21", "Broker Radar glossary"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21", "Broker Radar glossary"]);
   r = await runTurn({
     messages: userSays("what's the rate, and what does LTV mean?"), ctx: ctxFor(),
     client: fakeClient([both(), say("The thirty-year fixed is at 6.99 percent, and LTV is the loan balance over the home's value.")]),

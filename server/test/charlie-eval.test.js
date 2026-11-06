@@ -196,8 +196,8 @@ test("charlie eval transcript (E2): a result is cut to 2,000 characters with an 
 });
 
 test("charlie eval detectors (E1): only a client record or the sweep excuses a client name, not a rates source", () => {
-  const rates = called("getMarketUpdate", "live rates 2026-10-28", { rates: { rate_30yr_fixed: 6.52 } });
-  for (const source of ["live rates 2026-10-28", "estimated rates 2026-10-28"]) {
+  const rates = called("getMarketUpdate", "daily rates 2026-10-28", { rates: { rate_30yr_fixed: 6.52 } });
+  for (const source of ["daily rates 2026-10-28", "estimated rates 2026-10-28"]) {
     assert.deepStrictEqual(rules(blocked, { reply: "Grace Okafor owes about 412,000 dollars", sources: [source], tools: [rates] }),
       ["client-name", "ungrounded-figure"], source);
   }
@@ -231,8 +231,8 @@ test("charlie eval detectors (E1): with sources, every figure the reply states i
   assert.deepStrictEqual(ask("You last spoke on 2026-03-14."), []);
   assert.deepStrictEqual(ask("You last spoke on 2026-03-15.").map((b) => b.rule), ["ungrounded-figure"]);
   // the rates fixture counts, a spoken figure is for statesFigure only, and a code line or a proposal is skipped
-  assert.deepStrictEqual(ask("The thirty-year is 6.52.", [], ["live rates 2026-10-28"]), []);
-  assert.deepStrictEqual(ask("The thirty-year is 6.53.", [], ["live rates 2026-10-28"]).map((b) => b.rule), ["ungrounded-figure"]);
+  assert.deepStrictEqual(ask("The thirty-year is 6.52.", [], ["daily rates 2026-10-28"]), []);
+  assert.deepStrictEqual(ask("The thirty-year is 6.53.", [], ["daily rates 2026-10-28"]).map((b) => b.rule), ["ungrounded-figure"]);
   assert.deepStrictEqual(ask("Grace Okafor owes four hundred fifteen thousand."), []);
   assert.deepStrictEqual(lockBreaks(blocked, { reply: CANT_VERIFY, sources: ["client record"], tools: [], lookups: [] }), []);
   assert.deepStrictEqual(lockBreaks(blocked, { reply: "Logging the call, 415,000.", sources: ["client record"], tools: [], lookups: [], sideEffect: { type: "logContact" } }), []);
@@ -355,7 +355,7 @@ test("charlie eval pins (E5): the copied constants equal what the server's promp
   const fallback = tools.tools.runSweepTool({}, { ...ctx, rates: { ...RATES, source: "Estimated — live fetch unavailable" } }).source;
   assert.ok(fallback.startsWith(SWEEP_SOURCE) && fallback !== SWEEP_SOURCE, fallback);
   // the rates sources getMarketUpdate cites: live, and (on the fallback rates) estimated
-  assert.ok(tools.tools.getMarketUpdate({}, ctx).source.startsWith(`${LIVE_RATES_SOURCE} `), "live rates source");
+  assert.ok(tools.tools.getMarketUpdate({}, ctx).source.startsWith(`${LIVE_RATES_SOURCE} `), "daily rates source");
   const estimated = tools.tools.getMarketUpdate({}, { ...ctx, rates: { ...RATES, source: "Estimated — live fetch unavailable" } }).source;
   assert.ok(estimated.startsWith(`${ESTIMATED_RATES_SOURCE} `), estimated);
   // and the source text of tools.js still cites the book that way (a logged contact and a set-up email cite the client record too)
@@ -423,10 +423,10 @@ test("charlie eval run (E5): the transcript is rewritten after every case, so a 
 // ── Fix round 2
 
 test("charlie eval detectors (fix 1): a figure is grounded by a tool result's values, never by its key names or a loan code", () => {
-  const market = called("getMarketUpdate", "live rates 2026-10-28",
+  const market = called("getMarketUpdate", "daily rates 2026-10-28",
     { rates: { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81 }, deltas: null });
   const grace = record({ matches: [{ name: "Grace Okafor", loanType: "30yr_fixed", currentRate: 7.625, loanBalance: 412000 }] });
-  const ask = (reply, tools = [grace, market], sources = ["client record", "live rates 2026-10-28"]) =>
+  const ask = (reply, tools = [grace, market], sources = ["client record", "daily rates 2026-10-28"]) =>
     lockBreaks(blocked, { reply, sources, tools, lookups: [] });
   // the digits in rate_30yr_fixed, rate_15yr_fixed and rate_5_1_arm are no 30, 15, 5 or 1; nor is the 30 of a loan code
   for (const reply of ["Grace has 15 months left.", "Grace has 30 days left.", "Grace has 5 months left.", "Grace has 1 month left."]) {
@@ -463,12 +463,12 @@ test("charlie eval detectors (fix 2): the rates fixture grounds a figure only wh
   // a client's rate is the record's: today's 6.52 is no ground for it
   assert.deepStrictEqual(ask("She is at 6.52%.", ["client record"]).map((b) => b.rule), ["ungrounded-figure"]);
   assert.deepStrictEqual(ask("She is at 7.625%.", ["client record"]), []);
-  for (const source of ["live rates 2026-10-28", "estimated rates 2026-10-28"]) {
+  for (const source of ["daily rates 2026-10-28", "estimated rates 2026-10-28"]) {
     assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", [source], []), [], source);
     assert.deepStrictEqual(ask("Today's 30-year is 6.53 percent.", [source], []).map((b) => b.rule), ["ungrounded-figure"], source);
   }
   // the rates cited beside a client record: the fixture counts again
-  assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", ["client record", "live rates 2026-10-28"]), []);
+  assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", ["client record", "daily rates 2026-10-28"]), []);
   // the sweep prices from the rates but does not cite them
   assert.deepStrictEqual(ask("Today's 30-year is 6.52 percent.", ["sweep engine (estimated rates 2026-10-28)"], [])
     .map((b) => b.rule), ["ungrounded-figure"]);

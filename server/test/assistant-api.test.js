@@ -207,7 +207,7 @@ test("turn: a text answer comes back with its sources, a turnId, and a usage row
   const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("what's today's rate?"), rates: LIVE });
   assert.equal(r.status, 200);
   assert.equal(r.data.reply, "The thirty-year fixed is at 6.52 percent.");
-  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.data.sources, ["daily rates 2026-10-21"]);
   assert.match(r.data.turnId, UUID);
   assert.equal("sideEffect" in r.data, false);
   assert.equal("error" in r.data, false);
@@ -252,7 +252,7 @@ test("turn: only numeric rate_* fields, a date and a source label reach the tool
   const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("what's today's rate?"), rates });
   assert.equal(r.status, 200);
   assert.equal(r.data.reply, "The thirty-year fixed is at 6.52 percent.");
-  assert.deepStrictEqual(r.data.sources, [`live rates ${new Date().toISOString().slice(0, 10)}`], "an unusable date falls back to today");
+  assert.deepStrictEqual(r.data.sources, [`daily rates ${new Date().toISOString().slice(0, 10)}`], "an unusable date falls back to today");
 });
 
 test("turn that proposes logContact returns the sideEffect and writes nothing; confirm then sets last_contact", async () => {
@@ -383,7 +383,7 @@ test("greeting: the morning briefing, code-authored: opener, market, call list, 
   assert.equal(questionMarks(reply), 1, "exactly one question: " + reply);
   assert.ok(reply.endsWith(CLOSE_QUESTION), reply);
   assert.doesNotMatch(reply, /originating/, "a user with a stage is not asked for one");
-  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21", "sweep engine"]);
+  assert.deepStrictEqual(r.data.sources, ["daily rates 2026-10-21", "sweep engine"]);
   assert.match(r.data.turnId, UUID);
   assert.equal("sideEffect" in r.data, false);
   assert.equal("error" in r.data, false);
@@ -418,7 +418,7 @@ test("greeting: the strip's counts and the call list follow the user's own book"
   assert.doesNotMatch(none.data.reply, /Today's call/);
   assert.ok(none.data.reply.endsWith(CLOSE_NO_CALLS), "no list, so no offer to book its calls: " + none.data.reply);
   assert.equal(questionMarks(none.data.reply), 1);
-  assert.deepStrictEqual(none.data.sources, ["live rates 2026-10-21", "sweep engine"]);
+  assert.deepStrictEqual(none.data.sources, ["daily rates 2026-10-21", "sweep engine"]);
 
   const mix = await greet(max, { localHour: 9 });
   assert.deepStrictEqual(stripCounts(mix), [2, 1]);
@@ -624,7 +624,7 @@ test("greeting: a failed sweep, a failed market tool or both leave their part ou
       assert.match(r.data.reply, /The 30-year is at 6\.52%/);
       assert.doesNotMatch(r.data.reply, /Today's call/);
       assert.ok(r.data.reply.endsWith(CLOSE_NO_CALLS), r.data.reply);
-      assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+      assert.deepStrictEqual(r.data.sources, ["daily rates 2026-10-21"]);
       assert.deepStrictEqual(
         [r.data.briefing.strip.rate30, r.data.briefing.strip.opportunities, r.data.briefing.strip.checkInsDue], [6.52, null, null]
       );
@@ -1411,7 +1411,7 @@ test("I2: with the confirm's reply appended after the read-back, the next turn i
   setClient(client);
   r = await as(ann)("POST", "/api/assistant/turn", { messages: [...withReply, { role: "user", content: "give me a market update" }], rates: LIVE });
   assert.equal(r.data.reply, "The thirty-year fixed is at 6.52 percent today.");
-  assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.data.sources, ["daily rates 2026-10-21"]);
 
   // a client lookup
   client = fakeClient([useTool("findClient", { query: "chen" }), say("Robert & Linda Chen owe $485,000 at 7.85 percent.")]);
@@ -1869,7 +1869,7 @@ test("turn (round 4, V2): a cited turn's advice check goes to app.set(\"assistan
     let r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs(ASK), rates: LIVE });
     assert.equal(r.status, 200);
     assert.equal(r.data.reply, SAID);
-    assert.deepStrictEqual(r.data.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual(r.data.sources, ["daily rates 2026-10-21"]);
     assert.deepStrictEqual([asked.length, fiveWay.length], [1, 0]);
     assert.equal(asked[0].reply, SAID);
     assert.equal(asked[0].user, ASK);

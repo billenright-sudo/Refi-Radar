@@ -136,7 +136,7 @@ test("market question: runs getMarketUpdate, feeds the result back, and cites th
   ]);
   const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client });
   assert.match(r.reply, /6\.52/);
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
   assert.equal(r.sideEffect, undefined);
   assert.equal(client.calls.length, 2);
   // history sent on the second call: user, assistant(tool_use), user(tool_result)
@@ -717,7 +717,7 @@ test("parallel tool calls: all results come back in ONE user message, in order, 
   const r = await runTurn({ messages: userSays("rates and find chen"), ctx: brokerCtx, client });
   const last = client.calls[1].messages[client.calls[1].messages.length - 1];
   assert.deepStrictEqual(last.content.map((b) => b.tool_use_id), ["toolu_a", "toolu_b"]);
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21", "client record"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21", "client record"]);
 });
 
 test("a tool that throws becomes an is_error tool_result and the turn continues", async () => {
@@ -815,7 +815,7 @@ test("CHARLI_SYSTEM tells her about the five-match cap and never to claim an act
 // ── number grounding (every figure in model text must come from this turn's tool results) ──
 
 const MARKET_PAYLOAD = JSON.stringify({
-  source: "live rates 2026-10-21",
+  source: "daily rates 2026-10-21",
   data: {
     rates: { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461 },
     deltas: { rate_30yr_fixed: -0.1 }, hasHistory: true,
@@ -823,7 +823,7 @@ const MARKET_PAYLOAD = JSON.stringify({
 });
 
 test("ungroundedNumbers: a figure matching a payload number at the reply's own precision is grounded", () => {
-  const p = [JSON.stringify({ a: 6.461, b: 412.37, c: 485000, d: 70000, e: 1234567, f: -0.1, when: "live rates 2026-10-21" })];
+  const p = [JSON.stringify({ a: 6.461, b: 412.37, c: 485000, d: 70000, e: 1234567, f: -0.1, when: "daily rates 2026-10-21" })];
   for (const reply of [
     "6.46", "6.46%", "6.46 percent", "6.5", "6.461", "412", "412.4", "$485,000", "485,000", "485000",
     "$485K", "$485k", "70 thousand", "$1.2 million", "1.23 million", "down 0.10", "down 0.1 percent",
@@ -1288,7 +1288,7 @@ test("a grounded turn rejects a figure spelled in words; the thirty-year narrati
   client = fakeClient([useTool("getMarketUpdate"), say("The thirty-year fixed is at 6.52 percent.")]);
   r = await runTurn({ messages: userSays("what's the rate"), ctx: brokerCtx, client });
   assert.equal(r.reply, "The thirty-year fixed is at 6.52 percent.");
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
 });
 
 test("an ungrounded reply with a spoken figure is blocked even on small talk", async () => {
@@ -1367,7 +1367,7 @@ test("grounded turns are unaffected by the reply-side keyword screen (figure che
   const client = fakeClient([useTool("getMarketUpdate"), say("Rates are at 6.52 percent today, and your pipeline is quiet.")]);
   const r = await runTurn({ messages: userSays("good morning"), ctx: brokerCtx, client });
   assert.equal(r.reply, "Rates are at 6.52 percent today, and your pipeline is quiet.");
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
 });
 
 test("screenUngroundedText: the reply's own book/market noun resolves to can't-verify, after the lone-question exemption", () => {
@@ -1488,7 +1488,7 @@ test("'changed' is not a completion verb: narrating that rates changed passes on
   const client = fakeClient([useTool("getMarketUpdate"), say("I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.")]);
   const r = await runTurn({ messages: userSays("what are rates doing"), ctx: brokerCtx, client });
   assert.equal(r.reply, "I see rates changed overnight, and the thirty-year fixed is at 6.52 percent.");
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
 });
 
 test("offers pass the claim guard through runTurn; 'I logged it, okay?' and a claim before the question do not", async () => {
@@ -1708,7 +1708,7 @@ test("ungrounded: a first-word yes or no to a yes/no question is the can't-verif
     client: fakeClient([useTool("getMarketUpdate"), say("The thirty-year is at 6.52 percent today.")]),
   });
   assert.equal(r.reply, "The thirty-year is at 6.52 percent today.");
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
   // ACCEPTED RESIDUAL: grounded yes/no is figure-check-only by design. A cited tool result backs the
   // turn, so the opener may answer the question; this pass is intended, not a regression.
   r = await runTurn({
@@ -1962,7 +1962,7 @@ test("R5-6: CHARLI_SYSTEM narrates a past contact as 'was logged on <date>', nev
 
 const PASS = "pass-through";
 const TOOL_INPUT = { findClient: { query: "chen" }, getMarketUpdate: {}, runSweepTool: {}, explainTerm: { term: "LTV" } };
-const TOOL_SOURCE = { findClient: "client record", getMarketUpdate: "live rates 2026-10-21", runSweepTool: "sweep engine", explainTerm: "Broker Radar glossary" };
+const TOOL_SOURCE = { findClient: "client record", getMarketUpdate: "daily rates 2026-10-21", runSweepTool: "sweep engine", explainTerm: "Broker Radar glossary" };
 const onBoth = (user, reply, expected) => [[user, null, reply, expected], [user, "findClient", reply, expected]];
 const claimRows = (user, replies) => replies.flatMap((t) => onBoth(user, t, NOTHING_CHANGED));
 
@@ -2679,7 +2679,7 @@ test("m6: a null response from the model client is an error, not an answer", asy
 });
 
 test("m4: isCitation is exported: only a non-blank string that is not a parenthesised error label", () => {
-  for (const s of ["sweep engine", "client record", "live rates 2026-10-21", "sweep engine (estimated rates 2026-10-21)"]) {
+  for (const s of ["sweep engine", "client record", "daily rates 2026-10-21", "sweep engine (estimated rates 2026-10-21)"]) {
     assert.equal(isCitation(s), true, s);
   }
   for (const s of ["(unavailable)", "(not found)", "(unsaved)", " (invalid input) ", "", "   ", null, undefined, 5, {}]) {
@@ -3275,7 +3275,7 @@ test("B6: only JSON values ground a figure; a key's digits never do, but a 30-ye
   assert.deepStrictEqual(ungroundedNumbers("the 30-year is at 7.25 percent", [{ rates: { rate_30yr_fixed: 7.25 } }]), []);
   // dates and labels inside string values stay grounded
   assert.deepStrictEqual(ungroundedNumbers("down 0.10 since October 18", [{ deltas: { rate_30yr_fixed: -0.1 }, since: "October 18", sinceDate: "2026-10-18" }]), []);
-  assert.deepStrictEqual(ungroundedNumbers("as of 2026-10-21", [JSON.stringify({ source: "live rates 2026-10-21" })]), []);
+  assert.deepStrictEqual(ungroundedNumbers("as of 2026-10-21", [JSON.stringify({ source: "daily rates 2026-10-21" })]), []);
   // an object payload, nested arrays, and a string payload that is not JSON
   assert.deepStrictEqual(ungroundedNumbers("$485,000", [{ matches: [{ loanBalance: 485000 }] }]), []);
   assert.deepStrictEqual(ungroundedNumbers("412", ["not json, 412 inside"]), []);
@@ -3688,7 +3688,7 @@ test("deadline: a normal turn is unaffected - same reply, usage and sources, and
   const r = await runTurn({ messages: userSays("what's today's rate?"), ctx: brokerCtx, client });
   assert.match(r.reply, /6\.52/);
   assert.equal("error" in r, false);
-  assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+  assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
   assert.deepStrictEqual(r.usage, { inputTokens: 2200, outputTokens: 70 });
   assert.equal(client.optionsSeen.length, 2);
   for (const o of client.optionsSeen) {
@@ -7204,7 +7204,7 @@ test("Charlie T5: a lookup beside the glossary still gets the judge; beside a bo
     assert.equal(judge.calls.length, 0);
     r = await ratesAndLookup("The thirty-year is at 6.52 percent, and the Cowboys won.");
     assert.equal(r.reply, "The thirty-year is at 6.52 percent, and the Cowboys won.");
-    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21", "web — espn.com"]);
+    assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21", "web — espn.com"]);
     assert.equal(judge.calls.length, 0);
   });
 });
@@ -7383,8 +7383,8 @@ test("Final review C-1: a mixed turn that states only the market's figure is spo
   await capturingInfo(async () => {
     // the lookup answered (cited beside the market), and the lookup that only carried a rate failed (not cited)
     for (const [answer, sources] of [
-      [C1_INFLATION, ["live rates 2026-10-21", "web — npr.org"]],
-      [C1_RATE_NEWS, ["live rates 2026-10-21"]],
+      [C1_INFLATION, ["daily rates 2026-10-21", "web — npr.org"]],
+      [C1_RATE_NEWS, ["daily rates 2026-10-21"]],
     ]) {
       for (const said of ["Your live thirty-year is 6.52 percent.", "Inflation is up, and your live thirty-year is 6.52 percent."]) {
         const judge = recordingJudge("FACT");
@@ -7817,7 +7817,7 @@ test("Residual R3: any other real verdict goes on to today's checks; a cited tur
     let adviceJudge = recordingAdviceJudge("NONE");
     let r = await r3Turn(R3_ASK, R3_SAID, { judge: recordingJudge("FACT"), adviceJudge });
     assert.equal(r.reply, R3_SAID);
-    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
     assert.equal(adviceJudge.calls.length, 1);
     // a five-way word is no verdict of the advice judge's, so it is the hand-off (these were spoken before V2)
     for (const verdict of ["FACT", "CHAT", "DEFINE", "LIVE"]) {
@@ -7924,13 +7924,13 @@ test("Residual S2 (round 4, V2): on a cited turn the advice judge is given the w
     assert.equal(adviceJudge.calls.length, 1);
     assert.equal(adviceJudge.calls[0].reply, "The thirty-year is 6.52 percent.");
     assert.equal(r.reply, "The thirty-year is 6.52 percent.");
-    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
     // 4. ADVICE is the hand-off, NONE speaks the whole reply
     r = await r3Turn(R3_ASK, R3_SAID, { adviceJudge: recordingAdviceJudge("ADVICE") });
     assert.equal(r.reply, ADVICE_HANDOFF);
     r = await r3Turn(R3_ASK, R3_SAID, { adviceJudge: recordingAdviceJudge("NONE") });
     assert.equal(r.reply, R3_SAID);
-    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
     // ... and the second reply too
     r = await r3Turn(R3_ASK, "The thirty-year is 6.52 percent. Yes, you can write those off.", { adviceJudge: recordingAdviceJudge("ADVICE") });
     assert.equal(r.reply, ADVICE_HANDOFF);
@@ -7959,7 +7959,7 @@ test("Ruling F-8 (round 4, V2): a reply whose every piece states a figure, with 
     r = await r3Turn(R3_ASK, said, { adviceJudge });
     assert.equal(adviceJudge.calls.length, 1);
     assert.equal(r.reply, said);
-    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
     r = await r3Turn(R3_ASK, said, { adviceJudge: recordingAdviceJudge("FACT") });
     assert.equal(r.reply, ADVICE_HANDOFF);
   });
@@ -8006,7 +8006,7 @@ test("Round 4 V2: on a cited turn the advice judge receives the whole reply exac
       assert.equal(adviceJudge.calls.length, 1, said);
       assert.equal(adviceJudge.calls[0].reply, said, said);
       assert.equal(r.reply, said, said);
-      assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"], said);
+      assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"], said);
     }
   });
 });
@@ -8017,7 +8017,7 @@ test("Round 4 V2: a cited rates turn with no tax, legal or guideline word asks n
     const adviceJudge = recordingAdviceJudge("ADVICE");
     const r = await r3Turn("What's the thirty-year today?", "The thirty-year is 6.52 percent.", { judge, adviceJudge });
     assert.equal(r.reply, "The thirty-year is 6.52 percent.");
-    assert.deepStrictEqual(r.sources, ["live rates 2026-10-21"]);
+    assert.deepStrictEqual(r.sources, ["daily rates 2026-10-21"]);
     assert.deepStrictEqual([adviceJudge.calls.length, judge.calls.length], [0, 0]);
     assert.deepStrictEqual(logged, []);
   });

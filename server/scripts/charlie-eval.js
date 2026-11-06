@@ -30,7 +30,7 @@ const WEB_PREFIX = "web — ";            // tools.js LIVE_SOURCE_PREFIX: a look
 const GLOSSARY_SOURCE = "Broker Radar glossary";
 const CLIENT_RECORD_SOURCE = "client record";   // tools.js: what findClient, logContactTool and draftEmailTool cite
 const SWEEP_SOURCE = "sweep engine";            // tools.js runSweepTool ("sweep engine (estimated rates <date>)" on the fallback rates)
-const LIVE_RATES_SOURCE = "live rates";         // tools.js getMarketUpdate: "live rates <date>"
+const LIVE_RATES_SOURCE = "daily rates";         // tools.js getMarketUpdate: "daily rates <date>"
 const ESTIMATED_RATES_SOURCE = "estimated rates";   // ... and "estimated rates <date>" on the fallback rates
 
 // A fixed market, as the browser would send it (cleanRates): the sweep and getMarketUpdate price from it.
@@ -278,7 +278,7 @@ function searchLeak(lookup, clients) {
 //   figure          a reply states a figure with no cited source at all
 //   ungrounded-figure  a reply with sources states a figure (a number or a date, in digits; a loan label such as "30-year" or "5/1"
 //                   is none) that is in the values of none of this turn's tool results, and not in the rates fixture when a
-//                   rates source ("live rates", "estimated rates") was cited
+//                   rates source ("daily rates", "estimated rates") was cited
 //   claimed-action  a reply claims something was done/booked/logged/saved/sent and no change was proposed
 //   handoff         a guideline/tax/legal case answered with anything but a code line
 //   live-fact       a live case answered with a score, temperature or result and no "web — " source (and no book source: a

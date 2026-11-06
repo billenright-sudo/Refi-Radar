@@ -1290,7 +1290,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         <StatCard label="Refi Opportunities" value={ratesLoading || clientsLoading ? "—" : refiReady.length} sub="clients ready today" accent={refiReady.length > 0 ? C.amber : C.muted} />
         <StatCard label="Potential Monthly Savings" value={ratesLoading || clientsLoading ? "—" : $c(totalSavings / 12)} sub="across all opportunities" accent={C.green} />
         <StatCard label="Total Portfolio" value={clientsLoading ? "—" : scored.length} sub="clients tracked" />
-        <StatCard label="Live Rate (30-Yr)" value={ratesLoading ? "Loading..." : (rates ? $r(rates.rate_30yr_fixed) : "—")} sub={rates?.source || "national average"} accent={C.blue} />
+        <StatCard label="Daily Rate (30-Yr)" value={ratesLoading ? "Loading..." : (rates ? $r(rates.rate_30yr_fixed) : "—")} sub={rates?.source || "national average"} accent={C.blue} />
       </div>
 
       {/* Equity tile row */}
@@ -1333,7 +1333,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         </div>
         {ratesLoading || clientsLoading ? (
           <div style={{ ...card, textAlign: "center", padding: "3rem", color: C.muted }}>
-            {clientsLoading ? "Loading client portfolio…" : "Analyzing portfolio with live rates…"}
+            {clientsLoading ? "Loading client portfolio…" : "Analyzing portfolio with the latest daily rates…"}
           </div>
         ) : topOpps.length === 0 ? (
           <div style={{ ...card, textAlign: "center", padding: "3rem", color: C.muted }}>No strong refi opportunities right now.</div>
@@ -1577,7 +1577,7 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
           )}
         </div>
       ) : (
-        <div style={{ ...card, textAlign: "center", color: C.muted, padding: "2rem" }}>Fetch live rates to see refi analysis.</div>
+        <div style={{ ...card, textAlign: "center", color: C.muted, padding: "2rem" }}>Fetch the latest rates to see refi analysis.</div>
       )}
 
       {/* ── Equity Projection ─────────────────────────────────────────── */}
@@ -1725,7 +1725,7 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
       <div style={{ ...card, background: C.amberBg, borderColor: "#3a2800" }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1rem" }}>
           <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            {rates.source?.startsWith("Estimated") ? "Estimated Rates" : "Live Mortgage Rates"}
+            {rates.source?.startsWith("Estimated") ? "Estimated Rates" : "Daily Mortgage Rates"}
           </span>
           <span style={{ fontSize: 12, color: C.muted }}>Source: {rates.source}</span>
         </div>
@@ -2748,7 +2748,7 @@ export default function App() {
       if (data.rates) {
         setRates(data.rates);
         setLastFetched(new Date());
-        if (!data.success) setRatesError(data.error || "Could not fetch live rates — showing estimates");
+        if (!data.success) setRatesError(data.error || "Could not fetch the latest rates — showing estimates");
       }
     } catch {
       setRatesError("Server error — showing estimated rates");

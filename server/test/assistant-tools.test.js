@@ -68,7 +68,7 @@ const lo1Ctx = { user: user(lo1, "lo", orgA), rates: LIVE, db };
 
 const clientRow = (id) => db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 const clientCount = () => db.prepare("SELECT COUNT(*) AS n FROM clients").get().n;
-// Error-path results must not look like a citation ("client record", "live rates ...").
+// Error-path results must not look like a citation ("client record", "daily rates ...").
 const NON_CITING = /^\([^)]+\)$/;
 
 test.beforeEach(() => {
@@ -82,7 +82,7 @@ test("getMarketUpdate returns the rates, a cited source, and no deltas before an
   assert.equal(typeof r.data.rates.rate_30yr_fixed, "number");
   assert.equal(r.data.hasHistory, false);
   assert.equal(r.data.deltas, null);
-  assert.equal(r.source, "live rates 2026-10-21");
+  assert.equal(r.source, "daily rates 2026-10-21");
 });
 
 test("getMarketUpdate reports day-over-day deltas once a prior-day snapshot exists", () => {
@@ -127,9 +127,9 @@ test("B3: getMarketUpdate gives no move against a snapshot from another provider
   assert.match(desc, /The 5\/1 ARM has no change/);
 });
 
-test("getMarketUpdate cites a dated 'live rates' source, and labels the estimated fallback honestly", () => {
+test("getMarketUpdate cites a dated 'daily rates' source, and labels the estimated fallback honestly", () => {
   const { date, ...undated } = LIVE;
-  assert.match(getMarketUpdate({}, { ...brokerCtx, rates: undated }).source, /^live rates \d{4}-\d{2}-\d{2}$/);
+  assert.match(getMarketUpdate({}, { ...brokerCtx, rates: undated }).source, /^daily rates \d{4}-\d{2}-\d{2}$/);
 
   const est = getMarketUpdate({}, { ...brokerCtx, rates: { ...RATES, date: "2026-10-21", source: "Estimated — live fetch unavailable" } });
   assert.match(est.source, /^estimated rates 2026-10-21$/);
@@ -147,7 +147,7 @@ test("getMarketUpdate on estimated rates never fabricates a delta, even with a p
   assert.equal(r.data.estimated, true);
   assert.equal(r.data.rates.rate_30yr_fixed, RATES.rate_30yr_fixed, "still returns the (labeled) estimate");
   assert.equal(r.source, "estimated rates 2026-10-21");
-  // live rates are not flagged
+  // daily rates are not flagged
   assert.equal(getMarketUpdate({}, brokerCtx).data.estimated, undefined);
 });
 
@@ -220,7 +220,7 @@ test("runSweepTool marks its result estimated when the inputs are the hard-coded
   assert.equal(r.source, "sweep engine (estimated rates 2026-10-21)");
   assert.equal(r.data.estimated, true);
   assert.equal(r.data.counts.total, 2, "still sweeps the book");
-  // live rates stay unmarked
+  // daily rates stay unmarked
   const live = runSweepTool({}, brokerCtx);
   assert.equal(live.source, "sweep engine");
   assert.equal(live.data.estimated, undefined);

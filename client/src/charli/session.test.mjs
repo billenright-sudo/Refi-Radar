@@ -152,7 +152,7 @@ test("a 429 that is the limiter (or has no readable body) is a short break, not 
 test("greeting: waits for rates, then asks /turn once with greeting:true, rates, localHour and localDate", async () => {
   const { session, server, spoken } = setup({
     rates: null,
-    routes: { "POST /api/assistant/turn": queue(turnReply("Good morning, Ann. Want a market update?", { sources: ["sweep engine", "live rates 2026-10-25"], turnId: "g1" })) },
+    routes: { "POST /api/assistant/turn": queue(turnReply("Good morning, Ann. Want a market update?", { sources: ["sweep engine", "daily rates 2026-10-25"], turnId: "g1" })) },
   });
   const opened = session.open();
   await Promise.resolve();
@@ -166,7 +166,7 @@ test("greeting: waits for rates, then asks /turn once with greeting:true, rates,
   const t = lastTurn(session);
   assert.equal(t.role, "assistant");
   assert.equal(t.content, "Good morning, Ann. Want a market update?");
-  assert.deepEqual(t.sources, ["sweep engine", "live rates 2026-10-25"]);
+  assert.deepEqual(t.sources, ["sweep engine", "daily rates 2026-10-25"]);
   assert.equal(t.turnId, "g1");
   assert.deepEqual(spoken, [{ text: t.content, turnId: "g1" }]);
   assert.equal(session.getState().busy, false);
@@ -242,7 +242,7 @@ const BRIEFING_TEXT = "Good morning, Ann. The 30-year is at 6.52%. Want to start
 const STRIP = { rate30: 6.52, move30: -0.08, asOf: "2026-10-27", opportunities: 2, checkInsDue: 1, nextEvent: { title: "Call with Lucy", start: "2026-10-28T10:00:00" } };
 const FOLLOW_UP = { recId: 7, clientId: 41, name: "Lucy Tran", source: "briefing" };
 const briefingOf = (extra = {}) => ({ kind: "morning", strip: { ...STRIP }, followUp: null, ...extra });
-const briefingReply = (briefing, extra = {}) => turnReply(BRIEFING_TEXT, { briefing, sources: ["live rates 2026-10-27"], turnId: "b1", ...extra });
+const briefingReply = (briefing, extra = {}) => turnReply(BRIEFING_TEXT, { briefing, sources: ["daily rates 2026-10-27"], turnId: "b1", ...extra });
 const briefingSetup = (briefing, { options = {}, routes = {}, more = [] } = {}) =>
   setup({ options, routes: { "POST /api/assistant/turn": queue(briefingReply(briefing), ...more), ...routes } });
 
@@ -255,7 +255,7 @@ test("briefing: speakGreeting:false shows the briefing turn in the transcript an
   assert.equal(t.kind, "message");
   assert.equal(t.inHistory, true);
   assert.equal(t.turnId, "b1");
-  assert.deepEqual(t.sources, ["live rates 2026-10-27"]);
+  assert.deepEqual(t.sources, ["daily rates 2026-10-27"]);
   const b = session.getState().briefing;
   assert.equal(b.kind, "morning");
   assert.equal(b.strip.rate30, 6.52);
@@ -594,7 +594,7 @@ test("brief requests: with a briefing, each phrase is answered here (no /turn), 
     const [mine, hers] = turns.slice(-2);
     assert.deepEqual([mine.role, mine.content, mine.inHistory], ["user", phrase.trim(), true], phrase);
     assert.deepEqual([hers.role, hers.content, hers.kind, hers.inHistory, hers.turnId], ["assistant", BRIEFING_TEXT, "message", true, "b1"], phrase);
-    assert.deepEqual(hers.sources, ["live rates 2026-10-27"], phrase);
+    assert.deepEqual(hers.sources, ["daily rates 2026-10-27"], phrase);
     assert.deepEqual(spoken, [{ text: BRIEFING_TEXT, turnId: "b1" }], phrase);
     assert.equal(session.getState().busy, false);
   }
@@ -707,7 +707,7 @@ test("a normal turn sends plain {role, content} history ending with the user's m
     routes: {
       "POST /api/assistant/turn": queue(
         turnReply("Good morning. Want a market update?", { turnId: "g" }),
-        turnReply("The 30-year is at 6.5%.", { sources: ["live rates 2026-10-25", 42, "", "  sweep engine "], turnId: "t1" }),
+        turnReply("The 30-year is at 6.5%.", { sources: ["daily rates 2026-10-25", 42, "", "  sweep engine "], turnId: "t1" }),
       ),
     },
   });
@@ -730,7 +730,7 @@ test("a normal turn sends plain {role, content} history ending with the user's m
   const [, user, assistant] = session.getState().turns;
   assert.equal(user.role, "user");
   assert.equal(assistant.content, "The 30-year is at 6.5%.");
-  assert.deepEqual(assistant.sources, ["live rates 2026-10-25", "sweep engine"], "only real source strings are kept");
+  assert.deepEqual(assistant.sources, ["daily rates 2026-10-25", "sweep engine"], "only real source strings are kept");
   assert.equal(session.getState().pending, null);
   assert.deepEqual(spoken.at(-1), { text: "The 30-year is at 6.5%.", turnId: "t1" });
 });
@@ -1225,7 +1225,7 @@ test("B8: a can't-verify or guideline hand-off reply is marked 'unverified' (the
   const { session } = setup({
     routes: {
       "POST /api/assistant/turn": queue(
-        turnReply(CANT_VERIFY), turnReply(GUIDELINE_HANDOFF), turnReply("The 30-year is at 6.5%.", { sources: ["live rates 2026-10-25"] }),
+        turnReply(CANT_VERIFY), turnReply(GUIDELINE_HANDOFF), turnReply("The 30-year is at 6.5%.", { sources: ["daily rates 2026-10-25"] }),
         turnReply(`LTV is loan to value. ${CANT_VERIFY}`, { sources: ["Broker Radar glossary"] }),
       ),
     },
