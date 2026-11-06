@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gateScreen, bannerText, money, totalLine, billingLines, chipLabel, formatDate, registerExtras, removeConfirmText } from "./billing.mjs";
+import {
+  gateScreen, bannerText, money, totalLine, billingLines, chipLabel, formatDate, registerExtras, removeConfirmText,
+  testerPriceLine, isGateResponse, createGateWatch, stillFinishing, overviewChip, publicFlags,
+} from "./billing.mjs";
 
 const NOW = Date.UTC(2026, 10, 5, 12);
 const at = (m, d, y = 2026) => Date.UTC(y, m - 1, d, 12);
@@ -80,9 +83,110 @@ test("registerExtras: all on when billing is on, all off otherwise", () => {
   assert.deepEqual(registerExtras(undefined), { showPrice: false, showTerms: false, showTesterCode: false });
 });
 
-test("removeConfirmText: accepted and pending", () => {
-  assert.equal(removeConfirmText({ inviteAccepted: true, firstName: "Jane", lastName: "Smith", email: "j@x.com" }),
+test("removeConfirmText: accepted with billing on and off, and pending", () => {
+  const jane = { inviteAccepted: true, firstName: "Jane", lastName: "Smith", email: "j@x.com" };
+  assert.equal(removeConfirmText(jane, { billingOn: true }),
     "Remove Jane Smith? They'll be signed out right away, their clients move to you, and you'll stop paying for them.");
+  // billing off (the live site today): nothing about paying
+  assert.equal(removeConfirmText(jane, { billingOn: false }),
+    "Remove Jane Smith? They'll be signed out right away and their clients move to you.");
+  assert.equal(removeConfirmText(jane), "Remove Jane Smith? They'll be signed out right away and their clients move to you.");
+  assert.equal(removeConfirmText({ ...jane, inviteAccepted: false }, { billingOn: true }), "Cancel the invitation to j@x.com?");
   assert.equal(removeConfirmText({ inviteAccepted: false, firstName: "Jane", lastName: "Smith", email: "j@x.com" }),
     "Cancel the invitation to j@x.com?");
+});
+
+test("testerPriceLine: a tester month with no card says when the charge starts and how much (I4)", () => {
+  const tester = { ...base, testerUntil: at(11, 30), monthlyTotalCents: 9900, hasCard: false };
+  assert.equal(testerPriceLine(tester, NOW), "From Nov 30, 2026 we'll charge $99 a month until you cancel.");
+  assert.equal(testerPriceLine({ ...tester, users: 5, monthlyTotalCents: 29500 }, NOW), "From Nov 30, 2026 we'll charge $295 a month until you cancel.");
+  // a tester whose Stripe trial is running (no card yet) too
+  assert.equal(testerPriceLine({ ...tester, status: "trialing", trialEnd: at(11, 30) }, NOW), "From Nov 30, 2026 we'll charge $99 a month until you cancel.");
+  // the total from the user count when the server's own number is missing
+  assert.equal(testerPriceLine({ ...tester, users: 3, monthlyTotalCents: undefined }, NOW), "From Nov 30, 2026 we'll charge $197 a month until you cancel.");
+  // nothing otherwise: a card on file, an exempt account, the month over or never given, cancelled, billing off, no billing at all
+  assert.equal(testerPriceLine({ ...tester, hasCard: true }, NOW), null);
+  assert.equal(testerPriceLine({ ...tester, exempt: true }, NOW), null);
+  assert.equal(testerPriceLine({ ...tester, testerUntil: at(11, 1) }, NOW), null);
+  assert.equal(testerPriceLine({ ...tester, testerUntil: null }, NOW), null);
+  assert.equal(testerPriceLine({ ...tester, cancelAtPeriodEnd: true }, NOW), null);
+  assert.equal(testerPriceLine({ ...tester, enabled: false }, NOW), null);
+  assert.equal(testerPriceLine(null, NOW), null);
+  assert.equal(testerPriceLine({ enabled: false }), null);
+});
+
+test("isGateResponse: a 402 from our own /api/ only", () => {
+  const ORIGIN = "https://app.test";
+  assert.equal(isGateResponse("/api/clients", 402), true);
+  assert.equal(isGateResponse("/api/org/stats?x=1", 402, ORIGIN), true);
+  assert.equal(isGateResponse(`${ORIGIN}/api/clients`, 402, ORIGIN), true);
+  assert.equal(isGateResponse(new URL(`${ORIGIN}/api/clients`), 402, ORIGIN), true);
+  assert.equal(isGateResponse({ url: `${ORIGIN}/api/rates` }, 402, ORIGIN), true, "a Request");
+  for (const status of [200, 401, 403, 404, 409, 500]) assert.equal(isGateResponse("/api/clients", status, ORIGIN), false, String(status));
+  assert.equal(isGateResponse("/terms", 402, ORIGIN), false);
+  assert.equal(isGateResponse("/apiary", 402, ORIGIN), false);
+  assert.equal(isGateResponse("https://other.test/api/clients", 402, ORIGIN), false, "another site");
+  assert.equal(isGateResponse("https://other.test/api/clients", 402), false);
+  assert.equal(isGateResponse(undefined, 402, ORIGIN), false);
+  assert.equal(isGateResponse("not a url", 402, ORIGIN), false);
+});
+
+test("createGateWatch: a burst of 402s reads the status once; a later one reads it again; stop cancels", async () => {
+  const timers = [];
+  const setTimer = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  const cleared = [];
+  const clearTimer = (id) => { cleared.push(id); };
+  let reads = 0;
+  let finishRead;
+  const watch = createGateWatch({ onGate: () => { reads++; return new Promise((r) => { finishRead = r; }); }, delayMs: 250, setTimer, clearTimer });
+  watch.saw("/api/clients", 402);
+  watch.saw("/api/org/stats", 402);
+  watch.saw("/api/notifications", 402);
+  watch.saw("/api/clients", 200);
+  assert.equal(timers.length, 1, "one status read scheduled for the burst");
+  assert.equal(timers[0].ms, 250);
+  timers[0].fn();
+  assert.equal(reads, 1);
+  watch.saw("/api/clients", 402);
+  assert.equal(timers.length, 1, "not while that read is still running");
+  finishRead();
+  await new Promise((r) => setTimeout(r, 0));
+  watch.saw("/api/clients", 402);
+  assert.equal(timers.length, 2, "a later 402 reads it again");
+  watch.stop();
+  assert.deepEqual(cleared, [2]);
+  // a failed read never stops the watch
+  const failing = createGateWatch({ onGate: () => Promise.reject(new Error("offline")), delayMs: 1, setTimer, clearTimer });
+  failing.saw("/api/clients", 402);
+  timers.at(-1).fn();
+  await new Promise((r) => setTimeout(r, 0));
+  failing.saw("/api/clients", 402);
+  assert.equal(timers.length, 4);
+});
+
+test("stillFinishing: back from Stripe, the status is read again while access is not open (M5)", () => {
+  assert.equal(stillFinishing({ access: { ok: false, reason: "needs_card" }, billing: { status: "none" } }), true);
+  // a status that has moved on but still locks (an incomplete first payment, say) keeps waiting: the webhook may still land
+  assert.equal(stillFinishing({ access: { ok: false, reason: "needs_card" }, billing: { status: "incomplete" } }), true);
+  assert.equal(stillFinishing({ access: { ok: false, reason: "ended" }, billing: { status: "canceled" } }), true);
+  assert.equal(stillFinishing({ access: { ok: true }, billing: { status: "trialing" } }), false);
+  assert.equal(stillFinishing(null), false);
+});
+
+test("overviewChip: the plan chip only with billing on (I2)", () => {
+  const stats = { loCount: 2, totalClients: 9, plan: "trial", trialEnds: "2026-11-30T12:00:00.000Z" };
+  assert.equal(overviewChip(stats, false), null, "billing off: the live site shows no chip today");
+  assert.equal(overviewChip({ ...stats, plan: "trialing" }, undefined), null);
+  assert.deepEqual(overviewChip({ ...stats, plan: "trialing" }, true), { label: "Free trial", trialEnd: "Nov 30, 2026" });
+  assert.deepEqual(overviewChip({ ...stats, plan: "active", trialEnds: null }, true), { label: "Active", trialEnd: null });
+  assert.equal(overviewChip({ ...stats, plan: null }, true), null);
+  assert.equal(overviewChip(null, true), null);
+});
+
+test("publicFlags: billing and feedback from /api/billing/public; anything else is off", () => {
+  assert.deepEqual(publicFlags({ enabled: true, feedback: true }), { billing: true, feedback: true });
+  assert.deepEqual(publicFlags({ enabled: false, feedback: true }), { billing: false, feedback: true });
+  assert.deepEqual(publicFlags({ enabled: true }), { billing: true, feedback: false });
+  assert.deepEqual(publicFlags(null), { billing: false, feedback: false });
+  assert.deepEqual(publicFlags({ enabled: "yes", feedback: 1 }), { billing: false, feedback: false }, "only a true is on");
 });

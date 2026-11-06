@@ -62,6 +62,69 @@ export function billingLines(billing, nowMs) {
   return lines;
 }
 
+// A tester month with no card yet (the banner and the Billing page): what adding one starts, and when (I4). DRAFT for Bill.
+// null in every other state. The date is the month's end; the total is the server's own number for today's user count.
+export function testerPriceLine(billing, nowMs = Date.now()) {
+  if (!billing || !billing.enabled || billing.exempt || billing.hasCard || billing.cancelAtPeriodEnd) return null;
+  if (!(billing.testerUntil > nowMs)) return null;
+  const users = Math.max(1, Number(billing.users) || 1);
+  const total = Number.isFinite(billing.monthlyTotalCents) ? billing.monthlyTotalCents : BASE_CENTS + ADDITIONAL_CENTS * (users - 1);
+  return `From ${formatDate(billing.testerUntil)} we'll charge ${money(total)} a month until you cancel.`;
+}
+
+// Whether a response means the billing gate now stands in the way (I3): a 402 from this site's own /api/. `url` is what fetch was
+// given (a path, a URL or a Request); `origin` is the page's own (window.location.origin).
+export function isGateResponse(url, status, origin = "") {
+  if (status !== 402) return false;
+  const text = typeof url === "string" ? url : (url && (url.href || url.url)) || "";
+  if (text.startsWith("/api/")) return true;
+  try {
+    const u = new URL(text);
+    return Boolean(origin) && u.origin === origin && u.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
+// Watches responses for the gate (I3): the first 402 schedules one status read `delayMs` later, so a burst of them (a page firing
+// several requests at once) reads the status once; none is scheduled while a read is still running. Timers come in for tests.
+export function createGateWatch({ onGate, delayMs = 300, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let timer = null;
+  let reading = false;
+  return {
+    saw(url, status, origin) {
+      if (timer !== null || reading || !isGateResponse(url, status, origin)) return;
+      timer = setTimer(() => {
+        timer = null;
+        reading = true;
+        let read;
+        try { read = Promise.resolve(onGate()); } catch { read = Promise.resolve(); }
+        read.catch(() => {}).finally(() => { reading = false; });
+      }, delayMs);
+    },
+    stop() {
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+    },
+  };
+}
+
+// Back from Stripe (?billing=done): keep reading the status (up to 10 times, a second apart) while access is still closed (M5).
+export function stillFinishing(st) {
+  return Boolean(st) && !(st.access && st.access.ok);
+}
+
+// The Overview's plan chip, only with billing on (I2): with billing off the live site shows none, as before billing.
+export function overviewChip(stats, billingOn) {
+  if (!billingOn || !stats || !stats.plan) return null;
+  return { label: chipLabel(stats.plan, stats.trialEnds), trialEnd: stats.trialEnds ? formatDate(Date.parse(stats.trialEnds)) : null };
+}
+
+// GET /api/billing/public's two switches; anything but a true is off (a failed read too).
+export function publicFlags(d) {
+  return { billing: Boolean(d) && d.enabled === true, feedback: Boolean(d) && d.feedback === true };
+}
+
 // The Overview chip's word for /org/stats' `plan` (a billing status, or "exempt") when billing is on.
 export function chipLabel(plan, trialEnds) {
   switch (plan) {
@@ -80,8 +143,10 @@ export function registerExtras(enabled) {
   return { showPrice: on, showTerms: on, showTesterCode: on };
 }
 
-// The question before removing a loan officer (accepted) or cancelling an invitation (pending).
-export function removeConfirmText(lo) {
-  if (lo.inviteAccepted) return `Remove ${lo.firstName} ${lo.lastName}? They'll be signed out right away, their clients move to you, and you'll stop paying for them.`;
-  return `Cancel the invitation to ${lo.email}?`;
+// The question before removing a loan officer (accepted) or cancelling an invitation (pending). The part about paying is there only
+// while billing is on for the brokerage (I2): with billing off the live site says nothing about a charge.
+export function removeConfirmText(lo, { billingOn = false } = {}) {
+  if (!lo.inviteAccepted) return `Cancel the invitation to ${lo.email}?`;
+  if (billingOn) return `Remove ${lo.firstName} ${lo.lastName}? They'll be signed out right away, their clients move to you, and you'll stop paying for them.`;
+  return `Remove ${lo.firstName} ${lo.lastName}? They'll be signed out right away and their clients move to you.`;
 }

@@ -11,7 +11,10 @@ import { emailChangedNotice } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem } from "./auth/signup.mjs";
 import ImportView from "./import/ImportView.jsx";
-import { gateScreen, bannerText, billingLines, chipLabel, registerExtras, removeConfirmText, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE } from "./billing/billing.mjs";
+import {
+  gateScreen, bannerText, billingLines, registerExtras, removeConfirmText, testerPriceLine, createGateWatch, stillFinishing, overviewChip,
+  publicFlags, SPEC_LINE, RETURNING_LINE, LO_LOCKED_LINE,
+} from "./billing/billing.mjs";
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
 
@@ -396,7 +399,7 @@ const RefiRadarLogo = () => (
   </div>
 );
 
-const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
+const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn, feedbackOn }) => {
   const { main: nav, broker: brokerNav, bottom: bottomNav } = navGroups(user?.role, { billing: billingOn });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
@@ -440,7 +443,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
       )}
 
       <div style={{ marginTop: "auto" }}>
-        {feedbackOpen && (
+        {feedbackOpen && feedbackOn && (
           <div style={{ position: "fixed", left: 236, bottom: 20, width: 340, maxWidth: "calc(100vw - 252px)", zIndex: 60 }}>
             <FeedbackPanel page={view} onClose={() => setFeedbackOpen(false)} />
           </div>
@@ -454,7 +457,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
             </button>
           );
         })}
-        {user && (
+        {user && feedbackOn && (
           <button onClick={() => setFeedbackOpen((open) => !open)} data-testid="nav-feedback" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 9, background: feedbackOpen ? C.surfaceHi : "transparent", color: feedbackOpen ? C.text : C.muted, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: feedbackOpen ? 600 : 400, marginBottom: 4, width: "100%", textAlign: "left" }}>
             <Icon name="edit" size={16} color={feedbackOpen ? C.amber : C.muted} />
             Send feedback
@@ -486,7 +489,7 @@ const Sidebar = ({ view, setView, refiCount, user, onLogout, billingOn }) => {
 // drawn over the sign-in page too.
 const NoticeBanner = ({ notice, onClose }) => notice && (
   <div role="status" data-testid="email-changed-notice" style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 100, width: "max-content", maxWidth: "calc(100vw - 32px)", display: "flex", alignItems: "flex-start", gap: 12, background: notice.bad ? C.redBg : C.greenBg, border: `1px solid ${notice.bad ? C.red : C.green}`, color: notice.bad ? C.red : C.green, borderRadius: 10, padding: "10px 14px", fontSize: 13.5, lineHeight: 1.45 }}>
-    <span>{notice.text}</span>
+    <span>{notice.text}{notice.sub && <span style={{ display: "block", marginTop: 4 }}>{notice.sub}</span>}</span>
     {notice.action && <button onClick={notice.action.onClick} style={{ background: "none", border: "none", color: C.amber, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, padding: 0, flexShrink: 0 }}>{notice.action.label}</button>}
     <button onClick={onClose} aria-label="Dismiss" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex", flexShrink: 0 }}>
       <Icon name="x" size={14} color={notice.bad ? C.red : C.green} />
@@ -1156,7 +1159,8 @@ const OrgStatsCard = ({ billingOn }) => {
   }, []);
   if (!stats) return null;
 
-  const trialEnd = stats.trialEnds ? new Date(stats.trialEnds).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null;
+  // The plan chip shows only with billing on: with billing off the live site has never shown one (I2).
+  const chip = overviewChip(stats, billingOn);
 
   return (
     <div style={{ ...card, background: "#0a1525", borderColor: "#1e3a5a", marginBottom: "1.5rem", display: "flex", gap: "2rem", alignItems: "center", flexWrap: "wrap" }}>
@@ -1170,12 +1174,12 @@ const OrgStatsCard = ({ billingOn }) => {
           <span style={{ ...mono, fontSize: 22, fontWeight: 700, color: C.text }}>{stats.totalClients ?? 0}</span>
           <span style={{ color: C.muted, fontSize: 13, marginLeft: 6 }}>Total Clients</span>
         </div>
-        {stats.plan && (
+        {chip && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ background: C.amberBg, color: C.amber, borderRadius: 6, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>
-              {billingOn ? chipLabel(stats.plan, stats.trialEnds) : stats.plan === "trial" ? "Trial" : stats.plan}
+              {chip.label}
             </span>
-            {trialEnd && <span style={{ color: C.muted, fontSize: 12 }}>expires {trialEnd}</span>}
+            {chip.trialEnd && <span style={{ color: C.muted, fontSize: 12 }}>expires {chip.trialEnd}</span>}
           </div>
         )}
       </div>
@@ -1918,7 +1922,7 @@ const EditClient = ({ client, setClients, setSelected, setView }) => {
 // ---------------------------------------------------------------------------
 // My Team view (broker only)
 // ---------------------------------------------------------------------------
-const MyTeam = ({ setView, setSelectedLO }) => {
+const MyTeam = ({ setView, setSelectedLO, billingOn }) => {
   const [los, setLos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showInvite, setShowInvite] = useState(false);
@@ -1966,7 +1970,7 @@ const MyTeam = ({ setView, setSelectedLO }) => {
   // Remove an accepted loan officer or cancel a pending invitation, after a confirm; then the list is read again.
   const removeLo = async (lo) => {
     if (lo.role === "broker") return;
-    if (!window.confirm(removeConfirmText(lo))) return;
+    if (!window.confirm(removeConfirmText(lo, { billingOn }))) return;
     setRemoveError("");
     try {
       const res = await fetch(`/api/org/los/${lo.id}`, { method: "DELETE" });
@@ -2360,7 +2364,7 @@ const FeedbackPanel = ({ page, onClose }) => {
   );
 };
 
-const BillingGate = ({ screen, onSignOut, onRecheck }) => {
+const BillingGate = ({ screen, onSignOut, onRecheck, feedbackOn }) => {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2379,8 +2383,9 @@ const BillingGate = ({ screen, onSignOut, onRecheck }) => {
   const para = { color: C.muted, fontSize: 14, lineHeight: 1.6, marginBottom: "1.25rem" };
   const exportLink = <a href={EXPORT_URL} download style={{ ...textButton, textDecoration: "none" }}>Download my clients (CSV)</a>;
   const signOut = <button onClick={onSignOut} style={textButton}>Sign out</button>;
-  const feedbackButton = <button onClick={() => setFeedbackOpen((open) => !open)} style={textButton}>Send feedback</button>;
-  const feedbackPanel = feedbackOpen && <div style={{ marginTop: "1rem" }}><FeedbackPanel page={screen} onClose={() => setFeedbackOpen(false)} /></div>;
+  // Send feedback only when it has an inbox (FEEDBACK_TO): otherwise there is no button at all (I2).
+  const feedbackButton = feedbackOn && <button onClick={() => setFeedbackOpen((open) => !open)} style={textButton}>Send feedback</button>;
+  const feedbackPanel = feedbackOn && feedbackOpen && <div style={{ marginTop: "1rem" }}><FeedbackPanel page={screen} onClose={() => setFeedbackOpen(false)} /></div>;
   return (
     <AuthCard>
       {screen === "terms" && (<>
@@ -2424,11 +2429,13 @@ const BillingView = ({ billing, onRefresh }) => {
     setBusy(true); setError("");
     try { await openStripe(path); } catch (e) { setError(e.message); setBusy(false); }
   };
+  const priceLine = testerPriceLine(billing, Date.now());   // a tester month with no card: the charge adding one starts (I4)
   return (
     <div style={{ maxWidth: 560 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: "1.25rem" }}>Billing</h1>
       <div style={{ ...card }}>
         {billingLines(billing, Date.now()).map((line) => <div key={line} style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8, color: C.text }}>{line}</div>)}
+        {priceLine && <div style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8, color: C.muted }}>{priceLine}</div>}
         {errorBox(error)}
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: "1rem", flexWrap: "wrap" }}>
           {billing.hasCustomer
@@ -2445,6 +2452,7 @@ export default function App() {
   const [authState, setAuthState] = useState("loading"); // "loading" | "unauthenticated" | "authenticated"
   const [user, setUser] = useState(null);
   const [billingPublicOn, setBillingPublicOn] = useState(false);   // GET /api/billing/public, read once at boot; a failure means off
+  const [feedbackOn, setFeedbackOn] = useState(false);             // the same read: Send feedback has an inbox (FEEDBACK_TO)
   const [billingState, setBillingState] = useState(null);  // { access, billing, role } from /api/billing/status; null = unknown (the app shows)
   const [finishing, setFinishing] = useState(false);        // back from Stripe (?billing=done), waiting for the subscription to land
   const [bannerShut, setBannerShut] = useState(false);
@@ -2506,7 +2514,7 @@ export default function App() {
   useEffect(() => {
     fetch("/api/billing/public")
       .then(r => r.ok ? r.json() : null)
-      .then(d => setBillingPublicOn(Boolean(d && d.enabled)))
+      .then(d => { const flags = publicFlags(d); setBillingPublicOn(flags.billing); setFeedbackOn(flags.feedback); })
       .catch(() => {});
   }, []);
 
@@ -2521,13 +2529,27 @@ export default function App() {
   }, []);
   const refreshBilling = useCallback(async () => { const st = await readBilling(); if (st) setBillingState(st); return st; }, [readBilling]);
 
+  // A 402 in the middle of a session (a trial ended, a payment failed, the terms changed) shows the gate (I3): every response from
+  // our /api/ goes past one watch, and a 402 reads the billing status once (a burst of them reads it once), so the gate page appears:
+  // "terms" for everyone, "lo_locked" for a loan officer. One wrapper, put back as it was when App unmounts.
+  useEffect(() => {
+    const original = window.fetch;
+    const watch = createGateWatch({ onGate: refreshBilling });
+    window.fetch = async (...args) => {
+      const res = await original.apply(window, args);
+      watch.saw(args[0], res.status, window.location.origin);
+      return res;
+    };
+    return () => { watch.stop(); window.fetch = original; };
+  }, [refreshBilling]);
+
   // After sign-in (or /me): read the billing status, then show the app or a gate. Back from Stripe: read it up to 10 times, a second
-  // apart, until the access is open or the subscription is no longer "none".
+  // apart, while the access is still closed (M5: the webhook may land a moment later than the broker does).
   const enterApp = useCallback(async () => {
     let st = await readBilling();
     if (billingReturn.current === "done" && st) {
       setFinishing(true);
-      for (let i = 0; i < 10 && !st.access.ok && (!st.billing || st.billing.status === "none"); i++) {
+      for (let i = 0; i < 10 && stillFinishing(st); i++) {
         await new Promise((r) => setTimeout(r, 1000));
         st = (await readBilling()) || st;
       }
@@ -2786,14 +2808,18 @@ export default function App() {
     return (
       <div style={{ fontFamily: "'Sora', 'Segoe UI', sans-serif", background: C.bg, minHeight: "100vh", color: C.text }}>
         <style>{globalStyles}</style>
-        <BillingGate screen={gate} onSignOut={handleLogout} onRecheck={refreshBilling} />
+        <BillingGate screen={gate} onSignOut={handleLogout} onRecheck={refreshBilling} feedbackOn={feedbackOn} />
       </div>
     );
   }
 
   const bannerKind = billingState?.billing?.banner;
   const bannerLine = user?.role === "broker" && !bannerShut ? bannerText(bannerKind, billingState?.billing?.testerUntil) : null;
-  const billingBanner = bannerLine ? { text: bannerLine, bad: bannerKind === "past_due", action: { label: bannerKind === "past_due" ? "Update card" : "Add card", onClick: () => openStripe("/api/billing/card").catch((e) => window.alert(e.message)) } } : null;
+  // Under the tester-month banner, the charge "Add card" starts (I4)
+  const bannerSub = bannerKind === "tester_ending" ? testerPriceLine(billingState?.billing, Date.now()) : null;
+  const billingBanner = bannerLine ? { text: bannerLine, sub: bannerSub, bad: bannerKind === "past_due", action: { label: bannerKind === "past_due" ? "Update card" : "Add card", onClick: () => openStripe("/api/billing/card").catch((e) => window.alert(e.message)) } } : null;
+  // "you'll stop paying for them" only where the brokerage pays: billing on and not exempt (I2)
+  const teamBillingOn = billingOn && !billingState?.billing?.exempt;
 
   // Authenticated app
   return (
@@ -2802,7 +2828,7 @@ export default function App() {
       <NoticeBanner notice={emailNotice} onClose={() => setEmailNotice(null)} />
       <NoticeBanner notice={billingBanner} onClose={() => setBannerShut(true)} />
       <div style={{ display: "flex", minHeight: "100vh" }}>
-        <Sidebar view={view} setView={setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} billingOn={user?.role === "broker" && billingOn} />
+        <Sidebar view={view} setView={setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} billingOn={user?.role === "broker" && billingOn} feedbackOn={feedbackOn} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {/* Header bar */}
           <header style={{ height: 52, background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 2rem", flexShrink: 0 }}>
@@ -2818,7 +2844,7 @@ export default function App() {
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}
             {view === "client-detail" && selected && <ClientDetail client={selected} rates={rates} setView={setView} onDelete={handleDeleteClient} />}
             {view === "edit"          && selected && <EditClient client={selected} setClients={setClients} setSelected={setSelected} setView={setView} />}
-            {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} />}
+            {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} billingOn={teamBillingOn} />}
             {view === "lo-portal"     && selectedLO && user?.role === "broker" && <LOPortal lo={selectedLO} rates={rates} setView={setView} />}
             {view === "billing"       && user?.role === "broker" && billingOn && <BillingView billing={billingState.billing} onRefresh={refreshBilling} />}
             {view === "import"        && <ImportView ui={{ C, card, mono, Icon, $c }} onImported={() => fetch("/api/clients").then(r => r.json()).then(d => { if (d.success) setClients(d.clients); }).catch(() => {})} onDone={() => setView("clients")} />}
