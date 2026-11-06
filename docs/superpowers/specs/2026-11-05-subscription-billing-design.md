@@ -184,6 +184,8 @@ Cloud one and mail comes from a Gmail account).
 
 ## 10. Wording for Bill's approval before release
 
+Bill approved the base list below and the final-fix additions on 2026-11-05 ("wording approved"). The round-2 additions are still awaiting his look.
+
 Sign-up price line (6.1.1) · Start your free trial (6.1.2) · test month and its banner (6.1.3) · "That tester code isn't valid." ·
 "Please agree to the Terms of Service and Privacy Policy." · the confirmation email (6.1.5) · past-due banner, lock pages, "Your
 subscription has ended", "Restart subscription", "Download my clients (CSV)" (6.2, 6.8) · Billing page lines (6.5) · "We've updated
