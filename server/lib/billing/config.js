@@ -48,7 +48,11 @@ function billingConfig(env = {}) {
   };
 }
 
+// The inbox Send feedback goes to, or null: the app's billing config when it carries the setting (its own null included), else the
+// environment (index.js's fallback config after a failed start-up has no feedbackTo, and tests may set no config at all).
+const feedbackAddress = (config, env = process.env) => (config?.feedbackTo !== undefined ? config.feedbackTo : billingConfig(env).feedbackTo) || null;
+
 module.exports = {
-  billingConfig, monthlyTotalCents,
+  billingConfig, monthlyTotalCents, feedbackAddress,
   BASE_CENTS, ADDITIONAL_CENTS, TRIAL_DAYS, TESTER_DAYS, TESTER_WARN_DAYS, STALE_MS, TERMS_VERSION, PRIVACY_VERSION,
 };

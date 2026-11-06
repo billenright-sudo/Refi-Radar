@@ -126,6 +126,24 @@ test("no FEEDBACK_TO (or no billing config at all): stored, answered, nothing em
   assert.equal(sent.length, 0);
 });
 
+test("a billing config without feedbackTo (index.js's start-up fallback) reads FEEDBACK_TO from the environment", async () => {
+  const u = newUser();
+  const saved = process.env.FEEDBACK_TO;
+  process.env.FEEDBACK_TO = " env-owner@example.test ";
+  try {
+    app.set("billingConfig", { enabled: false });   // what index.js puts on the app when billing's start-up itself failed
+    assert.equal((await send(u, { message: "via env", page: "home" })).status, 200);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].to, "env-owner@example.test");
+    // a config that does carry it (null: FEEDBACK_TO was not set when it was read) is believed
+    app.set("billingConfig", { enabled: false, feedbackTo: null });
+    assert.equal((await send(u, { message: "not sent", page: "home" })).status, 200);
+    assert.equal(sent.length, 1);
+  } finally {
+    if (saved === undefined) delete process.env.FEEDBACK_TO; else process.env.FEEDBACK_TO = saved;
+  }
+});
+
 test("a failing or throwing send still answers 200 and keeps the row", async () => {
   const u = newUser();
   app.set("sendFeedback", async () => { throw new Error("smtp down"); });

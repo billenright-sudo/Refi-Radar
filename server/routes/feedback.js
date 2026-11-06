@@ -9,7 +9,7 @@ const rateLimit = require("express-rate-limit");
 const db = require("../db");
 const email = require("../email");
 const { requireAuth } = require("../middleware/auth");
-const { billingConfig } = require("../lib/billing/config");
+const { feedbackAddress } = require("../lib/billing/config");
 
 const router = express.Router();
 
@@ -27,10 +27,8 @@ const feedbackLimiter = rateLimit({
   message: { success: false, error: "Too many messages — please try again in an hour" },
 });
 
-const feedbackToOf = (req) => {
-  const config = req.app.get("billingConfig");
-  return (config ? config.feedbackTo : billingConfig(process.env).feedbackTo) || null;
-};
+// The same rule GET /api/billing/public uses to tell the page whether to show "Send feedback".
+const feedbackToOf = (req) => feedbackAddress(req.app.get("billingConfig"));
 
 router.post("/", requireAuth, feedbackLimiter, async (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";

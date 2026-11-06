@@ -1,7 +1,7 @@
 "use strict";
 // /api/billing: what the client asks about billing (spec §6.2, §6.5). This router is NOT behind the access gate: a locked brokerage
 // still reads its status, adds a card and takes its clients out (H11). The Stripe webhook is its own router (billingWebhook.js).
-//   GET  /public      (no sign-in) -> { enabled }
+//   GET  /public      (no sign-in) -> { enabled, feedback }: feedback is true when Send feedback has an inbox (FEEDBACK_TO)
 //   GET  /status      (signed in)  -> { success, access, role, billing }: `billing` is null for a loan officer (they never see a price
 //                                    or a Stripe detail), { enabled: false } for a broker while billing is off, else the brokerage's
 //                                    plan (see brokerView). Before answering it repairs a state that may be stale (H4): a Checkout
@@ -28,7 +28,7 @@ const { checkoutPlan } = require("../lib/billing/plan");
 const { seatCount, syncSeats } = require("../lib/billing/seats");
 const { storeSubscription } = require("../lib/billing/events");
 const { runFollowUps, retryPendingDuplicate } = require("../lib/billing/followUps");
-const { BASE_CENTS, ADDITIONAL_CENTS, STALE_MS, monthlyTotalCents } = require("../lib/billing/config");
+const { BASE_CENTS, ADDITIONAL_CENTS, STALE_MS, monthlyTotalCents, feedbackAddress } = require("../lib/billing/config");
 const { termsCurrent } = require("../lib/terms");
 
 const router = express.Router();
@@ -153,12 +153,14 @@ function brokerView(org, nowMs) {
     cancelAtPeriodEnd: Boolean(org.billing_cancel_at_period_end),
     exempt: Boolean(org.billing_exempt),
     hasCustomer: Boolean(org.stripe_customer_id),
+    hasCard: Boolean(org.billing_has_card),   // a tester month without a card shows the price it would start (I4)
     banner: bannerFor(org, nowMs),
   };
 }
 
+// `feedback`: whether Send feedback has an inbox (FEEDBACK_TO), so the page shows the button only then (I2). Never the address.
 router.get("/public", (req, res) => {
-  res.json({ enabled: billingOf(req).on });
+  res.json({ enabled: billingOf(req).on, feedback: Boolean(feedbackAddress(req.app.get("billingConfig"))) });
 });
 
 router.get("/status", requireAuth, async (req, res) => {

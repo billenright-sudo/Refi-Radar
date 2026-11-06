@@ -219,6 +219,8 @@ test("billing off: no 402, status enabled false, card/portal 404, export still w
   // a brokerage that would be locked with billing on: no terms accepted, no card, a canceled subscription
   const { broker, los: [lo] } = brokerage({ terms: false, los: 1, billing_status: "canceled", stripe_customer_id: "cus_off" });
   addClient(broker);
+  const savedFeedbackTo = process.env.FEEDBACK_TO;
+  delete process.env.FEEDBACK_TO;
   for (const config of [{ ...CONFIG, enabled: false }, undefined]) {
     app.set("billingConfig", config);
     calls = [];
@@ -226,7 +228,8 @@ test("billing off: no 402, status enabled false, card/portal 404, export still w
     assert.strictEqual((await get("/api/clients", lo)).status, 200);
     assert.strictEqual((await get("/api/org/stats", broker)).status, 200);
     assert.strictEqual((await get("/api/notifications", lo)).status, 200);
-    assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: false });
+    // no feedback inbox set up: the page shows no "Send feedback" (I2), as before billing
+    assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: false, feedback: false });
     assert.deepStrictEqual((await get("/api/billing/status", broker)).data,
       { success: true, access: { ok: true }, role: "broker", billing: { enabled: false } });
     assert.deepStrictEqual((await get("/api/billing/status", lo)).data, { success: true, access: { ok: true }, role: "lo", billing: null });
@@ -245,7 +248,27 @@ test("billing off: no 402, status enabled false, card/portal 404, export still w
   const locked = await get("/api/clients", broker);
   assert.strictEqual(locked.status, 402);
   assert.deepStrictEqual(locked.data, { success: false, error: NEEDS_ATTENTION, reason: "terms" });
-  assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: true });
+  assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: true, feedback: false });
+
+  // feedback follows FEEDBACK_TO, billing on or off: the app's config first, else (a config without it, such as index.js's start-up
+  // fallback, or none) the environment; nothing about the address itself is sent
+  try {
+    app.set("billingConfig", { ...CONFIG, enabled: false, feedbackTo: "owner@api.test" });
+    const pub = await get("/api/billing/public");
+    assert.deepStrictEqual(pub.data, { enabled: false, feedback: true });
+    assert.doesNotMatch(pub.text, /owner@api\.test/);
+    app.set("billingConfig", { ...CONFIG, feedbackTo: "owner@api.test" });
+    assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: true, feedback: true });
+    process.env.FEEDBACK_TO = "env-owner@api.test";
+    for (const config of [{ enabled: false }, undefined]) {
+      app.set("billingConfig", config);
+      assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: false, feedback: true }, JSON.stringify(config));
+    }
+    app.set("billingConfig", { ...CONFIG, enabled: false, feedbackTo: null });
+    assert.deepStrictEqual((await get("/api/billing/public")).data, { enabled: false, feedback: false }, "a config's own null is believed");
+  } finally {
+    if (savedFeedbackTo === undefined) delete process.env.FEEDBACK_TO; else process.env.FEEDBACK_TO = savedFeedbackTo;
+  }
 });
 
 test("a mismatched or unreadable Stripe price leaves billing off and logs why (H5)", async () => {
@@ -372,10 +395,14 @@ test("no card: gated routes 402 needs_card; /me, /billing/status, /profile, expo
     success: true, access: { ok: false, reason: "needs_card" }, role: "broker",
     billing: {
       enabled: true, status: "none", users: 2, baseCents: 9900, additionalCents: 4900, monthlyTotalCents: 14800,
-      trialEnd: null, testerUntil: null, periodEnd: null, cancelAtPeriodEnd: false, exempt: false, hasCustomer: false, banner: null,
+      trialEnd: null, testerUntil: null, periodEnd: null, cancelAtPeriodEnd: false, exempt: false, hasCustomer: false, hasCard: false,
+      banner: null,
     },
   });
   assert.deepStrictEqual(calls, [], "nothing to sync: no subscription, no Checkout");
+  // hasCard: whether a card is on file, so the page knows a tester month without one (I4); a loan officer never sees it
+  const carded = brokerage({ billing_tester_until: Date.now() + 5 * DAY_MS, billing_has_card: 1 });
+  assert.strictEqual((await get("/api/billing/status", carded.broker)).data.billing.hasCard, true);
 
   // the terms come first: a broker who hasn't accepted the current versions gets "terms", even with a card
   const old = brokerage({ terms: false, billing_status: "active", stripe_subscription_id: "sub_t", billing_synced_at: Date.now() });
