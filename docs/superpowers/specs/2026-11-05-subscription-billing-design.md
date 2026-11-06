@@ -215,3 +215,5 @@ Added in round 2 (2026-11-05), awaiting approval:
   saved. About how many years have you been originating?" are gone.
 - The confirmation email (6.1.5) keeps its words; its dates are now on the broker's own day (the time zone their browser gave at
   sign-up, else America/New_York), as "Nov 30, 2026".
+- Fix pass (Charlie is "she"): the Profile page's lines now read "Charlie uses your first name when she greets you." and "Your
+  details for Charlie and for the emails she sets up."
