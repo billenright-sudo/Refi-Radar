@@ -71,3 +71,25 @@ test("the two senders send nothing and answer false without mail settings; with 
   assert.strictEqual(b.subject, "You already have a Broker Radar account");
   assert.ok(b.html.includes(`href="${email.APP_URL}/"`));
 });
+
+// Round 2, item 9: Gmail shows an App Password in groups of four ("abcd efgh ijkl mnop"), and a value pasted into a setting can
+// carry a trailing newline. The transport gets the password with every bit of whitespace taken out, and mailReady checks that same
+// cleaned value (a password that is only whitespace is no password).
+test("EMAIL_PASS with spaces and a trailing newline: the transport's auth gets the cleaned value, and mailReady checks it", async (t) => {
+  const saved = { u: process.env.EMAIL_USER, p: process.env.EMAIL_PASS };
+  t.after(() => {
+    for (const [k, v] of [["EMAIL_USER", saved.u], ["EMAIL_PASS", saved.p]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+  const auths = [];
+  t.mock.method(require("nodemailer"), "createTransport", (options) => {
+    auths.push({ ...options.auth });
+    return { sendMail: async () => {} };
+  });
+  process.env.EMAIL_USER = "sender@x.test";
+  process.env.EMAIL_PASS = "abcd efgh ijkl mnop\n";
+  assert.strictEqual(await sendAlreadyRegistered({ to: "lou@x.test", firstName: "Lou" }), true);
+  assert.deepStrictEqual(auths, [{ user: "sender@x.test", pass: "abcdefghijklmnop" }]);
+
+  assert.strictEqual(email.mailReady({ EMAIL_USER: "sender@x.test", EMAIL_PASS: "abcd efgh ijkl mnop\n" }), true);
+  assert.strictEqual(email.mailReady({ EMAIL_USER: "sender@x.test", EMAIL_PASS: " \t\r\n " }), false);
+});

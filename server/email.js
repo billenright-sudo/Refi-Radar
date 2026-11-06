@@ -1,12 +1,16 @@
 "use strict";
 const nodemailer = require("nodemailer");
 
+// Gmail shows an App Password in groups of four ("abcd efgh ijkl mnop"), and a pasted setting can end in a newline: the password is
+// used with all of its whitespace taken out. "" when there is none (or only whitespace).
+const mailPass = (value) => (typeof value === "string" ? value.replace(/\s+/g, "") : "");
+
 function createTransport() {
   return nodemailer.createTransport({
     service: "gmail",
     auth: {
       user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,   // Gmail App Password (not account password)
+      pass: mailPass(process.env.EMAIL_PASS),   // Gmail App Password (not account password)
     },
   });
 }
@@ -102,9 +106,9 @@ function emailLinksWork(env) {
 }
 
 // Whether a reset email can really reach someone: both mail settings present and a link that opens somewhere. The reset route
-// answers 503 when this is false, before it stores anything. Pure.
+// answers 503 when this is false, before it stores anything. The password is checked as the transport uses it (mailPass). Pure.
 function mailReady(env) {
-  return Boolean(env && env.EMAIL_USER && env.EMAIL_PASS) && emailLinksWork(env);
+  return Boolean(env && env.EMAIL_USER && mailPass(env.EMAIL_PASS)) && emailLinksWork(env);
 }
 
 // Names and addresses come from people, so every email body escapes them before they go into the HTML.
