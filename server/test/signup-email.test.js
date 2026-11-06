@@ -93,3 +93,24 @@ test("EMAIL_PASS with spaces and a trailing newline: the transport's auth gets t
   assert.strictEqual(email.mailReady({ EMAIL_USER: "sender@x.test", EMAIL_PASS: "abcd efgh ijkl mnop\n" }), true);
   assert.strictEqual(email.mailReady({ EMAIL_USER: "sender@x.test", EMAIL_PASS: " \t\r\n " }), false);
 });
+
+// Fix pass (Ruling 36, item 5): every sender's guard reads the password the way the transport uses it, so one that is only
+// whitespace is "not set": each sender skips with its warning (false where it answers), and no transport is ever made.
+test("EMAIL_PASS that is only whitespace: every sender skips with its warning and makes no transport", async (t) => {
+  const saved = { u: process.env.EMAIL_USER, p: process.env.EMAIL_PASS };
+  t.after(() => {
+    for (const [k, v] of [["EMAIL_USER", saved.u], ["EMAIL_PASS", saved.p]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+  const made = t.mock.method(require("nodemailer"), "createTransport", () => ({ sendMail: async () => {} }));
+  const warn = t.mock.method(console, "warn", () => {});
+  process.env.EMAIL_USER = "sender@x.test";
+  process.env.EMAIL_PASS = "  \t\n ";
+  assert.strictEqual(await email.sendInvite({ toEmail: "lo@x.test", toName: "Lou", fromName: "Bea", orgName: "Org", token: "ab".repeat(32) }), undefined);
+  assert.strictEqual(await email.sendRefiAlert({ toEmail: "lo@x.test", toName: "Lou", clientName: "Cleo", brokerName: "Bea", monthlySavings: 10 }), undefined);
+  assert.strictEqual(await email.sendEmailChange("new@x.test", "https://app.example.com/api/profile/email/confirm/secret"), false);
+  assert.strictEqual(await sendSignup({ to: "a@x.test", firstName: "A", orgName: "Org", link: "https://app.example.com/#signup=secret" }), false);
+  assert.strictEqual(await sendAlreadyRegistered({ to: "a@x.test", firstName: "A" }), false);
+  assert.strictEqual(made.mock.callCount(), 0, "no transport was made");
+  assert.strictEqual(warn.mock.callCount(), 5, "each sender said why it skipped");
+  assert.ok(!warn.mock.calls.some((c) => c.arguments.join(" ").includes("secret")), "no link is logged");
+});

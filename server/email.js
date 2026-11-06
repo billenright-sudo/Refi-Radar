@@ -27,7 +27,7 @@ function inviteLink(token) {
 // Names in the HTML bodies below come from people (a broker types the company and the invitee, a client's name comes from an import),
 // so they go through escapeHtml (defined further down). Subjects are plain text, so they are left as typed.
 async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  if (!process.env.EMAIL_USER || !mailPass(process.env.EMAIL_PASS)) {
     console.warn("[email] EMAIL_USER/EMAIL_PASS not set — skipping invite email");
     return;
   }
@@ -46,7 +46,7 @@ async function sendInvite({ toEmail, toName, fromName, orgName, token }) {
 }
 
 async function sendRefiAlert({ toEmail, toName, clientName, brokerName, monthlySavings }) {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  if (!process.env.EMAIL_USER || !mailPass(process.env.EMAIL_PASS)) {
     console.warn("[email] EMAIL_USER/EMAIL_PASS not set — skipping alert email");
     return;
   }
@@ -68,7 +68,7 @@ async function sendRefiAlert({ toEmail, toName, clientName, brokerName, monthlyS
 // taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or the send fails, so the caller can say so instead of promising
 // a mail that never left. The link carries the secret token: it is never logged, and neither is the token.
 async function sendEmailChange(to, link) {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  if (!process.env.EMAIL_USER || !mailPass(process.env.EMAIL_PASS)) {
     console.warn("[email] EMAIL_USER/EMAIL_PASS not set — skipping email-change email");
     return false;
   }
@@ -209,7 +209,7 @@ function feedbackMessage({ brokerage, name, role, page, message }) {
 // the send fails; the caller decides what to do (the routes never tell the page, which must not reveal whether an account exists).
 // A reset message carries the secret link, so only err.message is logged, never the message, the link or the token.
 async function deliverPasswordMail(to, buildMessage, what) {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  if (!process.env.EMAIL_USER || !mailPass(process.env.EMAIL_PASS)) {
     console.warn(`[email] EMAIL_USER/EMAIL_PASS not set — skipping ${what} email`);
     return false;
   }
