@@ -6,6 +6,7 @@ const { requireAccess } = require("../middleware/access");
 const { sendRefiAlert } = require("../email");
 const { CAREER_STAGES, stageById } = require("../lib/assistant/coaching");
 const { syncSeats } = require("../lib/billing/seats");
+const { pushBeforeAnswer } = require("../lib/billing/bounded");
 
 const router = express.Router();
 router.use(requireAuth, requireAccess, requireBroker);
@@ -71,8 +72,10 @@ router.patch("/los/:id/stage", (req, res) => {
 // recommendations, the contact log, assistant usage) stays whole, but every way in is closed in ONE transaction: their clients move
 // to the broker, the login is blanked and their session version raised, the address is freed, and their ARIVE key, Google
 // connection, a Google sign-in begun but not finished, reset link and email change are deleted. The placeholder email has no "@",
-// so no address validator (invite, sign-up, forgot-password, email change) can ever accept it: it cannot be squatted. Then, after the answer, the new user count goes to Stripe (a failure is
-// logged by its message and retried at the next sync). 404 for anything that is not an LO of the caller's org that is not removed.
+// so no address validator (invite, sign-up, forgot-password, email change) can ever accept it: it cannot be squatted. Then, BEFORE the
+// answer (Cloud Run throttles work left after it), the new user count goes to Stripe, waiting 8 seconds at most: a failure or a
+// timeout still answers 200 and is logged by its message with our org id (and retried at the next sync). 404 for anything that is
+// not an LO of the caller's org that is not removed.
 router.delete("/los/:id", (req, res) => {
   const loId = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
   const lo = Number.isSafeInteger(loId)
@@ -104,17 +107,13 @@ router.delete("/los/:id", (req, res) => {
     console.error("DELETE /api/org/los/:id:", err.message);
     return res.status(500).json({ success: false, error: "Database error" });
   }
-  res.json({ success: true });
 
-  if (!lo.invite_accepted) return;
-  try {
-    const gateway = req.app.get("billingGateway");
-    if (!req.app.get("billingConfig")?.enabled || !gateway) return;
-    syncSeats(db, gateway, orgId)
-      .catch((err) => console.error(`[billing] sync_seats failed for org ${orgId}:`, err?.message));
-  } catch (err) {
-    console.error(`[billing] sync_seats failed for org ${orgId}:`, err?.message);
-  }
+  const answer = () => res.json({ success: true });
+  const gateway = req.app.get("billingGateway");
+  if (!lo.invite_accepted || !req.app.get("billingConfig")?.enabled || !gateway) return answer();
+  pushBeforeAnswer(req.app, "sync_seats", orgId, () => syncSeats(db, gateway, orgId))
+    .then(answer)
+    .catch((err) => console.error("DELETE /api/org/los/:id:", err?.message));
 });
 
 // POST /api/org/alert — broker sends refi alert to LO for a specific client

@@ -175,20 +175,55 @@ test("the removed LO leaves /los and the user count, and the new count is pushed
   const first = await call("GET", "/api/org/los", { as: broker });
   assert.strictEqual(first.data.los.length, 3, "pending invites are still listed");
   assert.strictEqual((await call("GET", "/api/org/stats", { as: broker })).data.stats.loCount, 3);
-  assert.strictEqual((await del(broker, a.id)).status, 200);
+  // a Stripe that takes a moment: the gateway records when it is called and when it has finished
+  const seen = [];
+  gateway.setQuantity = async (q) => {
+    calls.push(["setQuantity", q]); seen.push(["called", Date.now()]);
+    await pause(150);
+    seen.push(["finished", Date.now()]);
+  };
+  const removed = await del(broker, a.id);
+  const arrived = Date.now();
+  assert.strictEqual(removed.status, 200);
+  // the new count reached Stripe (and was stored) before the answer: Cloud Run throttles work left running after a response
+  assert.deepStrictEqual(seen.map(([what]) => what), ["called", "finished"], "the push ran to its end before the answer");
+  assert.ok(seen.every(([, at]) => at <= arrived), "called and finished before the response arrived");
+  assert.deepStrictEqual(calls, [["setQuantity", { subscriptionId: "sub_2", itemId: "si_2", quantity: 2 }]]);
+  assert.strictEqual(db.prepare("SELECT billing_quantity FROM organizations WHERE id = ?").get(orgId).billing_quantity, 2);
   const list = await call("GET", "/api/org/los", { as: broker });
   assert.deepStrictEqual(list.data.los.map((l) => l.id).sort(), [b.id, inv.id].sort());
   assert.strictEqual((await call("GET", "/api/org/stats", { as: broker })).data.stats.loCount, 2);
-  await until(() => calls.length === 1);
-  assert.deepStrictEqual(calls[0], ["setQuantity", { subscriptionId: "sub_2", itemId: "si_2", quantity: 2 }]);
-  assert.strictEqual(db.prepare("SELECT billing_quantity FROM organizations WHERE id = ?").get(orgId).billing_quantity, 2);
-  // a failing push still answers success and logs the message only
+  // a failing push still answers success and logs the message only, with our org id
   const logged = []; const orig = console.error; console.error = (...x) => logged.push(x.join(" "));
   try {
     gateway.setQuantity = async () => { throw new Error("stripe down"); };
     assert.strictEqual((await del(broker, b.id)).status, 200);
-    await until(() => logged.some((l) => l.includes("stripe down")));
+    assert.ok(logged.includes(`[billing] sync_seats failed for org ${orgId}: stripe down`), logged.join("\n"));
   } finally { console.error = orig; }
+});
+
+test("a Stripe that hangs holds the removal's answer only up to the bound, still 200, logged by org id", async () => {
+  const { orgId, broker, los: [lo] } = brokerage({ stripe_customer_id: "cus_h", stripe_subscription_id: "sub_h", stripe_item_id: "si_h", billing_quantity: 2 });
+  const BOUND_MS = 200;
+  app.set("billingPushWaitMs", BOUND_MS);
+  gateway.setQuantity = (q) => { calls.push(["setQuantity", q]); return new Promise(() => {}); };   // never answers
+  const logged = []; const orig = console.error; console.error = (...x) => logged.push(x.join(" "));
+  try {
+    const startedAt = Date.now();
+    const r = await del(broker, lo.id);
+    const took = Date.now() - startedAt;
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.data, { success: true });
+    assert.ok(took >= BOUND_MS, `it waited for Stripe first (${took} ms)`);
+    assert.ok(took < BOUND_MS + 2000, `then answered at the bound (${took} ms)`);
+    assert.deepStrictEqual(calls.map((c) => c[0]), ["setQuantity"]);
+    assert.ok(logged.includes(`[billing] sync_seats for org ${orgId} not finished after ${BOUND_MS} ms: answered without it`), logged.join("\n"));
+    assert.ok(!logged.join("\n").includes("sub_h"), "no Stripe id in the log");
+    assert.strictEqual(userRow(lo.id).removed_at > 0, true, "the removal itself is done");
+  } finally {
+    console.error = orig;
+    app.set("billingPushWaitMs", undefined);
+  }
 });
 
 test("with billing off, removal makes no Stripe call", async () => {
@@ -206,10 +241,14 @@ test("a broker's confirmed email change updates the Stripe customer email; an LO
     assert.strictEqual(r.status, 200, JSON.stringify(r.data));
     return call("GET", new URL(sentChange.at(-1).link).pathname);
   };
+  // a Stripe that takes a moment: the new billing email reaches it before the redirect goes out (M3)
+  const seen = [];
+  gateway.updateCustomerEmail = async (...a) => { calls.push(["updateCustomerEmail", ...a]); await pause(150); seen.push(Date.now()); };
   const r = await confirm(broker, "newboss@rm.test");
+  const arrived = Date.now();
   assert.strictEqual(r.location, "/?emailChanged=1");
-  await until(() => calls.length === 1);
-  assert.deepStrictEqual(calls[0], ["updateCustomerEmail", "cus_9", "newboss@rm.test"]);
+  assert.deepStrictEqual(calls, [["updateCustomerEmail", "cus_9", "newboss@rm.test"]]);
+  assert.ok(seen.length === 1 && seen[0] <= arrived, "finished before the redirect arrived");
   calls.length = 0;
   assert.strictEqual((await confirm(lo, "newlo@rm.test")).location, "/?emailChanged=1");
   setBilling(false);   // billing off: no call
@@ -219,6 +258,31 @@ test("a broker's confirmed email change updates the Stripe customer email; an LO
   assert.strictEqual((await confirm(bare.broker, "bare@rm.test")).location, "/?emailChanged=1");
   await pause();
   assert.deepStrictEqual(calls, []);
+
+  // a Stripe that hangs holds the redirect only up to the bound; a failure is logged by message with our org id
+  const hung = brokerage({ stripe_customer_id: "cus_hung" });
+  const BOUND_MS = 200;
+  app.set("billingPushWaitMs", BOUND_MS);
+  const logged = []; const orig = console.error; console.error = (...x) => logged.push(x.join(" "));
+  try {
+    gateway.updateCustomerEmail = () => new Promise(() => {});
+    const r1 = await call("POST", "/api/profile/email", { as: hung.broker, body: { email: "hung@rm.test" } });
+    assert.strictEqual(r1.status, 200);
+    const startedAt = Date.now();
+    const back = await call("GET", new URL(sentChange.at(-1).link).pathname);
+    const took = Date.now() - startedAt;
+    assert.strictEqual(back.location, "/?emailChanged=1");
+    assert.ok(took >= BOUND_MS && took < BOUND_MS + 2000, `answered at the bound (${took} ms)`);
+    assert.ok(logged.includes(`[billing] update_customer_email for org ${hung.orgId} not finished after ${BOUND_MS} ms: answered without it`), logged.join("\n"));
+    gateway.updateCustomerEmail = async () => { throw new Error("stripe said no"); };
+    await call("POST", "/api/profile/email", { as: hung.broker, body: { email: "hung2@rm.test" } });
+    assert.strictEqual((await call("GET", new URL(sentChange.at(-1).link).pathname)).location, "/?emailChanged=1");
+    assert.ok(logged.includes(`[billing] update_customer_email failed for org ${hung.orgId}: stripe said no`), logged.join("\n"));
+    assert.ok(!logged.join("\n").includes("cus_hung") && !logged.join("\n").includes("@rm.test"), "no Stripe id or address in the log");
+  } finally {
+    console.error = orig;
+    app.set("billingPushWaitMs", undefined);
+  }
 });
 
 test("a removed LO is treated like an unknown one by /clients, /stage and /alert (no notification, no mail)", async () => {

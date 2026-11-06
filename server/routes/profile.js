@@ -20,6 +20,7 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { parseNmls } = require("../lib/assistant/outreach");
 const { stageById } = require("../lib/assistant/coaching");
 const { setCareerStageForUser } = require("../lib/careerStage");
+const { pushBeforeAnswer } = require("../lib/billing/bounded");
 
 const router = express.Router();
 
@@ -72,23 +73,26 @@ router.get("/email/confirm/:token", (req, res) => {
     }
   }
   res.set("Cache-Control", "no-store");
-  res.redirect(302, confirmed ? "/?emailChanged=1" : "/?emailChanged=0");
-  if (confirmed) syncBillingEmail(req, confirmed);
+  const answer = () => res.redirect(302, confirmed ? "/?emailChanged=1" : "/?emailChanged=0");
+  if (!confirmed) return answer();
+  syncBillingEmail(req, confirmed)
+    .then(answer)
+    .catch((err) => console.error("GET /api/profile/email/confirm:", err?.message));
 });
 
-// H14: a broker's login email is also their brokerage's billing email at Stripe, so after a confirmed change (and after the
-// redirect, so a slow Stripe never holds up the person) the customer's email follows. Nothing for a loan officer, with billing off
-// or no gateway, or a brokerage with no Stripe customer. A failure is logged by its message only.
-function syncBillingEmail(req, { userId, email: newEmail }) {
+// H14: a broker's login email is also their brokerage's billing email at Stripe, so after a confirmed change the customer's email
+// follows, BEFORE the redirect (Cloud Run throttles work left after it), waiting 8 seconds at most. Nothing for a loan officer, with
+// billing off or no gateway, or a brokerage with no Stripe customer. A failure or timeout is logged by its message with our org id.
+// Never rejects.
+async function syncBillingEmail(req, { userId, email: newEmail }) {
   try {
     const gateway = req.app.get("billingGateway");
     if (!req.app.get("billingConfig")?.enabled || !gateway) return;
     const org = db.prepare(
-      "SELECT o.stripe_customer_id FROM users u JOIN organizations o ON o.id = u.org_id WHERE u.id = ? AND u.role = 'broker'"
+      "SELECT o.id, o.stripe_customer_id FROM users u JOIN organizations o ON o.id = u.org_id WHERE u.id = ? AND u.role = 'broker'"
     ).get(userId);
     if (!org?.stripe_customer_id) return;
-    Promise.resolve(gateway.updateCustomerEmail(org.stripe_customer_id, newEmail))
-      .catch((err) => console.error("[billing] update_customer_email failed:", err?.message));
+    await pushBeforeAnswer(req.app, "update_customer_email", org.id, () => gateway.updateCustomerEmail(org.stripe_customer_id, newEmail));
   } catch (err) {
     console.error("[billing] update_customer_email failed:", err?.message);
   }

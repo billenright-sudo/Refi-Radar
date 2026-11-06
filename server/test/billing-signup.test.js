@@ -90,11 +90,20 @@ function fakeGateway() {
 }
 
 let server, app, base, gateway, signupCalls, takenCalls, confirmations, ipCounter = 0;
+// When set, the answer to /register/complete goes out and THEN throws, as a broken response would: what the route does with that.
+let breakAnswer = false;
 before(async () => {
   app = express();
   app.set("trust proxy", 1);
   app.use(express.json());
   app.use(cookieParser());
+  app.use((req, res, next) => {
+    if (breakAnswer && req.path === "/api/auth/register/complete") {
+      const json = res.json.bind(res);
+      res.json = (body) => { json(body); throw new Error("the answer broke"); };
+    }
+    next();
+  });
   app.use("/api/auth", authRoutes);
   app.use("/api/clients", clientRoutes);
   app.set("sendSignup", async (args) => { signupCalls.push(args); return true; });
@@ -318,6 +327,27 @@ test("a Stripe that hangs holds up the tester's answer only up to the bound, wit
   } finally {
     release();
     app.set("testerSubscriptionWaitMs", undefined);
+  }
+});
+
+test("a tester's answer that throws after the Stripe side is caught and logged by message, never an unhandled rejection", async (t) => {
+  const logged = [];
+  t.mock.method(console, "error", (...args) => { logged.push(args.map(String).join(" ")); });
+  const unhandled = [];
+  const onUnhandled = (err) => unhandled.push(err);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const token = await signupToken({ testerCode: CODE });
+    breakAnswer = true;
+    const r = await complete(token);
+    assert.deepStrictEqual([r.status, r.data.success, r.data.tester], [200, true, true], "the answer itself went out");
+    await settle(100);
+    assert.deepStrictEqual(unhandled.map((e) => e?.message), [], "no unhandled rejection");
+    assert.ok(logged.includes("[auth] register/complete answer failed: the answer broke"), logged.join("\n"));
+    assert.ok(!logged.join("\n").includes("@x.test"), "no address in the log");
+  } finally {
+    breakAnswer = false;
+    process.off("unhandledRejection", onUnhandled);
   }
 });
 

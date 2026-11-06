@@ -12,6 +12,7 @@ const { userForReset, issueReset, completeReset, createSendCounter, hashToken } 
 const { issueSignup, signupFor, completeSignup, purgeExpiredSignups } = require("../lib/signup");
 const { stageById } = require("../lib/assistant/coaching");
 const { syncSeats, testerCodeUsable } = require("../lib/billing/seats");
+const { pushBeforeAnswer } = require("../lib/billing/bounded");
 const { storeSubscription } = require("../lib/billing/events");
 const { runFollowUps } = require("../lib/billing/followUps");
 const { CURRENT_VERSIONS, recordAcceptance } = require("../lib/terms");
@@ -320,7 +321,8 @@ router.post("/register/complete", signupCompleteLimiter, (req, res) => {
   setSession(res, user);
   const answer = () => res.json({ success: true, user: safeUser(user), tester });
   if (!tester) return answer();
-  startTesterSubscription(req, billing, user, org).then(answer, answer);
+  startTesterSubscription(req, billing, user, org).then(answer, answer)
+    .catch((err) => console.error("[auth] register/complete answer failed:", err?.message));
 });
 
 // How long "Create my account" waits for the tester month's Stripe side before answering without it (the work carries on).
@@ -492,22 +494,21 @@ router.post("/accept-invite", acceptInviteLimiter, (req, res) => {
 
   const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
   setSession(res, updated);
-  res.json({ success: true, user: safeUser(updated) });
 
-  // A new user is a new seat: with billing on and a subscription on file, Stripe's quantity follows (H2). After the answer, so a
-  // slow or failing Stripe never holds up the person joining; a failure is logged by its message and tried again on the broker's
-  // next billing status call.
-  try {
-    const config = req.app.get("billingConfig");
-    const gateway = req.app.get("billingGateway");
-    if (!config?.enabled || !gateway) return;
-    const org = db.prepare("SELECT stripe_subscription_id FROM organizations WHERE id = ?").get(updated.org_id);
-    if (!org?.stripe_subscription_id) return;
-    syncSeats(db, gateway, updated.org_id)
-      .catch((err) => console.error(`[billing] sync_seats failed for org ${updated.org_id}:`, err?.message));
-  } catch (err) {
-    console.error(`[billing] sync_seats failed for org ${updated.org_id}:`, err?.message);
-  }
+  const answer = () => res.json({ success: true, user: safeUser(updated) });
+
+  // A new user is a new seat: with billing on and a subscription on file, Stripe's quantity follows (H2). BEFORE the answer (Cloud
+  // Run throttles work left after it), waiting 8 seconds at most, so a slow Stripe holds up the person joining only that long; a
+  // failure or timeout is logged by its message with our org id and tried again on the broker's next billing status call.
+  const config = req.app.get("billingConfig");
+  const gateway = req.app.get("billingGateway");
+  const org = config?.enabled && gateway
+    ? db.prepare("SELECT stripe_subscription_id FROM organizations WHERE id = ?").get(updated.org_id)
+    : null;
+  if (!org?.stripe_subscription_id) return answer();
+  pushBeforeAnswer(req.app, "sync_seats", updated.org_id, () => syncSeats(db, gateway, updated.org_id))
+    .then(answer)
+    .catch((err) => console.error("[auth] accept-invite answer failed:", err?.message));
 });
 
 // POST /api/auth/forgot — ask for a password-reset link. The answer is 200 { success: true } for every address that is a valid email,

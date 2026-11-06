@@ -687,12 +687,37 @@ test("accept-invite pushes the user count when there is a subscription and calls
   };
   const acceptInvite = (token) => post("/api/auth/accept-invite", null, { token, password: "password123", acceptTerms: true });
 
+  // a Stripe that takes a moment: the new count reaches it (and is stored) before the answer (M3)
   const subbed = brokerage({ billing_status: "trialing", stripe_subscription_id: "sub_inv", stripe_item_id: "si_inv", billing_quantity: 1, billing_synced_at: Date.now() });
+  const finished = [];
+  const savedSet = gateway.setQuantity;
+  gateway.setQuantity = async (args) => { await savedSet(args); await new Promise((res) => setTimeout(res, 150)); finished.push(Date.now()); };
   const r = await acceptInvite(invite(subbed.orgId));
+  const arrived = Date.now();
+  gateway.setQuantity = savedSet;
   assert.strictEqual(r.status, 200);
-  await until(() => calls.length === 1);
   assert.deepStrictEqual(calls, [["setQuantity", { subscriptionId: "sub_inv", itemId: "si_inv", quantity: 2 }]]);
-  await until(() => orgRow(subbed.orgId).billing_quantity === 2);
+  assert.ok(finished.length === 1 && finished[0] <= arrived, "the push finished before the answer arrived");
+  assert.strictEqual(orgRow(subbed.orgId).billing_quantity, 2);
+
+  // a Stripe that hangs holds the answer only up to the bound; the person is in, and the log names our org id
+  const hung = brokerage({ billing_status: "active", stripe_subscription_id: "sub_hang", stripe_item_id: "si_hang", billing_quantity: 1, billing_synced_at: Date.now() });
+  app.set("billingPushWaitMs", 200);
+  gateway.setQuantity = () => new Promise(() => {});
+  try {
+    const hangLines = await captureLogs(async () => {
+      const startedAt = Date.now();
+      const h = await acceptInvite(invite(hung.orgId));
+      const took = Date.now() - startedAt;
+      assert.strictEqual(h.status, 200);
+      assert.ok(h.data.user && h.headers.get("set-cookie"), "signed in");
+      assert.ok(took >= 200 && took < 2200, `answered at the bound (${took} ms)`);
+    });
+    assert.ok(hangLines.includes(`[billing] sync_seats for org ${hung.orgId} not finished after 200 ms: answered without it`), hangLines.join("\n"));
+  } finally {
+    gateway.setQuantity = savedSet;
+    app.set("billingPushWaitMs", undefined);
+  }
 
   // no subscription yet: nothing to push
   calls = [];
@@ -714,10 +739,9 @@ test("accept-invite pushes the user count when there is a subscription and calls
   const failing = brokerage({ billing_status: "active", stripe_subscription_id: "sub_f", stripe_item_id: "si_f", billing_quantity: 1, billing_synced_at: Date.now() });
   const lines = await captureLogs(async () => {
     assert.strictEqual((await acceptInvite(invite(failing.orgId))).status, 200);
-    await until(() => calls.length === 1);
-    await settle();
+    assert.strictEqual(calls.length, 1, "tried before the answer");
   });
-  assert.ok(lines.some((l) => l.includes(`org ${failing.orgId}`) && l.includes("setQuantity failed")), lines.join("\n"));
+  assert.ok(lines.includes(`[billing] sync_seats failed for org ${failing.orgId}: setQuantity failed`), lines.join("\n"));
   assert.ok(!lines.some((l) => /sub_f|si_f|nia\d+@/.test(l)), "no Stripe id or address in the log");
   assert.strictEqual(orgRow(failing.orgId).billing_quantity, 1, "kept for the next try");
 });
