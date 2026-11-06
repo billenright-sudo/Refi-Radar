@@ -829,9 +829,11 @@ const TOOL_SCHEMA = [
     name: "setCareerStageTool",
     description:
       "Prepare to record the user's career stage, which only tailors how you coach them. This does NOT save " +
-      "anything: the user must confirm first. When the user says how many years they have been originating, pass " +
+      "anything: the user must confirm first. Call it only when the user explicitly asks you to set or change their " +
+      "career stage or experience level, never just because they mention how long they have been originating (they " +
+      "set it on their Profile page). When they ask and say how many years they have been originating, pass " +
       "`years` as that number exactly as they said it; the stage is chosen for you, so never map it yourself and " +
-      "never work years out from a date. Pass `stage` only when the user names a stage or asks to switch to one. " +
+      "never work years out from a date. Pass `stage` only when they name the stage they want. " +
       "Never guess either.",
     input_schema: {
       type: "object",

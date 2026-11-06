@@ -391,6 +391,20 @@ test("setCareerStageTool is in the tools map and TOOL_SCHEMA, and the schema off
   assert.match(entry.description, /confirm/);
 });
 
+// Fix pass (Ruling 36, item 6): tenure is set on the Profile page, so the model calls the tool only when the user explicitly asks to
+// set or change their stage, never because they mention how long they've been originating.
+test("setCareerStageTool's description: only on an explicit ask to set or change the stage, never on a mention of tenure", () => {
+  const { description } = TOOL_SCHEMA.find((t) => t.name === "setCareerStageTool");
+  assert.match(description, /Call it only when the user explicitly asks you to set or change their career stage or experience level/);
+  assert.match(description, /never just because they mention how long they have been originating/);
+  assert.match(description, /Profile page/);
+  assert.doesNotMatch(description, /^.*When the user says how many years they have been originating, pass/m, "no longer a trigger on its own");
+  // the rules that stay: years exactly as said, the stage chosen by code, no years worked out from a date, never a guess
+  assert.match(description, /pass `years` as that number exactly as they said it/);
+  assert.match(description, /never map it yourself and never work years out from a date/);
+  assert.match(description, /Never guess either/);
+});
+
 // ── runTurn ──────────────────────────────────────────────────────────────────
 
 test("runTurn sends buildCharliSystem(ctx.user) as the system prompt", async () => {
