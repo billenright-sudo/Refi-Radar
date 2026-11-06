@@ -86,7 +86,7 @@ const NameSection = ({ profile, ui, onSave }) => {
   };
 
   return (
-    <Section title="Name" hint="Charlie uses your first name when he greets you." testId="profile-name" ui={ui}>
+    <Section title="Name" hint="Charlie uses your first name when she greets you." testId="profile-name" ui={ui}>
       <form onSubmit={submit} noValidate>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
           <Field label="First name" value={first} onChange={setFirst} testId="profile-first-name" error={firstBad} maxLength={50} autoComplete="given-name" ui={ui} />
@@ -233,7 +233,7 @@ export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeS
           <Icon name="users" size={20} color={C.amber} />Profile
         </h1>
         <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>
-          {role ? `${role}. ` : ""}Your details for Charlie and for the emails he sets up.
+          {role ? `${role}. ` : ""}Your details for Charlie and for the emails she sets up.
         </div>
       </div>
 

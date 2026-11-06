@@ -1,5 +1,5 @@
 "use strict";
-// Charlie's follow-ups: who he put in front of the broker, what became of it, and the calls the broker logged.
+// Charlie's follow-ups: who she put in front of the broker, what became of it, and the calls the broker logged.
 //
 // Everything here is synchronous and takes the better-sqlite3 handle first. Two formats are used throughout, so every
 // comparison is a plain string compare:
