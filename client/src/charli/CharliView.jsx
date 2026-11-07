@@ -7,7 +7,7 @@ import { stripItems } from "./strip.mjs";
 import { useIsPhone } from "../useIsPhone.js";
 import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
-import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance } from "./talkMode.mjs";
+import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns } from "./talkMode.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
@@ -261,13 +261,15 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     audio.setCapture(mic === "live" && !paused && !speaking && !working && !voiceDown);
   }, [mic, paused, speaking, working, voiceDown]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Tap to talk: nothing heard within NO_SPEECH_MS of the mic going live closes it, and nothing is sent. Hearing clears the wait;
-  // a sound that was not kept as an utterance (too short) starts it again.
+  // Tap to talk: nothing heard within NO_SPEECH_MS of capture being on closes the mic, and nothing is sent. The wait counts only
+  // while she could hear (not while she speaks or works, or while paused) and starts over when capture resumes. Hearing clears
+  // it; a sound that was not kept as an utterance (too short) starts it again.
+  const clockRuns = noSpeechClockRuns({ micLive: mic === "live", paused, speaking, working, voiceDown });
   useEffect(() => {
-    if (handsFree || mic !== "live" || hearing) return undefined;
+    if (handsFree || !clockRuns || hearing) return undefined;
     const timer = setTimeout(() => audio.stopMic(), NO_SPEECH_MS);
     return () => clearTimeout(timer);
-  }, [handsFree, mic, hearing]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [handsFree, clockRuns, hearing]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const listRef = useRef(null);
   useEffect(() => {

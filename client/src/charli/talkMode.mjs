@@ -34,3 +34,10 @@ export function talkLabel({ handsFree = false, micLive = false, starting = false
 export function stopAfterUtterance(handsFree) {
   return !handsFree;
 }
+
+// Whether the NO_SPEECH_MS wait counts: only while the mic can actually capture (the same gate as the capture effect). While
+// she speaks or works (half-duplex), is paused, or speech-to-text is down, nothing could be heard, so the wait starts over
+// once capture resumes.
+export function noSpeechClockRuns({ micLive = false, paused = false, speaking = false, working = false, voiceDown = false } = {}) {
+  return micLive && !paused && !speaking && !working && !voiceDown;
+}

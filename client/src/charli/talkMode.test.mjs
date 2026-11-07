@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { HANDS_FREE_KEY, NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel, stopAfterUtterance } from "./talkMode.mjs";
+import { HANDS_FREE_KEY, NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel, stopAfterUtterance, noSpeechClockRuns } from "./talkMode.mjs";
 
 const fakeStorage = (initial = {}) => {
   const data = { ...initial };
@@ -67,4 +67,15 @@ test("paused, a starting mic does not read \"Starting…\"", () => {
 test("tap to talk stops the mic after one utterance; hands-free keeps it open", () => {
   assert.equal(stopAfterUtterance(false), true);
   assert.equal(stopAfterUtterance(true), false);
+});
+
+test("the no-speech wait counts only while the mic can capture", () => {
+  const open = { micLive: true, paused: false, speaking: false, working: false, voiceDown: false };
+  assert.equal(noSpeechClockRuns(open), true);
+  assert.equal(noSpeechClockRuns({ ...open, micLive: false }), false, "mic not live");
+  assert.equal(noSpeechClockRuns({ ...open, paused: true }), false, "paused");
+  assert.equal(noSpeechClockRuns({ ...open, speaking: true }), false, "she is speaking (half-duplex)");
+  assert.equal(noSpeechClockRuns({ ...open, working: true }), false, "a reply is being worked out");
+  assert.equal(noSpeechClockRuns({ ...open, voiceDown: true }), false, "speech-to-text is not set up");
+  assert.equal(noSpeechClockRuns({}), false, "nothing known: no clock");
 });
