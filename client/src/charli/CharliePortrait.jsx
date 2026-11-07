@@ -17,7 +17,7 @@ const play = (v) => {
   if (p && typeof p.catch === "function") p.catch(() => {});   // a blocked play leaves the still showing
 };
 
-export default function CharliePortrait({ state = "listening", shape = "portrait", width = 168, micOpen = false }) {
+export default function CharliePortrait({ state = "listening", shape = "portrait", width = 168, micOpen = false, maxHeight }) {
   const talk = useRef(null);
   const idle = useRef(null);
   const [still] = useState(reducedMotion);
@@ -50,13 +50,13 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
   // A number is pixels; a CSS length (e.g. "min(100%, 420px)") keeps the shape through aspect-ratio instead.
   const fluid = typeof width !== "number";
   const height = fluid ? "auto" : shape === "square" ? width : Math.round((width * 5) / 4);
-  const fill = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 15%", display: "block" };
+  const fill = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 18%", display: "block" };
   return (
     <div
       data-testid="charlie-portrait"
       data-state={state}
       data-shape={shape}
-      style={{ width, height, ...(fluid ? { aspectRatio: shape === "square" ? "1 / 1" : "4 / 5" } : null), borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
+      style={{ width, height, ...(maxHeight ? { maxHeight } : null), ...(fluid ? { aspectRatio: shape === "square" ? "1 / 1" : "4 / 5" } : null), borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
     >
       <div aria-hidden="true" style={{ position: "absolute", inset: 0 }}>
         <img src={PORTRAIT.still} alt="" draggable={false} style={fill} />

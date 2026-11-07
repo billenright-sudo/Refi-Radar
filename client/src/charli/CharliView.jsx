@@ -521,7 +521,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", flex: "none" }}>
         {stacked
           ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} />
-          : <CharliePortrait state={face} shape="portrait" width={width ?? 254} micOpen={mic === "live" && !paused} />}
+          : <CharliePortrait state={face} shape="portrait" width={width ?? "100%"} maxHeight={318} micOpen={mic === "live" && !paused} />}
       </div>
 
       {statusRow}
