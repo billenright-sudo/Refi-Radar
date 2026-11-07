@@ -323,11 +323,11 @@ const RefiRadarLogo = ({ compact }) => (
         <circle cx="0"   cy="0"   r="4"   fill="#8aafc9" opacity="0.8"/>
         <circle cx="0"   cy="0"   r="8"   fill="none" stroke="#8aafc9" strokeWidth="1" opacity="0.3"/>
       </g>
-      <text x="340" y="140" textAnchor="middle" fontFamily="Georgia, serif" fontSize="56" fontWeight="700" fill="#f59e0b" letterSpacing="-1">Broker Radar&#8482;</text>
+      <text x="340" y="140" textAnchor="middle" fontFamily="Georgia, serif" fontSize="56" fontWeight="700" fill="#fbbf24" letterSpacing="-1" paintOrder="stroke" stroke="#15294f" strokeWidth="8" strokeLinejoin="round">Broker Radar&#8482;</text>
       <line x1="80"  y1="162" x2="205" y2="162" stroke="#193048" strokeWidth="0.75"/>
       <line x1="475" y1="162" x2="600" y2="162" stroke="#193048" strokeWidth="0.75"/>
-      <text x="340" y="175" textAnchor="middle" fontFamily="Georgia, serif" fontSize="13" fill="#8aafc9" letterSpacing="6">BROKER INTELLIGENCE PLATFORM</text>
-      <text x="340" y="210" textAnchor="middle" fontFamily="sans-serif" fontSize="10" fill="#5a7a99" letterSpacing="3">A PRODUCT OF IGNITE BUSINESS SOLUTIONS</text>
+      <text x="340" y="182" textAnchor="middle" fontFamily="Georgia, serif" fontSize="19" fontWeight="700" fill="#e6f0fa" letterSpacing="3.5" paintOrder="stroke" stroke="#15294f" strokeWidth="5" strokeLinejoin="round">BROKER INTELLIGENCE PLATFORM</text>
+      <text x="340" y="214" textAnchor="middle" fontFamily="sans-serif" fontSize="14" fontWeight="700" fill="#b8cfe3" letterSpacing="2" paintOrder="stroke" stroke="#15294f" strokeWidth="4" strokeLinejoin="round">A PRODUCT OF IGNITE BUSINESS SOLUTIONS</text>
     </svg>
   </div>
 );
