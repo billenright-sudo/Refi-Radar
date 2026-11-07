@@ -5,7 +5,7 @@ import { createReplay, shouldClear } from "./replay.mjs";
 import { createAudio, transcribe } from "./audio.js";
 import { stripItems } from "./strip.mjs";
 import { useIsPhone } from "../useIsPhone.js";
-import CharlieFace from "./CharlieFace.jsx";
+import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
@@ -468,7 +468,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "center", margin: "0.2rem 0 1rem" }}>
-          <CharlieFace state={face} size={96} />
+          <CharliePortrait state={face} shape="portrait" width={168} micOpen={mic === "live" && !paused} />
         </div>
         {statusRow}
         {banners}
@@ -505,7 +505,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
 
       <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1.75rem 1.75rem 1.5rem", textAlign: "center", ...(isPhone ? { padding: "1.1rem 1rem" } : null) }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: isPhone ? 14 : 20 }}>
-          <CharlieFace state={face} size={isPhone ? 112 : 148} />
+          <CharliePortrait state={face} shape="square" width={isPhone ? 112 : 148} micOpen={mic === "live" && !paused} />
         </div>
         {briefingTurn ? (
           <>
