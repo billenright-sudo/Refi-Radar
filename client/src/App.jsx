@@ -8,7 +8,7 @@ import { gridCols } from "./layout.mjs";
 import { useIsPhone } from "./useIsPhone.js";
 import { DOCK_WIDTH } from "./homeLayout.mjs";
 import { useHomeLayout } from "./useHomeLayout.js";
-import { OVERVIEW_COPY, opportunityCount, ratesHeading } from "./overview.mjs";
+import { OVERVIEW_COPY, opportunityCount, ratesHeading, tileFigureSize } from "./overview.mjs";
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
@@ -1079,15 +1079,16 @@ const ResetPasswordPage = ({ token, onDone, goForgot }) => {
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
-// A tile never grows past its share of the row (a long figure wraps instead). `dense`: four across beside Charlie's column on a wide
-// screen, so a tighter padding and a figure that scales with the window (20–28px) to stay on one line in the narrower tile.
+// A tile takes its share of the row and its figure stays whole on one line: the tile is a CSS size container, and the figure's size
+// comes from the tile's width and the figure's length (tileFigureSize: 28px, 20px on a phone, smaller only when it would not fit).
+// `dense`: four across beside Charlie's column on a wide screen, so a tighter padding and label.
 const StatCard = ({ label, value, sub, accent, dense = false }) => {
   const isPhone = useIsPhone();
   const tight = dense && !isPhone;
   return (
-  <div style={{ ...card, flex: 1, minWidth: 0, ...(tight ? { padding: "0.95rem 1rem" } : null), ...ph(isPhone, { padding: "1rem", minWidth: 0 }) }}>
+  <div style={{ ...card, flex: 1, minWidth: 0, containerType: "inline-size", ...(tight ? { padding: "0.95rem 1rem" } : null), ...ph(isPhone, { padding: "1rem", minWidth: 0 }) }}>
     <div style={{ color: C.muted, fontSize: tight ? 11 : 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
-    <div style={{ ...mono, fontSize: tight ? "clamp(20px, 1.55vw, 28px)" : 28, fontWeight: 700, color: accent || C.text, marginBottom: 4, overflowWrap: "anywhere", ...ph(isPhone, { fontSize: 20, overflowWrap: "anywhere" }) }}>{value}</div>
+    <div style={{ ...mono, fontSize: tileFigureSize(value, isPhone ? { max: 20, min: 13 } : undefined), fontWeight: 700, color: accent || C.text, marginBottom: 4, whiteSpace: "nowrap" }}>{value}</div>
     {sub && <div style={{ color: C.muted, fontSize: 13 }}>{sub}</div>}
   </div>
   );

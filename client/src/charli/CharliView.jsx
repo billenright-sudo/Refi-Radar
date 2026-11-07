@@ -15,7 +15,8 @@ import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk,
 //   mode      "dock" (default): Charlie docked beside the Overview on Home: header, portrait, her briefing, Talk / Brief me, the
 //             conversation, the type box. `stacked` (tablet and phone) puts it above the Overview with a square portrait;
 //             `width` (a number of pixels, or a CSS length such as "100%") overrides the portrait width. Unstacked, it fills
-//             its parent's height (App's sticky column), and the briefing card scrolls on its own past 30vh.
+//             its parent's height (App's sticky column); the portrait is at most min(318px, 30vh) tall and the briefing card
+//             scrolls on its own past 20vh, so the conversation and the type box fit on a screen down to about 800px tall.
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
 //   onClose()           panel: the close button or Escape (App takes the drawer away)
 //   onStale()           Brief me (the button, or the request typed or said) found the briefing is from an earlier local day: App
@@ -522,13 +523,13 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", flex: "none" }}>
         {stacked
           ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} />
-          : <CharliePortrait state={face} shape="portrait" width={width ?? "100%"} maxHeight={318} micOpen={mic === "live" && !paused} />}
+          : <CharliePortrait state={face} shape="portrait" width={width ?? "100%"} maxHeight="min(318px, 30vh)" micOpen={mic === "live" && !paused} />}
       </div>
 
       {statusRow}
       {banners}
 
-      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", flex: "none", ...(stacked ? null : { maxHeight: "30vh", overflowY: "auto" }) }}>
+      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", flex: "none", ...(stacked ? null : { maxHeight: "20vh", overflowY: "auto" }) }}>
         {briefingTurn ? (
           <>
             <div style={{ fontSize: 14.5, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{briefingTurn.content}</div>
