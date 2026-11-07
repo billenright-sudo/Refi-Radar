@@ -1,18 +1,21 @@
 // The sidebar's items and the page the app opens on. Pure data: App.jsx draws it (Sidebar) and owns which view is showing.
 //
-// Charlie is the main page: "home" is Charlie's page (CharliView mode="home"), and every other page gets a corner Charlie button
-// that opens the same conversation in a panel (CharliView mode="panel"). The old Dashboard is "overview".
+// "home" is the Overview with Charlie docked beside it (App.jsx's HomeView, CharliView mode="dock"); every other page gets a corner
+// Charlie button that opens the same conversation in a panel (CharliView mode="panel"). There is no separate Overview page any more:
+// the old "overview" view lands on Home (viewFor).
 // An item is { id, label, icon }; `icon` is a name App.jsx's Icon knows.
 
 export const DEFAULT_VIEW = "home";
 
+// The view to show for a requested one: the old "overview" is Home now; anything else is itself.
+export const viewFor = (view) => (view === "overview" ? "home" : view);
+
 const MAIN = [
-  { id: "home",     label: "Home",        icon: "mic" },
-  { id: "sweeps",   label: "Sweeps",      icon: "search" },
-  { id: "clients",  label: "All Clients", icon: "users" },
-  { id: "rates",    label: "Rate Watch",  icon: "trending" },
-  { id: "overview", label: "Overview",    icon: "dashboard" },
-  { id: "add",      label: "Add Client",  icon: "plus" },
+  { id: "home",    label: "Home",        icon: "dashboard" },
+  { id: "sweeps",  label: "Sweeps",      icon: "search" },
+  { id: "clients", label: "All Clients", icon: "users" },
+  { id: "rates",   label: "Rate Watch",  icon: "trending" },
+  { id: "add",     label: "Add Client",  icon: "plus" },
 ];
 
 // Only a broker has a team and imports clients.

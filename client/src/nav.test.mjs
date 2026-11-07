@@ -1,11 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_VIEW, navGroups, navItems } from "./nav.mjs";
+import { DEFAULT_VIEW, navGroups, navItems, viewFor } from "./nav.mjs";
 
 const ids = (items) => items.map((i) => i.id);
 
-test("the app lands on Home, which is Charlie", () => {
+test("the app lands on Home, which is the Overview with Charlie", () => {
   assert.equal(DEFAULT_VIEW, "home");
+});
+
+test("Home uses the dashboard icon, and there is no separate Overview item", () => {
+  for (const role of ["lo", "broker"]) {
+    const items = navItems(role, { billing: true });
+    assert.deepEqual(items[0], { id: "home", label: "Home", icon: "dashboard" });
+    assert.ok(!ids(items).includes("overview"), role);
+    assert.ok(!items.some((i) => /overview/i.test(i.label)), role);
+  }
+});
+
+test("the old Overview view lands on Home; every other view is kept", () => {
+  assert.equal(viewFor("overview"), "home");
+  for (const view of ["home", "sweeps", "clients", "rates", "add", "profile", "team", "import", "billing", "client-detail", "edit", "lo-portal"]) {
+    assert.equal(viewFor(view), view);
+  }
 });
 
 test("a loan officer's nav starts with Home, has no Charlie tab, and ends with Profile", () => {
@@ -17,7 +33,7 @@ test("a loan officer's nav starts with Home, has no Charlie tab, and ends with P
   assert.deepEqual(items[items.length - 1], { id: "profile", label: "Profile", icon: "user" });
 });
 
-test("the loan officer's items are in this order, with the old Dashboard now called Overview", () => {
+test("the loan officer's items are in this order: Home (the old Overview) first", () => {
   assert.deepEqual(
     navItems("lo").map(({ id, label }) => [id, label]),
     [
@@ -25,7 +41,6 @@ test("the loan officer's items are in this order, with the old Dashboard now cal
       ["sweeps", "Sweeps"],
       ["clients", "All Clients"],
       ["rates", "Rate Watch"],
-      ["overview", "Overview"],
       ["add", "Add Client"],
       ["profile", "Profile"],
     ]

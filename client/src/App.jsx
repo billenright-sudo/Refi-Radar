@@ -3,9 +3,12 @@ import CharliView from "./charli/CharliView.jsx";
 import { returnNotice } from "./charli/google.mjs";
 import { endKeptSession } from "./charli/keep.mjs";
 import { localDateOf } from "./charli/session.mjs";
-import { DEFAULT_VIEW, navGroups } from "./nav.mjs";
+import { DEFAULT_VIEW, navGroups, viewFor } from "./nav.mjs";
 import { gridCols } from "./layout.mjs";
 import { useIsPhone } from "./useIsPhone.js";
+import { DOCK_WIDTH } from "./homeLayout.mjs";
+import { useHomeLayout } from "./useHomeLayout.js";
+import { OVERVIEW_COPY, opportunityCount, ratesHeading } from "./overview.mjs";
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
@@ -86,6 +89,7 @@ const C = {
 const ph = (isPhone, extra) => (isPhone ? extra : null);
 const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: "1.5rem" };
 const mono = { fontFamily: "'JetBrains Mono', monospace" };
+const TOP_BAR = 52;   // the header bar's height (px); Home's docked Charlie column sits right under it
 const inputStyle = { background: C.surfaceHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", color: C.text, fontFamily: "inherit", fontSize: 14, width: "100%", outline: "none", boxSizing: "border-box" };
 const btnPrimary = { background: C.amber, color: "#000", border: "none", borderRadius: 8, padding: "11px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" };
 const btnGhost = { background: "transparent", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 8, padding: "11px 20px", fontSize: 14, cursor: "pointer", fontFamily: "inherit" };
@@ -1075,12 +1079,15 @@ const ResetPasswordPage = ({ token, onDone, goForgot }) => {
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
-const StatCard = ({ label, value, sub, accent }) => {
+// A tile never grows past its share of the row (a long figure wraps instead). `dense`: four across beside Charlie's column on a wide
+// screen, so a tighter padding and a figure that scales with the window (20–28px) to stay on one line in the narrower tile.
+const StatCard = ({ label, value, sub, accent, dense = false }) => {
   const isPhone = useIsPhone();
+  const tight = dense && !isPhone;
   return (
-  <div style={{ ...card, flex: 1, ...ph(isPhone, { padding: "1rem", minWidth: 0 }) }}>
-    <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
-    <div style={{ ...mono, fontSize: 28, fontWeight: 700, color: accent || C.text, marginBottom: 4, ...ph(isPhone, { fontSize: 20, overflowWrap: "anywhere" }) }}>{value}</div>
+  <div style={{ ...card, flex: 1, minWidth: 0, ...(tight ? { padding: "0.95rem 1rem" } : null), ...ph(isPhone, { padding: "1rem", minWidth: 0 }) }}>
+    <div style={{ color: C.muted, fontSize: tight ? 11 : 12, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
+    <div style={{ ...mono, fontSize: tight ? "clamp(20px, 1.55vw, 28px)" : 28, fontWeight: 700, color: accent || C.text, marginBottom: 4, overflowWrap: "anywhere", ...ph(isPhone, { fontSize: 20, overflowWrap: "anywhere" }) }}>{value}</div>
     {sub && <div style={{ color: C.muted, fontSize: 13 }}>{sub}</div>}
   </div>
   );
@@ -1208,12 +1215,21 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
   );
 };
 
-const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn }) => {
+// The Overview: Home's left column beside Charlie's dock, or under her card when stacked (HomeView). `layout` is useHomeLayout()'s
+// value: "wide" keeps the 4-across tile rows; a narrower layout (and the phone, as before) puts them 2-across. `allOpps` is the
+// sweep's count (the number Charlie uses) or null; `allOppsLoading` while it is being asked for. `afterHeader` is drawn under the
+// greeting row (Charlie's card, when stacked).
+const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn, layout = "wide", allOpps = null, allOppsLoading = false, afterHeader = null }) => {
   const isPhone = useIsPhone();
   const topOpps = scored.filter(c => c.a?.good).slice(0, 5);
   const hour = new Date().getHours();
   const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
   const greeting = `Good ${timeOfDay}, ${user?.firstName || "there"} 👋`;
+  const dense = layout === "wide";
+  const tileRow = (marginBottom) => (isPhone || layout !== "wide"
+    ? { display: "grid", gridTemplateColumns: gridCols(4, true), gap: "1rem", marginBottom }
+    : { display: "flex", gap: "1rem", marginBottom });
+  const opps = ratesLoading || allOppsLoading ? null : allOpps;
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
@@ -1228,15 +1244,17 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         </button>
       </div>
 
+      {afterHeader}
+
       {user?.role === "broker" && <OrgStatsCard billingOn={billingOn} />}
 
       <TreasuryWidget treasury={treasury} />
 
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem", ...ph(isPhone, { display: "grid", gridTemplateColumns: gridCols(4, true) }) }}>
-        <StatCard label="Refi Opportunities" value={ratesLoading || clientsLoading ? "—" : refiReady.length} sub="clients ready today" accent={refiReady.length > 0 ? C.amber : C.muted} />
-        <StatCard label="Potential Monthly Savings" value={ratesLoading || clientsLoading ? "—" : $c(totalSavings / 12)} sub="across all opportunities" accent={C.green} />
-        <StatCard label="Total Portfolio" value={clientsLoading ? "—" : scored.length} sub="clients tracked" />
-        <StatCard label="Daily Rate (30-Yr)" value={ratesLoading ? "Loading..." : (rates ? $r(rates.rate_30yr_fixed) : "—")} sub={rates?.source || "national average"} accent={C.blue} />
+      <div style={tileRow("1rem")}>
+        <StatCard label={OVERVIEW_COPY.refiReadyLabel} value={ratesLoading || clientsLoading ? "—" : refiReady.length} sub={OVERVIEW_COPY.refiReadySub} accent={refiReady.length > 0 ? C.amber : C.muted} dense={dense} />
+        <StatCard label={OVERVIEW_COPY.allOppsLabel} value={opps === null ? "—" : opps} sub={OVERVIEW_COPY.allOppsSub} accent={opps > 0 ? C.amber : C.muted} dense={dense} />
+        <StatCard label={OVERVIEW_COPY.savingsLabel} value={ratesLoading || clientsLoading ? "—" : $c(totalSavings / 12)} sub={OVERVIEW_COPY.savingsSub} accent={C.green} dense={dense} />
+        <StatCard label="Daily Rate (30-Yr)" value={ratesLoading ? "Loading..." : (rates ? $r(rates.rate_30yr_fixed) : "—")} sub={rates?.source || "national average"} accent={C.blue} dense={dense} />
       </div>
 
       {/* Equity tile row */}
@@ -1247,11 +1265,11 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         const avgLtv        = scored.reduce((s, c) => s + equityAt(c, 0).ltvPct, 0) / scored.length;
         const ltvColor      = avgLtv > 85 ? C.red : avgLtv > 75 ? C.amber : C.green;
         return (
-          <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem", ...ph(isPhone, { display: "grid", gridTemplateColumns: gridCols(4, true) }) }}>
-            <StatCard label="🏡 Portfolio Equity" value={$c(totalEquity)} sub="combined today · 3.5%/yr" accent={C.blue} />
-            <StatCard label="📈 Equity in 5 Years" value={$c(equity5yr)} sub={`+${$c(equity5yr - totalEquity)} projected gain`} accent={C.purple} />
-            <StatCard label="💰 Cash-Out Potential" value={$c(totalCashOut)} sub="available at 80% LTV" accent={C.green} />
-            <StatCard label="📊 Avg Portfolio LTV" value={`${avgLtv.toFixed(1)}%`} sub={avgLtv <= 80 ? "below PMI threshold ✓" : "above 80% — PMI zone"} accent={ltvColor} />
+          <div style={tileRow("2rem")}>
+            <StatCard label="🏡 Portfolio Equity" value={$c(totalEquity)} sub="combined today · 3.5%/yr" accent={C.blue} dense={dense} />
+            <StatCard label="📈 Equity in 5 Years" value={$c(equity5yr)} sub={`+${$c(equity5yr - totalEquity)} projected gain`} accent={C.purple} dense={dense} />
+            <StatCard label="💰 Cash-Out Potential" value={$c(totalCashOut)} sub="available at 80% LTV" accent={C.green} dense={dense} />
+            <StatCard label="📊 Avg Portfolio LTV" value={`${avgLtv.toFixed(1)}%`} sub={avgLtv <= 80 ? "below PMI threshold ✓" : "above 80% — PMI zone"} accent={ltvColor} dense={dense} />
           </div>
         );
       })()}
@@ -1260,7 +1278,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
         <div style={{ ...card, display: "flex", gap: "2rem", alignItems: "center", flexWrap: "wrap", marginBottom: "2rem", background: C.amberBg, borderColor: "#3a2800" }}>
           <div style={{ color: C.amber, fontSize: 12, fontWeight: 700, letterSpacing: "0.5px", display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 8, height: 8, borderRadius: "50%", background: rates.source?.startsWith("Estimated") ? C.muted : C.green, display: "inline-block" }} />
-            {rates.source?.startsWith("Estimated") ? "ESTIMATED RATES" : "LIVE RATES"}
+            {ratesHeading(rates.source)}
           </div>
           {[["30-Yr Fixed", rates.rate_30yr_fixed], ["15-Yr Fixed", rates.rate_15yr_fixed], ["5/1 ARM", rates.rate_5_1_arm]].map(([label, val]) => (
             <div key={label} style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1287,6 +1305,49 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
           topOpps.map(c => <OpportunityRow key={c.id} client={c} a={c.a} onClick={() => { setSelected(c); setView("client-detail"); }} />)
         )}
       </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Home: the Overview with Charlie docked beside it
+// ---------------------------------------------------------------------------
+// `layout` is useHomeLayout()'s value. "wide" and "laptop": the Overview on the left and Charlie's column on the right (DOCK_WIDTH),
+// sticky under the top bar, one screen tall with its own scroll, while the Overview scrolls with the page. "stacked" (tablet and
+// phone): her card under the greeting row, then the rest of the Overview. `charlie` is the CharliView (mode "dock") App builds, keyed
+// by the day like the corner drawer's, so both show the one kept conversation; the rest of the props are the Overview's.
+// "All opportunities" is POST /api/sweeps with the page's rates: read-only and scoped like Charlie's own sweep (a broker's whole shop,
+// a loan officer's own book), so it is the number she says. Asked when the rates arrive and again whenever they change.
+const HomeView = ({ layout, charlie, rates, ...overview }) => {
+  const isPhone = useIsPhone();
+  const [allOpps, setAllOpps] = useState(null);
+  const [allOppsLoading, setAllOppsLoading] = useState(false);
+
+  useEffect(() => {
+    setAllOpps(null);
+    setAllOppsLoading(Boolean(rates));
+    if (!rates) return undefined;
+    let alive = true;
+    fetch("/api/sweeps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rates }) })
+      .then((r) => r.json())
+      .then((d) => { if (alive) setAllOpps(opportunityCount(d)); })
+      .catch(() => { /* "—" */ })
+      .finally(() => { if (alive) setAllOppsLoading(false); });
+    return () => { alive = false; };
+  }, [rates]);
+
+  const overviewProps = { ...overview, rates, layout, allOpps, allOppsLoading };
+  if (layout === "stacked") {
+    return <Dashboard {...overviewProps} afterHeader={<div style={{ marginBottom: isPhone ? "1.25rem" : "1.5rem" }}>{charlie}</div>} />;
+  }
+  return (
+    <div data-testid="home" style={{ display: "flex", alignItems: "flex-start" }}>
+      <div style={{ flex: 1, minWidth: 0, padding: "1.75rem 1.75rem 2rem" }}>
+        <Dashboard {...overviewProps} />
+      </div>
+      <aside data-testid="home-dock" aria-label="Charlie" style={{ width: DOCK_WIDTH[layout], flex: "none", position: "sticky", top: TOP_BAR, height: `calc(100vh - ${TOP_BAR}px)`, overflowY: "auto", background: "#132649", borderLeft: `1px solid ${C.border}`, padding: "18px 18px 14px" }}>
+        {charlie}
+      </aside>
     </div>
   );
 };
@@ -2461,7 +2522,9 @@ export default function App() {
   const [signupToken, setSignupToken] = useState(null); // from the emailed link's #signup= fragment
   const [forgotEmail, setForgotEmail] = useState("");     // what the "Reset your password" box opens with
 
-  const [view, setView] = useState(DEFAULT_VIEW);
+  const [view, showView] = useState(DEFAULT_VIEW);
+  const setView = useCallback((next) => showView(viewFor(next)), []);   // the old "overview" lands on Home
+  const homeLayout = useHomeLayout();                       // Home's shape: "wide" | "laptop" (Charlie docked) | "stacked"
   const [panelOpen, setPanelOpen] = useState(false);       // the corner Charlie panel, on every page but Home
   const cornerRef = useRef(null);
   const [clients, setClients] = useState([]);
@@ -2633,7 +2696,7 @@ export default function App() {
       .catch(() => setAuthState("unauthenticated"));
   }, [enterApp]);
 
-  // Home is Charlie's own page: going there takes the panel away.
+  // Charlie is docked on Home: going there takes the panel away (only one Charlie screen is live at a time: one mic, one greeting).
   useEffect(() => { if (view === "home") setPanelOpen(false); }, [view]);
 
   const closePanel = useCallback(() => {
@@ -2863,6 +2926,8 @@ export default function App() {
   const billingBanner = bannerLine ? { text: bannerLine, sub: bannerSub, bad: bannerKind === "past_due", action: { label: bannerKind === "past_due" ? "Update card" : "Add card", onClick: () => openStripe("/api/billing/card").catch((e) => window.alert(e.message)) } } : null;
   // "you'll stop paying for them" only where the brokerage pays: billing on and not exempt (I2)
   const teamBillingOn = billingOn && !billingState?.billing?.exempt;
+  // Home on a wide or laptop screen: the Overview with Charlie's column docked on the right
+  const homeDocked = view === "home" && homeLayout !== "stacked";
 
   // Authenticated app
   return (
@@ -2875,7 +2940,8 @@ export default function App() {
         <Sidebar isPhone={isPhone} drawerOpen={navOpen} view={view} setView={isPhone ? (v) => { setView(v); setNavOpen(false); } : setView} refiCount={refiReady.length} user={user} onLogout={handleLogout} billingOn={user?.role === "broker" && billingOn} feedbackOn={feedbackOn} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {/* Header bar */}
-          <header style={{ height: 52, background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 2rem", flexShrink: 0, ...ph(isPhone, { justifyContent: "space-between", padding: "0 12px 0 4px", gap: 8 }) }}>
+          {/* On Home with Charlie docked the bar stays put, so her column (sticky right under it) always fits the screen */}
+          <header style={{ height: TOP_BAR, background: C.surface, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 2rem", flexShrink: 0, ...(homeDocked ? { position: "sticky", top: 0, zIndex: 30 } : null), ...ph(isPhone, { justifyContent: "space-between", padding: "0 12px 0 4px", gap: 8 }) }}>
             {isPhone && (
               <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
                 <button onClick={() => setNavOpen(true)} aria-label="Open menu" aria-expanded={navOpen} data-testid="nav-menu" style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: C.text, fontSize: 24, lineHeight: 1, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>☰</button>
@@ -2884,9 +2950,16 @@ export default function App() {
             )}
             <NotificationBell />
           </header>
-          <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden", ...ph(isPhone, { padding: "1.25rem 16px 5.5rem", minWidth: 0 }) }}>
-            {view === "home"          && <CharliView key={today} mode="dock" stacked={isPhone} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} />}
-            {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn} />}
+          {/* Home with Charlie docked lays out its own padding (her column sits flush right, under the bar); "clip", not "hidden",
+              so <main> is not a scroll box and her column can stick */}
+          <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden", ...(homeDocked ? { padding: 0, overflowX: "clip" } : null), ...ph(isPhone, { padding: "1.25rem 16px 5.5rem", minWidth: 0 }) }}>
+            {view === "home"          && (
+              <HomeView
+                layout={homeLayout}
+                charlie={<CharliView key={today} mode="dock" stacked={homeLayout === "stacked"} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} />}
+                scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn}
+              />
+            )}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
             {view === "profile"       && profileAsk && <ProfilePrompt missing={profileAsk} onSkip={skipProfile} />}
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} onProfile={handleProfileTaken} />}
@@ -2902,7 +2975,7 @@ export default function App() {
           </main>
         </div>
       </div>
-      {/* On every page but Home, a corner button opens the same Charlie conversation in a panel (Home is Charlie's page). */}
+      {/* On every page but Home, a corner button opens the same Charlie conversation in a panel (Home has her docked). */}
       {view !== "home" && !panelOpen && (
         <button
           ref={cornerRef}
