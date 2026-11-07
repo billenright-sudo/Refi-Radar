@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createSession, pendingRows, voiceNoteFor } from "./session.mjs";
 import { keptSession } from "./keep.mjs";
 import { createReplay, shouldClear } from "./replay.mjs";
@@ -15,7 +15,7 @@ import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk,
 //   mode      "dock" (default): Charlie docked beside the Overview on Home: header, portrait, her briefing, Talk / Brief me, the
 //             conversation, the type box. `stacked` (tablet and phone) puts it above the Overview with a square portrait;
 //             `width` (a number of pixels, or a CSS length such as "100%") overrides the portrait width. Unstacked, it fills
-//             its parent's height (App's sticky column) as one flex column: the portrait is at most min(318px, 30vh) tall, the
+//             its parent's height (App's sticky column) as one flex column: the portrait is at most min(318px, 28vh) tall, the
 //             briefing card at most 20vh and the first thing to give way (down to 64px, scrolling on its own), and the
 //             transcript takes the rest (at least 96px), so the type box stays on screen down to about 768px tall.
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
@@ -61,7 +61,8 @@ const Sources = ({ turn, ui: { C, mono }, style }) => (
   )
 );
 
-const Turn = ({ turn, ui, isPhone }) => {
+// `breakAnywhere`: a long word or email address wraps inside the bubble (the dock, and the drawer on a phone).
+const Turn = ({ turn, ui, breakAnywhere }) => {
   const { C } = ui;
   if (turn.kind === "notice") {
     return <div style={{ color: C.muted, fontSize: 12.5, fontStyle: "italic", padding: "2px 6px" }}>{turn.content}</div>;
@@ -78,7 +79,7 @@ const Turn = ({ turn, ui, isPhone }) => {
       <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, letterSpacing: "0.4px", textTransform: "uppercase", margin: "0 6px 3px" }}>
         {mine ? "You" : "Charlie"}
       </div>
-      <div data-testid={mine ? "charli-user-turn" : failed ? "charli-error-turn" : "charli-turn"} style={{ ...bubble, borderRadius: 12, padding: "10px 14px", fontSize: 14, lineHeight: 1.5, maxWidth: "88%", whiteSpace: "pre-wrap", ...(isPhone ? { overflowWrap: "anywhere" } : null) }}>
+      <div data-testid={mine ? "charli-user-turn" : failed ? "charli-error-turn" : "charli-turn"} style={{ ...bubble, borderRadius: 12, padding: "10px 14px", fontSize: 14, lineHeight: 1.5, maxWidth: "88%", whiteSpace: "pre-wrap", ...(breakAnywhere ? { overflowWrap: "anywhere" } : null) }}>
         {turn.content}
         {!mine && <Sources turn={turn} ui={ui} style={{ marginTop: 8 }} />}
       </div>
@@ -238,26 +239,36 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const snap = useSyncExternalStore(session.subscribe, session.getState, session.getState);
   const working = snap.busy || snap.opening || transcribing;
 
-  // Half-duplex: listen only when Charlie is neither speaking nor working on something.
+  // Half-duplex: listen only when Charlie is neither speaking nor working on something. Computed once: the same gate decides
+  // capture and whether the tap-to-talk wait below counts (talkMode.mjs noSpeechClockRuns).
+  const canHear = noSpeechClockRuns({ micLive: mic === "live", paused, speaking, working, voiceDown });
   useEffect(() => {
-    audio.setCapture(mic === "live" && !paused && !speaking && !working && !voiceDown);
-  }, [mic, paused, speaking, working, voiceDown]);   // eslint-disable-line react-hooks/exhaustive-deps
+    audio.setCapture(canHear);
+  }, [canHear]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tap to talk: nothing heard within NO_SPEECH_MS of capture being on closes the mic, and nothing is sent. The wait counts only
   // while she could hear (not while she speaks or works, or while paused) and starts over when capture resumes. Hearing clears
   // it; a sound that was not kept as an utterance (too short) starts it again.
-  const clockRuns = noSpeechClockRuns({ micLive: mic === "live", paused, speaking, working, voiceDown });
   useEffect(() => {
-    if (handsFree || !clockRuns || hearing) return undefined;
+    if (handsFree || !canHear || hearing) return undefined;
     const timer = setTimeout(() => audio.stopMic(), NO_SPEECH_MS);
     return () => clearTimeout(timer);
-  }, [handsFree, clockRuns, hearing]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [handsFree, canHear, hearing]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const listRef = useRef(null);
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [snap.turns.length, snap.pending]);
+
+  // A change read back for a yes lands under the conversation, which on a laptop can be below the visible part of the dock: it is
+  // scrolled into view (the dock's own scroll, or the page when stacked). The drawer keeps it on screen by its layout.
+  const pendingRef = useRef(null);
+  useEffect(() => {
+    const el = pendingRef.current;
+    if (!panel && snap.pending && el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }, [snap.pending]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const tapNoteId = useId();
 
   // Asks for the microphone (the browser may prompt) and shows "starting" meanwhile. Only ever called from a tap.
   const startListening = () => {
@@ -366,11 +377,12 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   // Under the Talk row: the Hands-free switch, and in tap mode what a tap does.
   const talkOptions = (
     <div style={{ display: "flex", alignItems: "center", gap: "6px 14px", flexWrap: "wrap", marginTop: 10, flex: "none" }}>
-      <label style={{ display: "inline-flex", alignItems: "center", gap: 7, color: C.mutedHi, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-        <input data-testid="charli-handsfree" type="checkbox" role="switch" checked={handsFree} onChange={(e) => changeHandsFree(e.target.checked)} style={{ accentColor: C.amber, width: 15, height: 15, margin: 0, cursor: "pointer" }} />
+      {/* the whole label is the switch's hit area: at least 24px tall */}
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 7, minHeight: 24, color: C.mutedHi, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+        <input data-testid="charli-handsfree" type="checkbox" role="switch" checked={handsFree} aria-describedby={handsFree ? undefined : tapNoteId} onChange={(e) => changeHandsFree(e.target.checked)} style={{ accentColor: C.amber, width: 15, height: 15, margin: 0, cursor: "pointer" }} />
         Hands-free
       </label>
-      {!handsFree && <span data-testid="charli-tap-note" style={{ color: C.muted, fontSize: 12.5 }}>One question per tap. The mic closes after each answer.</span>}
+      {!handsFree && <span id={tapNoteId} data-testid="charli-tap-note" style={{ color: C.muted, fontSize: 12.5 }}>One question per tap. The mic closes after each answer.</span>}
     </div>
   );
 
@@ -412,12 +424,12 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       {snap.turns.length === 0 && (
         <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
       )}
-      {turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} isPhone={isPhone} />)}
+      {turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} breakAnywhere={isPhone || !panel} />)}
     </div>
   );
 
   const pendingCard = snap.pending && (
-    <div data-testid="charli-pending" style={{ ...card, borderColor: C.amber, background: C.amberBg, marginTop: 12, padding: "1rem 1.25rem", flex: "none" }}>
+    <div ref={pendingRef} data-testid="charli-pending" style={{ ...card, borderColor: C.amber, background: C.amberBg, marginTop: 12, padding: "1rem 1.25rem", flex: "none" }}>
       <div style={{ color: C.amber, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 6 }}>Waiting for your OK</div>
       <div style={{ fontSize: 14.5, lineHeight: 1.5, marginBottom: 12 }}>{snap.pending.readBack}</div>
       {/* every field the change will write, as the server packaged it */}
@@ -515,16 +527,17 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       {styles}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: "0.9rem", flex: "none" }}>
-        <h1 style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 9 }}>
+        {/* h2: Home's page heading (the greeting) is its h1 */}
+        <h2 style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 9 }}>
           <Icon name="mic" size={18} color={C.amber} />Charlie
-        </h1>
+        </h2>
         {pauseButton}
       </div>
 
       <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", flex: "none" }}>
         {stacked
-          ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} />
-          : <CharliePortrait state={face} shape="portrait" width={width ?? "100%"} maxHeight="min(318px, 30vh)" micOpen={mic === "live" && !paused} />}
+          ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} ariaHideName />
+          : <CharliePortrait state={face} shape="portrait" width={width ?? "100%"} maxHeight="min(318px, 28vh)" micOpen={mic === "live" && !paused} ariaHideName />}
       </div>
 
       {statusRow}

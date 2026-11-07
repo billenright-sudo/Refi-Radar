@@ -17,7 +17,8 @@ const play = (v) => {
   if (p && typeof p.catch === "function") p.catch(() => {});   // a blocked play leaves the still showing
 };
 
-export default function CharliePortrait({ state = "listening", shape = "portrait", width = 168, micOpen = false, maxHeight }) {
+// `ariaHideName`: her name on the card is hidden from screen readers where a heading beside it already names her (the dock).
+export default function CharliePortrait({ state = "listening", shape = "portrait", width = 168, micOpen = false, maxHeight, ariaHideName = false }) {
   const talk = useRef(null);
   const idle = useRef(null);
   const [still] = useState(reducedMotion);
@@ -74,7 +75,7 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
         )}
       </div>
       <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "22px 10px 8px", background: "linear-gradient(to top, rgba(8,16,28,0.88), rgba(8,16,28,0))", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, color: "#fff" }}>
-        <span style={{ fontSize: 13, fontWeight: 700 }}>Charlie</span>
+        <span aria-hidden={ariaHideName || undefined} style={{ fontSize: 13, fontWeight: 700 }}>Charlie</span>
         {tag && (
           <span style={{ fontSize: 11, fontWeight: 600, color: TONES[tag.tone], border: `1px solid ${TONES[tag.tone]}`, borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" }}>{tag.text}</span>
         )}
