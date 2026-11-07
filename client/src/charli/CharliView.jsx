@@ -7,6 +7,7 @@ import { stripItems } from "./strip.mjs";
 import { useIsPhone } from "../useIsPhone.js";
 import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
+import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance } from "./talkMode.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
@@ -23,7 +24,13 @@ import { faceState } from "./face.mjs";
 //
 // Only one of the two is on screen at a time, and both take the one kept session (keep.mjs), so the conversation carries over and
 // nobody is greeted twice. The briefing is shown but not spoken on its own (speakGreeting:false): Brief me speaks it, from a tap.
-// The microphone never starts by itself: Talk (or Enable microphone) starts it, and a second tap on Talk stops it.
+// The microphone never starts by itself: Talk (or Enable microphone) starts it, and a second tap on Talk stops it. By default a tap
+// opens it for one question (talkMode.mjs); the Hands-free switch keeps it open until Talk is tapped again.
+
+// The device's localStorage, or undefined where there is none or the browser refuses it (reading it can throw).
+const deviceStorage = () => {
+  try { return typeof window !== "undefined" ? window.localStorage : undefined; } catch { return undefined; }
+};
 
 const MIC_NOTES = {
   denied: "Microphone access is blocked. Allow it in your browser's site settings to talk to Charlie. Typing works in the meantime.",
@@ -148,9 +155,13 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   const [voiceDown, setVoiceDown] = useState(false);     // speech-to-text is not set up on the server
   const [voiceNote, setVoiceNote] = useState("");
   const [draft, setDraft] = useState("");
+  const [handsFree, setHandsFree] = useState(() => readHandsFree(deviceStorage()));   // read once, on mount
 
   const pausedRef = useRef(false);
   pausedRef.current = paused;
+  const handsFreeRef = useRef(handsFree);
+  handsFreeRef.current = handsFree;
+  const micLiveRef = useRef(false);   // the mic is live right now (set from audio.js itself, so a stop is seen at once)
   const speakingRef = useRef(false);   // whether she is mid-line right now (Pause keeps only a line it cuts off)
   const listenOnResume = useRef(false);   // the microphone was on when Pause was tapped: Resume turns it back on, never otherwise
   const onStaleRef = useRef(onStale);
@@ -171,6 +182,11 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     }));
 
     const handleUtterance = async (blob) => {
+      // Tap to talk: the first utterance closes the mic before it is sent; one that lands after the mic closed is dropped.
+      if (stopAfterUtterance(handsFreeRef.current)) {
+        if (!micLiveRef.current) return;
+        audio.stopMic();
+      }
       setTranscribing(true);
       // the change on screen when this recording went off: a yes / no that comes back after it was handled is dropped
       const pendingAtStart = session.getState().pending;
@@ -199,7 +215,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
       onUtterance: handleUtterance,
       onSpeakingChange: (on) => { speakingRef.current = on; setSpeaking(on); },
       onHearing: setHearing,
-      onMicChange: setMic,
+      onMicChange: (state) => { micLiveRef.current = state === "live"; setMic(state); },
       onAutoplayBlocked: () => setNeedsStart(true),
       onTtsOk: () => { setVoiceNote(""); setNeedsStart(false); },   // it played, so no tap is needed after all
       onTtsError: (status, body) => setVoiceNote(voiceNoteFor(status, body)),
@@ -245,6 +261,14 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     audio.setCapture(mic === "live" && !paused && !speaking && !working && !voiceDown);
   }, [mic, paused, speaking, working, voiceDown]);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Tap to talk: nothing heard within NO_SPEECH_MS of the mic going live closes it, and nothing is sent. Hearing clears the wait;
+  // a sound that was not kept as an utterance (too short) starts it again.
+  useEffect(() => {
+    if (handsFree || mic !== "live" || hearing) return undefined;
+    const timer = setTimeout(() => audio.stopMic(), NO_SPEECH_MS);
+    return () => clearTimeout(timer);
+  }, [handsFree, mic, hearing]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   const listRef = useRef(null);
   useEffect(() => {
     const el = listRef.current;
@@ -277,11 +301,19 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
       resume({ listen: listenOnResume.current });
     }
   };
-  // Talk: starts the microphone (hands-free from there); tapped again while it is on, stops it; tapped while paused, resumes.
+  // Talk: starts the microphone (for one question, or hands-free from there); tapped again while it is on, stops it with nothing
+  // sent; tapped while paused, resumes.
   const talk = () => {
     if (paused) { resume({ listen: true }); return; }
     audio.unlock();
     if (mic === "live") audio.stopMic(); else startListening();
+  };
+  // The Hands-free switch takes effect at once: off while the mic is live closes it; on never opens it (the next tap does).
+  const changeHandsFree = (on) => {
+    handsFreeRef.current = on;
+    setHandsFree(on);
+    writeHandsFree(deviceStorage(), on);
+    if (!on && mic === "live") audio.stopMic();
   };
   // Brief me: the briefing said aloud, from this tap (a tap is what lets the browser play audio). Said again if it was already; a
   // briefing from an earlier day is not said, and the screen is rebuilt for today instead.
@@ -332,7 +364,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   const turns = panel ? snap.turns : snap.turns.filter((t) => t !== briefingTurn);
 
   const listening = mic === "live" && !paused;
-  const talkLabel = listening ? "Stop listening" : mic === "starting" && !paused ? "Starting…" : "Talk";
+  const talkLabel = labelForTalk({ handsFree, micLive: listening, starting: mic === "starting", paused });
   const talkSize = panel ? {} : { fontSize: 18, padding: "16px 40px", borderRadius: 14, gap: 10, ...(isPhone ? { padding: "14px 28px" } : null) };
   const talkStyle = listening
     ? { ...ghost, ...talkSize, background: C.greenBg, color: C.green, border: `1px solid ${C.green}` }
@@ -346,6 +378,16 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     <button data-testid="charli-brief" type="button" disabled={paused} onClick={briefMe} style={{ ...ghost, ...(panel ? {} : { fontSize: 15, padding: "14px 26px", borderRadius: 14, ...(isPhone ? { padding: "14px 20px" } : null) }), opacity: paused ? 0.5 : 1, cursor: paused ? "default" : "pointer" }}>
       Brief me
     </button>
+  );
+  // Under the Talk row: the Hands-free switch, and in tap mode what a tap does.
+  const talkOptions = (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px 14px", flexWrap: "wrap", marginTop: 10, ...(panel ? null : { justifyContent: "center" }) }}>
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 7, color: C.mutedHi, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+        <input data-testid="charli-handsfree" type="checkbox" role="switch" checked={handsFree} onChange={(e) => changeHandsFree(e.target.checked)} style={{ accentColor: C.amber, width: 15, height: 15, margin: 0, cursor: "pointer" }} />
+        Hands-free
+      </label>
+      {!handsFree && <span data-testid="charli-tap-note" style={{ color: C.muted, fontSize: 12.5 }}>One question per tap. The mic closes after each answer.</span>}
+    </div>
   );
 
   const pauseButton = (
@@ -478,6 +520,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
           {talkButton}
           {briefButton}
         </div>
+        {talkOptions}
         {typeBox}
       </aside>
     );
@@ -521,6 +564,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
           {talkButton}
           {briefButton}
         </div>
+        {talkOptions}
       </section>
 
       {snap.briefing && (
