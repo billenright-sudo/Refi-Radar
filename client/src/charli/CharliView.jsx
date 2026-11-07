@@ -3,7 +3,6 @@ import { createSession, pendingRows, voiceNoteFor } from "./session.mjs";
 import { keptSession } from "./keep.mjs";
 import { createReplay, shouldClear } from "./replay.mjs";
 import { createAudio, transcribe } from "./audio.js";
-import { stripItems } from "./strip.mjs";
 import { useIsPhone } from "../useIsPhone.js";
 import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
@@ -13,10 +12,10 @@ import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk,
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
 //
 // Props: rates (today's rates, from App), user (from /api/auth/me), ui = { C, card, mono, Icon } (App's design tokens),
-//   mode      "home" (default): Charlie's page, the main page. The briefing written out in the centre, a large Talk button, Brief me,
-//             the strip of today's facts under it (wraps on a phone), then the rest of the conversation.
+//   mode      "dock" (default): Charlie docked beside the Overview on Home: header, portrait, her briefing, Talk / Brief me, the
+//             conversation, the type box. `stacked` (tablet and phone) puts it above the Overview with a square portrait;
+//             `width` (pixels) overrides the portrait width.
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
-//   onNavigate(viewId)  home: a strip item was tapped (App opens that page)
 //   onClose()           panel: the close button or Escape (App takes the drawer away)
 //   onStale()           Brief me (the button, or the request typed or said) found the briefing is from an earlier local day: App
 //                       renders again, and since it keys this screen by the day, a fresh session and briefing are built for today
@@ -119,29 +118,9 @@ const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
   </div>
 );
 
-// The slim strip under Charlie on the home page (strip.mjs decides what is in it): each fact opens its page. Hidden on a narrow
-// screen by the .charli-strip rule in the view's <style>.
-const Strip = ({ items, onOpen, ui: { C, mono } }) => items.length > 0 && (
-  <div className="charli-strip" data-testid="charli-strip" role="group" aria-label="Today at a glance">
-    {items.map((item) => {
-      const look = { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, minWidth: 0, maxWidth: 260, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 14px", color: C.text, textDecoration: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left" };
-      const inside = (
-        <>
-          <span style={{ color: C.muted, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.4px", textTransform: "uppercase" }}>{item.label}</span>
-          <span style={{ ...mono, fontSize: 15, fontWeight: 700, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.value}</span>
-          {item.detail && <span style={{ color: C.mutedHi, fontSize: 11.5 }}>{item.detail}</span>}
-        </>
-      );
-      return item.href
-        ? <a key={item.key} data-testid={`charli-strip-${item.key}`} href={item.href} target="_blank" rel="noopener noreferrer" style={look}>{inside}</a>
-        : <button key={item.key} type="button" data-testid={`charli-strip-${item.key}`} onClick={() => onOpen && onOpen(item.view)} style={{ ...look, border: `1px solid ${C.border}` }}>{inside}</button>;
-    })}
-  </div>
-);
-
 // ── the view ─────────────────────────────────────────────────────────────────
 
-export default function CharliView({ rates, user, ui, mode = "home", onNavigate, onClose, onStale }) {
+export default function CharliView({ rates, user, ui, mode = "dock", stacked = false, width, onClose, onStale }) {
   const { C, card, mono, Icon } = ui;
   const panel = mode === "panel";
   const isPhone = useIsPhone();
@@ -353,7 +332,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   else if (mic === "live") { status = hearing ? "Listening… hearing you" : "Listening"; dot = C.green; }
   else if (mic === "starting") status = "Starting the microphone…";
   else if (MIC_NOTES[mic]) status = "Type below. The microphone isn't available";   // denied | unavailable | error (the note below says why)
-  else status = "Tap Talk to speak, or type below";
+  else status = handsFree ? "Tap Talk to speak, or type below" : "Tap to talk, or type below";
 
   const micNote = !paused && MIC_NOTES[mic];
   const face = faceState({ speaking, working, paused });
@@ -367,7 +346,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
 
   const listening = mic === "live" && !paused;
   const talkLabel = labelForTalk({ handsFree, micLive: listening, starting: mic === "starting", paused });
-  const talkSize = panel ? {} : { fontSize: 18, padding: "16px 40px", borderRadius: 14, gap: 10, ...(isPhone ? { padding: "14px 28px" } : null) };
+  const talkSize = panel ? {} : { fontSize: 16, padding: "13px 18px", borderRadius: 12, gap: 10, flex: 1, justifyContent: "center" };
   const talkStyle = listening
     ? { ...ghost, ...talkSize, background: C.greenBg, color: C.green, border: `1px solid ${C.green}` }
     : { ...primary, ...talkSize };
@@ -377,13 +356,13 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     </button>
   );
   const briefButton = snap.briefing && (
-    <button data-testid="charli-brief" type="button" disabled={paused} onClick={briefMe} style={{ ...ghost, ...(panel ? {} : { fontSize: 15, padding: "14px 26px", borderRadius: 14, ...(isPhone ? { padding: "14px 20px" } : null) }), opacity: paused ? 0.5 : 1, cursor: paused ? "default" : "pointer" }}>
+    <button data-testid="charli-brief" type="button" disabled={paused} onClick={briefMe} style={{ ...ghost, ...(panel ? {} : { fontSize: 15, padding: "13px 20px", borderRadius: 12 }), opacity: paused ? 0.5 : 1, cursor: paused ? "default" : "pointer" }}>
       Brief me
     </button>
   );
   // Under the Talk row: the Hands-free switch, and in tap mode what a tap does.
   const talkOptions = (
-    <div style={{ display: "flex", alignItems: "center", gap: "6px 14px", flexWrap: "wrap", marginTop: 10, ...(panel ? null : { justifyContent: "center" }) }}>
+    <div style={{ display: "flex", alignItems: "center", gap: "6px 14px", flexWrap: "wrap", marginTop: 10 }}>
       <label style={{ display: "inline-flex", alignItems: "center", gap: 7, color: C.mutedHi, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
         <input data-testid="charli-handsfree" type="checkbox" role="switch" checked={handsFree} onChange={(e) => changeHandsFree(e.target.checked)} style={{ accentColor: C.amber, width: 15, height: 15, margin: 0, cursor: "pointer" }} />
         Hands-free
@@ -426,7 +405,7 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   );
 
   const transcript = (turns.length > 0 || panel) && (
-    <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", ...(panel ? { flex: 1, minHeight: 0 } : { maxHeight: 380 }) }}>
+    <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", ...(panel ? { flex: 1, minHeight: 0 } : stacked ? { maxHeight: 380 } : { flex: 1, minHeight: 120 }) }}>
       {snap.turns.length === 0 && (
         <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
       )}
@@ -484,7 +463,6 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
   const styles = (
     <style>{`
       @keyframes charliPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(1.5); } }
-      .charli-strip { display: flex; flex-wrap: wrap; gap: 10px; }
     `}</style>
   );
 
@@ -528,54 +506,47 @@ export default function CharliView({ rates, user, ui, mode = "home", onNavigate,
     );
   }
 
-  // ── the home page ──
+  // ── the dock ──
   return (
-    <div style={{ animation: "fadeIn 0.3s ease", maxWidth: 820, margin: "0 auto" }}>
+    <div data-testid="charli-dock" style={{ animation: "fadeIn 0.3s ease", display: "flex", flexDirection: "column", boxSizing: "border-box", ...(stacked ? null : { height: "100%", minHeight: 0 }) }}>
       {styles}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: "1.25rem", ...(isPhone ? { flexWrap: "wrap", gap: 12 } : null) }}>
-        <div style={isPhone ? { flex: "1 1 220px", minWidth: 0 } : undefined}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, display: "flex", alignItems: "center", gap: 10 }}>
-            <Icon name="mic" size={20} color={C.amber} />Charlie
-          </h1>
-          <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>
-            Your voice co-pilot. Ask for a market update, run a sweep of your book, or log a contact. Say it or type it.
-          </div>
-        </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: "0.9rem" }}>
+        <h1 style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 9 }}>
+          <Icon name="mic" size={18} color={C.amber} />Charlie
+        </h1>
         {pauseButton}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", flex: "none" }}>
+        {stacked
+          ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} />
+          : <CharliePortrait state={face} shape="portrait" width={width ?? 254} micOpen={mic === "live" && !paused} />}
       </div>
 
       {statusRow}
       {banners}
 
-      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1.75rem 1.75rem 1.5rem", textAlign: "center", ...(isPhone ? { padding: "1.1rem 1rem" } : null) }}>
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: isPhone ? 14 : 20 }}>
-          <CharliePortrait state={face} shape="square" width={isPhone ? 112 : 148} micOpen={mic === "live" && !paused} />
-        </div>
+      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", flex: "none" }}>
         {briefingTurn ? (
           <>
-            <div style={{ fontSize: 17, lineHeight: 1.65, textAlign: "left", whiteSpace: "pre-wrap", ...(isPhone ? { fontSize: 16, overflowWrap: "anywhere" } : null) }}>{briefingTurn.content}</div>
-            <Sources turn={briefingTurn} ui={ui} style={{ marginTop: 12, justifyContent: "flex-start" }} />
+            <div style={{ fontSize: 14.5, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{briefingTurn.content}</div>
+            <Sources turn={briefingTurn} ui={ui} style={{ marginTop: 10, justifyContent: "flex-start" }} />
           </>
         ) : snap.turns.length === 0 ? (
           <div style={{ color: C.muted, fontSize: 14 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
         ) : (
           <div style={{ color: C.muted, fontSize: 14 }}>There is no briefing to show right now. You can still ask Charlie below.</div>
         )}
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 22 }}>
-          {talkButton}
-          {briefButton}
-        </div>
-        {talkOptions}
       </section>
 
-      {snap.briefing && (
-        <div style={{ marginTop: 14 }}>
-          <Strip items={stripItems(snap.briefing.strip)} onOpen={onNavigate} ui={ui} />
-        </div>
-      )}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, flex: "none" }}>
+        {talkButton}
+        {briefButton}
+      </div>
+      {talkOptions}
 
-      <div style={{ marginTop: 16 }}>
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", ...(stacked ? null : { flex: 1, minHeight: 0 }) }}>
         {transcript}
         {pendingCard}
         {typeBox}

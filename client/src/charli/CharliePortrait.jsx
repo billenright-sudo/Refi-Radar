@@ -47,14 +47,16 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
   }, [clip]);
 
   const tag = statusTag({ state, micOpen });
-  const height = shape === "square" ? width : Math.round((width * 5) / 4);
+  // A number is pixels; a CSS length (e.g. "min(100%, 420px)") keeps the shape through aspect-ratio instead.
+  const fluid = typeof width !== "number";
+  const height = fluid ? "auto" : shape === "square" ? width : Math.round((width * 5) / 4);
   const fill = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 15%", display: "block" };
   return (
     <div
       data-testid="charlie-portrait"
       data-state={state}
       data-shape={shape}
-      style={{ width, height, borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
+      style={{ width, height, ...(fluid ? { aspectRatio: shape === "square" ? "1 / 1" : "4 / 5" } : null), borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
     >
       <div aria-hidden="true" style={{ position: "absolute", inset: 0 }}>
         <img src={PORTRAIT.still} alt="" draggable={false} style={fill} />

@@ -2885,7 +2885,7 @@ export default function App() {
             <NotificationBell />
           </header>
           <main style={{ flex: 1, padding: "2rem 2.5rem", overflowX: "hidden", ...ph(isPhone, { padding: "1.25rem 16px 5.5rem", minWidth: 0 }) }}>
-            {view === "home"          && <CharliView key={today} mode="home" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onNavigate={setView} onStale={renderAgain} />}
+            {view === "home"          && <CharliView key={today} mode="dock" stacked={isPhone} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} />}
             {view === "overview"      && <Dashboard scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn} />}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
             {view === "profile"       && profileAsk && <ProfilePrompt missing={profileAsk} onSkip={skipProfile} />}
