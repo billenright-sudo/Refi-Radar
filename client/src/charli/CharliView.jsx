@@ -15,8 +15,9 @@ import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk,
 //   mode      "dock" (default): Charlie docked beside the Overview on Home: header, portrait, her briefing, Talk / Brief me, the
 //             conversation, the type box. `stacked` (tablet and phone) puts it above the Overview with a square portrait;
 //             `width` (a number of pixels, or a CSS length such as "100%") overrides the portrait width. Unstacked, it fills
-//             its parent's height (App's sticky column); the portrait is at most min(318px, 30vh) tall and the briefing card
-//             scrolls on its own past 20vh, so the conversation and the type box fit on a screen down to about 800px tall.
+//             its parent's height (App's sticky column) as one flex column: the portrait is at most min(318px, 30vh) tall, the
+//             briefing card at most 20vh and the first thing to give way (down to 64px, scrolling on its own), and the
+//             transcript takes the rest (at least 96px), so the type box stays on screen down to about 768px tall.
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
 //   onClose()           panel: the close button or Escape (App takes the drawer away)
 //   onStale()           Brief me (the button, or the request typed or said) found the briefing is from an earlier local day: App
@@ -364,7 +365,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   );
   // Under the Talk row: the Hands-free switch, and in tap mode what a tap does.
   const talkOptions = (
-    <div style={{ display: "flex", alignItems: "center", gap: "6px 14px", flexWrap: "wrap", marginTop: 10 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: "6px 14px", flexWrap: "wrap", marginTop: 10, flex: "none" }}>
       <label style={{ display: "inline-flex", alignItems: "center", gap: 7, color: C.mutedHi, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
         <input data-testid="charli-handsfree" type="checkbox" role="switch" checked={handsFree} onChange={(e) => changeHandsFree(e.target.checked)} style={{ accentColor: C.amber, width: 15, height: 15, margin: 0, cursor: "pointer" }} />
         Hands-free
@@ -380,7 +381,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   );
 
   const statusRow = (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: "1rem", flexWrap: "wrap" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: "1rem", flexWrap: "wrap", flex: "none" }}>
       <div data-testid="charli-status" role="status" aria-live="polite" style={{ display: "inline-flex", alignItems: "center", gap: 9, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 999, padding: "6px 14px", fontSize: 13, color: C.mutedHi }}>
         <span style={{ width: 8, height: 8, borderRadius: "50%", background: dot, animation: hearing && !paused ? "charliPulse 0.9s ease-in-out infinite" : "none" }} />
         {status}
@@ -392,13 +393,13 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const banners = (
     <>
       {needsStart && (
-        <div style={{ ...card, borderColor: C.amber, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: "1rem", padding: "1rem 1.25rem" }}>
+        <div style={{ ...card, borderColor: C.amber, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: "1rem", padding: "1rem 1.25rem", flex: "none" }}>
           <div style={{ fontSize: 13.5, lineHeight: 1.45 }}>Your browser needs a tap before Charlie can speak.</div>
           <button data-testid="charli-start" type="button" onClick={startCharlie} style={primary}><Icon name="mic" size={15} color="#0f2040" />Let Charlie speak</button>
         </div>
       )}
       {micNote && (
-        <div style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: "1rem", padding: "0.9rem 1.25rem", color: C.mutedHi, fontSize: 13, lineHeight: 1.45 }}>
+        <div style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: "1rem", padding: "0.9rem 1.25rem", color: C.mutedHi, fontSize: 13, lineHeight: 1.45, flex: "none" }}>
           <span>{micNote}</span>
           {mic !== "unavailable" && <button type="button" onClick={enableMic} style={ghost}>Enable microphone</button>}
         </div>
@@ -407,7 +408,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   );
 
   const transcript = (turns.length > 0 || panel) && (
-    <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", ...(panel ? { flex: 1, minHeight: 0 } : stacked ? { maxHeight: 380 } : { flex: 1, minHeight: 120 }) }}>
+    <div ref={listRef} data-testid="charli-transcript" style={{ ...card, padding: "1rem", display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", ...(panel ? { flex: 1, minHeight: 0 } : stacked ? { maxHeight: 380 } : { flex: "1 1 0", minHeight: 96 }) }}>
       {snap.turns.length === 0 && (
         <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
       )}
@@ -416,7 +417,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   );
 
   const pendingCard = snap.pending && (
-    <div data-testid="charli-pending" style={{ ...card, borderColor: C.amber, background: C.amberBg, marginTop: 12, padding: "1rem 1.25rem" }}>
+    <div data-testid="charli-pending" style={{ ...card, borderColor: C.amber, background: C.amberBg, marginTop: 12, padding: "1rem 1.25rem", flex: "none" }}>
       <div style={{ color: C.amber, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 6 }}>Waiting for your OK</div>
       <div style={{ fontSize: 14.5, lineHeight: 1.5, marginBottom: 12 }}>{snap.pending.readBack}</div>
       {/* every field the change will write, as the server packaged it */}
@@ -443,7 +444,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
 
   const typeBox = (
     <>
-      <form onSubmit={(e) => { e.preventDefault(); sendDraft(); }} style={{ display: "flex", gap: 10, marginTop: 12 }}>
+      <form onSubmit={(e) => { e.preventDefault(); sendDraft(); }} style={{ display: "flex", gap: 10, marginTop: 12, flex: "none" }}>
         <input
           data-testid="charli-input"
           aria-label="Type instead"
@@ -456,7 +457,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
         />
         <button type="submit" data-testid="charli-send" disabled={!canSend} style={{ ...primary, opacity: canSend ? 1 : 0.5, cursor: canSend ? "pointer" : "default" }}>Send</button>
       </form>
-      <div style={{ ...mono, color: C.muted, fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
+      <div style={{ ...mono, color: C.muted, fontSize: 11, marginTop: 10, lineHeight: 1.5, flex: "none" }}>
         Anything Charlie changes is read back first and only saved when you confirm.
       </div>
     </>
@@ -513,7 +514,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
     <div data-testid="charli-dock" style={{ animation: "fadeIn 0.3s ease", display: "flex", flexDirection: "column", boxSizing: "border-box", ...(stacked ? null : { height: "100%", minHeight: 0 }) }}>
       {styles}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: "0.9rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: "0.9rem", flex: "none" }}>
         <h1 style={{ fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", gap: 9 }}>
           <Icon name="mic" size={18} color={C.amber} />Charlie
         </h1>
@@ -529,7 +530,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       {statusRow}
       {banners}
 
-      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", flex: "none", ...(stacked ? null : { maxHeight: "20vh", overflowY: "auto" }) }}>
+      {/* unstacked, the briefing is what gives way first on a short screen (down to 64px, then it scrolls) */}
+      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", ...(stacked ? { flex: "none" } : { flex: "0 1 auto", minHeight: 64, maxHeight: "20vh", overflowY: "auto" }) }}>
         {briefingTurn ? (
           <>
             <div style={{ fontSize: 14.5, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{briefingTurn.content}</div>
@@ -548,11 +550,22 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       </div>
       {talkOptions}
 
-      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", ...(stacked ? null : { flex: 1, minHeight: 0 }) }}>
-        {transcript}
-        {pendingCard}
-        {typeBox}
-      </div>
+      {stacked ? (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column" }}>
+          {transcript}
+          {pendingCard}
+          {typeBox}
+        </div>
+      ) : (
+        // Unstacked these sit directly in the column (no wrapper box), so the column's one flex pass shrinks the briefing first and
+        // the transcript (flex 1 1 0, min 96px) takes what is left: the type box stays on screen. The spacer is the 12px gap above.
+        <>
+          <div aria-hidden="true" style={{ height: 12, flex: "none" }} />
+          {transcript}
+          {pendingCard}
+          {typeBox}
+        </>
+      )}
     </div>
   );
 }
