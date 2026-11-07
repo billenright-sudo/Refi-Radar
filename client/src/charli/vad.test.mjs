@@ -134,3 +134,30 @@ test("reset() drops an utterance in progress without emitting anything", () => {
   const [events] = feed(vad, run(0.004, 2000), 300);
   assert.deepEqual(events, []);
 });
+
+test("reset() keeps the learned room level and the finished calibration: after a gap, the first loud reading starts at once", () => {
+  const vad = createVad();
+  const [, t] = feed(vad, run(0.012, 3000));   // calibrated to a slightly noisy room
+  const learned = vad.noiseFloor;
+  const threshold = vad.startThreshold;
+  assert.ok(threshold > VAD_DEFAULTS.minStart, "the room raised the start threshold");
+  vad.reset();   // the mic closed (tap to talk) ...
+  assert.equal(vad.noiseFloor, learned);
+  assert.equal(vad.startThreshold, threshold);
+  const [events] = feed(vad, [0.12], t + 8000);   // ... and opened again 8 s later
+  assert.deepEqual(events.map((e) => e.type), ["start"], "no second calibration: the first reading counts");
+});
+
+test("after reset(), soft speech right away is heard, where a NEW VAD would learn it as the room (why audio.js keeps one)", () => {
+  const fresh = createVad();
+  const [missed] = feed(fresh, run(0.04, 600));
+  assert.deepEqual(missed, [], "a new VAD calibrates on the voice: nothing starts");
+  assert.equal(fresh.startThreshold, VAD_DEFAULTS.maxStart, "and its start threshold is pushed to the cap");
+
+  const vad = createVad();
+  const [, t] = feed(vad, run(0.004, 1000));
+  vad.reset();
+  const [events] = feed(vad, run(0.04, 300), t + 5000);
+  assert.deepEqual(events.map((e) => e.type), ["start"]);
+  assert.ok(vad.startThreshold < VAD_DEFAULTS.maxStart);
+});

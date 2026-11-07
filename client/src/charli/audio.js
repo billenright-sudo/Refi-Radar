@@ -11,7 +11,7 @@ import { createVad, VAD_DEFAULTS } from "./vad.mjs";
 
 const TTS_URL = "/api/voice/tts";
 const STT_URL = "/api/voice/stt";
-const ECHO_TAIL_MS = 350;   // after capture resumes, ignore the room this long (the end of Charli's own voice)
+const ECHO_TAIL_MS = 350;   // after Charli's voice stops, ignore the room this long (the end of her own voice); none after a silence
 const TTS_ERROR_BODY_CHARS = 1024;   // how much of a failed /tts response is read
 
 // ── a failed speech response ─────────────────────────────────────────────────
@@ -134,7 +134,10 @@ export function createAudio({
   let analyser = null;
   let samples = null;
   let timer = null;
-  let vad = null;
+  // ONE per audio instance: the room level it learned and its calibration outlive stopMic / startMic, so tap to talk (a mic
+  // opened and closed for every question) is not deaf for a new calibration each time.
+  const vad = createVad();
+  let voiceEndedAt = -Infinity;   // when her voice last stopped (performance.now): the echo tail runs from there
   let starting = null;
   let micWanted = false;   // startMic() was called and stopMic() has not been since
   let capturing = false;
@@ -183,7 +186,8 @@ export function createAudio({
     if (stream) stream.getTracks().forEach((t) => t.stop());
     stream = null;
     if (context) context.close().catch(() => {});
-    context = analyser = samples = vad = null;
+    context = analyser = samples = null;
+    vad.reset();
   }
 
   async function openMic() {
@@ -219,7 +223,6 @@ export function createAudio({
     }
     stream = got;
     samples = new Float32Array(analyser.fftSize);
-    vad = createVad();
     timer = setInterval(tick, VAD_DEFAULTS.tickMs);
     got.getAudioTracks().forEach((t) => t.addEventListener("ended", () => {
       if (stream === got) { releaseMic(); onMicChange("error"); }
@@ -242,12 +245,13 @@ export function createAudio({
     if (!disposed) onMicChange("off");
   }
 
-  // Listen (true) or ignore the room (false). Turning it off throws away an utterance in progress.
+  // Listen (true) or ignore the room (false). Turning it off throws away an utterance in progress. Turned on within ECHO_TAIL_MS
+  // of her voice stopping, the rest of that tail is ignored; turned on after a silence (a cold open), it listens at once.
   function setCapture(on) {
     if (on === capturing) return;
     capturing = on;
-    if (vad) vad.reset();
-    if (on) quietUntil = performance.now() + ECHO_TAIL_MS; else closeTake(false);
+    vad.reset();
+    if (on) quietUntil = voiceEndedAt + ECHO_TAIL_MS; else closeTake(false);
   }
 
   // ── voice ──
@@ -403,6 +407,7 @@ export function createAudio({
       }
     } finally {
       pumping = false;
+      voiceEndedAt = performance.now();
       if (!disposed) onSpeakingChange(false);
     }
   }

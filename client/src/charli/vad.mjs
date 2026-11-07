@@ -39,7 +39,7 @@ export function createVad(options = {}) {
     get startThreshold() { return startThreshold(); },
     get noiseFloor() { return floor; },
 
-    // Forget any utterance in progress (capture was paused); the noise floor is kept.
+    // Forget any utterance in progress (capture was paused, or the mic closed); the noise floor and a finished calibration are kept.
     reset() { recording = false; },
 
     // One reading: `level` is the RMS of the latest audio, `now` a millisecond clock. -> null | event
