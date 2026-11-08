@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { PORTRAIT, clipToPlay, statusTag } from "./portrait.mjs";
+import { PORTRAIT, clipToPlay, statusTag, portraitBox } from "./portrait.mjs";
 
 // Charlie's face as a rounded portrait card with an amber edge. `state` comes from faceState(). Only the clip clipToPlay()
 // names plays (the other is paused); a hidden tab or reduced motion plays none, leaving the still, which is always underneath.
@@ -18,7 +18,7 @@ const play = (v) => {
 };
 
 // `ariaHideName`: her name on the card is hidden from screen readers where a heading beside it already names her (the dock).
-export default function CharliePortrait({ state = "listening", shape = "portrait", width = 168, micOpen = false, maxHeight, ariaHideName = false }) {
+export default function CharliePortrait({ state = "listening", shape = "portrait", width = 168, height: fixedHeight, micOpen = false, maxHeight, ariaHideName = false }) {
   const talk = useRef(null);
   const idle = useRef(null);
   const [still] = useState(reducedMotion);
@@ -48,16 +48,16 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
   }, [clip]);
 
   const tag = statusTag({ state, micOpen });
-  // A number is pixels; a CSS length (e.g. "min(100%, 420px)") keeps the shape through aspect-ratio instead.
-  const fluid = typeof width !== "number";
-  const height = fluid ? "auto" : shape === "square" ? width : Math.round((width * 5) / 4);
+  // A number is pixels; a CSS length (e.g. "min(100%, 420px)") keeps the shape through aspect-ratio instead; a `height` (CSS
+  // length) keeps her whole frame, head and shoulders, with the width following (portraitBox).
+  const box = portraitBox({ shape, width, height: fixedHeight });
   const fill = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 18%", display: "block" };
   return (
     <div
       data-testid="charlie-portrait"
       data-state={state}
       data-shape={shape}
-      style={{ width, height, ...(maxHeight ? { maxHeight } : null), ...(fluid ? { aspectRatio: shape === "square" ? "1 / 1" : "4 / 5" } : null), borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
+      style={{ ...box, ...(maxHeight ? { maxHeight } : null), borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
     >
       <div aria-hidden="true" style={{ position: "absolute", inset: 0 }}>
         <img src={PORTRAIT.still} alt="" draggable={false} style={fill} />

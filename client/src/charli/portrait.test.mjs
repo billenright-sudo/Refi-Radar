@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clipToPlay, statusTag } from "./portrait.mjs";
+import { clipToPlay, statusTag, portraitBox } from "./portrait.mjs";
 
 test("clipToPlay: talk while she talks, idle otherwise, nothing when hidden or reduced motion", () => {
   assert.equal(clipToPlay({ state: "talking", hidden: false, reducedMotion: false }), "talk");
@@ -16,4 +16,17 @@ test("statusTag: the chip under her name", () => {
   assert.deepEqual(statusTag({ state: "listening", micOpen: true }), { text: "Listening", tone: "green" });
   assert.deepEqual(statusTag({ state: "thinking", micOpen: false }), { text: "Thinking…", tone: "amber" });
   assert.equal(statusTag({ state: "listening", micOpen: false }), null);
+});
+
+test("portraitBox: a height keeps her whole 4:5 frame (head and shoulders), the width following from it", () => {
+  assert.deepEqual(portraitBox({ shape: "portrait", height: "min(318px, 28vh)" }), { width: "auto", height: "min(318px, 28vh)", aspectRatio: "4 / 5" });
+});
+
+test("portraitBox: a pixel width sets the 4:5 or square height", () => {
+  assert.deepEqual(portraitBox({ shape: "portrait", width: 168 }), { width: 168, height: 210 });
+  assert.deepEqual(portraitBox({ shape: "square", width: 200 }), { width: 200, height: 200 });
+});
+
+test("portraitBox: a CSS width keeps the shape through aspect-ratio", () => {
+  assert.deepEqual(portraitBox({ shape: "square", width: "min(100%, 420px)" }), { width: "min(100%, 420px)", height: "auto", aspectRatio: "1 / 1" });
 });

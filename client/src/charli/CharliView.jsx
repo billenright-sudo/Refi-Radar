@@ -16,7 +16,8 @@ import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk,
 //   mode      "dock" (default): Charlie docked beside the Overview on Home: header, portrait, her briefing, Talk / Brief me, the
 //             conversation, the type box. `stacked` (tablet and phone) puts it above the Overview with a square portrait;
 //             `width` (a number of pixels, or a CSS length such as "100%") overrides the portrait width. Unstacked, it fills
-//             its parent's height (App's sticky column) as one flex column: the portrait is at most min(318px, 28vh) tall, the
+//             its parent's height (App's sticky column) as one flex column: the portrait is min(318px, 28vh) tall in her whole
+//             4:5 frame (head and shoulders, centered; Bill 2026-11-07), the
 //             briefing card at most 20vh and the first thing to give way (down to 64px, scrolling on its own), and the
 //             transcript takes the rest (at least 96px), so the type box stays on screen down to about 768px tall.
 //             "panel": the same conversation in a drawer on the right, opened from the corner button on every other page.
@@ -542,7 +543,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", flex: "none" }}>
         {stacked
           ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} ariaHideName />
-          : <CharliePortrait state={face} shape="portrait" width={width ?? "100%"} maxHeight="min(318px, 28vh)" micOpen={mic === "live" && !paused} ariaHideName />}
+          : <CharliePortrait state={face} shape="portrait" {...(width != null ? { width } : { height: "min(318px, 28vh)" })} micOpen={mic === "live" && !paused} ariaHideName />}
       </div>
 
       {statusRow}
