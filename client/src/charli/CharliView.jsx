@@ -6,6 +6,7 @@ import { createAudio, transcribe } from "./audio.js";
 import { useIsPhone } from "../useIsPhone.js";
 import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
+import { briefingFolded } from "./briefingFold.mjs";
 import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns } from "./talkMode.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
@@ -138,6 +139,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const [voiceDown, setVoiceDown] = useState(false);     // speech-to-text is not set up on the server
   const [voiceNote, setVoiceNote] = useState("");
   const [draft, setDraft] = useState("");
+  const [briefOpen, setBriefOpen] = useState(false);   // the folded briefing tapped open (the dock, mid-conversation)
   const [handsFree, setHandsFree] = useState(() => readHandsFree(deviceStorage()));   // read once, on mount
 
   const pausedRef = useRef(false);
@@ -259,7 +261,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [snap.turns.length, snap.pending]);
+  }, [snap.turns.length, snap.pending, briefOpen]);   // briefOpen: folding/opening the briefing resizes the conversation
 
   // A change read back for a yes lands under the conversation, which on a laptop can be below the visible part of the dock: it is
   // scrolled into view (the dock's own scroll, or the page when stacked). The drawer keeps it on screen by its layout.
@@ -357,6 +359,9 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   // The briefing is the greeting turn: the first thing she said, once the greeting has come back with a briefing.
   const briefingTurn = snap.briefing ? snap.turns.find((t) => t.role === "assistant" && t.kind === "message") || null : null;
   const turns = panel ? snap.turns : snap.turns.filter((t) => t !== briefingTurn);
+  // The dock: once the conversation starts, the briefing folds to one line (tap to open) so the conversation gets the room.
+  const folded = briefingFolded({ talking: turns.length > 0, hasBriefing: Boolean(briefingTurn), open: briefOpen });
+  const foldToggle = { background: "transparent", border: "none", color: C.mutedHi, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0, flex: "none" };
 
   const listening = mic === "live" && !paused;
   const talkLabel = labelForTalk({ handsFree, micLive: listening, starting: mic === "starting", paused });
@@ -544,9 +549,21 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       {banners}
 
       {/* unstacked, the briefing is what gives way first on a short screen (down to 64px, then it scrolls) */}
+      {folded ? (
+        <button data-testid="charli-briefing" type="button" aria-expanded="false" aria-label="Today's briefing, folded. Show it" onClick={() => setBriefOpen(true)}
+          style={{ ...card, padding: "0.65rem 1.1rem", flex: "none", display: "flex", alignItems: "center", gap: 10, width: "100%", boxSizing: "border-box", cursor: "pointer", fontFamily: "inherit", color: C.text, textAlign: "left" }}>
+          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, color: C.amber, flex: "none" }}>BRIEFING</span>
+          <span style={{ fontSize: 13.5, color: C.mutedHi, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{briefingTurn.content}</span>
+          <span aria-hidden="true" style={foldToggle}>Show ▾</span>
+        </button>
+      ) : (
       <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", ...(stacked ? { flex: "none" } : { flex: "0 1 auto", minHeight: 64, maxHeight: "20vh", overflowY: "auto" }) }}>
         {briefingTurn ? (
           <>
+            {turns.length > 0 && (
+              // floated, so the briefing's first line wraps around it instead of giving up a row to it
+              <button type="button" aria-expanded="true" aria-label="Fold the briefing" onClick={() => setBriefOpen(false)} style={{ ...foldToggle, float: "right", marginLeft: 10, lineHeight: 1.6 * 14.5 + "px" }}>Hide ▴</button>
+            )}
             <div style={{ fontSize: 14.5, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{briefingTurn.content}</div>
             <Sources turn={briefingTurn} ui={ui} style={{ marginTop: 10, justifyContent: "flex-start" }} />
           </>
@@ -556,6 +573,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
           <div style={{ color: C.muted, fontSize: 14 }}>There is no briefing to show right now. You can still ask Charlie below.</div>
         )}
       </section>
+      )}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, flex: "none" }}>
         {talkButton}
