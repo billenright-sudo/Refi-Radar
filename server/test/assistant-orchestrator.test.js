@@ -812,6 +812,17 @@ test("CHARLI_SYSTEM tells her about the five-match cap and never to claim an act
   assert.match(CHARLI_SYSTEM, /never say an action is done/i);
 });
 
+// The app's own line after a confirmed change (routes/assistant.js confirmReply, every one starting "Done —") comes back to her in
+// the history as her own words. Told she can't change anything and never says "done", she took it for her mistake and "corrected"
+// it on the next turn: "I haven't logged the Brandt call. That one still needs your confirmation." (2026-11-08, after a confirmed log).
+test("CHARLI_SYSTEM tells her a \"Done —\" line in her earlier messages is the app's record of a confirmed, saved change", () => {
+  assert.ok(CHARLI_SYSTEM.includes("starts with \"Done —\""), "names the app's prefix");
+  assert.match(CHARLI_SYSTEM, /written by the app after the user confirmed/i);
+  assert.match(CHARLI_SYSTEM, /that change is saved/i);
+  assert.match(CHARLI_SYSTEM, /never say it wasn't made or still needs confirming/i);
+  assert.match(CHARLI_SYSTEM, /don't bring it up again unless the user asks/i);
+});
+
 // ── number grounding (every figure in model text must come from this turn's tool results) ──
 
 const MARKET_PAYLOAD = JSON.stringify({
