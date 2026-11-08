@@ -7,6 +7,7 @@ import { useIsPhone } from "../useIsPhone.js";
 import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
 import { briefingFolded } from "./briefingFold.mjs";
+import { dockParts, portraitSlot, BRIEFING_SHRINK } from "./dockLayout.mjs";
 import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns } from "./talkMode.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
@@ -362,6 +363,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const turns = panel ? snap.turns : snap.turns.filter((t) => t !== briefingTurn);
   // The dock: once the conversation starts, the briefing folds to one line (tap to open) so the conversation gets the room.
   const folded = briefingFolded({ talking: turns.length > 0, hasBriefing: Boolean(briefingTurn), open: briefOpen });
+  // the dock on a laptop: while a change waits for an OK, the card takes the conversation's place (dockLayout.mjs)
+  const dockShows = dockParts({ stacked: stacked || panel, pending: snap.pending, turns });
   const foldToggle = { background: "transparent", border: "none", color: C.mutedHi, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0, flex: "none" };
 
   const listening = mic === "live" && !paused;
@@ -475,9 +478,11 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
         />
         <button type="submit" data-testid="charli-send" disabled={!canSend} style={{ ...primary, opacity: canSend ? 1 : 0.5, cursor: canSend ? "pointer" : "default" }}>Send</button>
       </form>
-      <div style={{ ...mono, color: C.muted, fontSize: 11, marginTop: 10, lineHeight: 1.5, flex: "none" }}>
-        Anything Charlie changes is read back first and only saved when you confirm.
-      </div>
+      {dockShows.smallPrint && (
+        <div style={{ ...mono, color: C.muted, fontSize: 11, marginTop: 10, lineHeight: 1.5, flex: "none" }}>
+          Anything Charlie changes is read back first and only saved when you confirm.
+        </div>
+      )}
     </>
   );
 
@@ -540,17 +545,20 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
         {pauseButton}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", flex: "none" }}>
+      {/* unstacked, her portrait's slot is full size when there is room and shrinks (after the briefing) on a short screen, never
+          under 100px tall; the portrait fills the slot's height and keeps its shape (dockLayout.mjs portraitSlot) */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", ...(stacked || width != null ? { flex: "none" } : portraitSlot()) }}>
         {stacked
           ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} ariaHideName />
-          : <CharliePortrait state={face} shape="portrait" {...(width != null ? { width } : { height: "min(318px, 28vh)" })} micOpen={mic === "live" && !paused} ariaHideName />}
+          : <CharliePortrait state={face} shape="portrait" {...(width != null ? { width } : { height: "100%" })} micOpen={mic === "live" && !paused} ariaHideName />}
       </div>
 
       {statusRow}
       {banners}
 
-      {/* unstacked, the briefing is what gives way first on a short screen (down to 64px, then it scrolls) */}
-      {folded ? (
+      {/* unstacked, the briefing is what gives way first on a short screen (down to 64px, then it scrolls); while a change waits for
+          an OK it steps aside (dockLayout.mjs dockParts) */}
+      {!dockShows.briefing ? null : folded ? (
         <button data-testid="charli-briefing" type="button" aria-expanded="false" aria-label="Today's briefing, folded. Show it" onClick={() => setBriefOpen(true)}
           style={{ ...card, padding: "0.65rem 1.1rem", flex: "none", display: "flex", alignItems: "center", gap: 10, width: "100%", boxSizing: "border-box", cursor: "pointer", fontFamily: "inherit", color: C.text, textAlign: "left" }}>
           <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, color: C.amber, flex: "none" }}>BRIEFING</span>
@@ -558,7 +566,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
           <span aria-hidden="true" style={foldToggle}>Show ▾</span>
         </button>
       ) : (
-      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", ...(stacked ? { flex: "none" } : { flex: "0 1 auto", minHeight: 64, maxHeight: "20vh", overflowY: "auto" }) }}>
+      <section data-testid="charli-briefing" aria-label="Your briefing" style={{ ...card, padding: "1rem 1.1rem", ...(stacked ? { flex: "none" } : { flex: `0 ${BRIEFING_SHRINK} auto`, minHeight: 64, maxHeight: "20vh", overflowY: "auto" }) }}>
         {briefingTurn ? (
           <>
             {turns.length > 0 && (
@@ -580,7 +588,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
         {talkButton}
         {briefButton}
       </div>
-      {talkOptions}
+      {dockShows.talkOptions && talkOptions}
 
       {stacked ? (
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column" }}>
@@ -589,11 +597,12 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
           {typeBox}
         </div>
       ) : (
-        // Unstacked these sit directly in the column (no wrapper box), so the column's one flex pass shrinks the briefing first and
-        // the transcript (flex 1 1 0, min 96px) takes what is left: the type box stays on screen. The spacer is the 12px gap above.
+        // Unstacked these sit directly in the column (no wrapper box), so the column's one flex pass shrinks the briefing first, then
+        // the portrait's slot, and the transcript (flex 1 1 0, min 96px) takes what is left: the type box stays on screen. The spacer is
+        // the 12px gap above. While a change waits for an OK the card takes the conversation's place (the pending card has its own gap).
         <>
-          <div aria-hidden="true" style={{ height: 12, flex: "none" }} />
-          {transcript}
+          {dockShows.conversation && <div aria-hidden="true" style={{ height: 12, flex: "none" }} />}
+          {dockShows.conversation && transcript}
           {pendingCard}
           {typeBox}
         </>
