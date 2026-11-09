@@ -98,13 +98,19 @@ if (!clientCols.some((c) => c.name === "do_not_email")) {
 }
 // Target rate (target-rate alerts): the rate the broker wants a client to reach, who set it and when, the first FRED
 // observation that reached it (day, estimated rate, instant), the day a briefing announced it, and the last observation day
-// checked. All nullable; set only by hand, never by import (lib/targets.js).
+// checked with the estimate that check used (NULL when it could not price the client). All nullable; set only by hand, never by
+// import (lib/targets.js).
+const hadCheckedRate = clientCols.some((c) => c.name === "target_checked_rate");
 for (const col of [
   "target_rate REAL", "target_set_by INTEGER", "target_set_at TEXT", "target_reached_on TEXT",
   "target_reached_rate REAL", "target_reached_at TEXT", "target_announced_on TEXT", "target_checked_on TEXT",
+  "target_checked_rate REAL",
 ]) {
   if (!clientCols.some((c) => c.name === col.split(" ")[0])) db.exec(`ALTER TABLE clients ADD COLUMN ${col}`);
 }
+// A database that kept the check day before it kept the check's estimate forgets the day, so the next read checks again on the
+// same observation and stores the estimate (a stored hit is kept or re-armed by the usual rules). Not an edit: updated_at stays.
+if (!hadCheckedRate) db.exec("UPDATE clients SET target_checked_on = NULL WHERE target_checked_on IS NOT NULL");
 // Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
 db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
 

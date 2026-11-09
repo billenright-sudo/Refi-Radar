@@ -172,12 +172,12 @@ function sweepOf(rows, rates, nowMs) {
   return { result, source };
 }
 
-// The `rows` at their target and not yet handled (lib/targets.js views, on the snapshot the briefing's check returned; a stored hit
-// is at target with no snapshot too). None when the check failed (`targetCheck` null) or the views cannot be read.
+// The `rows` at their target and not yet handled (lib/targets.js views of what the briefing's check stored; a stored hit is at
+// target with no snapshot too). None when the check failed (`targetCheck` null) or the views cannot be read.
 function atTargetRows(db, rows, targetCheck, viewerId) {
   if (!targetCheck) return [];
   try {
-    const views = targets.viewsFor(db, rows, targetCheck.snapshot, viewerId);
+    const views = targets.viewsFor(db, rows, viewerId);
     return rows.filter((r) => views.has(r.id) && views.get(r.id).state === "at_target");
   } catch (err) { skip("targets", err); return []; }
 }

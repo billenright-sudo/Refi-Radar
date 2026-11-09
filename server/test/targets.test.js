@@ -52,10 +52,10 @@ test.beforeEach(() => {
   for (const table of ["contact_log", "rate_snapshots", "clients"]) db.prepare(`DELETE FROM ${table}`).run();
 });
 
-test("migration adds the eight target columns, nullable", () => {
+test("migration adds the nine target columns, nullable", () => {
   const cols = db.prepare("PRAGMA table_info(clients)").all();
   for (const name of ["target_rate", "target_set_by", "target_set_at", "target_reached_on", "target_reached_rate",
-    "target_reached_at", "target_announced_on", "target_checked_on"]) {
+    "target_reached_at", "target_announced_on", "target_checked_on", "target_checked_rate"]) {
     const col = cols.find((c) => c.name === name);
     assert.ok(col, name);
     assert.equal(col.notnull, 0, name);
@@ -116,43 +116,44 @@ test("a claude snapshot never acts", () => {
 test("nextTargetFields", () => {
   const NOW = "2026-11-09 15:00:00";
   const base = { target_rate: 6.0, current_rate: 6.75, target_reached_on: null, target_reached_rate: null,
-    target_reached_at: null, target_announced_on: null, target_checked_on: null };
+    target_reached_at: null, target_announced_on: null, target_checked_on: null, target_checked_rate: null };
+  // every check writes its day and the estimate it used (null when the client can't be priced)
+  const checked = (day, est) => ({ target_checked_on: day, target_checked_rate: est });
+  const cleared = { target_reached_on: null, target_reached_rate: null, target_reached_at: null, target_announced_on: null };
 
   const hit = T.nextTargetFields(base, 5.99, "2026-11-02", NOW);
-  assert.deepEqual(hit, { target_checked_on: "2026-11-02", target_reached_on: "2026-11-02", target_reached_rate: 5.99,
+  assert.deepEqual(hit, { ...checked("2026-11-02", 5.99), target_reached_on: "2026-11-02", target_reached_rate: 5.99,
     target_reached_at: NOW, target_announced_on: null });
 
   // wobble: the hit is kept while the estimate drifts
   let row = { ...base, ...hit, target_announced_on: "2026-11-03" };
-  assert.deepEqual(T.nextTargetFields(row, 6.01, "2026-11-03", NOW), { target_checked_on: "2026-11-03" });
+  assert.deepEqual(T.nextTargetFields(row, 6.01, "2026-11-03", NOW), checked("2026-11-03", 6.01));
   row = { ...row, target_checked_on: "2026-11-03" };
-  assert.deepEqual(T.nextTargetFields(row, 5.995, "2026-11-04", NOW), { target_checked_on: "2026-11-04" });
+  assert.deepEqual(T.nextTargetFields(row, 5.995, "2026-11-04", NOW), checked("2026-11-04", 5.995));
   row = { ...row, target_checked_on: "2026-11-04" };
 
   // re-arm at 0.125 above target, not below it
-  assert.deepEqual(T.nextTargetFields(row, 6.124, "2026-11-05", NOW), { target_checked_on: "2026-11-05" });
-  assert.deepEqual(T.nextTargetFields(row, 6.125, "2026-11-05", NOW), {
-    target_checked_on: "2026-11-05", target_reached_on: null, target_reached_rate: null, target_reached_at: null, target_announced_on: null });
+  assert.deepEqual(T.nextTargetFields(row, 6.124, "2026-11-05", NOW), checked("2026-11-05", 6.124));
+  assert.deepEqual(T.nextTargetFields(row, 6.125, "2026-11-05", NOW), { ...checked("2026-11-05", 6.125), ...cleared });
 
   // a repeated observation is not a new check
   assert.equal(T.nextTargetFields({ ...base, target_checked_on: "2026-11-02" }, 5.9, "2026-11-02", NOW), null);
   assert.equal(T.nextTargetFields({ ...base, target_checked_on: "2026-11-02" }, 5.9, "2026-11-01", NOW), null);
 
   // current rate at or below target clears a hit, never sets one
-  assert.deepEqual(T.nextTargetFields({ ...row, current_rate: 5.9 }, 5.5, "2026-11-05", NOW), {
-    target_checked_on: "2026-11-05", target_reached_on: null, target_reached_rate: null, target_reached_at: null, target_announced_on: null });
-  assert.deepEqual(T.nextTargetFields({ ...base, current_rate: 6.0 }, 5.5, "2026-11-05", NOW), { target_checked_on: "2026-11-05" });
+  assert.deepEqual(T.nextTargetFields({ ...row, current_rate: 5.9 }, 5.5, "2026-11-05", NOW), { ...checked("2026-11-05", 5.5), ...cleared });
+  assert.deepEqual(T.nextTargetFields({ ...base, current_rate: 6.0 }, 5.5, "2026-11-05", NOW), checked("2026-11-05", 5.5));
 
-  // unpriceable: only the check day, a stored hit is kept
-  assert.deepEqual(T.nextTargetFields(base, null, "2026-11-05", NOW), { target_checked_on: "2026-11-05" });
-  assert.deepEqual(T.nextTargetFields(row, null, "2026-11-05", NOW), { target_checked_on: "2026-11-05" });
+  // unpriceable: only the check day, with no estimate; a stored hit is kept
+  assert.deepEqual(T.nextTargetFields(base, null, "2026-11-05", NOW), checked("2026-11-05", null));
+  assert.deepEqual(T.nextTargetFields({ ...row, target_checked_rate: 6.01 }, null, "2026-11-05", NOW), checked("2026-11-05", null));
 
   // no target
   assert.equal(T.nextTargetFields({ ...base, target_rate: null }, 5.0, "2026-11-05", NOW), null);
 
   // already there when set
   assert.deepEqual(T.nextTargetFields({ ...base, target_rate: 5.875 }, 5.875, "2026-11-09", NOW), {
-    target_checked_on: "2026-11-09", target_reached_on: "2026-11-09", target_reached_rate: 5.875,
+    ...checked("2026-11-09", 5.875), target_reached_on: "2026-11-09", target_reached_rate: 5.875,
     target_reached_at: NOW, target_announced_on: null });
 });
 
@@ -175,6 +176,7 @@ test("checkTargets", () => {
 
   const r1 = get(a1);
   assert.equal(r1.target_checked_on, "2026-11-06");
+  assert.equal(r1.target_checked_rate, est);            // the estimate the check used, kept with its day
   assert.equal(r1.target_reached_on, "2026-11-06");
   assert.equal(r1.target_reached_rate, est);
   assert.equal(r1.target_reached_at, "2026-11-09 15:00:00");
@@ -185,21 +187,20 @@ test("checkTargets", () => {
   assert.equal(get(a2).updated_at, stamp);
 });
 
-test("targetView states", () => {
-  const rates = live("2026-11-06");
-  const snap = { rates, obsDate: "2026-11-06" };
+test("targetView states, from the stored check", () => {
   const mk = (fields = {}) => ({ ...get(addClient(orgA, ann, "V", { rate: 7.5, balance: 320000, value: 400000 })),
-    target_rate: 6.0, target_set_at: "2026-11-01 10:00:00", ...fields });
-  const est = T.estimateRate(mk(), rates);
+    target_rate: 6.0, target_set_at: "2026-11-01 10:00:00", target_checked_on: "2026-11-06", target_checked_rate: 6.2, ...fields });
 
-  assert.equal(T.targetView(mk({ target_rate: null }), snap, null), null);
+  assert.equal(T.targetView(mk({ target_rate: null }), null), null);
 
-  const w = T.targetView(mk(), snap, null);
-  assert.deepEqual(w, { rate: 6, state: "watching", estRate: est, gap: T.round3(est - 6), asOf: "2026-11-06",
+  const w = T.targetView(mk(), null);
+  assert.deepEqual(w, { rate: 6, state: "watching", estRate: 6.2, gap: 0.2, asOf: "2026-11-06",
     reachedOn: null, reachedRate: null, handledAt: null, setAt: "2026-11-01 10:00:00" });
+  // the loan's figures changed after the check (an import, a feed update): the line still says what the check used
+  assert.deepEqual(T.targetView(mk({ credit_score: 600, property_value: 330000 }), null), w);
 
   const hitFields = { target_reached_on: "2026-11-05", target_reached_rate: 5.99, target_reached_at: "2026-11-09 15:00:00" };
-  const at = T.targetView(mk(hitFields), snap, null);
+  const at = T.targetView(mk(hitFields), null);
   assert.equal(at.state, "at_target");
   assert.equal(at.reachedOn, "2026-11-05");
   assert.equal(at.reachedRate, 5.99);
@@ -207,13 +208,50 @@ test("targetView states", () => {
   assert.equal(at.gap, null);
   assert.equal(at.asOf, null);
 
-  const done = T.targetView(mk(hitFields), snap, "2026-11-09 18:00:00");
+  const done = T.targetView(mk(hitFields), "2026-11-09 18:00:00");
   assert.equal(done.state, "handled");
   assert.equal(done.handledAt, "2026-11-09 18:00:00");
 
-  assert.equal(T.targetView(mk({ current_rate: 6.0 }), snap, null).state, "already_below");
-  assert.equal(T.targetView(mk({ loan_balance: 0 }), snap, null).state, "unpriceable");
-  assert.equal(T.targetView(mk(), null, null).state, "no_rates");
+  assert.equal(T.targetView(mk({ current_rate: 6.0 }), null).state, "already_below");   // the loan as it is now
+  assert.equal(T.targetView(mk({ target_checked_rate: null }), null).state, "unpriceable");
+  assert.equal(T.targetView(mk({ target_checked_on: null, target_checked_rate: null }), null).state, "no_rates");
+  // a check that stored no hit on an estimate at or under the target (the loan was at or below it then, and an import has since
+  // raised it) is never watching
+  assert.equal(T.targetView(mk({ target_checked_rate: 5.9 }), null).state, "unpriceable");
+});
+
+test("property: a watching view is above its target, with the figures of the last check", () => {
+  let seed = 7;
+  const rand = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const pick = (lo, hi) => T.round3(lo + rand() * (hi - lo));
+  const NOW = "2026-11-09 15:00:00";
+  let watching = 0;
+  for (let run = 0; run < 400; run++) {
+    let row = { target_rate: pick(5, 7), current_rate: pick(4.5, 7.5), target_set_at: null, target_reached_on: null,
+      target_reached_rate: null, target_reached_at: null, target_announced_on: null, target_checked_on: null, target_checked_rate: null };
+    let day = 1;
+    for (let step = 0; step < 12; step++) {
+      const move = rand();
+      if (move < 0.55) {                       // a new FRED observation, priced or not
+        const obs = `2026-11-${String(day++).padStart(2, "0")}`;
+        const patch = T.nextTargetFields(row, rand() < 0.1 ? null : pick(5, 7.2), obs, NOW);
+        if (patch) row = { ...row, ...patch };
+      } else if (move < 0.8) {                 // an import or the LOS feed moves the loan's rate: no target column changes
+        row = { ...row, current_rate: pick(4.5, 7.5) };
+      } else {                                 // the broker changes the target: the hit and the check are forgotten
+        row = { ...row, target_rate: pick(5, 7), target_reached_on: null, target_reached_rate: null, target_reached_at: null,
+          target_announced_on: null, target_checked_on: null, target_checked_rate: null };
+      }
+      const v = T.targetView(row, null);
+      if (v.state !== "watching") continue;
+      watching += 1;
+      assert.ok(v.gap > 0, JSON.stringify({ row, v }));
+      assert.equal(v.estRate, row.target_checked_rate);
+      assert.equal(v.asOf, row.target_checked_on);
+      assert.equal(v.gap, T.round3(row.target_checked_rate - row.target_rate));
+    }
+  }
+  assert.ok(watching > 100, `watching is reached often enough to mean something (${watching})`);
 });
 
 test("a not-reached call does not handle it", () => {
@@ -227,8 +265,7 @@ test("a not-reached call does not handle it", () => {
   log("2026-11-09 19:00:00", "reached");
   const handled = T.handledAtFor(db, [get(id)]);
   assert.equal(handled.get(id), "2026-11-09 17:00:00");
-  const snap = { rates: live("2026-11-06"), obsDate: "2026-11-06" };
-  const v = T.viewsFor(db, [get(id)], snap, ann).get(id);
+  const v = T.viewsFor(db, [get(id)], ann).get(id);
   assert.equal(v.state, "handled");
   assert.equal(v.handledAt, "2026-11-09 17:00:00");
 });
@@ -240,7 +277,7 @@ test("viewsFor names the owner on a teammate's client only", () => {
   setCols(mine, { target_rate: 6.0 });
   setCols(theirs, { target_rate: 6.0 });
   const rows = [mine, theirs, none].map(get);
-  const views = T.viewsFor(db, rows, null, ann);
+  const views = T.viewsFor(db, rows, ann);
   assert.equal(views.size, 2);
   assert.equal("ownerName" in views.get(mine), false);
   assert.equal(views.get(theirs).ownerName, "Lou Officer");

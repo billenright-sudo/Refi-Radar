@@ -171,7 +171,7 @@ test("handled is never listed", async () => {
   const r = await brief(annId, { set, localDate: DAY1 });
   assert.ok(!r.reply.includes("Helen Brandt"), r.reply);
   assert.deepStrictEqual(announced(helen), [null]);
-  assert.equal(T.viewsFor(db, [client(helen)], null, annId).get(helen).state, "handled");
+  assert.equal(T.viewsFor(db, [client(helen)], annId).get(helen).state, "handled");
 });
 
 test("already below is never listed", async () => {

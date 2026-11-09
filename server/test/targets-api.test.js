@@ -26,10 +26,12 @@ const live = (obs, numbers = {}) => ({ ...BASE, ...numbers, date: obs, source: `
 const LOW = { rate_30yr_fixed: 5.0, rate_30yr_top_tier: 4.95, rate_15yr_fixed: 4.5, rate_5_1_arm: 4.6 };
 const RANGE = "A target rate is a number from 1.000 to 15.000.";
 const TARGET_COLS = ["target_rate", "target_set_by", "target_set_at", "target_reached_on", "target_reached_rate",
-  "target_reached_at", "target_announced_on", "target_checked_on"];
+  "target_reached_at", "target_announced_on", "target_checked_on", "target_checked_rate"];
 const FULL_HIT = `UPDATE clients SET target_rate = 6, target_set_by = ?, target_set_at = '2026-11-01 10:00:00', target_reached_on = '2026-11-02',
-  target_reached_rate = 5.9, target_reached_at = '2026-11-02 10:00:00', target_announced_on = '2026-11-02', target_checked_on = '2026-11-02'
-  WHERE id = ?`;
+  target_reached_rate = 5.9, target_reached_at = '2026-11-02 10:00:00', target_announced_on = '2026-11-02', target_checked_on = '2026-11-02',
+  target_checked_rate = 5.9 WHERE id = ?`;
+// A FRED day on which a 30-year client at LTV 75 is estimated by credit score: 640 -> 6.325, 700 -> 6.075, 760 -> 5.950.
+const BY_SCORE = { rate_30yr_fixed: 6.2, rate_15yr_fixed: 5.6, rate_5_1_arm: 5.9, rate_30yr_top_tier: 5.95 };
 
 const addOrg = (name) => Number(db.prepare("INSERT INTO organizations (name) VALUES (?)").run(name).lastInsertRowid);
 const addUser = (orgId, role, email, first) => Number(db.prepare(
@@ -135,7 +137,7 @@ test("PUT target out of range or not a number is a 400 with the range copy", asy
   }
 });
 
-test("PUT target null clears all eight columns", async () => {
+test("PUT target null clears all nine columns", async () => {
   const id = addClient(orgA, ann, "Clear");
   db.prepare(FULL_HIT).run(ann, id);
   const res = await as(ann)("PUT", `/api/clients/${id}/target`, { targetRate: null });
@@ -225,6 +227,83 @@ test("PUT /:id answers with the target too", async () => {
   });
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.data.client.target.rate, 6);
+});
+
+// The client form's body for a client added by addClient, with `changes` on top.
+const formBody = (name, changes = {}) => ({
+  name, currentRate: 6.75, loanBalance: 300000, propertyValue: 400000, loanType: "30yr_fixed", creditScore: 760, closeDate: "2024-03-14", ...changes,
+});
+
+test("a pricing edit through PUT /:id re-checks the same observation: 700 -> 760 reaches the target in the answer", async () => {
+  snap("2026-11-10", BY_SCORE);
+  const id = addClient(orgA, ann, "Helen Brandt");
+  db.prepare("UPDATE clients SET credit_score = 700 WHERE id = ?").run(id);
+  const set = await as(ann)("PUT", `/api/clients/${id}/target`, { targetRate: 6 });
+  assert.deepStrictEqual([set.data.client.target.state, set.data.client.target.estRate, set.data.client.target.gap], ["watching", 6.075, 0.075]);
+
+  const res = await as(ann)("PUT", `/api/clients/${id}`, formBody("Helen Brandt", { creditScore: 760 }));
+  assert.strictEqual(res.status, 200);
+  const t = res.data.client.target;
+  assert.deepStrictEqual([t.state, t.reachedOn, t.reachedRate], ["at_target", "2026-11-10", 5.95]);
+  const r = row(id);
+  assert.deepStrictEqual([r.target_checked_on, r.target_checked_rate, r.target_reached_on], ["2026-11-10", 5.95, "2026-11-10"]);
+  assert.strictEqual((await getClient(ann, id)).target.state, "at_target");
+});
+
+test("a pricing edit keeps a stored hit the rules keep, and re-arms one the rules re-arm", async () => {
+  snap("2026-11-10", BY_SCORE);
+  const id = addClient(orgA, ann, "Wobble");
+  await as(ann)("PUT", `/api/clients/${id}/target`, { targetRate: 6 });   // 760: 5.950, reached
+  const hit = row(id);
+  assert.strictEqual(hit.target_reached_on, "2026-11-10");
+
+  let res = await as(ann)("PUT", `/api/clients/${id}`, formBody("Wobble", { creditScore: 700 }));   // 6.075: under 0.125 above
+  assert.strictEqual(res.data.client.target.state, "at_target");
+  assert.deepStrictEqual([row(id).target_reached_at, row(id).target_checked_rate], [hit.target_reached_at, 6.075]);
+
+  res = await as(ann)("PUT", `/api/clients/${id}`, formBody("Wobble", { creditScore: 640 }));       // 6.325: re-armed
+  const t = res.data.client.target;
+  assert.deepStrictEqual([t.state, t.estRate, t.gap, t.asOf], ["watching", 6.325, 0.325, "2026-11-10"]);
+  assert.strictEqual(row(id).target_reached_on, null);
+});
+
+test("an edit that changes nothing priced keeps the stored check", async () => {
+  snap("2026-11-10", BY_SCORE);
+  const id = addClient(orgA, ann, "Notes");
+  db.prepare("UPDATE clients SET credit_score = 700 WHERE id = ?").run(id);
+  await as(ann)("PUT", `/api/clients/${id}/target`, { targetRate: 6 });
+  db.prepare("UPDATE clients SET target_checked_rate = 6.111 WHERE id = ?").run(id);   // marks the stored check
+  const res = await as(ann)("PUT", `/api/clients/${id}`, formBody("Notes renamed", { creditScore: 700, notes: "call after 5", email: "n@x.test" }));
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual([row(id).target_checked_on, row(id).target_checked_rate], ["2026-11-10", 6.111]);
+  assert.strictEqual(res.data.client.target.estRate, 6.111);
+});
+
+test("an import that changes the loan leaves the stored estimate and its day until a newer observation", async () => {
+  snap("2026-11-10", BY_SCORE);
+  const id = addClient(orgA, lou, "Imp2", 6.75);
+  db.prepare("UPDATE clients SET credit_score = 700 WHERE id = ?").run(id);
+  await as(ann)("PUT", `/api/clients/${id}/target`, { targetRate: 6 });
+  const before = (await getClient(ann, id)).target;
+  assert.deepStrictEqual([before.state, before.estRate, before.asOf], ["watching", 6.075, "2026-11-10"]);
+
+  const fields = {
+    firstName: "Imp2", lastName: "", email: "", phone: "", loanNumber: "LImp2", noteRate: "6.500%", loanAmount: "$300,000",
+    term: "360", amortization: "Fixed", appraisedValue: "400000", closingDate: "3/14/2024", purpose: "Refinance", creditScore: "760",
+    loanOfficer: "lou@tapi.test", notes: "",
+  };
+  ingest(db, {
+    actor: userRow(ann), source: "import", items: [{ row: fields, fields }], today: "2026-11-10",
+    nowUtc: "2026-11-10 15:00:00", requireClosingDate: true, dryRun: false,
+  });
+  assert.deepStrictEqual([row(id).credit_score, row(id).current_rate], [760, 6.5], "the import did update the loan");
+  const same = (await getClient(ann, id)).target;
+  assert.deepStrictEqual(same, before, "the same observation: the line keeps what the check used");
+  assert.ok(same.gap > 0);
+
+  snap("2026-11-11", BY_SCORE);
+  const next = (await getClient(ann, id)).target;
+  assert.deepStrictEqual([next.state, next.reachedOn, next.reachedRate], ["at_target", "2026-11-11", 5.95]);
 });
 
 test("an import of the matched loan leaves the target", () => {

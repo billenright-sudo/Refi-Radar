@@ -50,11 +50,12 @@ function latestRealSnapshot(db) {
 }
 
 // The patch to write for one client on observation `obsDate`, or null when there is nothing to check (no target, or this
-// observation was already checked). `est` is the rounded estimate or null.
+// observation was already checked). `est` is the rounded estimate or null. Every patch keeps the estimate it used beside its day,
+// so the screens show the figures this check decided on.
 function nextTargetFields(row, est, obsDate, nowUtc) {
   if (row.target_rate == null) return null;
   if (row.target_checked_on != null && obsDate <= row.target_checked_on) return null;
-  const patch = { target_checked_on: obsDate };
+  const patch = { target_checked_on: obsDate, target_checked_rate: est };
   const hit = row.target_reached_on != null;
   const clear = () => { for (const f of HIT_FIELDS) patch[f] = null; };
   if (round3(row.current_rate) <= round3(row.target_rate)) {   // already at or below: never a hit, and a stored one goes
@@ -108,32 +109,34 @@ function handledAtFor(db, rows) {
   return map;
 }
 
-// What the screens show for a client's target. `snapshot` is { rates, obsDate } or null.
-function targetView(row, snapshot, handledAt) {
+// What the screens show for a client's target, from the stored check only (spec 4.5: the line can never contradict the state):
+// watching shows the estimate and the observation day the last check used, never a fresh estimate. Whether the client's rate is
+// already at or below the target is the loan as it is now. A target not checked yet (no FRED day so far) has no rates; a check
+// that could not price the client, or that stored no hit on an estimate at or under the target (the loan was at or below it then
+// and has since been raised by an import or the feed), shows no estimate until the next observation.
+function targetView(row, handledAt) {
   if (row.target_rate == null) return null;
   const view = {
     rate: row.target_rate, state: null, estRate: null, gap: null, asOf: null,
     reachedOn: row.target_reached_on ?? null, reachedRate: row.target_reached_rate ?? null,
     handledAt: handledAt || null, setAt: row.target_set_at ?? null,
   };
+  const est = row.target_checked_rate ?? null;
   if (round3(row.current_rate) <= round3(row.target_rate)) view.state = "already_below";
   else if (row.target_reached_on != null) view.state = handledAt ? "handled" : "at_target";
-  else if (!snapshot) view.state = "no_rates";
+  else if (row.target_checked_on == null) view.state = "no_rates";
+  else if (est == null || round3(est) <= round3(row.target_rate)) view.state = "unpriceable";
   else {
-    const est = estimateRate(row, snapshot.rates);
-    if (est == null) view.state = "unpriceable";
-    else {
-      view.state = "watching";
-      view.estRate = est;
-      view.gap = round3(est - row.target_rate);
-      view.asOf = snapshot.obsDate;
-    }
+    view.state = "watching";
+    view.estRate = est;
+    view.gap = round3(est - row.target_rate);
+    view.asOf = row.target_checked_on;
   }
   return view;
 }
 
 // Views for the rows that have a target: Map<clientId, View>. A teammate's client carries the owner's "First Last".
-function viewsFor(db, rows, snapshot, viewerId) {
+function viewsFor(db, rows, viewerId) {
   const withTarget = rows.filter((r) => r.target_rate != null);
   const handled = handledAtFor(db, withTarget);
   const ownerIds = [...new Set(withTarget.filter((r) => r.user_id !== viewerId).map((r) => r.user_id))];
@@ -144,7 +147,7 @@ function viewsFor(db, rows, snapshot, viewerId) {
   }
   const out = new Map();
   for (const r of withTarget) {
-    const v = targetView(r, snapshot, handled.get(r.id));
+    const v = targetView(r, handled.get(r.id));
     if (r.user_id !== viewerId && owners.has(r.user_id)) v.ownerName = owners.get(r.user_id);
     out.set(r.id, v);
   }

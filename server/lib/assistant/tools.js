@@ -98,7 +98,7 @@ function runSweepTool(_args, ctx) {
 }
 
 // The target check (lib/targets checkTargets) for the caller's org, against the latest FRED observation, on the tools' clock: run
-// before the client rows are read, so a target it reaches shows at once. -> the snapshot it used, or null when there is none.
+// before the client rows are read, so a target it reaches shows at once (the views read what the check stored).
 function checkedTargets(ctx) {
   const { user, db } = ctx || {};
   if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
@@ -109,9 +109,9 @@ function checkedTargets(ctx) {
 function findClient(args, ctx) {
   const query = String((args && args.query) == null ? "" : args.query).trim().toLowerCase();
   if (!query) return { data: { matches: [], error: "a client name to search for is required" }, source: "(invalid input)" };
-  const snapshot = checkedTargets(ctx);
+  checkedTargets(ctx);
   const rows = scopedClients(ctx).filter((row) => String(row.name || "").toLowerCase().includes(query));
-  const views = targets.viewsFor(ctx.db, rows, snapshot, ctx.user.id);
+  const views = targets.viewsFor(ctx.db, rows, ctx.user.id);
   const matches = rows.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
   return { data: { matches }, source: "client record" };
 }
@@ -130,9 +130,9 @@ function byTargetOrder(a, b) {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 function targetRatesTool(_args, ctx) {
-  const snapshot = checkedTargets(ctx);
+  checkedTargets(ctx);
   const rows = scopedClients(ctx).filter((row) => row.target_rate != null);
-  const views = targets.viewsFor(ctx.db, rows, snapshot, ctx.user.id);
+  const views = targets.viewsFor(ctx.db, rows, ctx.user.id);
   const clients = rows
     .map((row) => {
       const target = views.get(row.id);

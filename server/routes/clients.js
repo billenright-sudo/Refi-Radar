@@ -28,13 +28,13 @@ function toClient(row) {
 // Clients the way the screens get them: the check runs first (one FRED observation, once), then the rows are re-read by id so a
 // stored hit shows, in `rows` order (a row deleted in between is skipped). Each answer carries `target` (a View, or null).
 function presentClients(db, user, rows, nowMs = Date.now()) {
-  const snapshot = targets.checkTargets(db, user.org_id, nowMs);
+  targets.checkTargets(db, user.org_id, nowMs);
   const ids = rows.map((r) => r.id);
   if (!ids.length) return [];
   const found = db.prepare(`SELECT * FROM clients WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids);
   const byId = new Map(found.map((r) => [r.id, r]));
   const fresh = ids.map((id) => byId.get(id)).filter(Boolean);
-  const views = targets.viewsFor(db, fresh, snapshot, user.id);
+  const views = targets.viewsFor(db, fresh, user.id);
   return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
 }
 
@@ -97,11 +97,14 @@ function logContactForUser(db, user, id) {
 }
 
 const TARGET_COLUMNS = ["target_rate", "target_set_by", "target_set_at", "target_reached_on", "target_reached_rate",
-  "target_reached_at", "target_announced_on", "target_checked_on"];
+  "target_reached_at", "target_announced_on", "target_checked_on", "target_checked_rate"];
+// The client fields the target check's estimate is priced on (lib/targets estimateRate).
+const PRICED_COLUMNS = ["loan_type", "current_rate", "loan_balance", "property_value", "credit_score"];
 
 // Sets (a number), keeps (the same value) or clears (null) client `id`'s target rate, for a user who may act on it (clientInReach).
 // `raw` goes through parseTarget, and a target has to be below the client's current rate. A new value starts over: who and when, and
-// the hit and the check date forgotten, so the check re-arms it against the latest observation. Throws only on a database error.
+// the hit and the check (its date and estimate) forgotten, so the check re-arms it against the latest observation. Throws only on a
+// database error.
 // -> { status: 200, client, receipt: { id, name, targetRate } } | { status: 400 | 403 | 404, error }
 function setTargetForUser(db, user, id, raw, nowMs = Date.now()) {
   const reach = clientInReach(db, user, id);
@@ -117,7 +120,8 @@ function setTargetForUser(db, user, id, raw, nowMs = Date.now()) {
       db.prepare(`UPDATE clients SET ${TARGET_COLUMNS.map((c) => `${c} = NULL`).join(", ")} WHERE id = ?`).run(id);
     } else {
       db.prepare(`UPDATE clients SET target_rate = ?, target_set_by = ?, target_set_at = ?, target_reached_on = NULL, target_reached_rate = NULL,
-        target_reached_at = NULL, target_announced_on = NULL, target_checked_on = NULL WHERE id = ?`).run(rate, user.id, sqliteUtc(nowMs), id);
+        target_reached_at = NULL, target_announced_on = NULL, target_checked_on = NULL, target_checked_rate = NULL WHERE id = ?`)
+        .run(rate, user.id, sqliteUtc(nowMs), id);
     }
   }
   return { status: 200, client: presentClients(db, user, [{ id }], nowMs)[0], receipt: { id, name: row.name, targetRate: rate } };
@@ -171,10 +175,15 @@ router.put("/:id", (req, res) => {
     // A rate, property value or credit score this save changes is marked as edited by hand, so the import keeps it.
     const marks = readMarks(existing.edited_by_hand);
     for (const col of HAND_KEPT) if (values[col] !== existing[col]) marks.add(col);
+    // A save that changes what the estimate is priced on forgets the target check (its day and estimate), so this answer's check
+    // runs again on the same observation and the target line matches the loan as saved. A stored hit stays for the check's own
+    // rules to keep, re-arm or clear.
+    const repriced = PRICED_COLUMNS.some((col) => values[col] !== existing[col]);
     db.prepare(`
       UPDATE clients SET name=@name, email=@email, phone=@phone, loan_type=@loan_type,
         current_rate=@current_rate, loan_balance=@loan_balance, property_value=@property_value,
         close_date=@close_date, credit_score=@credit_score, notes=@notes, do_not_email=@do_not_email, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
+        ${repriced ? ", target_checked_on=NULL, target_checked_rate=NULL" : ""}
       WHERE id=@id
     `).run({ ...values, edited_by_hand: writeMarks(marks) });
     const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
