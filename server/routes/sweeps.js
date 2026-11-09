@@ -4,6 +4,7 @@ const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const { requireAccess } = require("../middleware/access");
 const refi = require("../lib/refi");
+const { checkTargets } = require("../lib/targets");
 
 const router = express.Router();
 router.use(requireAuth, requireAccess);
@@ -17,6 +18,7 @@ router.post("/", (req, res) => {
     return res.status(400).json({ success: false, error: "current rates required" });
   }
   try {
+    checkTargets(db, req.user.org_id);   // spec 4.4: a sweep checks the targets too, so a hit it finds is stored
     const rows = req.user.role === "broker"
       ? db.prepare("SELECT * FROM clients WHERE org_id = ? ORDER BY name ASC").all(req.user.org_id)
       : db.prepare("SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC").all(req.user.id);

@@ -5,6 +5,10 @@ const { requireAuth } = require("../middleware/auth");
 const { requireAccess } = require("../middleware/access");
 const followups = require("../lib/assistant/followups");   // called as followups.x(): tests can swap one
 const { HAND_KEPT, readMarks, writeMarks } = require("../lib/intake/handEdits");
+const targets = require("../lib/targets");
+
+// An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
+const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
 
 const router = express.Router();
 router.use(requireAuth, requireAccess);
@@ -19,6 +23,19 @@ function toClient(row) {
     notes: row.notes, lastContact: row.last_contact, doNotEmail: row.do_not_email === 1,
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
+}
+
+// Clients the way the screens get them: the check runs first (one FRED observation, once), then the rows are re-read by id so a
+// stored hit shows, in `rows` order (a row deleted in between is skipped). Each answer carries `target` (a View, or null).
+function presentClients(db, user, rows, nowMs = Date.now()) {
+  const snapshot = targets.checkTargets(db, user.org_id, nowMs);
+  const ids = rows.map((r) => r.id);
+  if (!ids.length) return [];
+  const found = db.prepare(`SELECT * FROM clients WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids);
+  const byId = new Map(found.map((r) => [r.id, r]));
+  const fresh = ids.map((id) => byId.get(id)).filter(Boolean);
+  const views = targets.viewsFor(db, fresh, snapshot, user.id);
+  return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
 }
 
 function validateClient(body) {
@@ -79,13 +96,40 @@ function logContactForUser(db, user, id) {
   return { status: 200, client: toClient(db.prepare("SELECT * FROM clients WHERE id = ?").get(id)) };
 }
 
+const TARGET_COLUMNS = ["target_rate", "target_set_by", "target_set_at", "target_reached_on", "target_reached_rate",
+  "target_reached_at", "target_announced_on", "target_checked_on"];
+
+// Sets (a number), keeps (the same value) or clears (null) client `id`'s target rate, for a user who may act on it (clientInReach).
+// `raw` goes through parseTarget, and a target has to be below the client's current rate. A new value starts over: who and when, and
+// the hit and the check date forgotten, so the check re-arms it against the latest observation. Throws only on a database error.
+// -> { status: 200, client, receipt: { id, name, targetRate } } | { status: 400 | 403 | 404, error }
+function setTargetForUser(db, user, id, raw, nowMs = Date.now()) {
+  const reach = clientInReach(db, user, id);
+  if (reach.status !== 200) return reach;
+  const row = reach.row;
+  const parsed = targets.parseTarget(raw);
+  if (parsed.error) return { status: 400, error: parsed.error };
+  const rate = parsed.rate;
+  if (rate != null && rate >= targets.round3(row.current_rate)) return { status: 400, error: targets.notBelowError(row.name, row.current_rate) };
+  const same = rate != null && row.target_rate != null && targets.round3(rate) === targets.round3(row.target_rate);
+  if (!same) {
+    if (rate == null) {
+      db.prepare(`UPDATE clients SET ${TARGET_COLUMNS.map((c) => `${c} = NULL`).join(", ")} WHERE id = ?`).run(id);
+    } else {
+      db.prepare(`UPDATE clients SET target_rate = ?, target_set_by = ?, target_set_at = ?, target_reached_on = NULL, target_reached_rate = NULL,
+        target_reached_at = NULL, target_announced_on = NULL, target_checked_on = NULL WHERE id = ?`).run(rate, user.id, sqliteUtc(nowMs), id);
+    }
+  }
+  return { status: 200, client: presentClients(db, user, [{ id }], nowMs)[0], receipt: { id, name: row.name, targetRate: rate } };
+}
+
 // GET /api/clients — brokers get all org clients, LOs get their own
 router.get("/", (req, res) => {
   try {
     const rows = req.user.role === "broker"
       ? db.prepare("SELECT * FROM clients WHERE org_id = ? ORDER BY name ASC").all(req.user.org_id)
       : db.prepare("SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC").all(req.user.id);
-    res.json({ success: true, clients: rows.map(toClient) });
+    res.json({ success: true, clients: presentClients(db, req.user, rows) });
   } catch (err) {
     console.error("GET /api/clients:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
@@ -134,9 +178,24 @@ router.put("/:id", (req, res) => {
       WHERE id=@id
     `).run({ ...values, edited_by_hand: writeMarks(marks) });
     const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
-    res.json({ success: true, client: toClient(row) });
+    res.json({ success: true, client: presentClients(db, req.user, [row])[0] });
   } catch (err) {
     console.error("PUT /api/clients/:id:", err.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+
+// PUT /api/clients/:id/target — body { targetRate }: a number sets the client's target rate, null clears it. A body without the key
+// is refused, so a missing key can never clear a target. Broker: any org client; LO: own clients only.
+router.put("/:id/target", (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (!Object.prototype.hasOwnProperty.call(body, "targetRate")) return res.status(400).json({ success: false, error: "targetRate required" });
+  try {
+    const result = setTargetForUser(db, req.user, parseInt(req.params.id), body.targetRate);
+    if (result.status !== 200) return res.status(result.status).json({ success: false, error: result.error });
+    res.json({ success: true, client: result.client });
+  } catch (err) {
+    console.error("PUT /api/clients/:id/target:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
   }
 });
@@ -176,9 +235,6 @@ router.get("/:id/calls", (req, res) => {
   }
 });
 
-// An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
-const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
-
 // POST /api/clients/:id/contact — log an outreach (the Sweeps page's Log contact button; the broker's own click is the confirmation).
 // Broker: any org client; LO: own clients only. One transaction: last_contact = now, the call in contact_log as reached (no notes),
 // and the caller's open follow-ups of that client closed as reached, carry included, so Charlie's next briefing neither lists the
@@ -195,11 +251,11 @@ router.post("/:id/contact", (req, res) => {
       return done;
     })();
     if (result.error) return res.status(result.status).json({ success: false, error: result.error });
-    res.json({ success: true, client: result.client });
+    res.json({ success: true, client: presentClients(db, req.user, [result.client])[0] });
   } catch (err) {
     console.error("POST /api/clients/:id/contact:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
   }
 });
 
-module.exports = Object.assign(router, { validateClient, toClient, createClientForUser, logContactForUser, clientInReach });
+module.exports = Object.assign(router, { validateClient, toClient, createClientForUser, logContactForUser, clientInReach, presentClients, setTargetForUser });
