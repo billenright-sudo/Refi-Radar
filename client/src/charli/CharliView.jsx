@@ -127,7 +127,7 @@ const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
 
 // ── the view ─────────────────────────────────────────────────────────────────
 
-export default function CharliView({ rates, user, ui, mode = "dock", stacked = false, width, onClose, onStale }) {
+export default function CharliView({ rates, user, ui, mode = "dock", stacked = false, width, onClose, onStale, onClientsChanged }) {
   const { C, card, mono, Icon } = ui;
   const panel = mode === "panel";
   const isPhone = useIsPhone();
@@ -153,6 +153,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const listenOnResume = useRef(false);   // the microphone was on when Pause was tapped: Resume turns it back on, never otherwise
   const onStaleRef = useRef(onStale);
   onStaleRef.current = onStale;
+  const onClientsChangedRef = useRef(onClientsChanged);
+  onClientsChangedRef.current = onClientsChanged;
   // A brief request refused because the briefing is yesterday's: App rebuilds this screen for today.
   const rebuildIfStale = (result) => { if (result && result.reason === "stale" && onStaleRef.current) onStaleRef.current(); };
 
@@ -166,6 +168,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       user,
       onSpeak,
       speakGreeting: false,   // the briefing is read, not played at the user: Brief me speaks it, from a tap
+      onClientsChanged: () => (onClientsChangedRef.current ? onClientsChangedRef.current() : undefined),   // the kept session reads the latest
     }));
 
     const handleUtterance = async (blob) => {

@@ -23,6 +23,7 @@ import {
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
+import { targetStatusLine, closestToTarget, isAtTarget } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
 
 // ---------------------------------------------------------------------------
@@ -1400,6 +1401,9 @@ const ClientRow = ({ client: c, onClick }) => {
           </>
         )}
       </div>
+      {isAtTarget(c.target) && (
+        <span style={{ background: C.surfaceHi, border: `1px solid ${C.border}`, color: C.green, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600 }}>At target</span>
+      )}
       <PriorityBadge priority={a?.priority} good={a?.good} />
       <div style={{ color: C.muted, fontSize: 18 }}>›</div>
     </div>
@@ -1473,9 +1477,38 @@ const Clients = ({ scored, setSelected, setView }) => {
 // ---------------------------------------------------------------------------
 // Client Detail (with edit + delete)
 // ---------------------------------------------------------------------------
-const ClientDetail = ({ client, rates, setView, onDelete }) => {
+const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
   const isPhone = useIsPhone();
   const a = analyze(client, rates);
+  const [targetInput, setTargetInput] = useState(client.target ? client.target.rate.toFixed(3) : "");
+  const [targetSaving, setTargetSaving] = useState(false);
+  const [targetError, setTargetError] = useState("");
+  const shownTargetRate = client.target ? client.target.rate : null;
+  useEffect(() => { setTargetInput(shownTargetRate != null ? shownTargetRate.toFixed(3) : ""); }, [shownTargetRate]);   // Charlie changed it
+
+  const saveTarget = async (targetRate) => {
+    setTargetSaving(true);
+    setTargetError("");
+    try {
+      const res = await fetch(`/api/clients/${client.id}/target`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targetRate }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.client) {
+        setTargetInput(data.client.target ? data.client.target.rate.toFixed(3) : "");
+        if (onUpdated) onUpdated(data.client);
+      } else {
+        setTargetError(data.error || "Could not save the target rate. Try again.");
+      }
+    } catch {
+      setTargetError("Could not save the target rate. Try again.");
+    } finally {
+      setTargetSaving(false);
+    }
+  };
+  const onSaveTarget = () => {
+    if (String(targetInput).trim() === "") return;
+    saveTarget(Number(targetInput));
+  };
+  const statusLine = targetStatusLine(client.target, new Date());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -1560,6 +1593,24 @@ const ClientDetail = ({ client, rates, setView, onDelete }) => {
             </div>
           ))}
         </div>
+      </div>
+
+      <div style={{ ...card, marginBottom: "1.5rem" }}>
+        <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Target rate</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", ...ph(isPhone, { flexWrap: "wrap" }) }}>
+          <input
+            type="number" step="0.001" inputMode="decimal" placeholder="6.000" aria-label="Target rate"
+            value={targetInput} onChange={e => setTargetInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !targetSaving) onSaveTarget(); }}
+            style={{ ...inputStyle, width: 140, ...ph(isPhone, { width: "100%" }) }}
+          />
+          <button onClick={onSaveTarget} disabled={targetSaving} style={{ ...btnPrimary, opacity: targetSaving ? 0.6 : 1 }}>Save</button>
+          {client.target && (
+            <button onClick={() => saveTarget(null)} disabled={targetSaving} style={{ ...btnGhost, opacity: targetSaving ? 0.6 : 1 }}>Clear</button>
+          )}
+        </div>
+        {targetError && <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>{targetError}</div>}
+        {statusLine && <div style={{ color: C.muted, fontSize: 13, marginTop: 8 }}>{statusLine}</div>}
       </div>
 
       {a ? (
@@ -1723,8 +1774,10 @@ const ClientCalls = ({ clientId }) => {
 // ---------------------------------------------------------------------------
 // Rate Watch
 // ---------------------------------------------------------------------------
-const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, treasury }) => {
+const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, treasury, clients = [] }) => {
   const isPhone = useIsPhone();
+  const closest = closestToTarget(clients);
+  const shortWord = { handled: "Contacted", already_below: "Already below", unpriceable: "No estimate", no_rates: "No estimate" };
   return (
   <div style={{ animation: "fadeIn 0.35s ease", maxWidth: 640 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", ...ph(isPhone, { flexWrap: "wrap", gap: 12 }) }}>
@@ -1755,6 +1808,31 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
           </div>
         ))}
         {lastFetched && <div style={{ textAlign: "center", color: C.muted, fontSize: 12, marginTop: 12 }}>Last updated: {lastFetched.toLocaleTimeString()}</div>}
+      </div>
+    )}
+    {closest.length > 0 && (
+      <div style={{ ...card, marginTop: "1rem" }}>
+        <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Closest to target</h3>
+        {closest.map((c, i) => (
+          <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "0.75rem 0", borderTop: i ? `1px solid ${C.border}` : "none", ...ph(isPhone, { flexWrap: "wrap", gap: 4 }) }}>
+            <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+              <div style={{ color: C.text, fontWeight: 600, fontSize: 14 }}>{c.name}{c.target.ownerName ? ` · ${c.target.ownerName}` : ""}</div>
+              <div style={{ color: C.muted, fontSize: 12 }}>Target {c.target.rate.toFixed(3)}%</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              {c.target.state === "at_target" ? (
+                <div style={{ color: C.green, fontWeight: 700, fontSize: 14 }}>At target</div>
+              ) : c.target.state === "watching" ? (
+                <>
+                  <div style={{ ...mono, color: C.text, fontSize: 14, fontWeight: 600 }}>Est. {c.target.estRate.toFixed(3)}%</div>
+                  <div style={{ color: C.muted, fontSize: 12 }}>Gap {c.target.gap.toFixed(3)}</div>
+                </>
+              ) : (
+                <div style={{ color: C.muted, fontSize: 13 }}>{shortWord[c.target.state] || ""}</div>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     )}
   </div>
@@ -2782,6 +2860,25 @@ export default function App() {
       .finally(() => setClientsLoading(false));
   }, [appOpen]);
 
+  // Charlie changed a client (a target rate): re-read the list, and the open client page with it.
+  const selectedIdRef = useRef(null);
+  selectedIdRef.current = selected ? selected.id : null;
+  const reloadClients = useCallback(async () => {
+    const r = await fetch("/api/clients");
+    const data = await r.json();
+    if (!data.success) return;
+    setClients(data.clients);
+    const id = selectedIdRef.current;
+    if (id != null) {
+      const fresh = data.clients.find(x => x.id === id);
+      if (fresh) setSelected(fresh);
+    }
+  }, []);
+  const handleClientUpdated = (client) => {
+    setClients(prev => prev.map(x => (x.id === client.id ? client : x)));
+    setSelected(client);
+  };
+
   const ratesAskedOn = useRef(null);   // the local day rates were last asked for (see the new-day check below)
   const fetchRates = useCallback(async () => {
     ratesAskedOn.current = localDateOf(new Date());
@@ -2957,7 +3054,7 @@ export default function App() {
             {view === "home"          && (
               <HomeView
                 layout={homeLayout}
-                charlie={<CharliView key={today} mode="dock" stacked={homeLayout === "stacked"} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} />}
+                charlie={<CharliView key={today} mode="dock" stacked={homeLayout === "stacked"} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} onClientsChanged={reloadClients} />}
                 scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn}
               />
             )}
@@ -2965,9 +3062,9 @@ export default function App() {
             {view === "profile"       && profileAsk && <ProfilePrompt missing={profileAsk} onSkip={skipProfile} />}
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} onProfile={handleProfileTaken} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
-            {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} />}
+            {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} clients={clients} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}
-            {view === "client-detail" && selected && <ClientDetail client={selected} rates={rates} setView={setView} onDelete={handleDeleteClient} />}
+            {view === "client-detail" && selected && <ClientDetail key={selected.id} client={selected} rates={rates} setView={setView} onDelete={handleDeleteClient} onUpdated={handleClientUpdated} />}
             {view === "edit"          && selected && <EditClient client={selected} setClients={setClients} setSelected={setSelected} setView={setView} />}
             {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} billingOn={teamBillingOn} />}
             {view === "lo-portal"     && selectedLO && user?.role === "broker" && <LOPortal lo={selectedLO} rates={rates} setView={setView} />}
@@ -2989,7 +3086,7 @@ export default function App() {
           <img src={FACE.thumb} alt="" width={26} height={26} style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", boxShadow: "0 0 0 2px #0f2040", display: "block" }} />Charlie
         </button>
       )}
-      {view !== "home" && panelOpen && <CharliView key={today} mode="panel" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} onStale={renderAgain} />}
+      {view !== "home" && panelOpen && <CharliView key={today} mode="panel" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} onStale={renderAgain} onClientsChanged={reloadClients} />}
     </div>
   );
 }

@@ -241,7 +241,7 @@ const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const localDateOf = (date) =>
   `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
-// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting, now })
+// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting, now, onClientsChanged })
 //   fetch      the window fetch (injected so tests need no network)
 //   rates      today's rates, as App.jsx holds them (may be null at first: setRates() when they arrive)
 //   localHour  0-23 for the greeting; defaults to the clock
@@ -287,7 +287,7 @@ export const localDateOf = (date) =>
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
-export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true, now } = {}) {
+export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true, now, onClientsChanged } = {}) {
   const doFetch = fetchFn || ((...args) => globalThis.fetch(...args));
   const clock = typeof now === "function" ? now : () => new Date();
   let currentRates = rates;
@@ -528,6 +528,7 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
       addTurn({ role: "assistant", content: reply });
       speak(reply);
       if (sideEffect.type === "setCareerStage") await refreshStage(res.data.result && res.data.result.stage);
+      if (sideEffect.type === "setTargetRate" && typeof onClientsChanged === "function") { try { await onClientsChanged(); } catch { /* the list refreshes next load */ } }
       return;
     }
     if (away && (stillWorking(res) || isRetryable(res))) {

@@ -1350,6 +1350,33 @@ test("a career-stage change confirmed by voice (the user asked Charlie to set it
   assert.ok(server.calls.filter((c) => c.url === "/api/auth/me").length > meCallsBefore, "re-read /api/auth/me after the stage was set");
 });
 
+test("a confirmed setTargetRate calls onClientsChanged once; other confirmed types do not", async () => {
+  const TARGET_EFFECT = { type: "setTargetRate", clientId: 7, targetRate: 6, confirmId: "6b1d2c3e-4b5f-4a6b-8c7d-9e0f1a2b3c4d" };
+  const make = (effect, onClientsChanged) => setup({
+    options: { onClientsChanged },
+    routes: {
+      "POST /api/assistant/turn": queue(
+        turnReply("Good morning, Ann. Want a full sweep?"),
+        turnReply("Just to confirm — set Helen's target rate to 6.000%?", { sideEffect: effect }),
+      ),
+      "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }),
+    },
+  });
+  let n = 0;
+  const a = make(TARGET_EFFECT, () => { n += 1; });
+  await a.session.open();
+  await a.session.submit("set Helen's target to six");
+  await a.session.submit("yes");
+  assert.equal(n, 1);
+
+  let m = 0;
+  const b = make({ ...STAGE_SIDE_EFFECT }, () => { m += 1; });
+  await b.session.open();
+  await b.session.submit("set my stage");
+  await b.session.submit("yes");
+  assert.equal(m, 0);
+});
+
 // ── plumbing ─────────────────────────────────────────────────────────────────
 
 test("subscribe is notified on every change; dispose stops notifications and speech", async () => {
