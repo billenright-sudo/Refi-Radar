@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { loadConnection, connectArive, disconnectArive, utcTextToDate } from "./profile.mjs";
+import { loadConnection, connectLos, disconnectLos, utcTextToDate } from "./profile.mjs";
 
 // The Connections card on the Profile page: a broker or loan officer connects ARIVE here. ARIVE sends each funded loan to Broker Radar
 // through a Zap (Zapier's "Webhooks by Zapier"), signed with a key made on this card. The key is shown once, when it is made, and is
@@ -101,7 +101,7 @@ export function ConnectionsCard({ ui, isBroker }) {
   // Connect and Regenerate: the server makes a new key, and the old one (if any) stops working.
   const makeKey = async () => {
     setBusy(true); setNote(null);
-    const res = await connectArive(fetch);
+    const res = await connectLos(fetch, "arive");
     if (res.ok) {
       setFresh({ key: res.data.key });
       setConn({ connected: true, createdAt: res.data.createdAt || null, lastUsedAt: null, webhookUrl: res.data.webhookUrl });
@@ -116,7 +116,7 @@ export function ConnectionsCard({ ui, isBroker }) {
   const disconnect = async () => {
     if (!window.confirm(DISCONNECT_CONFIRM)) return;
     setBusy(true); setNote(null);
-    const res = await disconnectArive(fetch);
+    const res = await disconnectLos(fetch);
     if (res.ok) {
       setFresh(null);
       setConn((shown) => ({ ...shown, connected: false, createdAt: null, lastUsedAt: null }));

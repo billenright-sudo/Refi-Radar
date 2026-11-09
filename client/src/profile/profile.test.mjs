@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validName, cleanName, validEmail, loadProfile, saveName, requestEmailChange, saveStage, saveNmls, emailChangedNotice,
-  loadConnection, connectArive, disconnectArive, utcTextToDate,
+  loadConnection, connectLos, disconnectLos, utcTextToDate,
   BAD_NAME, TOO_MANY, profileMissing, stillNeededLine, profilePrompt, nextProfilePrompt, PROFILE_WELCOME,
   profileCheckDue, profileLanding,
 } from "./profile.mjs";
@@ -203,49 +203,49 @@ const WEBHOOK = "https://app.example.com/api/integrations/loans";
 const NEW_KEY = `br_${"ab12".repeat(16)}`;
 
 test("loadConnection reads the key status", async () => {
-  const status = { success: true, connected: true, createdAt: "2026-11-01 14:05:09", lastUsedAt: null, webhookUrl: WEBHOOK };
+  const status = { success: true, connected: true, createdAt: "2026-11-01 14:05:09", lastUsedAt: null, webhookUrl: WEBHOOK, los: "lendingpad" };
   const server = fakeServer({ [`GET ${KEY_URL}`]: () => reply(200, status) });
   assert.deepEqual(await loadConnection(server.fetch), { ok: true, data: status });
   assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["GET", KEY_URL, undefined]]);
   // not connected is an answer too
-  const none = { success: true, connected: false, createdAt: null, lastUsedAt: null, webhookUrl: WEBHOOK };
+  const none = { success: true, connected: false, createdAt: null, lastUsedAt: null, webhookUrl: WEBHOOK, los: null };
   const quiet = fakeServer({ [`GET ${KEY_URL}`]: () => reply(200, none) });
   assert.deepEqual(await loadConnection(quiet.fetch), { ok: true, data: none });
 });
 
-test("connectArive returns the new key once", async () => {
-  const made = { success: true, key: NEW_KEY, webhookUrl: WEBHOOK, createdAt: "2026-11-01 14:06:00" };
+test("connectLos asks for a key for the LOS and returns the new key once", async () => {
+  const made = { success: true, key: NEW_KEY, webhookUrl: WEBHOOK, createdAt: "2026-11-01 14:06:00", los: "lendingpad" };
   const server = fakeServer({ [`POST ${KEY_URL}`]: () => reply(200, made) });
-  const res = await connectArive(server.fetch);
+  const res = await connectLos(server.fetch, "lendingpad");
   assert.deepEqual(res, { ok: true, data: made });
   assert.equal(res.data.key, NEW_KEY);
   assert.equal(res.data.webhookUrl, WEBHOOK);
-  assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["POST", KEY_URL, undefined]]);
+  assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["POST", KEY_URL, { los: "lendingpad" }]]);
 });
 
-test("disconnectArive deletes the key", async () => {
+test("disconnectLos deletes the key", async () => {
   const server = fakeServer({ [`DELETE ${KEY_URL}`]: () => reply(200, { success: true, connected: false }) });
-  assert.deepEqual(await disconnectArive(server.fetch), { ok: true, data: { success: true, connected: false } });
+  assert.deepEqual(await disconnectLos(server.fetch), { ok: true, data: { success: true, connected: false } });
   assert.deepEqual(server.calls.map((c) => [c.method, c.url, c.body]), [["DELETE", KEY_URL, undefined]]);
 });
 
 test("connection calls map a 401 to the session-ended message and a network throw to the no-server message", async () => {
   const calls = [
-    ["GET", loadConnection], ["POST", connectArive], ["DELETE", disconnectArive],
+    ["GET", loadConnection], ["POST", connectLos], ["DELETE", disconnectLos],
   ];
   for (const [method, call] of calls) {
     const signedOut = fakeServer({ [`${method} ${KEY_URL}`]: () => reply(401, { success: false, error: "Not authenticated" }) });
-    assert.deepEqual(await call(signedOut.fetch), { ok: false, error: "Your session has ended. Sign in again." }, method);
+    assert.deepEqual(await call(signedOut.fetch, "arive"), { ok: false, error: "Your session has ended. Sign in again." }, method);
     const offline = fakeServer({ [`${method} ${KEY_URL}`]: () => { throw new Error("offline"); } });
-    assert.deepEqual(await call(offline.fetch), { ok: false, error: "Couldn't reach the server. Check your connection and try again." }, method);
+    assert.deepEqual(await call(offline.fetch, "arive"), { ok: false, error: "Couldn't reach the server. Check your connection and try again." }, method);
   }
 });
 
 test("connection calls show a plain line for a server error or an answer of the wrong shape, never the raw one", async () => {
   const calls = [
-    ["GET", loadConnection, "Couldn't check your ARIVE connection. Try again."],
-    ["POST", connectArive, "Couldn't make a key. Try again."],
-    ["DELETE", disconnectArive, "Couldn't disconnect ARIVE. Try again."],
+    ["GET", loadConnection, "Couldn't check your connection. Try again."],
+    ["POST", connectLos, "Couldn't make a key. Try again."],
+    ["DELETE", disconnectLos, "Couldn't disconnect. Try again."],
   ];
   for (const [method, call, error] of calls) {
     for (const handler of [
@@ -255,12 +255,12 @@ test("connection calls show a plain line for a server error or an answer of the 
       () => reply(200, null),
     ]) {
       const server = fakeServer({ [`${method} ${KEY_URL}`]: handler });
-      assert.deepEqual(await call(server.fetch), { ok: false, error }, method);
+      assert.deepEqual(await call(server.fetch, "arive"), { ok: false, error }, method);
     }
   }
   // a key is only worth showing with the address to send it to
   const noUrl = fakeServer({ [`POST ${KEY_URL}`]: () => reply(200, { success: true, key: NEW_KEY }) });
-  assert.equal((await connectArive(noUrl.fetch)).ok, false);
+  assert.equal((await connectLos(noUrl.fetch, "arive")).ok, false);
 });
 
 test("utcTextToDate reads the SQLite UTC text as UTC; anything else is null", () => {
