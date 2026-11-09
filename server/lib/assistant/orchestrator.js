@@ -48,7 +48,7 @@ const SWEEP_TOP_CHECKINS = 10;
 const FIND_CLIENT_MAX_MATCHES = 5;
 
 // The tools that only PACKAGE a change (they never write; see tools.js).
-const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool"]);
+const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool", "setTargetRateTool"]);
 // On the last allowed model call these are the only tools run, because nothing else's result could be used: a change to
 // confirm, and an email to set up (its result ends the turn in code, so no later model call is needed to narrate it).
 const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool"]);
@@ -1832,7 +1832,7 @@ function eventSpeech(event) {
   }
 }
 
-// The client a logContact or an addToCallList change is about, as its tool's own data names them.
+// The client a logContact, an addToCallList or a setTargetRate change is about, as its tool's own data names them.
 const clientNameOf = (out) => cleanName(out.data && out.data.client && out.data.client.name) || "that client";
 // Whether a logContact change carries the broker's notes (logContactTool packages "" for none).
 const hasNotes = (se) => typeof se.notes === "string" && se.notes !== "";
@@ -1859,6 +1859,11 @@ function readBack(out) {
     }
     case "addToCallList":
       return `${READ_BACK_PREFIX} put ${clientNameOf(out)} on tomorrow's call list?`;
+    case "setTargetRate":
+      // the rate setTargetRateTool packaged (three decimals), or null to take the target off
+      return se.targetRate == null
+        ? `${READ_BACK_PREFIX} take ${clientNameOf(out)}'s target rate off?`
+        : `${READ_BACK_PREFIX} set ${clientNameOf(out)}'s target rate to ${se.targetRate.toFixed(3)}%?`;
     case "addClient":
       return addClientReadBack(se.fields);
     case "setCareerStage": {
@@ -1875,8 +1880,8 @@ function readBack(out) {
 // What the pending card shows under the read-back: [{ label, value }], code-authored from the same packaged change. addClient
 // lists every field of sideEffect.fields (the object /confirm will write), the credit-score default included; logContact the
 // client, the outcome, the broker's notes (the only place they are shown) and the date; addToCallList the client and the list;
-// setCareerStage the stage; createEvent the title, the day with its start and end time on the calendar's clock, and that nobody
-// is invited. Never sent to the model.
+// setTargetRate the client and the target ("None" when it is taken off); setCareerStage the stage; createEvent the title, the day
+// with its start and end time on the calendar's clock, and that nobody is invited. Never sent to the model.
 const CLIENT_FIELD_LABELS = [
   ["name", "Name"], ["loanType", "Loan type"], ["currentRate", "Rate"], ["loanBalance", "Balance"], ["propertyValue", "Property value"],
   ["closeDate", "Close date"], ["creditScore", "Credit score"], ["email", "Email"], ["phone", "Phone"], ["notes", "Notes"],
@@ -1902,6 +1907,12 @@ function changeDetails(out) {
     ];
   }
   if (se.type === "addToCallList") return [{ label: "Client", value: clientNameOf(out) }, { label: "List", value: "Tomorrow" }];
+  if (se.type === "setTargetRate") {
+    return [
+      { label: "Client", value: clientNameOf(out) },
+      { label: "Target rate", value: se.targetRate == null ? "None" : `${se.targetRate.toFixed(3)}%` },
+    ];
+  }
   if (se.type === "setCareerStage") {
     const stage = stageById(se.stage);
     return stage ? [{ label: "Career stage", value: stage.label }] : [];

@@ -8,9 +8,9 @@
 // deadline (CHARLI_TURN_DEADLINE_MS, see turnDeadlineMs). A change Charli
 // proposes comes back as `sideEffect` with a code-authored read-back; the browser echoes it to
 // /confirm only after the user says yes. That body is UNTRUSTED browser input, so /confirm accepts
-// five action types, takes org/user from the session alone, and runs the same validation and checks
-// as the REST routes (createClientForUser / logContactForUser in routes/clients.js). Four of them write synchronously, in one
-// transaction; the fifth, createEvent, books on the user's own Google calendar, which a transaction cannot wait for.
+// six action types, takes org/user from the session alone, and runs the same validation and checks
+// as the REST routes (createClientForUser / logContactForUser / setTargetForUser in routes/clients.js). Five of them write
+// synchronously, in one transaction; the sixth, createEvent, books on the user's own Google calendar, which a transaction cannot wait for.
 // A broker who declines the briefing's follow-up question ("skip it", with its followUpRecId) is answered by code: see skipFollowUp.
 // An email Charli sets up for the broker (draftEmailTool) comes back from /turn as `compose` and is never confirmed or sent.
 const crypto = require("crypto");
@@ -34,7 +34,8 @@ const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
-const { createClientForUser, logContactForUser, clientInReach, toClient } = require("./clients");
+const { createClientForUser, logContactForUser, clientInReach, toClient, setTargetForUser } = require("./clients");
+const { round3 } = require("../lib/targets");
 const { googleFor } = require("../lib/google");
 const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, zoneName } = require("../lib/google/time");
 
@@ -153,6 +154,11 @@ function confirmReply(type, receipt, { canBook = false } = {}) {
   }
   if (type === "setCareerStage") return `Done — your career stage is set to ${spokenStageLabel(receipt.stage) || receipt.label}.`;
   if (type === "addToCallList") return `Done — ${receipt.name} is on tomorrow's call list.`;
+  if (type === "setTargetRate") {
+    return receipt.targetRate == null
+      ? `Done — ${receipt.name}'s target rate is off.`
+      : `Done — ${receipt.name}'s target rate is ${receipt.targetRate.toFixed(3)}%.`;
+  }
   if (type === "logContact" && receipt.outcome === "not_reached") return `Done — I noted that you couldn't reach ${receipt.name}.`;
   if (type === "logContact") return `Done — I logged a contact for ${receipt.name}.${canBook ? ` ${FOLLOW_UP_OFFER}` : ""}`;
   return `Done — I added ${receipt.name} as a new client.`;
@@ -204,6 +210,17 @@ function addToCallListForUser(user, id, day) {
   followups.resolveForClient(db, user.id, id, "expired", sqliteUtc(Date.now()), { includeCarry: false });
   const receipt = { id: reach.row.id, name: reach.row.name, day };
   return { result: receipt, receipt };
+}
+
+// ── A client's target rate (setTargetRate) ───────────────────────────────────
+
+// The setTargetRate write: setTargetForUser (routes/clients.js), the one PUT /api/clients/:id/target runs. It checks the reach (404
+// unknown, 403 another org's or another LO's) and the value again (400, in the words the client page shows), then sets the target
+// (a new value re-arms it), keeps it (the same value) or takes it off (null). `result` is the client as the screens get it, target
+// included; the receipt kept per confirmId is { id, name, targetRate }.
+function setTargetRateForUser(user, id, targetRate) {
+  const done = setTargetForUser(db, user, id, targetRate);
+  return done.status === 200 ? { result: done.client, receipt: done.receipt } : done;
 }
 
 // "Skip it": the broker's answer to the briefing's follow-up question (its briefing.followUp.recId, sent back as followUpRecId)
@@ -516,13 +533,20 @@ function createAssistantRouter({ limiter = {} } = {}) {
   //     of the caller's OWN clients to the next day's call list (404 unknown, 403 anyone else's, a broker's LO's included), closes
   //     the client's open follow-ups as expired (Ruling R16), and replies "Done — <name> is on tomorrow's call list." (result
   //     { id, name, day }).
-  //   * addClient, addToCallList and logContact require a confirmId (M3: a logContact appends a call). A malformed one is 400.
+  //   * setTargetRate ({ type, clientId, targetRate, confirmId }, targetRate a finite number or null, else 400; without the key,
+  //     400 "targetRate required", so a missing key never clears a target) runs setTargetForUser: the reach check (404 / 403), the
+  //     value checked again (400 with its words: the 1.000 to 15.000 range, or below the client's current rate), then the target
+  //     set (re-armed), kept (the same value) or taken off (null). Replies "Done — <name>'s target rate is <6.000>%." or "Done —
+  //     <name>'s target rate is off." (result: the client, target included). Its target is "<id>:<rate to three decimals>" or
+  //     "<id>:clear".
+  //   * addClient, addToCallList, logContact and setTargetRate require a confirmId (M3: a logContact appends a call). A malformed
+  //     one is 400.
   //   * a confirmId is bound to the user AND to the action it was recorded for (type + target); the same id
   //     from another user, or for another type or target, is 409 and nothing is executed.
   //   * the confirmId only dedupes: every validation and authorization check still applies, and a request
   //     that fails (400 / 403 / 404) records nothing, so the id is still good for a corrected retry.
   //   * what is kept per confirmId is { id, name } only (no email, phone or notes; a not-reached log adds its outcome, a carry its
-  //     day), or { stage, label }.
+  //     day, a target its targetRate), or { stage, label }.
   //   * createEvent ({ type, event: { title, date, time, durationMinutes, timeZone }, confirmId }, the confirmId required) books the
   //     event on the signed-in user's own Google calendar: asynchronous, see confirmCreateEvent. What is kept is
   //     { eventId, title, date, time }; the reply is `Done — "<title>" is on your calendar for <day> at <time>.`
@@ -570,6 +594,15 @@ function createAssistantRouter({ limiter = {} } = {}) {
       if (!day) return bad("a valid day is required");
       target = `${id}:${day}`;
       execute = () => addToCallListForUser(req.user, id, day);
+    } else if (sideEffect.type === "setTargetRate") {
+      const id = sideEffect.clientId;
+      if (!Number.isInteger(id) || id <= 0) return bad("a valid clientId is required");
+      // as PUT /api/clients/:id/target: a body without the key is refused, so a missing key can never clear a target
+      if (!Object.prototype.hasOwnProperty.call(sideEffect, "targetRate")) return bad("targetRate required");
+      const { targetRate } = sideEffect;
+      if (targetRate !== null && !Number.isFinite(targetRate)) return bad("a valid targetRate is required");
+      target = `${id}:${targetRate === null ? "clear" : round3(targetRate).toFixed(3)}`;
+      execute = () => setTargetRateForUser(req.user, id, targetRate);
     } else if (sideEffect.type === "setCareerStage") {
       const stage = stageById(sideEffect.stage);
       if (!stage) return bad("a valid career stage is required");
@@ -583,7 +616,7 @@ function createAssistantRouter({ limiter = {} } = {}) {
     if (sideEffect.confirmId != null) {
       if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return bad("confirmId must be a UUID");
       confirmId = sideEffect.confirmId.toLowerCase();
-    } else if (sideEffect.type === "addClient" || sideEffect.type === "addToCallList" || sideEffect.type === "logContact") {
+    } else if (["addClient", "addToCallList", "logContact", "setTargetRate"].includes(sideEffect.type)) {
       // (M3: a logContact appends a call to contact_log, so a replay without one would log it twice)
       return bad("confirmId required");
     }

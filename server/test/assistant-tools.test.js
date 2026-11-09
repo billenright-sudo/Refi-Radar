@@ -17,7 +17,7 @@ const { recordSnapshot } = require("../lib/rateHistory");
 const {
   tools, TOOL_SCHEMA,
   getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, callListTool, getCalendarTool, createEventTool, draftEmailTool,
-  callNotes,
+  callNotes, setTargetRateTool, targetRatesTool,
 } = require("../lib/assistant/tools");
 const { PURPOSES, composeLinks } = require("../lib/assistant/outreach");
 
@@ -896,7 +896,169 @@ test("draftEmailTool: it never writes", () => {
   assert.equal(JSON.stringify([clientRow(chenCId), db.prepare("SELECT * FROM users WHERE id = ?").get(billId)]), before);
 });
 
+// ── Task 4: target rates ────────────────────────────────────────────────────
+
+// Org Hotel: a broker and two loan officers. Every client below is top tier (760, LTV 75, 30-year fixed), so its estimated rate on
+// a FRED set is that set's rate_30yr_top_tier.
+const orgH = addOrg("Hotel");
+const brokerH = addUser(orgH, "broker", "broker@h.co");
+const loH = addUser(orgH, "lo", "lo@h.co");
+const loH2 = addUser(orgH, "lo", "lo2@h.co");
+const brokerHCtx = { user: user(brokerH, "broker", orgH), rates: LIVE, db };
+const loHCtx = { user: user(loH, "lo", orgH), rates: LIVE, db };
+const loH2Ctx = { user: user(loH2, "lo", orgH), rates: LIVE, db };
+const addTop = (orgId, userId, name, currentRate = 6.75) =>
+  addClientRow(orgId, userId, { name, loanType: "30yr_fixed", currentRate, loanBalance: 300000, propertyValue: 400000, creditScore: 760 });
+const setTarget = (id, rate) => db.prepare("UPDATE clients SET target_rate = ? WHERE id = ?").run(rate, id);
+// A FRED observation as the rates route stores it.
+const fredDay = (obs, topTier) => recordSnapshot({ ...RATES, rate_30yr_top_tier: topTier, date: obs, source: `Optimal Blue lock data (${obs})` }, obs, "fred");
+const helenH = addTop(orgH, brokerH, "Helen Brandt");
+const lousH = addTop(orgH, loH, "Omar Patel");
+const RANGE_COPY = "A target rate is a number from 1.000 to 15.000.";
+
+test("Task 4: setTargetRateTool packages a target (or taking it off) for a client the caller can see, and writes nothing", () => {
+  const before = clientRow(helenH);
+  assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate: 6 }, brokerHCtx), {
+    data: { client: { id: helenH, name: "Helen Brandt", currentRate: 6.75 }, targetRate: 6 },
+    source: "client record",
+    sideEffect: { type: "setTargetRate", clientId: helenH, targetRate: 6 },
+  });
+  // a digit-string id; three decimals kept, a fourth rounded off; a plain decimal string is read as its number
+  assert.deepStrictEqual(setTargetRateTool({ clientId: String(helenH), targetRate: 5.875 }, brokerHCtx).sideEffect,
+    { type: "setTargetRate", clientId: helenH, targetRate: 5.875 });
+  assert.equal(setTargetRateTool({ clientId: helenH, targetRate: 5.8754 }, brokerHCtx).sideEffect.targetRate, 5.875);
+  assert.equal(setTargetRateTool({ clientId: helenH, targetRate: "6.25" }, brokerHCtx).sideEffect.targetRate, 6.25);
+  // a broker reaches the whole org; an LO their own
+  assert.equal(setTargetRateTool({ clientId: lousH, targetRate: 6 }, brokerHCtx).sideEffect.clientId, lousH);
+  assert.equal(setTargetRateTool({ clientId: lousH, targetRate: 6 }, loHCtx).sideEffect.clientId, lousH);
+  assert.deepStrictEqual(clientRow(helenH), before, "no column of the row changed");
+
+  // null takes a target off
+  setTarget(helenH, 6);
+  try {
+    const off = setTargetRateTool({ clientId: helenH, targetRate: null }, brokerHCtx);
+    assert.deepStrictEqual(off.sideEffect, { type: "setTargetRate", clientId: helenH, targetRate: null });
+    assert.deepStrictEqual(off.data, { client: { id: helenH, name: "Helen Brandt", currentRate: 6.75 }, targetRate: null });
+    assert.equal(clientRow(helenH).target_rate, 6, "still there: nothing is written");
+  } finally {
+    setTarget(helenH, null);
+  }
+});
+
+test("Task 4: setTargetRateTool refuses a bad value with the copy to say, and a target that isn't below the current rate", () => {
+  const refused = (error) => ({ data: { error }, source: "(invalid input)" });
+  for (const targetRate of [7, 6.75, 6.7504]) {
+    assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate }, brokerHCtx),
+      refused("A target has to be below Helen Brandt's current rate of 6.750%."), String(targetRate));
+  }
+  for (const targetRate of [0.5, 15.5, -6, "abc", "6%", " 6", true, [6], { rate: 6 }]) {
+    assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate }, brokerHCtx), refused(RANGE_COPY), JSON.stringify(targetRate));
+  }
+  assert.deepStrictEqual(setTargetRateTool({ clientId: helenH }, brokerHCtx), refused("a targetRate (or null to clear) is required"));
+  assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate: null }, brokerHCtx), refused("that client has no target rate to take off"));
+  for (const clientId of ["abc", undefined, 0, -1, 1.5, `${helenH}e0`]) {
+    assert.deepStrictEqual(setTargetRateTool({ clientId, targetRate: 6 }, brokerHCtx), refused("a valid clientId is required"), String(clientId));
+  }
+});
+
+test("Task 4: setTargetRateTool: an LO can't package a teammate's client, nobody another org's or an unknown one", () => {
+  for (const [clientId, ctx] of [[helenH, loHCtx], [lousH, loH2Ctx], [chenId, brokerHCtx], [otherOrgClientId, brokerHCtx], [999999, brokerHCtx]]) {
+    assert.deepStrictEqual(setTargetRateTool({ clientId, targetRate: 6 }, ctx), { data: { error: "no such client in your book" }, source: "(not found)" }, String(clientId));
+  }
+});
+
+test("Task 4: findClient runs the check first and carries each match's target (null without one)", () => {
+  const ivy = addTop(orgH, brokerH, "Ivy Brandt");
+  setTarget(helenH, 6);
+  try {
+    fredDay("2026-11-10", 6.25);
+    let r = findClient({ query: "brandt" }, brokerHCtx);
+    const byName = Object.fromEntries(r.data.matches.map((m) => [m.name, m]));
+    assert.equal(byName["Ivy Brandt"].target, null);
+    assert.deepStrictEqual(byName["Helen Brandt"].target, {
+      rate: 6, state: "watching", estRate: 6.25, gap: 0.25, asOf: "2026-11-10",
+      reachedOn: null, reachedRate: null, handledAt: null, setAt: null,
+    });
+    assert.equal(r.source, "client record");
+
+    // a newer observation at 5.875 reaches it: the check runs before the rows are read, so the hit shows at once, stamped on the tool's clock
+    fredDay("2026-11-11", 5.875);
+    r = findClient({ query: "helen" }, { ...brokerHCtx, now: Date.UTC(2026, 10, 11, 15) });
+    assert.deepStrictEqual([r.data.matches[0].target.state, r.data.matches[0].target.reachedOn, r.data.matches[0].target.reachedRate],
+      ["at_target", "2026-11-11", 5.875]);
+    assert.equal(clientRow(helenH).target_reached_at, "2026-11-11 15:00:00");
+    // a teammate's client carries its owner's name for the broker, and not for the owner
+    setTarget(lousH, 6);
+    assert.equal(findClient({ query: "omar" }, brokerHCtx).data.matches[0].target.ownerName, "T User");
+    assert.equal("ownerName" in findClient({ query: "omar" }, loHCtx).data.matches[0].target, false);
+  } finally {
+    db.prepare("DELETE FROM clients WHERE id = ?").run(ivy);
+    db.prepare("UPDATE clients SET target_rate = NULL, target_reached_on = NULL, target_reached_rate = NULL, target_reached_at = NULL, target_checked_on = NULL WHERE id IN (?, ?)")
+      .run(helenH, lousH);
+  }
+});
+
+test("Task 4: targetRatesTool lists the caller's clients with a target: at target first (earliest first), then by gap, then the rest by name", () => {
+  const orgK = addOrg("Kilo");
+  const brokerK = addUser(orgK, "broker", "broker@k.co");
+  const loK = addUser(orgK, "lo", "lo@k.co");
+  const brokerKCtx = { user: user(brokerK, "broker", orgK), rates: LIVE, db };
+  const loKCtx = { user: user(loK, "lo", orgK), rates: LIVE, db };
+  fredDay("2026-11-10", 6.25);
+  const hit = (id, reachedOn) => db.prepare(`UPDATE clients SET target_rate = 6, target_reached_on = ?, target_reached_rate = 5.9,
+    target_reached_at = ? || ' 10:00:00', target_checked_on = '2026-11-10' WHERE id = ?`).run(reachedOn, reachedOn, id);
+  const zoe = addTop(orgK, brokerK, "Zoe Hart"); hit(zoe, "2026-11-02");
+  const amy = addTop(orgK, brokerK, "Amy Lowe"); hit(amy, "2026-11-05");
+  const bob = addTop(orgK, brokerK, "Bob Nash"); setTarget(bob, 6.125);          // watching, 0.125 above
+  const lou = addTop(orgK, loK, "Lou Vance"); setTarget(lou, 6);                 // watching, 0.250 above (the LO's)
+  const ann = addTop(orgK, brokerK, "Ann Wolfe"); setTarget(ann, 6);             // watching, 0.250 above
+  const cal = addTop(orgK, brokerK, "Cal Ortiz"); setTarget(cal, 5.5);           // watching, 0.750 above
+  const eve = addTop(orgK, brokerK, "Eve Unger"); setTarget(eve, 6);
+  db.prepare("UPDATE clients SET loan_balance = 0 WHERE id = ?").run(eve);       // can't be priced
+  const dee = addTop(orgK, brokerK, "Dee Moss", 5.9); setTarget(dee, 6);         // already at or below
+  addTop(orgK, brokerK, "Nia Plain");                                             // no target: not listed
+
+  const r = targetRatesTool({}, brokerKCtx);
+  assert.equal(r.source, "client record");
+  assert.deepStrictEqual(r.data.clients.map((c) => [c.name, c.target.state]), [
+    ["Zoe Hart", "at_target"], ["Amy Lowe", "at_target"],
+    ["Bob Nash", "watching"], ["Ann Wolfe", "watching"], ["Lou Vance", "watching"], ["Cal Ortiz", "watching"],
+    ["Dee Moss", "already_below"], ["Eve Unger", "unpriceable"],
+  ]);
+  const lous = r.data.clients.find((c) => c.id === lou);
+  assert.deepStrictEqual(lous, { id: lou, name: "Lou Vance", ownerName: "T User", target: { ...lous.target, ownerName: "T User" } });
+  assert.deepStrictEqual([lous.target.estRate, lous.target.gap, lous.target.asOf], [6.25, 0.25, "2026-11-10"]);
+  assert.equal("ownerName" in r.data.clients.find((c) => c.id === ann), false, "the broker's own client has no owner named");
+  assert.equal(clientRow(bob).target_checked_on, "2026-11-10", "the check ran first");
+
+  // an LO sees their own only
+  assert.deepStrictEqual(targetRatesTool({}, loKCtx).data.clients.map((c) => [c.id, c.name, "ownerName" in c]), [[lou, "Lou Vance", false]]);
+  // nobody with a target: an empty list, still cited
+  assert.deepStrictEqual(targetRatesTool({}, brokerHCtx), { data: { clients: [] }, source: "client record" });
+
+  // at most 15
+  for (let i = 1; i <= 12; i++) setTarget(addTop(orgK, brokerK, `Many ${String(i).padStart(2, "0")}`), 6);
+  const many = targetRatesTool({}, brokerKCtx).data.clients;
+  assert.equal(many.length, 15);
+  assert.deepStrictEqual(many.slice(0, 2).map((c) => c.name), ["Zoe Hart", "Amy Lowe"]);
+});
+
 // ── TOOL_SCHEMA ─────────────────────────────────────────────────────────────
+
+test("Task 4: TOOL_SCHEMA: setTargetRateTool takes a clientId and a targetRate (null clears) and only prepares; targetRatesTool takes nothing", () => {
+  const set = TOOL_SCHEMA.find((t) => t.name === "setTargetRateTool");
+  assert.deepStrictEqual(set.input_schema.required, ["clientId", "targetRate"]);
+  assert.deepStrictEqual(Object.keys(set.input_schema.properties), ["clientId", "targetRate"]);
+  assert.equal(set.input_schema.properties.clientId.type, "integer");
+  assert.match(set.input_schema.properties.clientId.description, /findClient/);
+  assert.deepStrictEqual(set.input_schema.properties.targetRate.anyOf, [{ type: "number" }, { type: "null" }]);
+  assert.match(set.input_schema.properties.targetRate.description, /null/);
+  assert.match(set.description, /does NOT save anything/);
+  const list = TOOL_SCHEMA.find((t) => t.name === "targetRatesTool");
+  assert.deepStrictEqual(list.input_schema, { type: "object", properties: {}, required: [] });
+  assert.match(list.description, /estimated/);
+  assert.match(TOOL_SCHEMA.find((t) => t.name === "findClient").description, /`target`/);
+});
 
 test("TOOL_SCHEMA: draftEmailTool takes a clientId and a purpose, and says Charlie never writes or sends the email", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "draftEmailTool");
@@ -924,7 +1086,8 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   );
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
-    ["addClientTool", "callListTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "runSweepTool", "setCareerStageTool"]
+    ["addClientTool", "callListTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "runSweepTool", "setCareerStageTool",
+      "setTargetRateTool", "targetRatesTool"]
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);

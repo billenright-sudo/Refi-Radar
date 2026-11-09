@@ -2443,3 +2443,99 @@ test("Task 7 fix (M1): clientInReach is the one reach check (routes/clients.js):
   assert.deepStrictEqual(clientInReach(db, broker, beaClient), { status: 403, error: "Access denied" });
   for (const id of [99999999, 0, -1, 1.5, "5"]) assert.deepStrictEqual(clientInReach(db, broker, id), { status: 404, error: "Client not found" });
 });
+
+// ── Task 4 (target-rate alerts): /confirm setTargetRate ──────────────────────
+
+const targetRow = (id) => db.prepare("SELECT target_rate, target_set_by FROM clients WHERE id = ?").get(id);
+
+test("Task 4: confirm setTargetRate sets the target and says so; a replay writes nothing; null takes it off", async () => {
+  const helen = addClientRow(orgF, fay, { name: "Helen Brandt", currentRate: 6.75 });
+  const sideEffect = { type: "setTargetRate", clientId: helen, targetRate: 6, confirmId: newId() };
+  const r = await confirmAs(fay, sideEffect);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.success, true);
+  assert.equal(r.data.reply, "Done — Helen Brandt's target rate is 6.000%.");
+  assert.equal(r.data.result.id, helen);
+  assert.equal(r.data.result.target.rate, 6, "the result is the client as the screens get it, target included");
+  assert.deepStrictEqual(targetRow(helen), { target_rate: 6, target_set_by: fay });
+  const kept = confirmation(sideEffect.confirmId);
+  assert.deepStrictEqual([kept.action_type, kept.target, JSON.parse(kept.result_json)],
+    ["setTargetRate", `${helen}:6.000`, { id: helen, name: "Helen Brandt", targetRate: 6 }]);
+
+  // a replay answers from the receipt and writes nothing, even after the target changed since
+  db.prepare("UPDATE clients SET target_rate = 5.5 WHERE id = ?").run(helen);
+  const again = await confirmAs(fay, sideEffect);
+  assert.deepStrictEqual([again.status, again.data.duplicate, again.data.reply], [200, true, r.data.reply]);
+  assert.equal(targetRow(helen).target_rate, 5.5);
+  // the same confirmId for another value is another action
+  assert.equal((await confirmAs(fay, { ...sideEffect, targetRate: 5.875 })).status, 409);
+  assert.equal(targetRow(helen).target_rate, 5.5);
+
+  const off = { type: "setTargetRate", clientId: helen, targetRate: null, confirmId: newId() };
+  const cleared = await confirmAs(fay, off);
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.data.reply, "Done — Helen Brandt's target rate is off.");
+  assert.equal(cleared.data.result.target, null);
+  assert.deepStrictEqual(targetRow(helen), { target_rate: null, target_set_by: null });
+  assert.equal(confirmation(off.confirmId).target, `${helen}:clear`);
+  const offAgain = await confirmAs(fay, off);
+  assert.deepStrictEqual([offAgain.status, offAgain.data.duplicate, offAgain.data.reply], [200, true, cleared.data.reply]);
+});
+
+test("Task 4: confirm setTargetRate refuses a missing or bad targetRate, a target not below the current rate and no confirmId (400, nothing written)", async () => {
+  const hal = addClientRow(orgF, fay, { name: "Hal Moreno", currentRate: 6.75 });
+  const refusals = [
+    [{ clientId: hal, confirmId: newId() }, "targetRate required"],
+    ...["6", "", true, [6], { rate: 6 }].map((targetRate) => [{ clientId: hal, targetRate, confirmId: newId() }, "a valid targetRate is required"]),
+    [{ clientId: hal, targetRate: 0.5, confirmId: newId() }, "A target rate is a number from 1.000 to 15.000."],
+    [{ clientId: hal, targetRate: 16, confirmId: newId() }, "A target rate is a number from 1.000 to 15.000."],
+    [{ clientId: hal, targetRate: 7, confirmId: newId() }, "A target has to be below Hal Moreno's current rate of 6.750%."],
+    [{ clientId: hal, targetRate: 6.75, confirmId: newId() }, "A target has to be below Hal Moreno's current rate of 6.750%."],
+    ...[0, -1, 1.5, String(hal), null].map((clientId) => [{ clientId, targetRate: 6, confirmId: newId() }, "a valid clientId is required"]),
+    [{ clientId: hal, targetRate: 6 }, "confirmId required"],
+    [{ clientId: hal, targetRate: 6, confirmId: "abc" }, "confirmId must be a UUID"],
+  ];
+  for (const [se, error] of refusals) {
+    const r = await confirmAs(fay, { type: "setTargetRate", ...se });
+    assert.equal(r.status, 400, JSON.stringify(se));
+    assert.deepStrictEqual(r.data, { success: false, error }, JSON.stringify(se));
+    if (typeof se.confirmId === "string") assert.equal(confirmation(se.confirmId), undefined, "a refusal records nothing");
+  }
+  assert.deepStrictEqual(targetRow(hal), { target_rate: null, target_set_by: null });
+  // a refused confirmId is still good for the corrected retry
+  const retry = refusals.find(([se]) => se.targetRate === 7)[0];
+  assert.equal((await confirmAs(fay, { type: "setTargetRate", ...retry, targetRate: 6 })).status, 200);
+  assert.equal(targetRow(hal).target_rate, 6);
+});
+
+test("Task 4: confirm setTargetRate reaches what the client routes reach: a broker the org, an LO their own; 403 / 404 otherwise", async () => {
+  const faysClient = addClientRow(orgF, fay, { name: "Fay Target", currentRate: 6.75 });
+  const leosClient = addClientRow(orgF, leo, { name: "Leo Target", currentRate: 6.75 });
+  for (const [userId, clientId, status] of [[leo, faysClient, 403], [fay, beaClient, 403], [bea, faysClient, 403], [fay, 99999999, 404]]) {
+    const r = await confirmAs(userId, { type: "setTargetRate", clientId, targetRate: 6, confirmId: newId() });
+    assert.equal(r.status, status, `user ${userId} -> client ${clientId}`);
+    assert.equal(r.data.success, false);
+    assert.equal("reply" in r.data, false);
+  }
+  assert.equal(targetRow(faysClient).target_rate, null);
+  assert.equal(targetRow(beaClient).target_rate, null);
+  assert.equal((await confirmAs(leo, { type: "setTargetRate", clientId: leosClient, targetRate: 6, confirmId: newId() })).status, 200);
+  assert.equal((await confirmAs(fay, { type: "setTargetRate", clientId: leosClient, targetRate: 5.5, confirmId: newId() })).status, 200);
+  assert.deepStrictEqual(targetRow(leosClient), { target_rate: 5.5, target_set_by: fay });
+});
+
+test("Task 4: /turn hands up setTargetRateTool's change with its read-back and card; confirming that sideEffect sets the target", async () => {
+  const hope = addClientRow(orgF, fay, { name: "Hope Lin", currentRate: 6.75 });
+  setClient(fakeClient([useTool("setTargetRateTool", { clientId: hope, targetRate: 6 })]));
+  const turn = await as(fay)("POST", "/api/assistant/turn", { messages: userMsgs("Hope Lin wants to refinance at 6 percent"), rates: LIVE });
+  assert.equal(turn.status, 200);
+  assert.equal(turn.data.reply, "Just to confirm — set Hope Lin's target rate to 6.000%?");
+  assert.deepStrictEqual(withoutConfirmId(turn.data.sideEffect), { type: "setTargetRate", clientId: hope, targetRate: 6 });
+  assert.match(turn.data.sideEffect.confirmId, UUID);
+  assert.deepStrictEqual(turn.data.details, [{ label: "Client", value: "Hope Lin" }, { label: "Target rate", value: "6.000%" }]);
+  assert.equal(targetRow(hope).target_rate, null, "the turn is read-only");
+  const ok = await confirmAs(fay, turn.data.sideEffect);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.reply, "Done — Hope Lin's target rate is 6.000%.");
+  assert.equal(targetRow(hope).target_rate, 6);
+});

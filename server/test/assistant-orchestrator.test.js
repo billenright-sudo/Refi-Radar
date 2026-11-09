@@ -464,6 +464,112 @@ test("Task 7: callListTool proposes tomorrow's list: its read-back and card rows
   assert.equal(r.sideEffect, undefined);
 });
 
+// ── Task 4 (target-rate alerts): setting, clearing and reading a target ──────
+
+// Org Targets: Helen Brandt, top tier (760, LTV 75, 30-year fixed) at 6.750, so her estimated rate on a FRED set is its top-tier rate.
+const orgH = addOrg("Targets");
+const brokerH = addUser(orgH, "broker", "broker@targets.co");
+const helenId = addClientRow(orgH, brokerH, {
+  name: "Helen Brandt", loanType: "30yr_fixed", currentRate: 6.75, loanBalance: 300000, propertyValue: 400000, creditScore: 760,
+});
+const helenCtx = { user: user(brokerH, "broker", orgH), rates: LIVE, db };
+const targetOf = (id) => db.prepare("SELECT target_rate FROM clients WHERE id = ?").get(id).target_rate;
+const CLEAR_HIT = "UPDATE clients SET target_rate = NULL, target_reached_on = NULL, target_reached_rate = NULL, target_reached_at = NULL, target_checked_on = NULL WHERE id = ?";
+
+test("Task 4: setTargetRateTool proposes a target: the read-back, the card rows, nothing written; and works on the last allowed call", async () => {
+  let r = await runTurn({
+    messages: userSays("Helen Brandt wants to refinance at 6 percent"), ctx: helenCtx,
+    client: fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: 6 })]),
+  });
+  assert.equal(r.reply, "Just to confirm — set Helen Brandt's target rate to 6.000%?");
+  assert.deepStrictEqual(r.sideEffect, { type: "setTargetRate", clientId: helenId, targetRate: 6 });
+  assert.deepStrictEqual(r.details, [{ label: "Client", value: "Helen Brandt" }, { label: "Target rate", value: "6.000%" }]);
+  assert.deepStrictEqual(r.sources, ["client record"]);
+  assert.equal(targetOf(helenId), null, "nothing is written before the yes");
+
+  r = await runTurn({
+    messages: userSays("set Helen's target to 5.875"), ctx: helenCtx,
+    client: fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: 5.875 })]),
+  });
+  assert.equal(r.reply, "Just to confirm — set Helen Brandt's target rate to 5.875%?");
+  assert.deepStrictEqual(r.details[1], { label: "Target rate", value: "5.875%" });
+
+  const client = fakeClient([
+    useTool("getMarketUpdate", {}, "toolu_1"), useTool("getMarketUpdate", {}, "toolu_2"),
+    useTool("getMarketUpdate", {}, "toolu_3"), useTool("setTargetRateTool", { clientId: helenId, targetRate: 6 }, "toolu_4"),
+  ]);
+  r = await runTurn({ messages: userSays("set Helen's target to 6"), ctx: helenCtx, client });
+  assert.equal(client.calls.length, 4);
+  assert.deepStrictEqual(r.sideEffect, { type: "setTargetRate", clientId: helenId, targetRate: 6 });
+  assert.equal(r.reply, "Just to confirm — set Helen Brandt's target rate to 6.000%?");
+});
+
+test("Task 4: taking a target off reads back as such, with None on the card; a refused target goes back to the model", async () => {
+  db.prepare("UPDATE clients SET target_rate = 6 WHERE id = ?").run(helenId);
+  try {
+    const r = await runTurn({
+      messages: userSays("take Helen's target off"), ctx: helenCtx,
+      client: fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: null })]),
+    });
+    assert.equal(r.reply, "Just to confirm — take Helen Brandt's target rate off?");
+    assert.deepStrictEqual(r.sideEffect, { type: "setTargetRate", clientId: helenId, targetRate: null });
+    assert.deepStrictEqual(r.details, [{ label: "Client", value: "Helen Brandt" }, { label: "Target rate", value: "None" }]);
+    assert.equal(targetOf(helenId), 6, "still there before the yes");
+  } finally {
+    db.prepare(CLEAR_HIT).run(helenId);
+  }
+  const client = fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: 7 }), say("What target below her current rate?")]);
+  const r = await runTurn({ messages: userSays("set Helen's target to 7"), ctx: helenCtx, client });
+  assert.equal(r.sideEffect, undefined);
+  assert.deepStrictEqual(toolResultPayload(client.calls[1]), {
+    source: "(invalid input)", data: { error: "A target has to be below Helen Brandt's current rate of 6.750%." },
+  });
+});
+
+test("Task 4: a target's figures from findClient or targetRatesTool ground the reply; one they didn't return is can't-verify", async () => {
+  const { recordSnapshot } = require("../lib/rateHistory");
+  db.prepare("UPDATE clients SET target_rate = 6 WHERE id = ?").run(helenId);
+  // a FRED observation at 5.875 reaches her 6.000 target
+  recordSnapshot({ ...RATES, rate_30yr_top_tier: 5.875, date: "2026-11-10", source: "Optimal Blue lock data (2026-11-10)" }, "2026-11-10", "fred");
+  try {
+    const said = "Helen Brandt's target is 6.000% and she's estimated at 5.875%.";
+    let client = fakeClient([useTool("findClient", { query: "helen" }), say(said)]);
+    let r = await runTurn({ messages: userSays("how close is Helen to her target?"), ctx: helenCtx, client });
+    assert.equal(r.reply, said);
+    assert.deepStrictEqual(r.sources, ["client record"]);
+    const match = toolResultPayload(client.calls[1]).data.matches[0];
+    assert.deepStrictEqual([match.target.state, match.target.rate, match.target.reachedRate], ["at_target", 6, 5.875], "the model is shown the target");
+
+    r = await runTurn({
+      messages: userSays("how close is Helen to her target?"), ctx: helenCtx,
+      client: fakeClient([useTool("findClient", { query: "helen" }), say("Helen Brandt's target is 6.000% and she's estimated at 5.750%.")]),
+    });
+    assert.equal(r.reply, CANT_VERIFY);
+
+    const atTarget = "Helen Brandt is at target, estimated 5.875% against a 6.000% target.";
+    client = fakeClient([useTool("targetRatesTool"), say(atTarget)]);
+    r = await runTurn({ messages: userSays("who's at their target?"), ctx: helenCtx, client });
+    assert.equal(r.reply, atTarget);
+    assert.deepStrictEqual(r.sources, ["client record"]);
+    assert.deepStrictEqual(toolResultPayload(client.calls[1]).data.clients.map((c) => [c.name, c.target.state]), [["Helen Brandt", "at_target"]]);
+  } finally {
+    db.prepare("DELETE FROM rate_snapshots").run();
+    db.prepare(CLEAR_HIT).run(helenId);
+  }
+});
+
+test("Task 4: CHARLI_SYSTEM names setTargetRateTool in both lists of the confirmation rule, and says how to set, clear and read a target", () => {
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const rule = paragraphs.find((p) => p.startsWith("Confirmation rule:"));
+  assert.ok(rule.includes("addClientTool, logContactTool, setCareerStageTool, createEventTool, callListTool and setTargetRateTool only prepare an action"));
+  assert.ok(rule.includes("if you are not calling addClientTool, logContactTool, createEventTool, callListTool, setTargetRateTool or draftEmailTool, reply with only ONE question"));
+  const TARGETS =
+    "Target rates: to set or clear a client's target rate, find the client, then call setTargetRateTool (null clears it). For who is " +
+    "at or near their target, call targetRatesTool; for one client's target, use findClient's target. Every estimated rate is an " +
+    "estimate: say \"estimated\" whenever you give one.";
+  assert.equal(paragraphs.filter((p) => p === TARGETS).length, 1, "a paragraph of its own, once");
+});
+
 test("Task 7 fix (Ruling R14): isSkip takes only an explicit skip; a bare no answers the follow-up question and is no skip", () => {
   for (const text of [
     "skip it", "Skip.", "skip", "Skip that one.", "not now", "Not now, thanks.", "Not right now", "never mind", "Nevermind.",
@@ -2448,7 +2554,7 @@ test("multi-turn: the caller's history is not mutated; block-array content count
 
 test("CHARLI_SYSTEM tells her to reply with ONE question, starting with the question word, when she is not calling a change tool", () => {
   assert.ok(CHARLI_SYSTEM.includes(
-    "On a request to change something, if you are not calling addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, " +
+    "On a request to change something, if you are not calling addClientTool, logContactTool, createEventTool, callListTool, setTargetRateTool or draftEmailTool, " +
     "reply with only ONE question that starts with the question word"
   ));
   assert.ok(CHARLI_SYSTEM.includes("'Which Chen — Robert and Linda, or Chen Wei?'"));
@@ -2951,8 +3057,9 @@ test("R7-a: CHARLI_SYSTEM tells her to call explainTerm for a term and never def
 });
 
 test("Fix round 1: CHARLI_SYSTEM's confirmation rule names setCareerStageTool alongside addClientTool and logContactTool", () => {
-  // Task 5: createEventTool joins the list of tools that only prepare an action (and the briefing's Task 7, callListTool)
-  assert.ok(CHARLI_SYSTEM.includes("addClientTool, logContactTool, setCareerStageTool, createEventTool and callListTool only prepare an action, and nothing is saved until the user confirms."));
+  // Task 5: createEventTool joins the list of tools that only prepare an action (and the briefing's Task 7, callListTool, and the
+  // target-rate alerts' Task 4, setTargetRateTool)
+  assert.ok(CHARLI_SYSTEM.includes("addClientTool, logContactTool, setCareerStageTool, createEventTool, callListTool and setTargetRateTool only prepare an action, and nothing is saved until the user confirms."));
   // the pinned sentences of the earlier rounds are untouched
   assert.ok(CHARLI_SYSTEM.includes("Never say an action is done, logged, added or saved"));
 });
@@ -4134,7 +4241,7 @@ test("Task 5: CHARLI_SYSTEM carries the Calendar and Email paragraphs, and creat
     "email yourself and you never send email: it opens in the user's own email for them to review and send. After a sweep or a calendar " +
     "read you may offer to book a follow-up or write a check-in; offering is fine, doing needs their request."
   ));
-  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool, setCareerStageTool, createEventTool and callListTool only prepare an action/);
+  assert.match(CHARLI_SYSTEM, /addClientTool, logContactTool, setCareerStageTool, createEventTool, callListTool and setTargetRateTool only prepare an action/);
   assert.ok(buildCharliSystem(null).startsWith(CHARLI_SYSTEM + "\n\n"));
 });
 
@@ -4150,7 +4257,7 @@ test("Task 7: CHARLI_SYSTEM says how to answer a follow-up question, right after
   assert.ok(at > 0, "it is a paragraph of its own");
   assert.ok(paragraphs[at - 1].startsWith("Email: to write to a client"), "right after the Email paragraph");
   const rule = paragraphs.find((p) => p.startsWith("Confirmation rule:"));
-  assert.ok(rule.includes("if you are not calling addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, reply with only ONE question"));
+  assert.ok(rule.includes("if you are not calling addClientTool, logContactTool, createEventTool, callListTool, setTargetRateTool or draftEmailTool, reply with only ONE question"));
 });
 
 // Live check 2026-10-28: "book a call with Dave" (Dave not in the book) got findClient -> no match -> "I don't see a Dave in your
@@ -4545,8 +4652,9 @@ test("Task 5 fix: a draft is honoured only on an action turn (a request, or a ye
 });
 
 test("Task 5 fix: CHARLI_SYSTEM's one-question rule names the calendar and email tools too", () => {
+  // (and the target-rate alerts' Task 4, setTargetRateTool)
   assert.ok(CHARLI_SYSTEM.includes(
-    "if you are not calling addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, reply with only ONE question that starts with the question word"
+    "if you are not calling addClientTool, logContactTool, createEventTool, callListTool, setTargetRateTool or draftEmailTool, reply with only ONE question that starts with the question word"
   ));
 });
 

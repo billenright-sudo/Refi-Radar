@@ -6,12 +6,13 @@
 //
 // Read tools query the CRM / the server sweep engine (lib/refi.js, the single math source). lookUpLive (a Promise) asks ctx.live,
 // lib/assistant/live.js, for one web search, after its screens have refused anything that must not leave the server.
-// Side-effect tools (addClientTool, logContactTool, callListTool, setCareerStageTool, createEventTool) only PACKAGE the intent in
-// `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
+// Side-effect tools (addClientTool, logContactTool, callListTool, setCareerStageTool, createEventTool, setTargetRateTool) only PACKAGE
+// the intent in `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
 // The two Google Calendar tools (getCalendarTool, createEventTool) return a Promise: a read goes out to Google.
 // draftEmailTool sets up a client email and returns it as compose links at the TOP level of the result (`compose`, next to
 // data and source): nothing is sent and no Google connection is involved; the broker sends it from their own mail app.
 const refi = require("../refi");
+const targets = require("../targets");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
@@ -96,13 +97,50 @@ function runSweepTool(_args, ctx) {
   return { data: result, source: "sweep engine" };
 }
 
+// The target check (lib/targets checkTargets) for the caller's org, against the latest FRED observation, on the tools' clock: run
+// before the client rows are read, so a target it reaches shows at once. -> the snapshot it used, or null when there is none.
+function checkedTargets(ctx) {
+  const { user, db } = ctx || {};
+  if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
+  return targets.checkTargets(db, user.org_id, clockOf(ctx));
+}
+
+// Each match carries `target`: its target view (lib/targets viewsFor), or null when it has no target.
 function findClient(args, ctx) {
   const query = String((args && args.query) == null ? "" : args.query).trim().toLowerCase();
   if (!query) return { data: { matches: [], error: "a client name to search for is required" }, source: "(invalid input)" };
-  const matches = scopedClients(ctx)
-    .filter((row) => String(row.name || "").toLowerCase().includes(query))
-    .map(toClient);
+  const snapshot = checkedTargets(ctx);
+  const rows = scopedClients(ctx).filter((row) => String(row.name || "").toLowerCase().includes(query));
+  const views = targets.viewsFor(ctx.db, rows, snapshot, ctx.user.id);
+  const matches = rows.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
   return { data: { matches }, source: "client record" };
+}
+
+// "Who's at their target?": the caller's clients with a target (a broker's whole org, a loan officer's own), each with its target
+// view; a teammate's client also names its owner. At target first (the earliest reached first), then watching by the gap (the
+// smallest first), then the rest (handled, already at or below, can't be priced, no live rates yet); ties by name. At most
+// MAX_TARGETS_SHOWN.
+const MAX_TARGETS_SHOWN = 15;
+const TARGET_STATE_ORDER = { at_target: 0, watching: 1 };
+function byTargetOrder(a, b) {
+  const rank = (c) => TARGET_STATE_ORDER[c.target.state] ?? 2;
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (a.target.state === "at_target" && a.target.reachedOn !== b.target.reachedOn) return a.target.reachedOn < b.target.reachedOn ? -1 : 1;
+  if (a.target.state === "watching" && a.target.gap !== b.target.gap) return a.target.gap - b.target.gap;
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+function targetRatesTool(_args, ctx) {
+  const snapshot = checkedTargets(ctx);
+  const rows = scopedClients(ctx).filter((row) => row.target_rate != null);
+  const views = targets.viewsFor(ctx.db, rows, snapshot, ctx.user.id);
+  const clients = rows
+    .map((row) => {
+      const target = views.get(row.id);
+      return target.ownerName ? { id: row.id, name: row.name, ownerName: target.ownerName, target } : { id: row.id, name: row.name, target };
+    })
+    .sort(byTargetOrder)
+    .slice(0, MAX_TARGETS_SHOWN);
+  return { data: { clients }, source: "client record" };
 }
 
 // What a term means, from the fixed glossary (lib/assistant/glossary.js): the model reads the definition as given
@@ -269,6 +307,29 @@ function callListTool(args, ctx) {
 
 // An id as the model may pass it: a positive integer, or a plain digit string (not "1e2", "0x10" or " 5 "). NaN otherwise.
 const idOf = (raw) => (typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN);
+
+// Package a client's target rate (`targetRate` a number), or taking it off (null), for the user to confirm. It does NOT write:
+// /api/assistant/confirm does, with setTargetForUser (routes/clients.js). Any client the caller can see, as for the REST route. The
+// value is checked here as that write checks it (lib/targets parseTarget: 1.000 to 15.000, kept to three decimals; and below the
+// client's current rate), so a bad one comes back to the model with the words to say why, before anyone is asked to confirm it.
+function setTargetRateTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const id = idOf(a.clientId);
+  if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
+  if (a.targetRate === undefined) return fail("(invalid input)", "a targetRate (or null to clear) is required");
+  const parsed = targets.parseTarget(a.targetRate);
+  if (parsed.error) return fail("(invalid input)", parsed.error);
+  const row = scopedClients(ctx).find((r) => r.id === id);
+  if (!row) return fail("(not found)", "no such client in your book");
+  const rate = parsed.rate;
+  if (rate != null && rate >= targets.round3(row.current_rate)) return fail("(invalid input)", targets.notBelowError(row.name, row.current_rate));
+  if (rate == null && row.target_rate == null) return fail("(invalid input)", "that client has no target rate to take off");
+  return {
+    data: { client: { id: row.id, name: row.name, currentRate: row.current_rate }, targetRate: rate },
+    source: "client record",
+    sideEffect: { type: "setTargetRate", clientId: row.id, targetRate: rate },
+  };
+}
 
 // Package a calendar booking for confirmation. It does NOT book anything: createEvent happens later, behind /api/assistant/confirm,
 // on the broker's own primary calendar with no attendees (nobody is invited or emailed). The date is resolved HERE from what the
@@ -723,7 +784,7 @@ async function lookUpLive(args, ctx) {
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
-    getCalendarTool, createEventTool, draftEmailTool, lookUpLive,
+    getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool,
   })
 );
 
@@ -756,7 +817,8 @@ const TOOL_SCHEMA = [
     description:
       "Look up the user's clients by name (case-insensitive, partial match) and return every match with " +
       "their loan details and last contact. If more than one comes back, ask which one is meant; if none, " +
-      "say so. Never guess. Use this first to get a client's id.",
+      "say so. Never guess. Use this first to get a client's id. Each match's `target` is their target rate and where it " +
+      "stands (null when they have none).",
     input_schema: {
       type: "object",
       properties: { query: { type: "string", description: "Part of the client's name, e.g. 'chen'." } },
@@ -832,6 +894,35 @@ const TOOL_SCHEMA = [
       properties: { clientId: { type: "integer", description: "The id of the client, from findClient." } },
       required: ["clientId"],
     },
+  },
+  {
+    name: "setTargetRateTool",
+    description:
+      "Prepare to set one client's target rate, the rate they want to refinance at (Broker Radar watches their estimated rate " +
+      "and flags them when it gets there), or to take it off with targetRate null. This does NOT save anything: the user must " +
+      "confirm first. Get the clientId from findClient; never guess it. Pass the rate in percent as the user said it (6 for 6 " +
+      "percent). A target is from 1 to 15 and below the client's current rate: if it comes back with an error, tell the user why " +
+      "in its words.",
+    input_schema: {
+      type: "object",
+      properties: {
+        clientId: { type: "integer", description: "The id of the client, from findClient." },
+        targetRate: {
+          anyOf: [{ type: "number" }, { type: "null" }],
+          description: "The target rate in percent, e.g. 6 or 5.875; null takes the client's target off.",
+        },
+      },
+      required: ["clientId", "targetRate"],
+    },
+  },
+  {
+    name: "targetRatesTool",
+    description:
+      "The user's clients who have a target rate, at most fifteen: who is at their target (first, the earliest reached first), " +
+      "then who is closest to it, each with the target, the estimated rate, how far above the target it is, and the date of the " +
+      "rates it used. Use it for 'who's at their target?' or 'who's close?'. For one client's target use findClient. Every rate " +
+      "here is an estimate: say \"estimated\" whenever you give one. Read-only.",
+    input_schema: NO_ARGS,
   },
   {
     name: "setCareerStageTool",
@@ -930,5 +1021,5 @@ const TOOL_SCHEMA = [
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
-  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes,
+  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool,
 };

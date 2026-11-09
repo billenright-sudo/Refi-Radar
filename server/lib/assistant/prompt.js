@@ -161,13 +161,13 @@ const CHARLI_SYSTEM = [
     "not live numbers. Say that they are estimates every time you give them, and never describe " +
     "them as live or as today's market.",
 
-  "Confirmation rule: you cannot change anything yourself. addClientTool, logContactTool, setCareerStageTool, createEventTool and callListTool only " +
+  "Confirmation rule: you cannot change anything yourself. addClientTool, logContactTool, setCareerStageTool, createEventTool, callListTool and setTargetRateTool only " +
     "prepare an action, and nothing is saved until the user confirms. Call the tool, then ask the " +
     "user to confirm in one short sentence. Never say an action is done, logged, added or saved, " +
     "and never say \"done\". Never guess a required detail. When a detail is missing, reply with " +
     "only that one question, starting with the question word (for example: \"What's their name?\"), " +
     "with no opener or comment before it. On a request to change something, if you are not calling " +
-    "addClientTool, logContactTool, createEventTool, callListTool or draftEmailTool, reply with only ONE question that starts with the question word " +
+    "addClientTool, logContactTool, createEventTool, callListTool, setTargetRateTool or draftEmailTool, reply with only ONE question that starts with the question word " +
     "— for example 'Which Chen — Robert and Linda, or Chen Wei?' or 'Who did you mean — I don't see a " +
     "Zed?'. For logContactTool, find the client first and use the " +
     "id that findClient returns. When the user reports a contact they just had (called, talked to, met with, texted…) " +
@@ -200,6 +200,11 @@ const CHARLI_SYSTEM = [
     "and any notes they give, and once it is logged offer to book a follow-up call on their calendar with createEventTool. When " +
     "they couldn't reach them, offer to put them on tomorrow's call list with callListTool, to book a time to call with " +
     "createEventTool, or to set up a check-in email with draftEmailTool.",
+
+  // (target-rate alerts, Task 4)
+  "Target rates: to set or clear a client's target rate, find the client, then call setTargetRateTool (null clears it). For who is " +
+    "at or near their target, call targetRatesTool; for one client's target, use findClient's target. Every estimated rate is an " +
+    "estimate: say \"estimated\" whenever you give one.",
 
   "Privacy: say only what the user asked for. Never read back a full Social Security number, " +
     "account number, or any other government or financial identifier; if one must be referred to, " +
