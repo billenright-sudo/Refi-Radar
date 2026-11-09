@@ -1,6 +1,6 @@
 # Target-rate alerts: "call me when rates hit 6%"
 
-Date: 2026-11-09. Owner: Bill. Status: DRAFT for Bill.
+Date: 2026-11-09. Owner: Bill. Status: DRAFT for Bill (builder check done; 6 questions settled as my calls).
 Repo: `C:\Users\bille\dev\refi-radar`. Branch `feature/target-rate-alerts` @ 0cfd1f4, off `feature/accurate-refi-scoring`, in the
 worktree `C:\Users\bille\dev\refi-radar-target-rate`.
 Builds on: `2026-10-30-charlie-morning-briefing-design.md` (the "briefing design") and the sweep engine (`server/lib/refi.js`,
@@ -83,9 +83,16 @@ builds on the targets this round stores.
 
 ### 4.2 What "at target" means
 
-- The figure compared is the client's **Est. Client Rate**, exactly as the client page shows it today (for an ARM, the
-  30-year fixed it would refinance into). Server and client must compute the same number; they already share the math.
+- The figure compared is the client's **Est. Client Rate**, computed as the client page computes it (`client/src/refiAnalysis.mjs`
+  `analyze`), but on the **latest real rate snapshot** (A1), not on whatever rates the page happens to be showing. For an ARM
+  that is the 30-year fixed it would refinance into, as on the client page. Note: the server's `refi.analyze` prices an ARM at
+  the ARM rate today, so the server must run the 30-year-fixed analysis for ARM clients to match the page. A snapshot without
+  `rate_30yr_top_tier` is priced the way the page prices a rate set without it (the market-plus-adjustment path), so the same
+  inputs always give the same number.
 - **At target** = Est. Client Rate ≤ target rate, on a day of real rates (A1).
+- **The date of a check** is the rates' **FRED observation date** (`rates.date`, the "as of" date the briefing already
+  names), not the day the snapshot was captured. FRED repeats an observation over weekends and holidays; a repeated
+  observation is not a new check and can neither reach nor re-arm a target (my call).
 - A client whose current rate has dropped to or below their target (they refinanced, or the LOS feed corrected the rate)
   is never "at target". Their target stays, and the client page says "Their rate is already at or below this target." (my call).
 - A client the sweep can't price (missing balance or value) shows "Can't estimate a rate for this client yet" and is never
@@ -95,10 +102,13 @@ builds on the targets this round stores.
 
 Each target is in one of three states:
 1. **Watching.** Not reached since it was set or re-armed.
-2. **At target.** Reached. Broker Radar records the date of the rates that reached it and the estimated rate that day. The
-   first briefing after that date announces it.
-3. **Handled.** The broker logged a contact with the client (one-tap contacted, a logged call, or Charlie's logContact) on or
-   after the reach date. The client leaves the call list but the page still says when the target was reached.
+2. **At target.** Reached. Broker Radar records the observation date of the rates that reached it, the estimated rate that
+   day, and the moment it recorded the hit (UTC). The owner's first briefing after that announces it (4.5).
+3. **Handled.** The broker **reached** the client after the hit was recorded: a contact logged as reached (one-tap
+   "contacted", a logged call marked reached, or Charlie's logContact with outcome reached) at or after the recorded moment.
+   A not-reached attempt (voicemail, no answer) does not handle it: the promised conversation hasn't happened yet, and the
+   briefing's existing follow-ups already ask about unanswered calls (my call). The client leaves the call list but the page
+   still says when the target was reached.
 
 **Re-arming** (my call): a target that is At target or Handled goes back to Watching when the client's estimated rate rises
 to **0.125 or more above the target** on a real day, or when the target is changed. So a 6.000 target reached at 5.990 and
@@ -107,26 +117,39 @@ then 6.010 the next day is still the same hit (A2); it takes a move to 6.125 to 
 ### 4.4 When it's checked
 
 There is no scheduler today. Rates come from FRED when the app asks for them (`POST /api/rates`), and each real day is stored
-as a rate snapshot. So targets are checked whenever Broker Radar holds a real snapshot newer than the last check: when the
-briefing is built, when the sweep runs, and when the client list or client page loads (my call). The state change is
-recorded against the **snapshot's date**, not the time someone opened the app, so a broker who opens the app at noon gets the
-same answer as one who opened it at 7 a.m. A day nobody opens the app is checked the next time someone does, against the
-newest snapshot (days in between are not replayed).
+as a rate snapshot. So targets are checked whenever Broker Radar holds a real snapshot whose **observation date** is newer
+than the last check: when the briefing is built, when the sweep runs, and when the client list or client page loads (my call).
+The state change is recorded against that observation date, not the time someone opened the app, so a broker who opens the
+app at noon gets the same answer as one who opened it at 7 a.m. A day nobody opens the app is checked the next time someone
+does, against the newest snapshot (days in between are not replayed).
 
 ### 4.5 Where the broker sees it
 
 - **Morning briefing.** Clients newly At target go to the top of the call list, after the clients the broker carried from
   yesterday, ahead of the sweep's picks. The reason line is code-written with digits, like the others: "Helen Brandt is at her
   target: estimated 5.875% against her 6.000%." They count toward the list's limit of three; if more than three are newly at
-  target, the rest are "Plus N more clients at their target." An At target client stays on later briefings' lists until
-  Handled, ranked like a sweep pick (my call), but the "is at her target" wording is used only the first time.
+  target, the rest are "Plus N more clients at their target."
+  - **At target overrides the sweep's own bar** (my call). A client at target is listed even when the sweep wouldn't pick
+    them (a drop under 0.5, a break-even over 36 months): they asked for the call at that rate, so the broker makes it. Their
+    reason line uses the target figures, never sweep figures.
+  - **Announced once, per client** (my call). The announcement belongs to the client's owner (the loan officer, or the broker
+    for the broker's own clients), whose briefing is the only one that lists the client. It is "announced" on the local date
+    of the owner's first briefing built after the hit; every briefing that owner opens that same day uses the same wording
+    (a rebuild doesn't drop it), and later days don't.
+  - **After the announcement**, an At target client who isn't Handled follows the call list's existing rules like any pick:
+    the same recent-recommendation exclusion (no re-listing for 3 days), the same follow-up questions. When listed again it
+    ranks right after the newly announced ones, with "Helen Brandt is still at her target of 6.000% (since November 10th)."
 - **Team line (brokers).** The count-only line about loan officers' open opportunities adds ", and N of their clients are at
   target" when N > 0.
 - **Client list.** An "At target" badge on the client's row, in the list's existing badge style.
-- **Client page.** Under the target field, one status line: "Watching: estimated 6.250%, 0.250 above target", "Target reached
-  November 12th (estimated 5.875%)", or "Target reached November 12th · contacted November 13th".
-- **Rate Watch.** A "Closest to target" list under the rates: up to 5 of the caller's clients with a target, At target ones
-  first, then the smallest gap. Each row: name, target, est. rate, gap.
+- **Client page.** Under the target field, one status line: "Watching: estimated 6.250% as of November 10th, 0.250 above
+  target", "Target reached November 12th (estimated 5.875%)", or "Target reached November 12th · reached November 13th".
+  These figures come from the same real snapshot the check used, so the line can never contradict the state. On a day the
+  page shows web-searched rates, its Est. Client Rate tile may differ; the target line's "as of" date says which rates it
+  used (my call).
+- **Rate Watch.** A "Closest to target" list under the rates: up to 5 clients with a target, At target ones first, then the
+  smallest gap. Each row: name, target, est. rate, gap, from the same real snapshot. Its scope is the client list's (a broker
+  sees the whole company's, with the loan officer's name on their clients' rows; a loan officer sees their own) (my call).
 
 ### 4.6 Teams
 
@@ -139,9 +162,11 @@ officers' clients at target show up only as the team-line count (G5).
 - **`clients`**, new columns (idempotent migrations, like the others in `db.js`; existing clients get no target):
   - `target_rate` REAL, NULL = no target;
   - `target_set_by`, `target_set_at`;
-  - `target_reached_on` (the snapshot date, YYYY-MM-DD) and `target_reached_rate` (the est. rate that day), NULL while Watching;
-  - whatever the builder needs to know a hit was announced and to apply the re-arm rule.
-- **Handled** is derived, not stored: a contact logged on or after `target_reached_on`.
+  - `target_reached_on` (the FRED observation date, YYYY-MM-DD), `target_reached_rate` (the est. rate that day) and
+    `target_reached_at` (the UTC moment the hit was recorded), NULL while Watching;
+  - `target_announced_on` (the owner's local date of the announcing briefing), NULL until announced;
+  - whatever else the builder needs to apply the re-arm rule (the last observation date checked).
+- **Handled** is derived, not stored: a contact in `contact_log` with outcome `reached` at or after `target_reached_at`.
 - An **import or the LOS feed never touches** these columns (they're not on the import whitelist, and a matched loan's update
   leaves them alone). A loan update that lowers `current_rate` to or below the target follows 4.2.
 - **Charlie** gains the set/clear-target action (confirmed like logContact) and the target figures in its client lookups.
@@ -170,6 +195,11 @@ they can announce; that needs the scheduler and push keys the briefing design li
 6. **A loan officer's client reaches target:** the LO's briefing announces it; the broker's team line counts it; the broker
    can open the client and see it.
 7. **Four clients reach target the same morning:** three on the list, "Plus 1 more client at their target."
+8. **The broker leaves a voicemail:** the client is not Handled; the follow-up asks about the call as it does today.
+9. **A weekend:** Saturday's and Sunday's snapshots repeat Friday's observation; nothing is reached, re-armed or announced
+   twice because of it.
+10. **A client at target the sweep wouldn't pick** (current 6.250, target 6.100, drop under 0.5): still listed, with the
+    target wording.
 
 ## 9. Left to the builder
 
