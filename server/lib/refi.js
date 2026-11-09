@@ -220,7 +220,7 @@ function runSweep(clients, rates, now = new Date()) {
 
 module.exports = {
   CASH_OUT_FLOOR, CHECK_IN_MONTHS,
-  calcPayment, llpaPrice, estClosingCosts, analyze,
+  norm, calcPayment, llpaPrice, estClosingCosts, analyze,
   rateTerm, cashOut, armToFixed, termSwap, checkInStatus,
   sweepClient, runSweep,
   PRIORITY_RANK, impact,

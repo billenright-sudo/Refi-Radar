@@ -96,6 +96,15 @@ if (!clientCols.some((c) => c.name === "edited_by_hand")) {
 if (!clientCols.some((c) => c.name === "do_not_email")) {
   db.exec("ALTER TABLE clients ADD COLUMN do_not_email INTEGER NOT NULL DEFAULT 0");
 }
+// Target rate (target-rate alerts): the rate the broker wants a client to reach, who set it and when, the first FRED
+// observation that reached it (day, estimated rate, instant), the day a briefing announced it, and the last observation day
+// checked. All nullable; set only by hand, never by import (lib/targets.js).
+for (const col of [
+  "target_rate REAL", "target_set_by INTEGER", "target_set_at TEXT", "target_reached_on TEXT",
+  "target_reached_rate REAL", "target_reached_at TEXT", "target_announced_on TEXT", "target_checked_on TEXT",
+]) {
+  if (!clientCols.some((c) => c.name === col.split(" ")[0])) db.exec(`ALTER TABLE clients ADD COLUMN ${col}`);
+}
 // Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
 db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
 

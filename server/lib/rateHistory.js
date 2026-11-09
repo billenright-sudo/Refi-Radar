@@ -123,4 +123,4 @@ function getMovement(rates, provider) {
   return { current: rates, previous, deltas, hasHistory: true, since: sinceLabel(latest.date, nowDate), sinceDate: latest.date };
 }
 
-module.exports = { recordSnapshot, getMovement, providerOf, sinceLabel, ordinal, MONTHS, WEEKDAYS };
+module.exports = { recordSnapshot, getMovement, providerOf, observationDate, sinceLabel, ordinal, MONTHS, WEEKDAYS };
