@@ -95,6 +95,7 @@ export function ConnectionsCard({ ui, isBroker }) {
     const res = await disconnectLos(fetch);
     if (res.ok) {
       setFresh(null);
+      if (conn.los) setChoice(conn.los);
       setConn((shown) => ({ ...shown, connected: false, createdAt: null, lastUsedAt: null }));
       setNote({ text: copy.disconnected });
     } else {

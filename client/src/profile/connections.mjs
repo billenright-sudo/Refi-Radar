@@ -62,7 +62,7 @@ const BY_LOS = {
 // -> { label, connect, connected, disconnectConfirm, disconnected, steps, fields, sameLoan, routing } for `los` ("arive" | "lendingpad";
 // anything else is ARIVE's). `isBroker` picks the routing line.
 export function connectionCopy(los, { isBroker } = {}) {
-  const copy = Object.hasOwn(BY_LOS, los) ? BY_LOS[los] : BY_LOS.arive;
+  const copy = Object.prototype.hasOwnProperty.call(BY_LOS, los) ? BY_LOS[los] : BY_LOS.arive;
   return {
     label: copy.label,
     connect: `Connect ${copy.label}`,
