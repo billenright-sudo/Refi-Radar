@@ -251,14 +251,30 @@ const COACHING_OBJECT =
   "|rough|first|catchy|friendly|casual|fresh|few|couple|of))*\\s+(?:(?:talk\\s+tracks?|scripts?|openers?|opening\\s+lines?|pitch(?:es)?" +
   "|intros?|voicemail\\s+scripts?)(?![\\w'\\u2019-])(?!\\s+to\\s+(?:the\\s+(?!point\\b)[\\w'\\u2019-]+|them|him|her)(?![\\w'\\u2019-]))" +
   "|(?:what|how)\\s+to\\s+say(?![\\w'\\u2019-]))(?!\\s+(?:e-?mails?|notes?|letters?|messages?|texts?)\\b))";
+// Target-rate alerts (Task 4 fix round 1): changing a client's target rate is a change like the rest, asked for in words of its own
+// ("set" is an action verb already): taking a target off ("take Helen's target off", "take off her target rate"), and clear / remove /
+// delete / drop / cancel / change / lower / raise / adjust / reset with "target" at most four words after it ("clear Helen's target",
+// "can you remove her target?", "would you mind lowering her target"), so "take a look", "clear my afternoon" and "change of plans"
+// are no change. They join ACTION_VERBS, and so open a request at the start of a clause or after a request lead, and an offer to act
+// (OFFER_TO_ACT_RE: "Want me to take her target off?"). A client's wish, said as news, is a request for a target too
+// (WANTS_REFI_AT_RE, below, counted like a contact report: only in a message that asks nothing): "Helen Brandt wants to refinance at
+// 6 percent" (the spec's own example), "she'd like to refi at six".
+const TARGET_NOUN = "targets?(?![\\w'\\u2019-])";
+const TARGET_GAP = "(?:\\s+[\\w&'\\u2019.-]+){0,4}?\\s+";
+const targetChange = (take, verbs) =>
+  "(?:" + take + TARGET_GAP + TARGET_NOUN + "(?:\\s+rates?)?\\s+off\\b|" + take + "\\s+off" + TARGET_GAP + TARGET_NOUN +
+  "|(?:" + verbs + ")" + TARGET_GAP + TARGET_NOUN + ")";
+const TARGET_CHANGE = targetChange("take", "clear|remove|delete|drop|cancel|change|lower|raise|adjust|reset");
+const TARGET_CHANGE_ING =
+  targetChange("taking", "clearing|removing|deleting|dropping|cancell?ing|changing|lowering|raising|adjusting|resetting");
 const ACTION_VERBS =
   "log|add|mark|record|note|update(?!\\s+(?:me|us|on)\\b)|set|book|schedule|save|create|enter|put(?!\\s+together\\b)" +
   "|draft" + COACHING_OBJECT + "|write(?!\\s+(?:me|us|down)\\b)" + COACHING_OBJECT +
-  "|email(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|send(?!\\s+(?:me|us)\\b)";
+  "|email(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|send(?!\\s+(?:me|us)\\b)|" + TARGET_CHANGE;
 const ACTION_VERBS_ING =
   "logging|adding|marking|recording|noting|updating(?!\\s+(?:me|us|on)\\b)|setting|booking|scheduling|saving|creating|entering|putting(?!\\s+together\\b)" +
   "|drafting" + COACHING_OBJECT + "|writing(?!\\s+(?:me|us|down)\\b)" + COACHING_OBJECT +
-  "|emailing(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|sending(?!\\s+(?:me|us)\\b)";
+  "|emailing(?!\\s+(?:address(?:es)?|me|us|on\\s+file)\\b)|sending(?!\\s+(?:me|us)\\b)|" + TARGET_CHANGE_ING;
 const REQUEST_FILLER =
   "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember(?=\\s+to\\b)|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
@@ -285,13 +301,20 @@ const reportOnly = (text) => {
   const t = text.replace(AUDIO_TAG_RE, " ");
   return !t.includes("?") && !t.split(USER_CLAUSE_BREAK_RE).some((clause) => ASKING_START_RE.test(afterFiller(clause)));
 };
+// (Task 4 fix round 1) a client who wants to refinance at a rate, in digits or in words up to fifteen: a target to set
+const WANTS_REFI_AT_RE = new RegExp(
+  "\\b(?:wants?|wanted|would\\s+like|['\\u2019]d\\s+like|hopes?|hoping)\\s+to\\s+(?:refinance|refi)\\s+at\\s+(?:about\\s+|around\\s+)?" +
+    "(?:\\d|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen)(?![\\w'\\u2019-]))",
+  "i"
+);
 const STATE_QUESTION_LEAD_RE = /^(?:when|what|which|who|how|did|has|have|had|was|were)\b/i;
 const isActionRequest = (text) => {
   const t = String(text == null ? "" : text);
   const reports = reportOnly(t);
   return t.split(USER_CLAUSE_BREAK_RE).some((clause) => {
     const c = afterFiller(clause);
-    return !STATE_QUESTION_LEAD_RE.test(c) && (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c) || (reports && CONTACT_REPORT_RE.test(c)));
+    return !STATE_QUESTION_LEAD_RE.test(c) &&
+      (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c) || (reports && (CONTACT_REPORT_RE.test(c) || WANTS_REFI_AT_RE.test(c))));
   });
 };
 
@@ -588,6 +611,56 @@ const callListClaim = (s) =>
   [...s.matchAll(LIST_PLACED_ALL_RE)].some((m) => !(/\?\s*$/.test(s) && INVERTED_MODAL_BEFORE_RE.test(s.slice(0, m.index)))) ||
   (!NEGATIVE_START_RE.test(s) && ON_CALL_LIST_RE.test(s));
 
+// Task 4 fix round 1: a client's target rate changes only behind /confirm (setTargetRateTool packages it; the Done line is code's,
+// routes/assistant.js confirmReply), so a reply that says a target was set, changed or taken off is false on every turn, like the
+// call list's. A claim: the first person with a change verb and the target at most four words after it ("I've set Helen Brandt's
+// target rate.", "I cleared her target.", "We've lowered Helen's target to 5.5%."), or taking it off ("I took her target off.", "I've
+// taken off Helen's target."); a target said to have changed, with now / just / already ("Helen's target is now 6.000%.", "Her target
+// was just removed.", "Her target is now set to 6%."), in the perfect ("Her target has been set to 6%.", "Her target's been
+// cleared."), or as gone ("Helen Brandt's target rate is off.", "Her target is cleared.", "Her target is gone."); and the shortened
+// passive opening a clause ("Target set for Helen Brandt.", "Helen's target cleared."). No claim: a read of what findClient or
+// targetRatesTool returned ("Helen's target is 6.000%.", "Her target is set at 6.000%.": the bare "is set" is the stored state; "Her
+// target was set on November 1st.", the date it was set, the simple past being PASSIVE_PAST_RE's on an ungrounded turn; "She's
+// estimated at 5.875%, 0.125 below her target."); an offer or a question ("Should I take her target off?", "Want me to clear her
+// target?", the first person after an inverted modal as in callListClaim); the first person with a modal, 'd or "if" ("I can take
+// her target off.", "I'd set it at 6.125.", "If I set her target to 6, ..."); and a negative ("No target is set for Helen.", "Her
+// target hasn't been changed.").
+const TARGET_CHANGED = "set|changed|updated|lowered|raised|moved|adjusted|reset|cleared|removed|deleted|dropped|cancell?ed";
+const TARGET_GONE = "taken\\s+off|turned\\s+off|off|gone";
+const FIRST_PERSON_TARGET_ALL_RE = new RegExp(
+  "(?<!\\bif\\s)\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*\\s+" +
+    "(?:(?:" + TARGET_CHANGED + ")" + TARGET_GAP + TARGET_NOUN +
+    "|(?:took|taken|turned)" + TARGET_GAP + TARGET_NOUN + "(?:\\s+rates?)?\\s+off\\b|(?:took|taken|turned)\\s+off" + TARGET_GAP + TARGET_NOUN + ")",
+  "gi"
+);
+// (the target as a subject: "target's" here is "target is", so the 's may follow)
+const TARGET_CHANGED_RE = new RegExp(
+  "\\btargets?(?![\\w-])(?:\\s+rates?(?![\\w-]))?(?:" +
+    // "now" and a rate: "is now 6.000%", "is now at 6%"
+    "(?:\\s+(?:is|are)|['\\u2019]s)\\s+now\\s+(?:at\\s+)?\\d" +
+    // with now / just / already: "was just removed", "is now set to 6%", "'s already off"
+    "|(?:\\s+(?:is|are|was|were|has\\s+been|have\\s+been)|['\\u2019]s(?:\\s+been)?)\\s+(?:(?:now|just|already)\\s+)+(?:been\\s+)?" +
+      "(?:" + TARGET_CHANGED + "|" + TARGET_GONE + ")\\b" +
+    // the perfect: "has been set to 6%", "'s been cleared"
+    "|(?:\\s+(?:has|have)|['\\u2019]s)\\s+been\\s+(?:" + TARGET_CHANGED + "|taken\\s+off|turned\\s+off)\\b" +
+    // gone: "is off", "is cleared", "are removed" (never the bare "is set": the stored state)
+    "|(?:\\s+(?:is|are)|['\\u2019]s)\\s+(?:(?!set\\b)(?:" + TARGET_CHANGED + ")|" + TARGET_GONE + ")\\b" +
+  ")",
+  "i"
+);
+const SHORT_TARGET_CHANGED_RE = new RegExp(
+  "^(?!(?:no|not|nothing|none|never|any)\\b)(?:[\\w&'\\u2019-]+\\s+){0,4}?" + TARGET_NOUN + "(?:\\s+rates?)?\\s+(?:" + TARGET_CHANGED +
+    "|taken\\s+off|turned\\s+off)\\b",
+  "i"
+);
+const targetClaim = (s) =>
+  [...s.matchAll(FIRST_PERSON_TARGET_ALL_RE)].some((m) => !(/\?\s*$/.test(s) && INVERTED_MODAL_BEFORE_RE.test(s.slice(0, m.index)))) ||
+  (!NEGATIVE_START_RE.test(s) && TARGET_CHANGED_RE.test(s)) ||
+  s.split(SHORT_CLAUSE_SPLIT_RE).some((piece) => {
+    const c = stripOpener(piece.trim().replace(SHORT_LEADING_CONJ_RE, "")).trim();
+    return !/\?\s*$/.test(c) && SHORT_TARGET_CHANGED_RE.test(c);
+  });
+
 // `grounded` = a cited tool result backs this turn; `storedStage` = the user's stored stage id (null / omitted = not set);
 // `sweep` = the sweep engine is among the cited sources (count narration is exempt on that turn only); `plainReads` = null, or, on a
 // turn that cited a calendar read and is neither an action turn nor a reply to an offer, { events } (the events the read returned,
@@ -603,7 +676,7 @@ function claimsCompletion(text, grounded, storedStage, sweep, plainReads) {
       ? markTitles(part, groups).split(NOW_CLAUSE_SPLIT_RE).filter((c) => CALENDAR_NOW_FORM_RE.test(c))
       : [];
     const released = nowClauses.length > 0 && nowClauses.every((c) => NAMES_TITLE_RE.test(c));
-    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, released) || callListClaim(s) ||
+    return COMPLETION_OPENER_RE.test(s) || calendarClaim(s, released) || callListClaim(s) || targetClaim(s) ||
       FIRST_PERSON_CLAIM_RE.test(s) || IN_PROGRESS_RE.test(s) ||
       PASSIVE_RE.test(s) || PASSIVE_JUST_RE.test(s) || GOT_IT_DONE_RE.test(s) || DONE_RE.test(s) ||
       falseSetClaim(s, storedStage) || YOURE_SET_RE.test(s) ||
@@ -2503,8 +2576,11 @@ const googleCodeOf = (ctx) => {
 };
 
 // The line code speaks when a tool this turn came back with a `data.code` that has one (null otherwise): Google not connected,
-// expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool). Only the
-// non-citing error results carry these codes. The first such result, in the order the tools ran, decides.
+// expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool), and a target
+// setTargetRateTool refused (target_refused: out of range, or not below the client's current rate), said in the tool's own copy
+// (lib/targets): told by the model, a statement on a change request would be held by the action backstop, and the range's figures
+// are in no cited result. Only the non-citing error results carry these codes. The first such result, in the order the tools ran,
+// decides.
 // Ruling 55: a calendar READ the user did not ask for does not decide the turn. When getCalendarTool came back with a Google code
 // beside a tool that is no calendar tool, and the user's message is not about the calendar or availability (`aboutCalendar`), its
 // result is handed back to the model like any other ("who should I call today?" with the sweep and a read in parallel, Google not
@@ -2526,6 +2602,7 @@ function codeAuthoredLine(outs, blocks, aboutCalendar) {
     if (code === "nmls_missing") return NMLS_NEEDED;
     if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
     if (code === "do_not_email") return doNotEmailLine(cleanName(o.data.client) || "That client");
+    if (code === "target_refused" && blocks[i].name === "setTargetRateTool" && typeof o.data.error === "string") return o.data.error;
   }
   return null;
 }

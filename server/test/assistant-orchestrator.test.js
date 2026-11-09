@@ -504,7 +504,7 @@ test("Task 4: setTargetRateTool proposes a target: the read-back, the card rows,
   assert.equal(r.reply, "Just to confirm — set Helen Brandt's target rate to 6.000%?");
 });
 
-test("Task 4: taking a target off reads back as such, with None on the card; a refused target goes back to the model", async () => {
+test("Task 4: taking a target off reads back as such, with None on the card; a refused target is said by code", async () => {
   db.prepare("UPDATE clients SET target_rate = 6 WHERE id = ?").run(helenId);
   try {
     const r = await runTurn({
@@ -518,12 +518,130 @@ test("Task 4: taking a target off reads back as such, with None on the card; a r
   } finally {
     db.prepare(CLEAR_HIT).run(helenId);
   }
-  const client = fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: 7 }), say("What target below her current rate?")]);
+  // FIX ROUND 1 FLIP (was: the refusal went back to the model): the turn ends with the refusal's own copy, and no model call follows
+  const client = fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: 7 })]);
   const r = await runTurn({ messages: userSays("set Helen's target to 7"), ctx: helenCtx, client });
   assert.equal(r.sideEffect, undefined);
-  assert.deepStrictEqual(toolResultPayload(client.calls[1]), {
-    source: "(invalid input)", data: { error: "A target has to be below Helen Brandt's current rate of 6.750%." },
-  });
+  assert.equal(r.reply, "A target has to be below Helen Brandt's current rate of 6.750%.");
+  assert.equal(client.calls.length, 1);
+});
+
+// ── Task 4 fix round 1: why a target is refused is said by code; target changes are change requests, and never claimed ──
+
+const NOT_BELOW_HELEN = "A target has to be below Helen Brandt's current rate of 6.750%.";
+const TARGET_RANGE = "A target rate is a number from 1.000 to 15.000.";
+// findClient ran in an earlier turn: this turn calls setTargetRateTool straight away
+const afterLookup = (text) => [
+  { role: "user", content: "pull up Helen Brandt" },
+  { role: "assistant", content: "Helen Brandt is on a 30-year fixed at 6.75 percent." },
+  { role: "user", content: text },
+];
+
+test("Task 4 fix round 1: the broker hears exactly why a target is refused, on a change request and on the spec's phrasing, this turn's lookup or an earlier one's", async () => {
+  for (const [messages, targetRate, line, lookupNow] of [
+    [userSays("set Helen's target to 7"), 7, NOT_BELOW_HELEN, true],
+    [userSays("set Helen's target to 16"), 16, TARGET_RANGE, true],
+    [userSays("Helen Brandt wants to refinance at 7 percent"), 7, NOT_BELOW_HELEN, true],
+    [userSays("Helen Brandt wants to refinance at 16 percent"), 16, TARGET_RANGE, true],
+    [afterLookup("set her target to 7"), 7, NOT_BELOW_HELEN, false],
+    [afterLookup("set her target to 16"), 16, TARGET_RANGE, false],
+    [afterLookup("Helen Brandt wants to refinance at 7 percent"), 7, NOT_BELOW_HELEN, false],
+    [afterLookup("Helen Brandt wants to refinance at 16 percent"), 16, TARGET_RANGE, false],
+  ]) {
+    const script = [
+      ...(lookupNow ? [useTool("findClient", { query: "helen" }, "toolu_f")] : []),
+      useTool("setTargetRateTool", { clientId: helenId, targetRate }, "toolu_s"),
+    ];
+    const client = fakeClient(script);
+    const r = await runTurn({ messages, ctx: helenCtx, client });
+    const label = `${messages[messages.length - 1].content} (lookup ${lookupNow ? "this turn" : "earlier"})`;
+    assert.equal(r.reply, line, label);
+    assert.equal(r.sideEffect, undefined, label);
+    assert.deepStrictEqual(r.sources, [], label);
+    assert.equal(client.calls.length, script.length, `${label}: the model is not asked to put it into words`);
+  }
+  // on the last allowed model call too
+  const last = fakeClient([
+    useTool("getMarketUpdate", {}, "toolu_1"), useTool("getMarketUpdate", {}, "toolu_2"),
+    useTool("getMarketUpdate", {}, "toolu_3"), useTool("setTargetRateTool", { clientId: helenId, targetRate: 16 }, "toolu_4"),
+  ]);
+  assert.equal((await runTurn({ messages: userSays("set Helen's target to 16"), ctx: helenCtx, client: last })).reply, TARGET_RANGE);
+  assert.equal(targetOf(helenId), null, "nothing written");
+
+  // every other refusal still goes back to the model to handle (here: nothing to take off)
+  const client = fakeClient([useTool("setTargetRateTool", { clientId: helenId, targetRate: null }), say("Which client did you mean?")]);
+  const r = await runTurn({ messages: userSays("take Helen's target off"), ctx: helenCtx, client });
+  assert.equal(r.reply, "Which client did you mean?");
+  assert.equal(toolResultPayload(client.calls[1]).data.error, "that client has no target rate to take off");
+});
+
+test("Task 4 fix round 1: taking off, clearing, removing or changing a target, and a client who wants to refinance at a rate, are change requests", () => {
+  for (const text of [
+    "take Helen's target off", "Take off Helen Brandt's target rate.", "clear Helen's target", "remove Helen's target",
+    "can you remove her target?", "please delete Helen's target rate", "would you mind clearing her target", "lower Helen's target to 5.5",
+    "change Helen's target to 5.875", "Charlie, drop the target for Helen", "set Helen's target to 6",
+    "Helen Brandt wants to refinance at 6 percent", "She'd like to refi at six.", "Helen wants to refinance at about 5.875",
+  ]) assert.equal(isActionRequest(text), true, text);
+  for (const text of [
+    "what's Helen's target?", "how close is Helen to her target?", "who's at their target?", "did you clear Helen's target?",
+    "should I lower her target?", "Helen wants to refinance at 6 percent, what would she save?", "Helen wants to refinance someday",
+    "take a look at Helen", "clear my afternoon", "change of plans, who should I call?",
+  ]) assert.equal(isActionRequest(text), false, text);
+});
+
+test("Task 4 fix round 1: a target set, cleared, changed or taken off is a completion claim; a read of the stored target is not", () => {
+  for (const text of [
+    "I've taken Helen Brandt's target off.", "I took her target off.", "I've taken off Helen's target.", "I've cleared Helen Brandt's target.",
+    "I removed her target rate.", "I've set Helen Brandt's target rate.", "I just set her target to 6%.", "We've lowered Helen's target to 5.5%.",
+    "Helen Brandt's target rate is off.", "Her target is now off.", "Helen's target is now 6.000%.", "Her target is now set to 6%.",
+    "Her target was just removed.", "Helen's target has been set to 6%.", "Her target's been cleared.", "Her target is cleared.",
+    "Her target is gone.", "Target set for Helen Brandt.", "Got it, Helen's target cleared.",
+  ]) assert.equal(claimsCompletion(text, true), true, text);
+  for (const text of [
+    "Helen's target is 6.000%.", "Helen Brandt's target is 6.000% and she's estimated at 5.875%.",
+    "She's estimated at 5.875%, 0.125 below her target.", "Her target is set at 6.000%.", "Her target was set on November 1st.",
+    "Helen is at target, estimated 5.875% against a 6.000% target.", "Should I take Helen's target off?", "Want me to clear her target?",
+    "I can take her target off if you'd like.", "If I set her target to 6, she'll show up when rates get there.", "I'd set it at 6.125.",
+    "No target is set for Helen.", "Her target hasn't been changed.", "Helen Brandt doesn't have a target rate.", "Her target isn't off.",
+    "I took a look at Helen's target: it's 6.000%.",
+  ]) assert.equal(claimsCompletion(text, true), false, text);
+});
+
+test("Task 4 fix round 1: with the client looked up, a claimed target change is the nothing-changed line; true reads of the target are said", async () => {
+  const { recordSnapshot } = require("../lib/rateHistory");
+  // the reviewer's probe: the lookup cited, then a false claim, on each way of asking
+  for (const [user, said] of [
+    ["take Helen's target off", "I've taken Helen Brandt's target off."],
+    ["take Helen's target off", "Helen Brandt's target rate is off."],
+    ["Helen Brandt wants to refinance at 6 percent", "I've set Helen Brandt's target rate."],
+    ["clear Helen's target", "I've cleared Helen Brandt's target."],
+    ["remove Helen's target", "Helen Brandt's target is removed."],
+    // and on a turn that asked for no change: the claim screen, not the action backstop, holds it
+    ["how's Helen doing?", "Helen Brandt's target rate is off."],
+    ["how's Helen doing?", "I've set Helen Brandt's target rate."],
+  ]) {
+    const r = await runTurn({ messages: userSays(user), ctx: helenCtx, client: fakeClient([useTool("findClient", { query: "helen" }), say(said)]) });
+    assert.equal(r.reply, NOTHING_CHANGED, `${user} -> ${said}`);
+    assert.equal(r.sideEffect, undefined);
+  }
+  assert.equal(targetOf(helenId), null, "nothing written");
+
+  // watching: a FRED observation puts her estimate at 6.125, 0.125 above her 6.000 target
+  db.prepare("UPDATE clients SET target_rate = 6 WHERE id = ?").run(helenId);
+  recordSnapshot({ ...RATES, rate_30yr_top_tier: 6.125, date: "2026-11-10", source: "Optimal Blue lock data (2026-11-10)" }, "2026-11-10", "fred");
+  try {
+    for (const said of [
+      "Helen Brandt's target is 6.000%, and she's estimated at 6.125%, 0.125 above it.",
+      "Her target is set at 6.000%; she's estimated at 6.125%.",
+    ]) {
+      const r = await runTurn({ messages: userSays("how close is Helen to her target?"), ctx: helenCtx, client: fakeClient([useTool("findClient", { query: "helen" }), say(said)]) });
+      assert.equal(r.reply, said);
+      assert.deepStrictEqual(r.sources, ["client record"]);
+    }
+  } finally {
+    db.prepare("DELETE FROM rate_snapshots").run();
+    db.prepare(CLEAR_HIT).run(helenId);
+  }
 });
 
 test("Task 4: a target's figures from findClient or targetRatesTool ground the reply; one they didn't return is can't-verify", async () => {

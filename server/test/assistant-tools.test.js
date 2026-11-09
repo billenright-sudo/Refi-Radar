@@ -947,12 +947,14 @@ test("Task 4: setTargetRateTool packages a target (or taking it off) for a clien
 
 test("Task 4: setTargetRateTool refuses a bad value with the copy to say, and a target that isn't below the current rate", () => {
   const refused = (error) => ({ data: { error }, source: "(invalid input)" });
+  // fix round 1: the range and not-below refusals carry target_refused, so the turn ends with their copy in code's words
+  const targetRefused = (error) => ({ data: { error, code: "target_refused" }, source: "(invalid input)" });
   for (const targetRate of [7, 6.75, 6.7504]) {
     assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate }, brokerHCtx),
-      refused("A target has to be below Helen Brandt's current rate of 6.750%."), String(targetRate));
+      targetRefused("A target has to be below Helen Brandt's current rate of 6.750%."), String(targetRate));
   }
   for (const targetRate of [0.5, 15.5, -6, "abc", "6%", " 6", true, [6], { rate: 6 }]) {
-    assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate }, brokerHCtx), refused(RANGE_COPY), JSON.stringify(targetRate));
+    assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate }, brokerHCtx), targetRefused(RANGE_COPY), JSON.stringify(targetRate));
   }
   assert.deepStrictEqual(setTargetRateTool({ clientId: helenH }, brokerHCtx), refused("a targetRate (or null to clear) is required"));
   assert.deepStrictEqual(setTargetRateTool({ clientId: helenH, targetRate: null }, brokerHCtx), refused("that client has no target rate to take off"));
@@ -1054,6 +1056,7 @@ test("Task 4: TOOL_SCHEMA: setTargetRateTool takes a clientId and a targetRate (
   assert.deepStrictEqual(set.input_schema.properties.targetRate.anyOf, [{ type: "number" }, { type: "null" }]);
   assert.match(set.input_schema.properties.targetRate.description, /null/);
   assert.match(set.description, /does NOT save anything/);
+  assert.match(set.description, /the app tells the user why in its own words, so you don't restate it/, "fix round 1: code says why");
   const list = TOOL_SCHEMA.find((t) => t.name === "targetRatesTool");
   assert.deepStrictEqual(list.input_schema, { type: "object", properties: {}, required: [] });
   assert.match(list.description, /estimated/);

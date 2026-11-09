@@ -311,18 +311,20 @@ const idOf = (raw) => (typeof raw === "number" ? raw : typeof raw === "string" &
 // Package a client's target rate (`targetRate` a number), or taking it off (null), for the user to confirm. It does NOT write:
 // /api/assistant/confirm does, with setTargetForUser (routes/clients.js). Any client the caller can see, as for the REST route. The
 // value is checked here as that write checks it (lib/targets parseTarget: 1.000 to 15.000, kept to three decimals; and below the
-// client's current rate), so a bad one comes back to the model with the words to say why, before anyone is asked to confirm it.
+// client's current rate), before anyone is asked to confirm it. Those two refusals carry `code: "target_refused"`: the turn then
+// ends with their copy, said by code (orchestrator codeAuthoredLine), never put into the model's words.
+const targetRefused = (error) => ({ data: { error, code: "target_refused" }, source: "(invalid input)" });
 function setTargetRateTool(args, ctx) {
   const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
   const id = idOf(a.clientId);
   if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
   if (a.targetRate === undefined) return fail("(invalid input)", "a targetRate (or null to clear) is required");
   const parsed = targets.parseTarget(a.targetRate);
-  if (parsed.error) return fail("(invalid input)", parsed.error);
+  if (parsed.error) return targetRefused(parsed.error);
   const row = scopedClients(ctx).find((r) => r.id === id);
   if (!row) return fail("(not found)", "no such client in your book");
   const rate = parsed.rate;
-  if (rate != null && rate >= targets.round3(row.current_rate)) return fail("(invalid input)", targets.notBelowError(row.name, row.current_rate));
+  if (rate != null && rate >= targets.round3(row.current_rate)) return targetRefused(targets.notBelowError(row.name, row.current_rate));
   if (rate == null && row.target_rate == null) return fail("(invalid input)", "that client has no target rate to take off");
   return {
     data: { client: { id: row.id, name: row.name, currentRate: row.current_rate }, targetRate: rate },
@@ -901,8 +903,8 @@ const TOOL_SCHEMA = [
       "Prepare to set one client's target rate, the rate they want to refinance at (Broker Radar watches their estimated rate " +
       "and flags them when it gets there), or to take it off with targetRate null. This does NOT save anything: the user must " +
       "confirm first. Get the clientId from findClient; never guess it. Pass the rate in percent as the user said it (6 for 6 " +
-      "percent). A target is from 1 to 15 and below the client's current rate: if it comes back with an error, tell the user why " +
-      "in its words.",
+      "percent). A target has to be from 1 to 15 and below the client's current rate; one that isn't is refused, and the app " +
+      "tells the user why in its own words, so you don't restate it.",
     input_schema: {
       type: "object",
       properties: {
