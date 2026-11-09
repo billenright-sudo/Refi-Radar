@@ -1,20 +1,24 @@
 "use strict";
 // Charlie's morning call list: who to put in front of the broker, and the one-line reason for each.
 //
-// Pure: it takes a runSweep result (lib/refi.js) and returns the picks. The reasons are code-authored from sweep fields only,
-// so every figure is grounded by construction. The briefing reads them aloud, so figures are digits, never words, and a
-// reason has no contact details and no question mark (the briefing's one question is its own).
+// Pure: it takes a runSweep result (lib/refi.js) and returns the picks. The reasons are code-authored from sweep fields only
+// (a target's, from the client record, is the caller's), so every figure is grounded by construction. The briefing reads them
+// aloud, so figures are digits, never words, and a reason has no contact details and no question mark (the briefing's one
+// question is its own).
 //
 // Order (spec 5.2):
 //   1. carried clients (the broker asked for them on "tomorrow's list"), in the order they were carried;
-//   2. the sweep's ranking, alternating a refi-savings client (rate_term, arm_to_fixed) with a cash-out client. The engine ranks
+//   2. clients at their target rate (target-rate alerts spec 4.5): the caller's `targets` ([{ clientId, name, reason, reasonCode }],
+//      reasonCode "target" or "target_still"), in the order given, each once and never one already carried;
+//   3. the sweep's ranking, alternating a refi-savings client (rate_term, arm_to_fixed) with a cash-out client. The engine ranks
 //      a cash-out dollar figure against a monthly saving, so cash-out would otherwise always win. The kind whose best client
 //      ranks higher overall goes first, and when one kind runs out the other fills the list;
-//   3. term_swap clients, which have an opportunity but belong to neither kind;
-//   4. check-ins with no opportunity, the longest overdue first.
+//   4. term_swap clients, which have an opportunity but belong to neither kind;
+//   5. check-ins with no opportunity, the longest overdue first.
 //
 // Scope and exclusions are the caller's: only ownClientIds can appear (none when it is missing), and excludeIds never do,
-// carried or not. A carried client is exempt from the recent-recommendation exclusion because the caller takes carried ids out
+// carried or not, except a target: the caller has already applied the exclusions that hold for one, so excludeIds does not
+// filter `targets`. A carried client is exempt from the recent-recommendation exclusion because the caller takes carried ids out
 // of excludeIds before calling.
 //
 // The broker explicitly asked for a carried client, so it is never dropped for lack of something to say: with a name in
@@ -113,7 +117,7 @@ function reasonFor(c, carried) {
 // Cross-client rank, the way orchestrator.js trimSweep orders opportunities: priority, then impact, both descending.
 const byRank = (a, b) => (PRIORITY_RANK[b.best.priority] || 0) - (PRIORITY_RANK[a.best.priority] || 0) || impact(b.best) - impact(a.best);
 
-function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames, limit = DEFAULT_LIMIT } = {}) {
+function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames, targets, limit = DEFAULT_LIMIT } = {}) {
   const max = Math.max(0, Math.floor(limit) || 0);
   const own = idSet(ownClientIds);
   const excluded = idSet(excludeIds);
@@ -156,6 +160,15 @@ function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames
     if (c) take(c, "carry", true);
   }
 
+  // 2. At their target, in the order given.
+  for (const t of Array.isArray(targets) ? targets : []) {
+    const key = String(t.clientId);
+    if (picked.length >= max) break;
+    if (used.has(key) || !own.has(key)) continue;
+    used.add(key);
+    picked.push({ clientId: t.clientId, name: t.name, reasonCode: t.reasonCode, reason: t.reason });
+  }
+
   const pool = [];
   for (const [key, row] of rows) {
     if (used.has(key) || !eligible(key)) continue;
@@ -163,7 +176,7 @@ function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames
     if (c) pool.push(c);
   }
 
-  // 2. Alternate the two kinds. Array.sort is stable, so equal rank keeps the sweep's name order.
+  // 3. Alternate the two kinds. Array.sort is stable, so equal rank keeps the sweep's name order.
   const ranked = pool.filter((c) => c.phrase).sort(byRank);
   const queues = [[], [], []];
   for (const c of ranked) queues[kindOf(c.best)].push(c);
@@ -175,10 +188,10 @@ function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames
     turn = turn === KIND_SAVINGS ? KIND_CASH : KIND_SAVINGS;
   }
 
-  // 3. Opportunities that are neither kind.
+  // 4. Opportunities that are neither kind.
   for (const c of queues[KIND_OTHER]) take(c, c.best.lens);
 
-  // 4. Check-ins with no opportunity, longest overdue first.
+  // 5. Check-ins with no opportunity, longest overdue first.
   const checkIns = pool.filter((c) => !c.phrase).sort((a, b) => b.monthsSince - a.monthsSince);
   for (const c of checkIns) take(c, "check_in");
 

@@ -439,6 +439,32 @@ test("name-only carried clients take their place in the carried order and count 
   assert.deepStrictEqual(idsOf(list), [4, 2, 1]);
 });
 
+// ── clients at their target rate ─────────────────────────────────────────────
+
+test("targets go after carried and before the sweep, and skip ids already used", () => {
+  const sweep = sweepOf([
+    row(1, "Carla Carried", rateTerm("low", 90)),
+    row(2, "Alan Cash", cashOut("high", 210000)),
+    row(3, "Tia Target", rateTerm("high", 620)),
+    row(4, "Di Rate", rateTerm("medium", 310)),
+  ]);
+  const target = (clientId, name, reasonCode = "target") => ({ clientId, name, reasonCode, reason: `${name} is at target` });
+  const targets = [
+    target(1, "Carla Carried"),               // already taken as carried
+    target(3, "Tia Target"),
+    target(5, "Sam Still", "target_still"),   // no sweep row, and in excludeIds: the caller applied the exclusions already
+    target(3, "Tia Target"),                  // listed once
+    target(9, "Not Mine"),                    // not the broker's own
+  ];
+  const args = { sweep, ownClientIds: [1, 2, 3, 4, 5], carriedIds: [1], excludeIds: [5], targets, limit: 10 };
+  const list = pickCallList(args);
+  assert.deepStrictEqual(list.map((c) => [c.clientId, c.reasonCode]),
+    [[1, "carry"], [3, "target"], [5, "target_still"], [2, "cash_out"], [4, "rate_term"]]);
+  assert.deepStrictEqual(list[1], { clientId: 3, name: "Tia Target", reasonCode: "target", reason: "Tia Target is at target" });
+  assert.deepStrictEqual(idsOf(pickCallList({ ...args, limit: 2 })), [1, 3], "targets count against the limit");
+  assert.deepStrictEqual(idsOf(pickCallList({ ...args, targets: undefined })), [1, 2, 3, 4], "no targets: as before");
+});
+
 // ── what the check-in is counted from (R8) ───────────────────────────────────
 
 const DUE_BY = (basis, monthsSince) => ({ due: true, monthsSince, basis });

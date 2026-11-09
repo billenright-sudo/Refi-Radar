@@ -10,9 +10,17 @@
 //      then one clause each for a 15-year, FHA or jumbo move of 0.05 or more. A 30-year drop of DROP_THRESHOLD or more leads
 //      with "Rates dropped:" in the first briefing after that observation only. An estimated set says so and claims no move;
 //   3. the call list (callList.js) over the user's OWN clients, less the ones its follow-ups ask about, recorded
-//      as today's 'briefing' recommendations (a carried client it lists is no longer carried), and "Plus N more check-ins due." for
-//      the due clients it could have listed but did not;
-//   4. a broker's one count-only team line: their loan officers' open opportunities;
+//      as today's 'briefing' recommendations (a carried client it lists is no longer carried), then "Plus N more clients at their
+//      target." for the newly-at-target clients it had no room for, and "Plus N more check-ins due." for the due clients it could
+//      have listed but did not. Clients at their target rate (target-rate alerts spec 4.5, read after targets.checkTargets has run
+//      on the latest FRED observation) come right after the carried ones: first the newly reached, "<name> is at target,
+//      estimated 5.875% against a 6.000% target", whatever the sweep or the 7- and 3-day exclusions say, and only a client the
+//      follow-ups ask about waits. The first briefing that lists one announces it (target_announced_on = today, in the same
+//      transaction as the list) and a rebuild that day says the same; from the next day one not yet handled is "<name> is still
+//      at a 6.000% target, since November 10th" and follows the list's exclusions like any pick. A carried client is listed
+//      as carried, and is not announced by it;
+//   4. a broker's one count-only team line: their loan officers' open opportunities, and how many of their clients are at
+//      target (said alone when there are no opportunities or no rates);
 //   5. today's calendar: the count and the first one or two events still ahead;
 //   6. open follow-ups (followups.js), at most two clients and none that today's list carries (unless a call booked with them
 //      today has ended), after the calendar's calls have been matched (calendarFollowUps.js);
@@ -23,9 +31,10 @@
 // (no "@", no "?", no run of seven or more digits however punctuated, at most 80 characters). A title that fails is "an event";
 // a client whose name fails is left off the list and never asked about.
 //
-// Every section is computed on its own and a section that fails (no rates, no Google, an empty book, a sweep that throws) is
-// left out silently: the briefing still renders and still ends in its one question. A localDate or localHour the browser got
-// wrong is replaced by the UTC date or hour of nowMs, so no section is lost to it. Figures are digits from tool data; there
+// Every section is computed on its own and a section that fails (no rates, no Google, an empty book, a sweep that throws, a
+// target check that throws: no target lines) is left out silently: the briefing still renders and still ends in its one
+// question. A localDate or localHour the browser got wrong is replaced by the UTC date or hour of nowMs, so no section is lost
+// to it. Figures are digits from tool data; there
 // are no figure words and no "?" before the last sentence.
 //
 // Google is only ever called one request at a time (a token refresh is single-flight per user in lib/google/oauth.js; this keeps
@@ -34,6 +43,7 @@
 // left to finish on its own (the follow-ups' upsert simply lands for the next open), and nothing else is started beside it; a
 // read is never started once the wait is used up.
 const refi = require("../refi");   // called as refi.runSweep(): tests can swap it
+const targets = require("../targets");   // called as targets.checkTargets(): tests can swap it
 const assistantTools = require("./tools");   // called as assistantTools.x(): tests can swap a tool
 const followups = require("./followups");
 const { pickCallList } = require("./callList");
@@ -54,6 +64,7 @@ const MAX_FOLLOW_UPS = 2;
 const REACHED_WINDOW_MS = 7 * 86_400_000;   // a client reached in the last 7 days is left off the list
 const RECENT_DAYS = 3;                      // and one recommended in the last 3 days whose item is open or not reached
 const MAX_SPOKEN = 80;                      // a name or title longer than this is not read out
+const TARGET_SOURCE = "client record";      // what a target line is cited as: the hit stored on the client
 
 const CLOSE_QUESTION = "Want a full sweep, an update on a client, or should I get those calls on your calendar?";
 const CLOSE_NO_CALLS = "Want a full sweep, or an update on a client?";
@@ -161,17 +172,40 @@ function sweepOf(rows, rates, nowMs) {
   return { result, source };
 }
 
-// A broker's team line: their loan officers' clients (the org's, not their own) with an opportunity, as a count only. A count from
-// an estimated rate set says so, as the call list does.
-function teamSection({ user, ctx, db, nowMs }) {
-  if (user.role !== "broker" || !hasRates(ctx.rates)) return null;
+// The `rows` at their target and not yet handled (lib/targets.js views, on the snapshot the briefing's check returned; a stored hit
+// is at target with no snapshot too). None when the check failed (`targetCheck` null) or the views cannot be read.
+function atTargetRows(db, rows, targetCheck, viewerId) {
+  if (!targetCheck) return [];
+  try {
+    const views = targets.viewsFor(db, rows, targetCheck.snapshot, viewerId);
+    return rows.filter((r) => views.has(r.id) && views.get(r.id).state === "at_target");
+  } catch (err) { skip("targets", err); return []; }
+}
+
+// A broker's team line: their loan officers' clients (the org's, not their own) with an opportunity, as a count only, and how many
+// of those clients are at their target (with no rates too: the hit is stored). A count from an estimated rate set says so, as the
+// call list does. -> { line, source, atTarget } or null.
+function teamSection({ user, ctx, db, nowMs, targetCheck }) {
+  if (user.role !== "broker") return null;
   const rows = db.prepare("SELECT * FROM clients WHERE org_id = ? AND user_id != ? ORDER BY name ASC").all(user.org_id, user.id);
   if (rows.length === 0) return null;
-  const { result, source } = sweepOf(rows, ctx.rates, nowMs);
-  const n = result && result.counts && result.counts.withOpportunity;
-  if (!Number.isInteger(n) || n <= 0) return null;
+  let n = 0;
+  let source = null;
+  if (hasRates(ctx.rates)) {
+    const swept = sweepOf(rows, ctx.rates, nowMs);
+    const count = swept.result && swept.result.counts && swept.result.counts.withOpportunity;
+    if (Number.isInteger(count) && count > 0) {
+      n = count;
+      source = swept.source;
+    }
+  }
+  const k = atTargetRows(db, rows, targetCheck, user.id).length;
+  if (n === 0 && k === 0) return null;
+  const atTarget = k === 1 ? "is at target" : "are at target";
+  if (n === 0) return { line: `${k} of your loan officers' clients ${atTarget}.`, source: TARGET_SOURCE, atTarget: k };
   const estimated = isEstimated(ctx.rates) ? ", on estimated rates" : "";
-  return { line: `Your loan officers have ${plural(n, "opportunity", "opportunities")} open${estimated}.`, source };
+  const clause = k > 0 ? `, and ${k} of their clients ${atTarget}` : "";
+  return { line: `Your loan officers have ${plural(n, "opportunity", "opportunities")} open${estimated}${clause}.`, source, atTarget: k };
 }
 
 // What a calendar title is read as: the title when speakable() passes it, else "an event".
@@ -206,8 +240,31 @@ function carriesOn(db, userId, localDate) {
   return { carried, earlier, carriedToday };
 }
 
-// -> { picks, line, moreLine }. Only `speakableRows` (the user's own clients whose names may be read) can be listed.
-function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, estimated, followUpClientIds }) {
+// The user's own clients at their target as call-list targets (callList.js), each list in the order the hits were recorded, then
+// by name (the rows' own order: Array.sort is stable). `newly`: not announced before today, so a rebuild today reads the same
+// words; listed whatever the 7- and 3-day exclusions say, but never while the follow-ups ask about the client. `still`: announced
+// on an earlier day and not handled, left off by `excludeIds` like any pick. The figures are the ones stored with the hit (a hit
+// without them is not spoken).
+function targetPicks({ db, userId, localDate, speakableRows, targetCheck, excludeIds, followUpClientIds }) {
+  const hitAt = (r) => String(r.target_reached_at ?? "");
+  const rows = atTargetRows(db, speakableRows, targetCheck, userId)
+    .filter((r) => Number.isFinite(r.target_reached_rate) && realDay(r.target_reached_on))
+    .sort((a, b) => (hitAt(a) < hitAt(b) ? -1 : hitAt(a) > hitAt(b) ? 1 : 0));
+  const pick = (r, reasonCode, says) => {
+    const name = speakable(r.name);
+    return { clientId: r.id, name, reasonCode, reason: `${name} ${says}` };
+  };
+  const target = (r) => Number(r.target_rate).toFixed(3);
+  const newly = rows.filter((r) => (r.target_announced_on == null || r.target_announced_on === localDate) && !followUpClientIds.has(r.id))
+    .map((r) => pick(r, "target", `is at target, estimated ${r.target_reached_rate.toFixed(3)}% against a ${target(r)}% target`));
+  const still = rows.filter((r) => r.target_announced_on != null && r.target_announced_on < localDate && !excludeIds.has(r.id))
+    .map((r) => pick(r, "target_still", `is still at a ${target(r)}% target, since ${spokenDate(r.target_reached_on, localDate)}`));
+  return { newly, still };
+}
+
+// -> { picks, line, targetLine, moreLine, consumed, announced, targetSaid }. Only `speakableRows` (the user's own clients whose
+// names may be read) can be listed.
+function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, estimated, followUpClientIds, targetCheck }) {
   const { carried, earlier, carriedToday } = carriesOn(db, userId, localDate);
   // "A logged contact in the last 7 days" (spec 5.2): a reached call in contact_log, or a last_contact the client record has from
   // then until now (the Sweeps page's Log contact writes it as SQLite UTC text, an import or a close date as YYYY-MM-DD; both
@@ -229,12 +286,14 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   const excludeIds = new Set([...reached, ...[...recent].filter((id) => !listedToday.has(id)), ...followUpClientIds]);
   for (const id of [...carried, ...carriedToday]) if (!followUpClientIds.has(id)) excludeIds.delete(id);
 
+  const { newly, still } = targetPicks({ db, userId, localDate, speakableRows, targetCheck, excludeIds, followUpClientIds });
   const picks = pickCallList({
     sweep,
     ownClientIds: speakableRows.map((r) => r.id),
     carriedIds: [...new Set([...carriedToday, ...carried])],
     excludeIds,
     clientNames: new Map(speakableRows.map((r) => [r.id, r.name])),   // Ruling R7: a carried client with no sweep row is still named
+    targets: [...newly, ...still],
     limit: CALL_LIST_LIMIT,
   });
 
@@ -245,9 +304,13 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
     line = `Today's call${picks.length === 1 ? "" : "s"}${estimated ? ", on estimated rates" : ""}: ${list}.`;
   }
 
+  // The newly-at-target clients the list had no room for (one listed as carried is listed).
+  const picked = new Set(picks.map((p) => p.clientId));
+  const unlisted = newly.filter((t) => !picked.has(t.clientId)).length;
+  const targetLine = unlisted > 0 ? `Plus ${plural(unlisted, "more client", "more clients")} at their target.` : null;
+
   // The due check-ins the list could have named and did not: own and speakable, not left off, not listed, not asked about.
   const listable = new Set(speakableRows.map((r) => r.id));
-  const picked = new Set(picks.map((p) => p.clientId));
   const more = new Set(((sweep && sweep.checkIns) || []).map((r) => r.clientId)
     .filter((id) => listable.has(id) && !excludeIds.has(id) && !picked.has(id) && !followUpClientIds.has(id))).size;
   let moreLine = null;
@@ -256,7 +319,17 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   // carried clients this list has taken: consumed (only the carries that put them on today's list, not one asked for today)
   const carriedSet = new Set(carried);
   const consumed = picks.filter((p) => p.reasonCode === "carry" && carriedSet.has(p.clientId)).map((p) => p.clientId);
-  return { picks, line, moreLine, consumed };
+  // the newly-at-target clients this list announces, and whether it says anything of a target at all
+  const announced = picks.filter((p) => p.reasonCode === "target").map((p) => p.clientId);
+  const targetSaid = Boolean(targetLine) || picks.some((p) => p.reasonCode === "target" || p.reasonCode === "target_still");
+  return { picks, line, targetLine, moreLine, consumed, announced, targetSaid };
+}
+
+// The clients a list has just announced as newly at target: announced today, once (a rebuild today leaves the date as it is).
+// Not an edit of the client, so updated_at is left alone.
+function announceTargets(db, clientIds, localDate) {
+  const mark = db.prepare("UPDATE clients SET target_announced_on = ? WHERE id = ? AND target_announced_on IS NULL");
+  for (const id of clientIds) mark.run(localDate, id);
 }
 
 // Open follow-ups as at most MAX_FOLLOW_UPS clients: { shown: [{ ...first row, name }], rowIds }. A client can have more than
@@ -311,6 +384,11 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
     if (market) Object.assign(strip, market.strip);
   } catch (err) { skip("market", err); }
 
+  // the org's targets, checked on the latest FRED observation before any book is read, so the rows carry its hits. A check that
+  // throws leaves every target line out (targetCheck stays null) and nothing else changes.
+  let targetCheck = null;
+  try { targetCheck = { snapshot: targets.checkTargets(db, user.org_id, nowMs) }; } catch (err) { skip("targets", err); }
+
   // the user's OWN book and its sweep (for a broker too: the call list is never the team's)
   let ownRows = [];
   let sweep = null;
@@ -328,7 +406,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
 
   // 4. the team line
   let team = null;
-  try { team = teamSection({ user, ctx, db, nowMs }); } catch (err) { skip("team", err); }
+  try { team = teamSection({ user, ctx, db, nowMs, targetCheck }); } catch (err) { skip("team", err); }
 
   // 5. today's calendar, then 6. the calendar's calls matched to follow-ups: one Google call at a time, within the wait
   let calendar = null;
@@ -373,6 +451,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
       speakableRows: ownRows.filter((r) => speakable(r.name)),
       estimated: hasRates(rates) && isEstimated(rates),
       followUpClientIds: new Set(shown.map((f) => f.clientId)),
+      targetCheck,
     });
   } catch (err) { skip("call list", err); }
   if (calls && calls.picks.length) {
@@ -381,6 +460,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
         followups.recordRecommendations(db, userId, today,
           calls.picks.map((p) => ({ clientId: p.clientId, source: "briefing", reasonCode: p.reasonCode })));
         if (calls.consumed.length) followups.consumeCarries(db, userId, calls.consumed, nowUtc, today);
+        if (calls.announced.length) announceTargets(db, calls.announced, today);
       })();
     } catch (err) { skip("recording the call list", err); }
   }
@@ -392,6 +472,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   // sources, in reply order
   if (market) cite(market.source);
   if ((calls && calls.picks.length) || strip.opportunities !== null) cite(sweepSource);
+  if ((calls && calls.targetSaid) || (team && team.atTarget > 0)) cite(TARGET_SOURCE);
   if (team) cite(team.source);
   if (calendar) cite(calendar.source);
 
@@ -405,6 +486,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
     openerFor({ localHour: hour, localDate: today, name }),
     market && market.line,
     calls && calls.line,
+    calls && calls.targetLine,
     calls && calls.moreLine,
     team && team.line,
     calendar && calendar.line,
