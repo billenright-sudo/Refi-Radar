@@ -688,6 +688,60 @@ test("Task 4: CHARLI_SYSTEM names setTargetRateTool in both lists of the confirm
   assert.equal(paragraphs.filter((p) => p === TARGETS).length, 1, "a paragraph of its own, once");
 });
 
+// ── Task 4 fix round 2: the target claim screen lets true target reads through ──
+
+const TRUE_TARGET_READS = {
+  // Helen has no target; findClient cited
+  none: [
+    "She doesn't have a target set.", "She doesn't have a target set — want me to set one?", "There's no target set for Helen Brandt.",
+    "She has no target set.",
+  ],
+  // Helen's target is 6.000; findClient cited (the targetRatesTool reads are run with it below)
+  set: ["Helen Brandt has a target set at 6.000%."],
+  list: ["One client has a target set: Helen Brandt, at 6.000%.", "Three clients have targets set; Helen Brandt is at hers.", "Only two clients have targets set."],
+  // watching, 0.125 above her 6.000 target; findClient cited
+  watching: [
+    "With her target set at 6.000%, she's 0.125 away.", "The gap to her target is now 0.125.", "Her target is now 0.125 away.",
+    "Her target is off by 0.125.", "Once we set a target, Broker Radar flags her when her estimate gets there.",
+    "When I set a target for a client, you'll see them on the target list.", "A reached target is reset once her estimate climbs 0.125 above it.",
+  ],
+};
+
+test("Task 4 fix round 2: what a client has, a watching gap and how a target works are no claim; the false claims still are", () => {
+  for (const text of Object.values(TRUE_TARGET_READS).flat()) assert.equal(claimsCompletion(text, true), false, text);
+  for (const text of [
+    "I've taken Helen Brandt's target off.", "Helen Brandt's target rate is off.", "I've cleared Helen Brandt's target.",
+    "I've set Helen Brandt's target rate.", "Helen Brandt's target is removed.", "Target set.", "Target set for Helen Brandt.",
+    "Helen's target set for 6%.", "Helen's target is now 6.000%.", "Her target is now at 10.5%.", "Her target is off.",
+    "Helen's target cleared.", "I set her target to 6.", "We just cleared the target for Helen.",
+  ]) assert.equal(claimsCompletion(text, true), true, text);
+});
+
+test("Task 4 fix round 2: in a turn, those true reads are said as written, with the lookup or the target list cited", async () => {
+  const { recordSnapshot } = require("../lib/rateHistory");
+  const said = async (user, tool, text) => {
+    const r = await runTurn({ messages: userSays(user), ctx: helenCtx, client: fakeClient([useTool(tool, tool === "findClient" ? { query: "helen" } : {}), say(text)]) });
+    assert.equal(r.reply, text, `${user} -> ${text}`);
+    assert.deepStrictEqual(r.sources, ["client record"], text);
+  };
+  for (const text of TRUE_TARGET_READS.none) await said("what's Helen's target?", "findClient", text);
+  db.prepare("UPDATE clients SET target_rate = 6 WHERE id = ?").run(helenId);
+  try {
+    for (const text of TRUE_TARGET_READS.set) await said("what's Helen's target?", "findClient", text);
+    for (const text of TRUE_TARGET_READS.list) await said("who has a target?", "targetRatesTool", text);
+    recordSnapshot({ ...RATES, rate_30yr_top_tier: 6.125, date: "2026-11-10", source: "Optimal Blue lock data (2026-11-10)" }, "2026-11-10", "fred");
+    for (const text of TRUE_TARGET_READS.watching) await said("how close is Helen to her target?", "findClient", text);
+    // and the false claims are still held in the same turn shape
+    for (const text of ["Helen Brandt's target rate is off.", "I've set Helen Brandt's target rate.", "Helen Brandt's target is removed."]) {
+      const r = await runTurn({ messages: userSays("how close is Helen to her target?"), ctx: helenCtx, client: fakeClient([useTool("findClient", { query: "helen" }), say(text)]) });
+      assert.equal(r.reply, NOTHING_CHANGED, text);
+    }
+  } finally {
+    db.prepare("DELETE FROM rate_snapshots").run();
+    db.prepare(CLEAR_HIT).run(helenId);
+  }
+});
+
 test("Task 7 fix (Ruling R14): isSkip takes only an explicit skip; a bare no answers the follow-up question and is no skip", () => {
   for (const text of [
     "skip it", "Skip.", "skip", "Skip that one.", "not now", "Not now, thanks.", "Not right now", "never mind", "Nevermind.",

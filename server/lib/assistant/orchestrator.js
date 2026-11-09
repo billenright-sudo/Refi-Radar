@@ -622,35 +622,56 @@ const callListClaim = (s) =>
 // targetRatesTool returned ("Helen's target is 6.000%.", "Her target is set at 6.000%.": the bare "is set" is the stored state; "Her
 // target was set on November 1st.", the date it was set, the simple past being PASSIVE_PAST_RE's on an ungrounded turn; "She's
 // estimated at 5.875%, 0.125 below her target."); an offer or a question ("Should I take her target off?", "Want me to clear her
-// target?", the first person after an inverted modal as in callListClaim); the first person with a modal, 'd or "if" ("I can take
-// her target off.", "I'd set it at 6.125.", "If I set her target to 6, ..."); and a negative ("No target is set for Helen.", "Her
-// target hasn't been changed.").
+// target?", the first person after an inverted modal as in callListClaim); the first person with a modal, 'd, "if" or a when-word
+// ("I can take her target off.", "I'd set it at 6.125.", "If I set her target to 6, ...", "Once we set a target, Broker Radar flags
+// her ...", "When I set a target for a client, ..."); and a negative ("No target is set for Helen.", "Her target hasn't been
+// changed.").
+// Fix round 2: what a client HAS is no claim either: "Helen Brandt has a target set at 6.000%.", "She doesn't have a target set.",
+// "There's no target set for Helen Brandt.", "Three clients have targets set." (the shortened passive's words before "target" are a
+// short noun phrase, NP_WORD's, with no negative; and "set" there only as "Target set." / "Helen's target set for 6%.", so "With her
+// target set at 6.000%, ..." reads her target); nor are a watching gap ("Her target is now 0.125 away.": "now" claims a change only
+// with a rate from 1 to 15 after it; "The gap to her target is now 0.125.": the target is no subject after a preposition), a gap said
+// as "off by" ("Her target is off by 0.125."), or how a target works ("A reached target is reset once her estimate climbs ...").
 const TARGET_CHANGED = "set|changed|updated|lowered|raised|moved|adjusted|reset|cleared|removed|deleted|dropped|cancell?ed";
-const TARGET_GONE = "taken\\s+off|turned\\s+off|off|gone";
+const TARGET_GONE = "taken\\s+off|turned\\s+off|off(?!\\s+by\\b)|gone";
 const FIRST_PERSON_TARGET_ALL_RE = new RegExp(
-  "(?<!\\bif\\s)\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*\\s+" +
+  "(?<!\\b(?:if|once|when|whenever|after|before|until|unless)\\s)\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?" +
+    "(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and))*\\s+" +
     "(?:(?:" + TARGET_CHANGED + ")" + TARGET_GAP + TARGET_NOUN +
     "|(?:took|taken|turned)" + TARGET_GAP + TARGET_NOUN + "(?:\\s+rates?)?\\s+off\\b|(?:took|taken|turned)\\s+off" + TARGET_GAP + TARGET_NOUN + ")",
   "gi"
 );
-// (the target as a subject: "target's" here is "target is", so the 's may follow)
+// (the target as a subject: not after a preposition or "reach" / "hit", with at most a determiner or a possessive between; and
+// "target's" here is "target is", so the 's may follow)
+const TARGET_SUBJECT =
+  "(?<!\\b(?:to|from|of|toward|towards|than|below|above|under|over|at|near|past|with|reach(?:ed|es|ing)?|hit(?:s|ting)?)\\s+" +
+    "(?:(?:her|his|their|its|the|a|your|my|our)\\s+|[\\w\\u00c0-\\u024f.&-]+['\\u2019]s\\s+)?)" +
+  "\\btargets?(?![\\w-])(?:\\s+rates?(?![\\w-]))?";
+// (a rate a target can be: 1 to 15)
+const TARGET_FIGURE = "(?:1[0-5]|[1-9])(?!\\d)";
 const TARGET_CHANGED_RE = new RegExp(
-  "\\btargets?(?![\\w-])(?:\\s+rates?(?![\\w-]))?(?:" +
+  TARGET_SUBJECT + "(?:" +
     // "now" and a rate: "is now 6.000%", "is now at 6%"
-    "(?:\\s+(?:is|are)|['\\u2019]s)\\s+now\\s+(?:at\\s+)?\\d" +
+    "(?:\\s+(?:is|are)|['\\u2019]s)\\s+now\\s+(?:at\\s+)?" + TARGET_FIGURE +
     // with now / just / already: "was just removed", "is now set to 6%", "'s already off"
     "|(?:\\s+(?:is|are|was|were|has\\s+been|have\\s+been)|['\\u2019]s(?:\\s+been)?)\\s+(?:(?:now|just|already)\\s+)+(?:been\\s+)?" +
       "(?:" + TARGET_CHANGED + "|" + TARGET_GONE + ")\\b" +
     // the perfect: "has been set to 6%", "'s been cleared"
     "|(?:\\s+(?:has|have)|['\\u2019]s)\\s+been\\s+(?:" + TARGET_CHANGED + "|taken\\s+off|turned\\s+off)\\b" +
-    // gone: "is off", "is cleared", "are removed" (never the bare "is set": the stored state)
+    // gone: "is off", "is cleared", "are removed" (never the bare "is set": the stored state; nor how it works: "is reset once ...")
     "|(?:\\s+(?:is|are)|['\\u2019]s)\\s+(?:(?!set\\b)(?:" + TARGET_CHANGED + ")|" + TARGET_GONE + ")\\b" +
+      "(?!\\s+(?:once|when|whenever|if|after|until|unless|each|every)\\b)" +
   ")",
   "i"
 );
+// the shortened passive: up to four words of a short noun phrase (NP_WORD: no auxiliary, modal or pronoun) with no negative in
+// them, then the target and a change participle other than "set"; or "set" with at most a determiner or a possessive before the
+// target and nothing but "for" after it
+const SHORT_NP_WORD = "(?!(?:no|not|nothing|none|never|any)\\b|[\\w'\\u2019-]*n['\\u2019]t\\b)" + NP_WORD;
 const SHORT_TARGET_CHANGED_RE = new RegExp(
-  "^(?!(?:no|not|nothing|none|never|any)\\b)(?:[\\w&'\\u2019-]+\\s+){0,4}?" + TARGET_NOUN + "(?:\\s+rates?)?\\s+(?:" + TARGET_CHANGED +
-    "|taken\\s+off|turned\\s+off)\\b",
+  "^(?:" + SHORT_NP_WORD + "\\s+){0,4}?" + TARGET_NOUN + "(?:\\s+rates?)?\\s+(?:(?!set\\b)(?:" + TARGET_CHANGED + ")|taken\\s+off|turned\\s+off)\\b" +
+  "|^(?:(?:the|her|his|their|your)\\s+|(?:[A-Z][\\w'\\u2019&.-]*\\s+){0,3}?[\\w&.-]+['\\u2019]s\\s+)?" + TARGET_NOUN +
+    "(?:\\s+rates?)?\\s+set(?=\\s*(?:$|[.!,;:\\u2014\\u2013])|\\s+for\\b)",
   "i"
 );
 const targetClaim = (s) =>
