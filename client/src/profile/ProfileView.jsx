@@ -4,7 +4,7 @@ import { cleanName, validName, validEmail, loadProfile, saveName, requestEmailCh
 import { CalendarCard, NmlsCard, StageCard } from "./cards.jsx";
 import ConnectionsCard from "./ConnectionsCard.jsx";
 
-// The Profile page: each user sets up their name, login email, Google calendar, tenure as a loan officer, NMLS IDs and ARIVE connection
+// The Profile page: each user sets up their name, login email, Google calendar, tenure as a loan officer, NMLS IDs and LOS connection
 // in one place. The logic and every server call are in profile.mjs; the Google card, the tenure card and the NMLS card are in cards.jsx,
 // and the Connections card is in ConnectionsCard.jsx.
 //

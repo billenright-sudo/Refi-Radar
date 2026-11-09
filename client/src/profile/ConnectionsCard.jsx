@@ -1,49 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { loadConnection, connectLos, disconnectLos, utcTextToDate } from "./profile.mjs";
+import { LOS_CHOICES, CARD_HINT, LOS_QUESTION, CHECKING, connectionCopy } from "./connections.mjs";
 
-// The Connections card on the Profile page: a broker or loan officer connects ARIVE here. ARIVE sends each funded loan to Broker Radar
+// The Connections card on the Profile page: a broker or loan officer connects their LOS here, ARIVE or LendingPad (picked before connecting; once
+// connected the card shows the LOS the server holds, and Regenerate keeps it). The LOS sends each funded loan to Broker Radar
 // through a Zap (Zapier's "Webhooks by Zapier"), signed with a key made on this card. The key is shown once, when it is made, and is
 // kept only in this card's state: leaving the page, or a reload, loses it for good (the server holds only a hash). The calls are
 // profile.mjs's; the server is server/routes/integrations.js.
 //
 // Props: ui = { C, card, mono, Icon, $c } (App's design tokens), isBroker (a broker's loans are routed by loan_officer_email, a loan
-// officer's all go to their own book, so the closing line differs). The card makes its own server calls, so ProfileView renders it whether
+// officer's all go to their own book, so the closing line differs). Every line that differs by LOS comes from connections.mjs. The card makes its own server calls, so ProfileView renders it whether
 // or not the profile has loaded.
 
-const HINT = "Send funded loans from ARIVE straight into Broker Radar through Zapier.";
 const KEY_ONCE = "Copy your key now. It won't be shown again.";
 const REGENERATE_CONFIRM = "Make a new key? The old one stops working right away, so update your Zap.";
-const DISCONNECT_CONFIRM = "Disconnect ARIVE? Your Zap will stop adding loans.";
 const COPY_FAILED = "Couldn't copy. Select the text and copy it yourself.";
-
-// Step 4 must keep "payload type JSON": Zapier's own default is form, which the webhook refuses.
-const STEPS = [
-  "Ask ARIVE for its Zapier invite. The ARIVE app on Zapier is invite-only and needs ARIVE Pro or above.",
-  "In Zapier, make a Zap that starts with ARIVE, \"Loan Status Updated\".",
-  "Add a Filter step: only continue when the status is your company's funded status.",
-  "Add a \"Webhooks by Zapier\" action: POST, payload type JSON, to the URL above, with a header named Authorization whose value is Bearer, a space, then your key.",
-  "Map ARIVE's fields to the names below.",
-  "Test the step. Zapier shows Broker Radar's answer: created, updated, unchanged, ambiguous or ignored.",
-];
-
-const FIELDS = [
-  "loan_id (required)",
-  "borrower_name, or borrower_first_name and borrower_last_name (required)",
-  "email; phone",
-  "note_rate (required)",
-  "current_balance or loan_amount (one required)",
-  "term_months; amortization_type; first_payment_date",
-  "property_value, appraised_value or purchase_price (one required)",
-  "closing_date or funding_date (required)",
-  "credit_score; loan_officer_email; loan_purpose; status",
-];
-// Without this, a Zap loan whose loan_id or date differs from the file's reads as a refinance, and the next import flips it back.
-const SAME_LOAN = "Send the same loan number your import file uses as loan_id, and ARIVE's funded date as closing_date, so a loan from "
-  + "the Zap and the same loan in a file match.";
-
-const ROUTING_BROKER = "Each loan goes to the loan officer whose email is in loan_officer_email. Anything else comes to your book. "
-  + "Bring in your existing book first with Import Clients: the Zap only sends loans that change from now on.";
-const ROUTING_LO = "Loans you send go into your own book.";
 
 const WHEN = { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" };
 
@@ -80,8 +51,9 @@ const CopyRow = ({ label, value, testId, copied, onCopy, ui: { C, mono } }) => (
 
 export function ConnectionsCard({ ui, isBroker }) {
   const { C, card, mono } = ui;
-  const [conn, setConn] = useState(null);     // null: checking | { error } the read failed | { connected, createdAt, lastUsedAt, webhookUrl }
+  const [conn, setConn] = useState(null);     // null: checking | { error } the read failed | { connected, createdAt, lastUsedAt, webhookUrl, los }
   const [fresh, setFresh] = useState(null);   // { key } while the key just made is on screen; never kept anywhere else
+  const [choice, setChoice] = useState("arive");   // the LOS picked while not connected
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);     // { text, bad? } | null
   const [copied, setCopied] = useState("");   // "url" | "key" | "" : which Copy button says "Copied" for a moment
@@ -98,36 +70,40 @@ export function ConnectionsCard({ ui, isBroker }) {
     return () => clearTimeout(timer.current);
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  const known = conn && !conn.error;
+  const connected = known && conn.connected;
+  const copy = connectionCopy(connected ? conn.los : choice, { isBroker });
+
   // Connect and Regenerate: the server makes a new key, and the old one (if any) stops working.
-  const makeKey = async () => {
+  const makeKey = async (los) => {
     setBusy(true); setNote(null);
-    const res = await connectLos(fetch, "arive");
+    const res = await connectLos(fetch, los);
     if (res.ok) {
       setFresh({ key: res.data.key });
-      setConn({ connected: true, createdAt: res.data.createdAt || null, lastUsedAt: null, webhookUrl: res.data.webhookUrl });
+      setConn({ connected: true, createdAt: res.data.createdAt || null, lastUsedAt: null, webhookUrl: res.data.webhookUrl, los: res.data.los || los });
       setCopied("");
     } else {
       setNote({ bad: true, text: res.error });
     }
     setBusy(false);
   };
-  const regenerate = () => { if (window.confirm(REGENERATE_CONFIRM)) makeKey(); };
+  const regenerate = () => { if (window.confirm(REGENERATE_CONFIRM)) makeKey(conn.los || "arive"); };
 
   const disconnect = async () => {
-    if (!window.confirm(DISCONNECT_CONFIRM)) return;
+    if (!window.confirm(copy.disconnectConfirm)) return;
     setBusy(true); setNote(null);
     const res = await disconnectLos(fetch);
     if (res.ok) {
       setFresh(null);
       setConn((shown) => ({ ...shown, connected: false, createdAt: null, lastUsedAt: null }));
-      setNote({ text: "ARIVE is disconnected." });
+      setNote({ text: copy.disconnected });
     } else {
       setNote({ bad: true, text: res.error });
     }
     setBusy(false);
   };
 
-  const copy = async (which, text) => {
+  const copyText = async (which, text) => {
     try {
       await navigator.clipboard.writeText(text);
       setNote(null);
@@ -139,15 +115,12 @@ export function ConnectionsCard({ ui, isBroker }) {
     }
   };
 
-  const known = conn && !conn.error;
-  const connected = known && conn.connected;
-
   return (
     <div data-testid="connections-card" style={{ ...card, padding: "1.1rem" }}>
       <div style={{ fontSize: 14, fontWeight: 600 }}>Connections</div>
-      <div style={{ color: C.muted, fontSize: 12.5, margin: "4px 0 12px", lineHeight: 1.45 }}>{HINT}</div>
+      <div style={{ color: C.muted, fontSize: 12.5, margin: "4px 0 12px", lineHeight: 1.45 }}>{CARD_HINT}</div>
 
-      {conn === null && <div data-testid="connections-status" style={{ color: C.muted, fontSize: 13 }}>Checking your ARIVE connection…</div>}
+      {conn === null && <div data-testid="connections-status" style={{ color: C.muted, fontSize: 13 }}>{CHECKING}</div>}
 
       {conn && conn.error && (
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -159,18 +132,31 @@ export function ConnectionsCard({ ui, isBroker }) {
       {known && (
         <div data-testid="connections-status" style={{ display: "flex", alignItems: "center", gap: 8, color: C.mutedHi, fontSize: 13, lineHeight: 1.45 }}>
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: connected ? C.green : C.muted, flex: "none" }} />
-          <span>{connected ? `Connected · ${usedLine(conn.lastUsedAt)}` : "Not connected"}</span>
+          <span>{connected ? `${copy.connected} · ${usedLine(conn.lastUsedAt)}` : "Not connected"}</span>
         </div>
       )}
 
       {/* The address is shown connected or not (it is no secret), so step 4 of the guide always has a URL above it. */}
       {known && conn.webhookUrl && (
-        <CopyRow label="Webhook URL" value={conn.webhookUrl} testId="connections-url" copied={copied === "url"} onCopy={() => copy("url", conn.webhookUrl)} ui={ui} />
+        <CopyRow label="Webhook URL" value={conn.webhookUrl} testId="connections-url" copied={copied === "url"} onCopy={() => copyText("url", conn.webhookUrl)} ui={ui} />
       )}
 
       {known && !connected && (
         <div style={{ marginTop: 12 }}>
-          <button type="button" data-testid="connections-connect" disabled={busy} onClick={makeKey} style={button(C, { primary: true, busy })}>Connect ARIVE</button>
+          <div id="connections-los-question" style={{ color: C.mutedHi, fontSize: 12.5, marginBottom: 6 }}>{LOS_QUESTION}</div>
+          <div role="radiogroup" aria-labelledby="connections-los-question" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {LOS_CHOICES.map((c) => (
+              <button
+                key={c.id} type="button" role="radio" aria-checked={choice === c.id} data-testid={`connections-los-${c.id}`}
+                onClick={() => setChoice(c.id)} style={button(C, { primary: choice === c.id })}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <button type="button" data-testid="connections-connect" disabled={busy} onClick={() => makeKey(choice)} style={button(C, { primary: true, busy })}>{copy.connect}</button>
+          </div>
         </div>
       )}
 
@@ -178,7 +164,7 @@ export function ConnectionsCard({ ui, isBroker }) {
         <>
           {fresh && (
             <>
-              <CopyRow label="Key" value={fresh.key} testId="connections-key" copied={copied === "key"} onCopy={() => copy("key", fresh.key)} ui={ui} />
+              <CopyRow label="Key" value={fresh.key} testId="connections-key" copied={copied === "key"} onCopy={() => copyText("key", fresh.key)} ui={ui} />
               <div data-testid="connections-key-once" style={{ color: C.amber, fontSize: 12.5, fontWeight: 600, marginTop: 8 }}>{KEY_ONCE}</div>
             </>
           )}
@@ -194,14 +180,14 @@ export function ConnectionsCard({ ui, isBroker }) {
       <div data-testid="connections-guide" style={{ borderTop: `1px solid ${C.border}`, marginTop: 14, paddingTop: 12, color: C.mutedHi, fontSize: 12.5, lineHeight: 1.55 }}>
         <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Set it up in Zapier</div>
         <ol style={{ margin: "6px 0 0", paddingLeft: 20 }}>
-          {STEPS.map((step) => <li key={step} style={{ marginBottom: 3 }}>{step}</li>)}
+          {copy.steps.map((step) => <li key={step} style={{ marginBottom: 3 }}>{step}</li>)}
         </ol>
         <div style={{ color: C.text, fontSize: 13, fontWeight: 600, marginTop: 12 }}>Field names</div>
         <ul style={{ ...mono, margin: "6px 0 0", paddingLeft: 20, fontSize: 12 }}>
-          {FIELDS.map((line) => <li key={line} style={{ marginBottom: 2, overflowWrap: "anywhere" }}>{line}</li>)}
+          {copy.fields.map((line) => <li key={line} style={{ marginBottom: 2, overflowWrap: "anywhere" }}>{line}</li>)}
         </ul>
-        <div data-testid="connections-same-loan" style={{ marginTop: 8 }}>{SAME_LOAN}</div>
-        <div data-testid="connections-routing" style={{ marginTop: 12 }}>{isBroker ? ROUTING_BROKER : ROUTING_LO}</div>
+        <div data-testid="connections-same-loan" style={{ marginTop: 8 }}>{copy.sameLoan}</div>
+        <div data-testid="connections-routing" style={{ marginTop: 12 }}>{copy.routing}</div>
       </div>
     </div>
   );

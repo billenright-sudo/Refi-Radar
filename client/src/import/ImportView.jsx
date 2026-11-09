@@ -11,7 +11,7 @@ import { uploadFile, reviewAgain, confirmImport, withMapping, withStatus, outcom
 // Props: ui = { C, card, mono, Icon } (App's design tokens), onImported() (called once the rows are written, so App can reload its
 // client list), onDone() (the result screen's "Go to All Clients").
 
-const UPLOAD_HINT = "Exports from ARIVE and Calyx Point are recognised; for any other file, pick the columns on the next step.";
+const UPLOAD_HINT = "Exports from ARIVE, LendingPad and Calyx Point are recognised; for any other file, pick the columns on the next step.";
 const EVERY_ROW_FUNDED = "Every row is treated as a funded loan: no loan status or closing date column is picked.";
 const NOT_IN_FILE = "— not in this file —";
 
@@ -324,7 +324,7 @@ export default function ImportView({ ui, onImported, onDone }) {
   return (
     <div style={{ animation: "fadeIn 0.35s ease", maxWidth: step === "result" ? 600 : 900 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 6 }}>Import Clients</h1>
-      <div style={{ color: C.muted, fontSize: 14, marginBottom: "1.5rem" }}>Upload a CSV or Excel export from ARIVE, Calyx Point or your CRM</div>
+      <div style={{ color: C.muted, fontSize: 14, marginBottom: "1.5rem" }}>Upload a CSV or Excel export from ARIVE, LendingPad, Calyx Point or your CRM</div>
 
       <ErrorLine text={error} ui={ui} />
 
