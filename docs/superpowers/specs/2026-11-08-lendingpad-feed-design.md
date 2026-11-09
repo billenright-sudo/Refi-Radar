@@ -1,6 +1,6 @@
 # LendingPad: a second LOS on the same feed
 
-Date: 2026-11-08. Owner: Bill. Status: DRAFT, for Bill to read.
+Date: 2026-11-08. Owner: Bill. Status: APPROVED by Bill 2026-11-08 ("approved").
 Repo: `C:\Users\bille\dev\refi-radar`. Branch `feature/lendingpad` @ 20f9df7, off `feature/accurate-refi-scoring`, in the
 worktree `C:\Users\bille\dev\refi-radar-lendingpad`.
 Builds on: `docs/superpowers/specs/2026-11-01-client-import-arive-design.md` (the "ARIVE design"). Every rule there still
