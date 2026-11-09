@@ -10,6 +10,9 @@
 
 const { nameKey } = require("./normalize");
 
+// What every routing flag starts with; the webhook strips it to tell a broker the loan came to their book.
+const ROUTED_PREFIX = "routed to your book: ";
+
 const fullNameOf = (u) => `${u.first_name} ${u.last_name}`.trim();
 
 function resolveOwner(db, actor, loanOfficer) {
@@ -33,7 +36,7 @@ function resolveOwner(db, actor, loanOfficer) {
   }
   if (match) return { id: match.id, name: fullNameOf(match), named: true, flag: null };
 
-  return { ...self, named: false, flag: `routed to your book: no loan officer in your company matches "${wanted}"` };
+  return { ...self, named: false, flag: `${ROUTED_PREFIX}no loan officer in your company matches "${wanted}"` };
 }
 
-module.exports = { resolveOwner };
+module.exports = { resolveOwner, ROUTED_PREFIX };

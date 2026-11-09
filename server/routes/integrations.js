@@ -1,5 +1,5 @@
 "use strict";
-// The ARIVE feed. A Zap ("Webhooks by Zapier", POST) sends each funded loan here as it closes; the loan lands in the key owner's
+// The loan feed, for ARIVE or LendingPad (the key's los says which). A Zap ("Webhooks by Zapier", POST) sends each funded loan here as it closes; the loan lands in the key owner's
 // book through the same ingest() the file import uses (lib/intake/ingest.js), so a loan is never made twice. Importing never
 // contacts anyone (A1): nothing here sends mail, and the only message is the in-app note ingest() leaves when a client moves.
 //   GET    /api/integrations/key    signed in (any role) -> { success, connected, createdAt, lastUsedAt, webhookUrl, los }
@@ -13,7 +13,7 @@
 // The key is "br_" and 64 hex characters. It is shown once, when it is made; only its SHA-256 is stored, so it can be checked but
 // never read back. The key routes carry a cookie (they are the Settings page's), so they are no-store; /loans reads no cookie.
 //
-// /loans answers, in this order (every error is { error }, and no answer ever echoes a value from the body):
+// /loans answers, in this order (every error is { error }, and no answer echoes a value from the body, except routed_to_you, below):
 //   401  no Bearer header, or a key that is malformed, unknown or revoked ({ error: "Unauthorized" }); then the key's last use is
 //        stamped, and a key gets 60 calls a minute (429)
 //   413  body over 32 KB    400  not a JSON object
@@ -23,9 +23,12 @@
 //   400  a closing date that is not a date (R7)
 //   400  a missing name, note rate, balance or property value
 //   200  { result: "created" | "updated" | "unchanged" | "ambiguous" }, plus moved_from (the old loan officer's name) when an
-//        update moved the client to the loan officer the loan names (A6a)
+//        update moved the client to the loan officer the loan names (A6a), or routed_to_you when a broker's key made a new
+//        client and no loan officer in the company matched the one the Zap named (R4)
 //   500  { error: "Server error" }
-// A key's owner decides the book: a loan officer's key always fills their own, a broker's routes by loan_officer_email. Only the
+// A key's owner decides the book: a loan officer's key always fills their own, a broker's routes by loan_officer (a name, as LendingPad sends it) or loan_officer_email;
+// loan_officer wins when both are given. routed_to_you quotes the loan officer value the Zap sent: the one value an answer echoes,
+// and it goes only to the key's owner, who sent it. Only the
 // keys in BODY_FIELDS are read (A2), so an SSN or a date of birth in the body goes nowhere. The payload is never logged (a failure
 // logs only the error's name).
 const crypto = require("crypto");
@@ -37,6 +40,7 @@ const { requireAuth } = require("../middleware/auth");
 const { APP_URL } = require("../email");   // the one constant: nothing in this file sends mail
 const { toRecord } = require("../lib/intake/record");
 const { ingest } = require("../lib/intake/ingest");
+const { ROUTED_PREFIX } = require("../lib/intake/owner");
 // A status that means the loan will never fund, so the Zap has nothing to import (the file import never ticks one as funded).
 const { isDeadStatus, parseDate } = require("../lib/intake/normalize");
 
@@ -91,6 +95,7 @@ const BODY_FIELDS = Object.freeze({
   purchase_price: "purchasePrice",
   credit_score: "creditScore",
   loan_officer_email: "loanOfficer",
+  loan_officer: "loanOfficer",   // listed last, so it wins over loan_officer_email when both are given
   loan_purpose: "purpose",
 });
 
@@ -215,12 +220,13 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
     if (!KEY_RE.test(key)) return res.status(401).json({ error: MSG.unauthorized });
     try {
       const user = db.prepare(`
-        SELECT u.id, u.org_id, u.role, u.first_name, u.last_name, u.email
+        SELECT u.id, u.org_id, u.role, u.first_name, u.last_name, u.email, k.los AS key_los
         FROM integration_keys k JOIN users u ON u.id = k.user_id
         WHERE k.key_hash = ?
       `).get(sha256(key));
       if (!user) return res.status(401).json({ error: MSG.unauthorized });
       req.keyUser = user;
+      req.keyLos = user.key_los;
       req.now = clock();
       db.prepare("UPDATE integration_keys SET last_used_at = ? WHERE user_id = ?").run(req.now.nowUtc, user.id);
       next();
@@ -283,12 +289,15 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
       }
 
       const { results } = ingest(db, {
-        actor: req.keyUser, source: "arive", items: [{ row: 1, fields }], today, nowUtc, requireClosingDate: true, dryRun: false,
+        actor: req.keyUser, source: req.keyLos, items: [{ row: 1, fields }], today, nowUtc, requireClosingDate: true, dryRun: false,
       });
-      const { outcome, movedFrom, reason } = results[0];
+      const { outcome, movedFrom, reason, flags } = results[0];
       if (movedFrom) return res.json({ result: outcome, moved_from: movedFrom });
       // The only row ingest skips here is another loan officer's client sent with a loan officer's own key (Bill, 2026-11-03).
-      res.json(outcome === "skipped" ? { result: outcome, reason } : { result: outcome });
+      if (outcome === "skipped") return res.json({ result: outcome, reason });
+      // A new client the broker's key could not place comes to the broker; say so, and quote the loan officer the Zap named.
+      const routed = outcome === "created" ? flags.find((f) => f.startsWith(ROUTED_PREFIX)) : undefined;
+      res.json(routed ? { result: outcome, routed_to_you: routed.slice(ROUTED_PREFIX.length) } : { result: outcome });
     } catch (err) {
       loansFailed(res, err);
     }

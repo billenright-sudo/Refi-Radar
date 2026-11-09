@@ -37,9 +37,9 @@ const orgB = addOrg("Bravo");
 const bea = addUser(orgB, "broker", "bea@b.test", "Bea", "Ray");
 
 // A key for a user, made straight in the table (the lifecycle test is the one that goes through the key routes).
-const giveKey = (userId) => {
+const giveKey = (userId, los = "arive") => {
   const key = "br_" + crypto.randomBytes(32).toString("hex");
-  db.prepare("INSERT OR REPLACE INTO integration_keys (user_id, key_hash) VALUES (?, ?)").run(userId, sha256(key));
+  db.prepare("INSERT OR REPLACE INTO integration_keys (user_id, key_hash, los) VALUES (?, ?, ?)").run(userId, sha256(key), los);
   return key;
 };
 
@@ -294,10 +294,10 @@ test("a broker's key routes by loan_officer_email; an LO's key always fills thei
   let r = await post(annKey, { ...BODY, loan_officer_email: "lou@a.test" });
   assert.deepStrictEqual(r.data, { result: "created" });
   r = await post(annKey, { ...BODY, loan_id: "L2", borrower_name: "Mary Jones", email: "mary@x.test", loan_officer_email: "nobody@a.test" });
-  assert.deepStrictEqual(r.data, { result: "created" });
+  assert.deepStrictEqual(r.data, { result: "created", routed_to_you: 'no loan officer in your company matches "nobody@a.test"' });
   // a loan officer at another company is nobody the broker can route to
   r = await post(annKey, { ...BODY, loan_id: "L3", borrower_name: "Ned Poe", email: "ned@x.test", loan_officer_email: "bea@b.test" });
-  assert.deepStrictEqual(r.data, { result: "created" });
+  assert.deepStrictEqual(r.data, { result: "created", routed_to_you: 'no loan officer in your company matches "bea@b.test"' });
   r = await post(louKey, { ...BODY, loan_id: "L4", borrower_name: "Pat Doe", email: "pat@x.test", loan_officer_email: "lia@a.test" });
   assert.deepStrictEqual(r.data, { result: "created" });
 
@@ -343,6 +343,65 @@ test("created, then unchanged on replay, updated on a rate change, ambiguous on 
   assert.deepStrictEqual([r.status, r.data], [200, { result: "ambiguous" }]);
   assert.strictEqual(clientRows().length, 3);
   assert.strictEqual(clientRows().filter((x) => x.name === "Jane Roe" && x.loan_number).length, 0);
+});
+
+test("a LendingPad key's clients are lendingpad; a key made before LendingPad still makes arive clients", async () => {
+  const lpKey = giveKey(ann, "lendingpad");
+  const oldKey = giveKey(lou);
+  assert.deepStrictEqual((await post(lpKey, BODY)).data, { result: "created" });
+  assert.deepStrictEqual((await post(oldKey, { ...BODY, loan_id: "L2", borrower_name: "Mary Jones", email: "mary@x.test" })).data, { result: "created" });
+  assert.deepStrictEqual(Object.fromEntries(clientRows().map((c) => [c.loan_number, c.source])), { L1: "lendingpad", L2: "arive" });
+});
+
+test("Review 1: a funded LendingPad loan sent five times is created once, then unchanged, and its notes are untouched", async () => {
+  const key = giveKey(ann, "lendingpad");
+  assert.deepStrictEqual((await post(key, BODY)).data, { result: "created" });
+  db.prepare("UPDATE clients SET notes = ?").run("Called 11/8, wants numbers");
+  for (let i = 0; i < 4; i++) assert.deepStrictEqual((await post(key, BODY)).data, { result: "unchanged" });
+  const rows = clientRows();
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].notes, "Called 11/8, wants numbers");
+  assert.strictEqual(rows[0].source, "lendingpad");
+});
+
+test("Review 2: with no Filter step, pipeline loans are ignored", async () => {
+  const key = giveKey(ann, "lendingpad");
+  for (const status of ["Processing", "Submitted", "Approved"]) {
+    const r = await post(key, { ...without(BODY, "closing_date"), status });
+    assert.deepStrictEqual([r.status, r.data], [200, { result: "ignored", reason: "no closing date" }], status);
+  }
+  const r = await post(key, { ...BODY, closing_date: "2999-01-01" });
+  assert.deepStrictEqual(r.data, { result: "ignored", reason: "closing date is in the future" });
+  assert.strictEqual(clientRows().length, 0);
+});
+
+test("Review 3: loan officers by name; an unknown one comes to the broker with routed_to_you", async () => {
+  const key = giveKey(ann, "lendingpad");
+  const loan = (n, name, lo) => ({ ...BODY, loan_id: `R${n}`, borrower_name: name, email: `r${n}@x.test`, loan_officer: lo });
+  assert.deepStrictEqual((await post(key, loan(1, "Ray One", "Lou Park"))).data, { result: "created" });
+  assert.deepStrictEqual((await post(key, loan(2, "Ray Two", "Lia Chen"))).data, { result: "created" });
+  assert.deepStrictEqual((await post(key, loan(3, "Ray Three", "Sam Green"))).data,
+    { result: "created", routed_to_you: 'no loan officer in your company matches "Sam Green"' });
+  assert.deepStrictEqual(Object.fromEntries(clientRows().map((c) => [c.loan_number, c.user_id])), { R1: lou, R2: lia, R3: ann });
+});
+
+test("loan_officer wins over loan_officer_email, and a blank one leaves the email in charge", async () => {
+  const key = giveKey(ann, "lendingpad");
+  await post(key, { ...BODY, loan_officer: "Lia Chen", loan_officer_email: "lou@a.test" });
+  await post(key, { ...BODY, loan_id: "L2", borrower_name: "Mary Jones", email: "mary@x.test", loan_officer: "", loan_officer_email: "lou@a.test" });
+  assert.deepStrictEqual(Object.fromEntries(clientRows().map((c) => [c.loan_number, c.user_id])), { L1: lia, L2: lou });
+});
+
+test("routed_to_you is only for a created client", async () => {
+  const annKey = giveKey(ann, "lendingpad");
+  assert.deepStrictEqual((await post(annKey, { ...BODY, loan_officer: "Lou Park" })).data, { result: "created" });
+  assert.deepStrictEqual((await post(annKey, { ...BODY, loan_officer: "Sam Green" })).data, { result: "unchanged" });
+  assert.strictEqual(clientRows()[0].user_id, lou);
+
+  const louKey = giveKey(lou, "lendingpad");
+  const r = await post(louKey, { ...BODY, loan_id: "L2", borrower_name: "Mary Jones", email: "mary@x.test", loan_officer: "Sam Green" });
+  assert.deepStrictEqual(r.data, { result: "created" });
+  assert.strictEqual(clientRows().find((c) => c.loan_number === "L2").user_id, lou);
 });
 
 test("A6a over the webhook: moved_from names the old loan officer", async () => {

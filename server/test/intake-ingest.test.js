@@ -407,6 +407,29 @@ test("an error during the run rolls everything back and is not taken for a dry r
   assert.equal(clientRow(id).user_id, lia);
 });
 
+test("the lendingpad source is recorded on a new client", () => {
+  run([item(2)], { source: "lendingpad" });
+  assert.equal(db.prepare("SELECT source FROM clients").get().source, "lendingpad");
+});
+
+test("an unknown source is refused", () => {
+  assert.throws(() => run([item(2)], { source: "calyx" }), TypeError);
+});
+
+test("a LendingPad loan officer's refinance for another loan officer's client is skipped, and the note says LendingPad feed", () => {
+  const id = addClient(lia, { close_date: "2021-05-01", current_rate: 3.0 });
+  const before = clientRow(id);
+  const refi = run([item(2, { ...REFI, loanOfficer: "" })], { actor: userRow(lou), source: "lendingpad" });
+  assert.deepStrictEqual(refi.results.map((x) => [x.outcome, x.reason]), [[
+    "skipped", "in Lia Chen's book: a loan officer's feed only changes their own clients",
+  ]]);
+  assert.deepStrictEqual(clientRow(id), before);
+  assert.deepStrictEqual(db.prepare("SELECT from_user, to_user, client_id, message FROM notifications").all(), [{
+    from_user: lou, to_user: lia, client_id: id,
+    message: "Lou Park's LendingPad feed sent a newer loan for John Smith (closed 2026-03-02). Nothing was changed, and John Smith stays in your book.",
+  }]);
+});
+
 test("a bad source, today or nowUtc is refused before anything is read", () => {
   assert.throws(() => run([item(2)], { source: "csv" }), TypeError);
   assert.throws(() => run([item(2)], { today: "11/1/2026" }), TypeError);

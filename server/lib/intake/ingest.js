@@ -1,5 +1,5 @@
 "use strict";
-// The one write both front doors share. The file import and the ARIVE (Zapier) feed hand their rows here, and the import's
+// The one write both front doors share. The file import and the Zapier feed (ARIVE or LendingPad) hand their rows here, and the import's
 // review is this very call with dryRun: it does all the work inside the transaction and then rolls it back. So the review shows
 // exactly what the import will do, and the reviewHash it returns lets the confirm prove nothing changed in between (R6).
 //
@@ -39,7 +39,9 @@ const { fullName, parseDate } = require("./normalize");
 // Called as followups.resolveForClient(...) so a test can stand in for it.
 const followups = require("../assistant/followups");
 
-const SOURCES = ["import", "arive"];
+const SOURCES = ["import", "arive", "lendingpad"];
+// How a notification names the front door a row came through.
+const VIA = Object.freeze({ import: "import", arive: "ARIVE feed", lendingpad: "LendingPad feed" });
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UTC_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 // Two numbers this close are the same value (a REAL read back from SQLite is not always bit-for-bit what was written).
@@ -223,7 +225,7 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
     if (actor.role === "lo" && client.user_id !== actor.id) {
       const holder = person(client.user_id);
       if (rel === "refinance") {
-        const via = source === "arive" ? "ARIVE feed" : "import";
+        const via = VIA[source];
         const closed = record.closeDate ? ` (closed ${record.closeDate})` : "";
         const message = `${person(actor.id).name}'s ${via} sent a newer loan for ${client.name}${closed}. `
           + `Nothing was changed, and ${client.name} stays in your book.`;
