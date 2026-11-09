@@ -1,6 +1,6 @@
 # Target-rate alerts: "call me when rates hit 6%"
 
-Date: 2026-11-09. Owner: Bill. Status: DRAFT for Bill (builder check done; 6 questions settled as my calls).
+Date: 2026-11-09. Owner: Bill. Status: Bill 2026-11-09 "keep going" after the design handoff; plan at `docs/superpowers/plans/2026-11-09-target-rate-alerts.md`.
 Repo: `C:\Users\bille\dev\refi-radar`. Branch `feature/target-rate-alerts` @ 0cfd1f4, off `feature/accurate-refi-scoring`, in the
 worktree `C:\Users\bille\dev\refi-radar-target-rate`.
 Builds on: `2026-10-30-charlie-morning-briefing-design.md` (the "briefing design") and the sweep engine (`server/lib/refi.js`,
