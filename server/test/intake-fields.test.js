@@ -1,6 +1,6 @@
 "use strict";
 // The import whitelist and header mapping (lib/intake/fields.js). Pure, so there is no DB here. The three fixtures below are
-// the header rows of an ARIVE funded-loans export and a Calyx Point export (both best guesses until a real file is seen) and
+// the header rows of an ARIVE funded-loans export, a LendingPad funded-loans export and a Calyx Point export (all best guesses until a real file is seen) and
 // of a plain CRM spreadsheet. Each must map with no picks from the broker, and a column that looks like SSN or date of birth
 // must never be used.
 const test = require("node:test");
@@ -11,6 +11,7 @@ const { headerKey, isProtectedHeader } = require("../lib/intake/normalize");
 
 const ARIVE = ["Loan Number", "Borrower First Name", "Borrower Last Name", "Borrower Email", "Borrower Cell Phone", "Note Rate", "Loan Amount", "Loan Term", "Amortization Type", "Appraised Value", "Purchase Price", "Funded Date", "Loan Status", "Loan Purpose", "First Payment Date", "Credit Score", "Loan Officer Email", "Borrower SSN"];
 const CALYX = ["Loan #", "Borr First Name", "Borr Last Name", "Borr Email", "Borr Home Phone", "Interest Rate", "Loan Amt", "Term", "Amort Type", "Appraised Value", "Sales Price", "Closing Date", "Loan Status", "Purpose of Loan", "1st Pmt Date", "FICO", "Loan Officer", "Date of Birth"];
+const LENDINGPAD = ["Loan Number", "Borrower First Name", "Borrower Last Name", "Borrower Email", "Borrower Mobile Phone", "Interest Rate", "Total Loan Amount", "Loan Term", "Loan Program", "Appraised Value", "Purchase Price", "Funded Date", "Loan Status", "Loan Purpose", "First Payment Date", "Qualifying FICO", "Loan Officer", "Borrower SSN", "Est. Closing Date", "Base Loan Amount"];
 const GENERIC = ["Name", "Email", "Phone", "Rate", "Balance", "Property Value", "Loan Type", "Close Date", "Credit Score", "Notes"];
 const pick = (m, ids) => Object.fromEntries(ids.map((id) => [id, m[id]]));
 const LOAN_IDS = ["loanNumber", "firstName", "lastName", "email", "phone", "noteRate", "loanAmount", "term", "amortization", "appraisedValue", "purchasePrice", "closingDate", "status", "purpose", "firstPaymentDate", "creditScore", "loanOfficer"];
@@ -49,6 +50,12 @@ test("a Calyx Point export maps with no picks, and the date-of-birth column is n
   assert.deepStrictEqual(pick(m, LOAN_IDS), LOAN_COLUMNS);
   assert.ok(!Object.values(m).includes(17));
 });
+test("a LendingPad funded-loans export maps with no picks; the SSN and the estimated closing date are never used", () => {
+  const m = detectMapping(LENDINGPAD);
+  assert.deepStrictEqual(pick(m, LOAN_IDS), LOAN_COLUMNS);
+  assert.equal(m.closingDate, 11);
+  for (const i of [17, 18, 19]) assert.ok(!Object.values(m).includes(i));
+});
 test("a generic CRM file still maps as today; 'Loan Amount' is the original amount, never the balance", () => {
   assert.deepStrictEqual(pick(detectMapping(GENERIC), ["borrowerName","email","phone","noteRate","currentBalance","propertyValue","amortization","closingDate","creditScore","notes"]),
     { borrowerName: 0, email: 1, phone: 2, noteRate: 3, currentBalance: 4, propertyValue: 5, amortization: 6, closingDate: 7, creditScore: 8, notes: 9 });
@@ -56,7 +63,7 @@ test("a generic CRM file still maps as today; 'Loan Amount' is the original amou
   assert.equal(m.loanAmount, 1); assert.equal(m.currentBalance, -1);
 });
 test("a column goes to one field only, and every field id is always present", () => {
-  for (const headers of [ARIVE, CALYX, GENERIC, [], ["Balance", "Balance"]]) {
+  for (const headers of [ARIVE, CALYX, LENDINGPAD, GENERIC, [], ["Balance", "Balance"]]) {
     const m = detectMapping(headers);
     assert.deepStrictEqual(Object.keys(m), FIELDS.map((f) => f.id));
     const used = Object.values(m).filter((i) => i >= 0);
@@ -95,7 +102,7 @@ test("cleanMapping gives a doubled column to the first field in FIELDS order", (
   assert.equal(m.borrowerName, 0); assert.equal(m.email, -1); assert.equal(m.notes, -1);
 });
 test("cleanMapping reads a mapping that detectMapping made, unchanged", () => {
-  for (const headers of [ARIVE, CALYX, GENERIC]) assert.deepStrictEqual(cleanMapping(detectMapping(headers), headers), detectMapping(headers));
+  for (const headers of [ARIVE, CALYX, LENDINGPAD, GENERIC]) assert.deepStrictEqual(cleanMapping(detectMapping(headers), headers), detectMapping(headers));
 });
 
 test("readFields reads only mapped cells", () => {

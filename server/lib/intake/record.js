@@ -5,7 +5,7 @@
 // Nothing here touches the DB or the network, so it is pure.
 //
 // A loan must have a name, a note rate, a balance and a property value, and it must already be funded (A4): a closing date after
-// today is never imported, and a front door that needs the date (the ARIVE feed) can insist on one. No figure is made up (A5):
+// today is never imported, and a front door that needs the date (the LOS feed) can insist on one. No figure is made up (A5):
 // the balance is the one the row gave, else worked out from the loan's schedule, else the original loan amount, and that last
 // stand-in always comes back with a flag so the broker can see it. `status` is not part of the record; the front doors decide
 // from it before they get here.

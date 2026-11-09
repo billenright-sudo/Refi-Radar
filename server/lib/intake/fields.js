@@ -1,10 +1,10 @@
 "use strict";
-// The import whitelist: the only fields a client file or an ARIVE feed may ever read, and the mapping from a file's header row
+// The import whitelist: the only fields a client file or an LOS feed (ARIVE or LendingPad) may ever read, and the mapping from a file's header row
 // onto them. Nothing outside FIELDS is read from a row, so an SSN, a date of birth, income, assets, an employer or an account
 // number can never reach the app, whatever the file happens to contain.
 //
 // The mapping is a plain object { fieldId: columnIndex } with every field present and -1 for "no column". detectMapping()
-// guesses it from the headers (ARIVE, Calyx Point and ordinary CRM exports), the broker can fix it on the page, and
+// guesses it from the headers (ARIVE, LendingPad, Calyx Point and ordinary CRM exports), the broker can fix it on the page, and
 // cleanMapping() makes whatever the browser sends back safe before anything is read. A column that looks protected, or has no
 // header at all, is never offered, never guessed and never accepted. readFields() then lifts just the mapped cells from a row.
 //
@@ -39,7 +39,7 @@ const FIELDS = Object.freeze([
 ].map((f) => Object.freeze(f)));
 
 // What each field's header can be called, as headerKeys, most specific first: the first synonym that finds an unused column
-// wins. The ARIVE and Calyx Point names are best guesses until a real export is seen; the rest are common CRM spellings.
+// wins. The ARIVE, LendingPad and Calyx Point names are best guesses until a real export is seen; the rest are common CRM spellings.
 const SYNONYMS = Object.freeze({
   borrowerName: ["borrowername", "borrowerfullname", "borrfullname", "primaryborrower", "fullname", "clientname", "customername", "contactname", "name", "borrower", "client", "customer"],
   firstName: ["borrowerfirstname", "borrfirstname", "firstname", "clientfirstname", "borrowerfname", "fname", "givenname"],
@@ -49,7 +49,7 @@ const SYNONYMS = Object.freeze({
   loanNumber: ["loannumber", "loan#", "loanno", "loannum", "loannbr", "loanid", "loanidentifier"],
   noteRate: ["noterate", "interestrate", "currentinterestrate", "currentrate", "mortgagerate", "loanrate", "intrate", "rate"],
   currentBalance: ["currentbalance", "currentloanbalance", "currentprincipalbalance", "unpaidprincipalbalance", "upb", "remainingbalance", "outstandingbalance", "principalbalance", "loanbalance", "balance", "principal"],
-  loanAmount: ["originalloanamount", "origloanamount", "originalloanamt", "loanamount", "loanamt", "originalamount", "originalbalance", "mortgageamount", "amount"],
+  loanAmount: ["totalloanamount", "originalloanamount", "origloanamount", "originalloanamt", "loanamount", "loanamt", "originalamount", "originalbalance", "mortgageamount", "amount"],
   term: ["loanterm", "loantermmonths", "loantermyears", "mortgageterm", "termofloan", "termmonths", "termyears", "term"],
   amortization: ["amortizationtype", "amorttype", "amortization", "loanproduct", "producttype", "product", "loanprogram", "program", "mortgagetype", "loantype"],
   propertyValue: ["propertyvalue", "currentpropertyvalue", "currenthomevalue", "homevalue", "estimatedpropertyvalue", "estimatedhomevalue", "estimatedvalue", "marketvalue", "propvalue"],
@@ -59,7 +59,7 @@ const SYNONYMS = Object.freeze({
   status: ["loanstatus", "status", "loanstage", "currentstatus"],
   purpose: ["loanpurpose", "purposeofloan", "mortgagepurpose", "purpose"],
   firstPaymentDate: ["firstpaymentdate", "1stpaymentdate", "firstpmtdate", "1stpmtdate", "firstpaydate", "1stpaydate", "firstpaymentduedate"],
-  creditScore: ["creditscore", "borrowercreditscore", "ficoscore", "borrowerfico", "fico"],
+  creditScore: ["creditscore", "borrowercreditscore", "ficoscore", "borrowerfico", "fico", "qualifyingfico", "qualifyingcreditscore", "representativecreditscore"],
   loanOfficer: ["loanofficeremail", "loemail", "originatoremail", "loanofficer", "loanofficername", "loanoriginator", "originator", "loname", "lo"],
   notes: ["notes", "note", "comments", "comment"],
 });

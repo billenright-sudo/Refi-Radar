@@ -1,5 +1,5 @@
 "use strict";
-// The loan values a person changed by hand on the client form (routes/clients.js), which an import or the ARIVE feed keeps
+// The loan values a person changed by hand on the client form (routes/clients.js), which an import or an LOS feed keeps
 // for the same loan (Bill, 2026-11-03; ingest.js). clients.edited_by_hand holds them as column names, comma-separated, in
 // HAND_KEPT's order, and '' when there are none.
 

@@ -9,7 +9,7 @@
 //
 // Two helpers (headerKey, isProtectedHeader) are the import's privacy guard: a column that looks like SSN, date of birth,
 // income, assets, employer or an account number is never offered to the broker and never read. The last two (isDeadStatus,
-// looksFunded) read a loan status the same way for the file import and the ARIVE feed.
+// looksFunded) read a loan status the same way for the file import and the LOS feed.
 
 const MS_PER_DAY = 86400000;
 // Excel counts days from 1899-12-30 (it treats 1900 as a leap year, so this epoch makes every date after Feb 1900 line up).
@@ -197,7 +197,7 @@ function isProtectedHeader(h) {
   return PROTECTED_HEADER_RE.test(headerKey(h));
 }
 
-// True for a status that means the loan will never fund: denied, withdrawn, cancelled, adverse action, archived. The ARIVE feed
+// True for a status that means the loan will never fund: denied, withdrawn, cancelled, adverse action, archived. The LOS feed
 // ignores such a loan, and the file import never ticks one as funded.
 function isDeadStatus(v) {
   return DEAD_STATUS_RE.test(text(v));

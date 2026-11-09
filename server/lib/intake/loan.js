@@ -1,5 +1,5 @@
 "use strict";
-// Loan math for imported loans. A spreadsheet or an ARIVE feed rarely says what the loan owes today, and rarely says which of
+// Loan math for imported loans. A spreadsheet or an LOS feed rarely says what the loan owes today, and rarely says which of
 // the three loan types the pricing engine knows (30-year fixed, 15-year fixed, 5/1 ARM) the loan is. This turns the loan's
 // terms into both: today's balance, and a loan type. Nothing here touches the DB or the network, so every function is pure.
 //
