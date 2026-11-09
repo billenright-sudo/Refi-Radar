@@ -2,8 +2,11 @@
 // The ARIVE feed. A Zap ("Webhooks by Zapier", POST) sends each funded loan here as it closes; the loan lands in the key owner's
 // book through the same ingest() the file import uses (lib/intake/ingest.js), so a loan is never made twice. Importing never
 // contacts anyone (A1): nothing here sends mail, and the only message is the in-app note ingest() leaves when a client moves.
-//   GET    /api/integrations/key    signed in (any role) -> { success, connected, createdAt, lastUsedAt, webhookUrl }
-//   POST   /api/integrations/key    signed in            -> { success, key, webhookUrl, createdAt }   a NEW key, replacing any old one
+//   GET    /api/integrations/key    signed in (any role) -> { success, connected, createdAt, lastUsedAt, webhookUrl, los }
+//                                    (los is "arive" | "lendingpad", or null when not connected)
+//   POST   /api/integrations/key    signed in, body { los? } -> { success, key, webhookUrl, createdAt, los }   a NEW key, replacing
+//                                    any old one. los is the system the key's Zap reads from; with none (or null) the key keeps
+//                                    its current one, or "arive" for a first key. Any other value is a 400 and the old key stays.
 //   DELETE /api/integrations/key    signed in            -> { success: true, connected: false }
 //   POST   /api/integrations/loans  Authorization: Bearer <key>  JSON body, up to 32 KB   -> 200 { result } (below)
 //
@@ -40,6 +43,7 @@ const { isDeadStatus, parseDate } = require("../lib/intake/normalize");
 const MAX_BODY = "32kb";
 const MAX_LOAN_ID = 64;
 const PER_MINUTE = 60;
+const LOSES = Object.freeze(["arive", "lendingpad"]);
 const KEY_RE = /^br_[0-9a-f]{64}$/;
 const BEARER_RE = /^Bearer +(\S+)$/i;
 
@@ -51,6 +55,7 @@ const MSG = Object.freeze({
   noLoanId: "loan_id is required",
   longLoanId: "loan_id is too long",
   failed: "Server error",
+  badLos: "los must be arive or lendingpad",
 });
 
 // toRecord()'s codes that are the Zap's mistake (400) and the two that only mean "not funded yet" (200 ignored). The /loans route
@@ -141,29 +146,52 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
 
   router.get("/key", signedIn, (req, res) => {
     try {
-      const row = db.prepare("SELECT created_at, last_used_at FROM integration_keys WHERE user_id = ?").get(req.user.id);
+      const row = db.prepare("SELECT created_at, last_used_at, los FROM integration_keys WHERE user_id = ?").get(req.user.id);
       res.json({
         success: true,
         connected: Boolean(row),
         createdAt: row ? row.created_at : null,
         lastUsedAt: row ? row.last_used_at : null,
         webhookUrl,
+        los: row ? row.los : null,
       });
     } catch (err) {
       keyFailed("GET /api/integrations/key:", res, err);
     }
   });
 
-  router.post("/key", signedIn, (req, res) => {
+  // The body is optional ({ los? }) and tiny. The router sits above the app-wide parser (R9), so this route parses its own (R3).
+  const parseKeyBody = express.json({ limit: "1kb" });
+  const readKeyBody = (req, res, next) => {
+    parseKeyBody(req, res, (err) => {
+      if (!err) return next();
+      res.status(400).json({ success: false, error: MSG.notObject });
+    });
+  };
+
+  router.post("/key", signedIn, readKeyBody, (req, res) => {
     try {
+      // Not a JSON object (an array, say) is a 400 like non-JSON; an absent body parses to {}.
+      const body = req.body;
+      if (body === null || typeof body !== "object" || Array.isArray(body)) {
+        return res.status(400).json({ success: false, error: MSG.notObject });
+      }
+      // An absent or null los means "no word on it" (R2); anything else must be exactly one of LOSES.
+      const asked = body.los;
+      if (asked !== undefined && asked !== null && !LOSES.includes(asked)) {
+        return res.status(400).json({ success: false, error: MSG.badLos });
+      }
+      const current = db.prepare("SELECT los FROM integration_keys WHERE user_id = ?").get(req.user.id);
+      const los = asked ?? (current ? current.los : "arive");
       const key = `br_${crypto.randomBytes(32).toString("hex")}`;
       const { nowUtc } = clock();
       // One row per user: a new key takes the old one's place, and it has not been used yet.
       db.prepare(`
-        INSERT INTO integration_keys (user_id, key_hash, created_at, last_used_at) VALUES (?, ?, ?, NULL)
-        ON CONFLICT(user_id) DO UPDATE SET key_hash = excluded.key_hash, created_at = excluded.created_at, last_used_at = NULL
-      `).run(req.user.id, sha256(key), nowUtc);
-      res.json({ success: true, key, webhookUrl, createdAt: nowUtc });
+        INSERT INTO integration_keys (user_id, key_hash, created_at, last_used_at, los) VALUES (?, ?, ?, NULL, ?)
+        ON CONFLICT(user_id) DO UPDATE SET key_hash = excluded.key_hash, created_at = excluded.created_at, last_used_at = NULL,
+          los = excluded.los
+      `).run(req.user.id, sha256(key), nowUtc, los);
+      res.json({ success: true, key, webhookUrl, createdAt: nowUtc, los });
     } catch (err) {
       keyFailed("POST /api/integrations/key:", res, err);
     }
@@ -269,4 +297,4 @@ function createIntegrationsRouter({ limiter = {} } = {}) {
   return router;
 }
 
-module.exports = Object.assign(createIntegrationsRouter(), { createIntegrationsRouter });
+module.exports = Object.assign(createIntegrationsRouter(), { createIntegrationsRouter, LOSES });

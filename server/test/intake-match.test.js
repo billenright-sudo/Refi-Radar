@@ -66,7 +66,7 @@ test("migrations add loan_number (''), source ('manual') and edited_by_hand ('')
   assert.deepStrictEqual(indexCols, ["org_id", "loan_number"]);
 
   const cols = db.prepare("PRAGMA table_info(integration_keys)").all().map((c) => c.name);
-  assert.deepStrictEqual(cols, ["user_id", "key_hash", "created_at", "last_used_at"]);
+  assert.deepStrictEqual(cols, ["user_id", "key_hash", "created_at", "last_used_at", "los"]);
 });
 
 test("migrations upgrade an older database in place and a second start changes nothing", () => {
@@ -95,7 +95,7 @@ test("migrations upgrade an older database in place and a second start changes n
     const run = () => JSON.parse(execFileSync(process.execPath, ["-e", script], {
       env: { ...process.env, DATA_DIR: dir }, encoding: "utf8",
     }));
-    const expected = { row: { loan_number: "", source: "manual", edited_by_hand: "" }, idx: 1, keys: 4 };
+    const expected = { row: { loan_number: "", source: "manual", edited_by_hand: "" }, idx: 1, keys: 5 };
     assert.deepStrictEqual(run(), expected);
     assert.deepStrictEqual(run(), expected);
   } finally {

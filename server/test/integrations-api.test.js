@@ -106,8 +106,14 @@ const postTo = (base) => (key, body, headers = {}) => send(
 );
 
 // `as(userId)` -> a request function for the key routes, signed in as that user; `as(null)` is anonymous.
-const as = (userId) => (method, p = "/api/integrations/key") => send(
-  main.base, method, p, userId != null ? { cookie: "rr_token=" + signToken({ userId }) } : {},
+// A `body` is sent as JSON (a string is sent as it is); with none, no body and no content-type go out.
+const as = (userId) => (method, p = "/api/integrations/key", body) => send(
+  main.base, method, p,
+  {
+    ...(userId != null ? { cookie: "rr_token=" + signToken({ userId }) } : {}),
+    ...(body !== undefined ? { "content-type": "application/json" } : {}),
+  },
+  body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
 );
 
 // Captures console.log / warn / error while fn runs.
@@ -123,6 +129,56 @@ async function captured(fn) {
 }
 
 // ── the key ──────────────────────────────────────────────────────────────────
+
+test("GET /key answers los: null before connecting, the key's LOS after", async () => {
+  const me = as(ann);
+  assert.strictEqual((await me("GET")).data.los, null);
+  await me("POST", undefined, { los: "lendingpad" });
+  assert.strictEqual((await me("GET")).data.los, "lendingpad");
+});
+
+test("POST /key stores the LOS it is given; with none it keeps the current one, or means arive", async () => {
+  const me = as(ann);
+
+  let r = await me("POST");
+  assert.strictEqual(r.data.los, "arive");
+  assert.strictEqual(keyRow(ann).los, "arive");
+
+  r = await me("POST", undefined, { los: "lendingpad" });
+  assert.strictEqual(r.data.los, "lendingpad");
+  assert.strictEqual(keyRow(ann).los, "lendingpad");
+
+  // a Regenerate from an old page sends no body: the LOS stays, the key is new
+  const before = keyRow(ann).key_hash;
+  r = await me("POST");
+  assert.strictEqual(r.data.los, "lendingpad");
+  assert.notStrictEqual(keyRow(ann).key_hash, before);
+
+  r = await me("POST", undefined, { los: null });
+  assert.strictEqual(r.data.los, "lendingpad");
+
+  // switching is Disconnect, then Connect
+  await me("DELETE");
+  r = await me("POST", undefined, { los: "arive" });
+  assert.strictEqual(r.data.los, "arive");
+  assert.strictEqual(keyRow(ann).los, "arive");
+});
+
+test("POST /key with any other los is a 400 and the old key keeps working", async () => {
+  const me = as(ann);
+  await me("POST", undefined, { los: "lendingpad" });
+  const before = keyRow(ann);
+  for (const los of ["calyx", "", "ARIVE", 7, true, ["arive"]]) {
+    const r = await me("POST", undefined, { los });
+    assert.deepStrictEqual([r.status, r.data], [400, { success: false, error: "los must be arive or lendingpad" }], JSON.stringify(los));
+    assert.deepStrictEqual(keyRow(ann), before);
+  }
+  for (const body of ["{", "[]", "[\"arive\"]"]) {
+    const r = await me("POST", undefined, body);
+    assert.deepStrictEqual([r.status, r.data], [400, { success: false, error: "The body must be a JSON object" }], body);
+    assert.deepStrictEqual(keyRow(ann), before);
+  }
+});
 
 test("key lifecycle: connect, use, regenerate, disconnect", async () => {
   const me = as(ann);
