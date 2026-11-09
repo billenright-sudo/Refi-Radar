@@ -1,7 +1,7 @@
 "use strict";
-// The import whitelist and header mapping (lib/intake/fields.js). Pure, so there is no DB here. The three fixtures below are
-// the header rows of an ARIVE funded-loans export, a LendingPad funded-loans export and a Calyx Point export (all best guesses until a real file is seen) and
-// of a plain CRM spreadsheet. Each must map with no picks from the broker, and a column that looks like SSN or date of birth
+// The import whitelist and header mapping (lib/intake/fields.js). Pure, so there is no DB here. The four fixtures below are
+// the header rows of an ARIVE funded-loans export, a LendingPad funded-loans export and a Calyx Point export (all best guesses until a
+// real file is seen), and of a plain CRM spreadsheet. Each must map with no picks from the broker, and a column that looks like SSN or date of birth
 // must never be used.
 const test = require("node:test");
 const assert = require("node:assert");

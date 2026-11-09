@@ -1,5 +1,5 @@
 "use strict";
-// One imported row, turned into a client record. The row's values (from a file row or an ARIVE/Zapier webhook body, keyed by the
+// One imported row, turned into a client record. The row's values (from a file row or an ARIVE or LendingPad Zapier webhook body, keyed by the
 // FIELDS ids in lib/intake/fields.js) are read with the parsers in normalize.js and loan.js and checked. The answer is either
 // { ok: true, record, flags } or { ok: false, code }, where code says why the row cannot be imported (REASONS has the words).
 // Nothing here touches the DB or the network, so it is pure.

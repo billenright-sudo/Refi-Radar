@@ -1,7 +1,8 @@
 "use strict";
-// The loan feed, for ARIVE or LendingPad (the key's los says which). A Zap ("Webhooks by Zapier", POST) sends each funded loan here as it closes; the loan lands in the key owner's
-// book through the same ingest() the file import uses (lib/intake/ingest.js), so a loan is never made twice. Importing never
-// contacts anyone (A1): nothing here sends mail, and the only message is the in-app note ingest() leaves when a client moves.
+// The loan feed, for ARIVE or LendingPad (the key's los says which). A Zap ("Webhooks by Zapier", POST) sends each funded loan here as
+// it closes; the loan lands in the key owner's book through the same ingest() the file import uses (lib/intake/ingest.js), so a loan is
+// never made twice. Importing never contacts anyone (A1): nothing here sends mail, and the only message is the in-app note ingest()
+// leaves when a client moves.
 //   GET    /api/integrations/key    signed in (any role) -> { success, connected, createdAt, lastUsedAt, webhookUrl, los }
 //                                    (los is "arive" | "lendingpad", or null when not connected)
 //   POST   /api/integrations/key    signed in, body { los? } -> { success, key, webhookUrl, createdAt, los }   a NEW key, replacing
@@ -26,11 +27,11 @@
 //        update moved the client to the loan officer the loan names (A6a), or routed_to_you when a broker's key made a new
 //        client and no loan officer in the company matched the one the Zap named (R4)
 //   500  { error: "Server error" }
-// A key's owner decides the book: a loan officer's key always fills their own, a broker's routes by loan_officer (a name, as LendingPad sends it) or loan_officer_email;
-// loan_officer wins when both are given. routed_to_you quotes the loan officer value the Zap sent: the one value an answer echoes,
-// and it goes only to the key's owner, who sent it. Only the
-// keys in BODY_FIELDS are read (A2), so an SSN or a date of birth in the body goes nowhere. The payload is never logged (a failure
-// logs only the error's name).
+// A key's owner decides the book: a loan officer's key always fills their own, a broker's routes by loan_officer (an email or a full
+// name, as LendingPad sends it) or loan_officer_email; loan_officer wins when both are given. routed_to_you quotes the loan officer
+// value the Zap sent: the one value an answer echoes, and it goes only to the key's owner, who sent it. Only the keys in BODY_FIELDS
+// are read (A2), so an SSN or a date of birth in the body goes nowhere. The payload is never logged (a failure logs only the error's
+// name).
 const crypto = require("crypto");
 const express = require("express");
 const cookieParser = require("cookie-parser");

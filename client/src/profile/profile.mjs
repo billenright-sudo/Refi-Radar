@@ -159,7 +159,7 @@ export const PROFILE_WELCOME = "Welcome to Broker Radar — finish your profile 
 const isSet = (value) => typeof value === "string" && value.trim() !== "";
 
 // What a complete profile still lacks, in this order: the career stage and the user's own NMLS ID (everyone), then the company's NMLS
-// ID (a broker only). Google Calendar and ARIVE are optional. `profile` is what GET /api/profile answers with (careerStage, nmlsId and
+// ID (a broker only). Google Calendar and an LOS connection (ARIVE or LendingPad) are optional. `profile` is what GET /api/profile answers with (careerStage, nmlsId and
 // orgNmlsId are null until set); `role` is the user's ("broker" | "lo"). -> string[] (empty when complete)
 export function profileMissing(profile, role) {
   const p = isObject(profile) ? profile : {};

@@ -196,7 +196,7 @@ test("saveNmls: a 400 comes back with the server's message, and an unknown field
   assert.deepEqual(await saveNmls(wrongShape.fetch, "own", "1"), { ok: false, error: "That didn't save. Try again." });
 });
 
-// ── the ARIVE connection (server/routes/integrations.js) ──
+// ── the LOS connection, ARIVE or LendingPad (server/routes/integrations.js) ──
 
 const KEY_URL = "/api/integrations/key";
 const WEBHOOK = "https://app.example.com/api/integrations/loans";
@@ -286,7 +286,7 @@ test("emailChangedNotice: ?emailChanged=1 is the success line and =0 the failure
 
 // ── Round 2, items 1 and 2: profile first ──
 // What counts as a complete profile: the career stage and the user's own NMLS ID for everyone, and the company's NMLS ID for a
-// broker too. Google Calendar and ARIVE are optional. The missing items come back in this order, worded as the banner says them.
+// broker too. Google Calendar and an LOS connection are optional. The missing items come back in this order, worded as the banner says them.
 const STAGE = "how long you've been originating";
 const OWN = "your NMLS ID";
 const COMPANY = "your company's NMLS ID";

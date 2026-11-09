@@ -1,5 +1,5 @@
 "use strict";
-// The broker's client-file import: upload a CSV or Excel export (ARIVE, Calyx Point, a CRM), look at exactly what it will do, then
+// The broker's client-file import: upload a CSV or Excel export (ARIVE, LendingPad, Calyx Point, a CRM), look at exactly what it will do, then
 // confirm. Broker only (R1): the import matches against the whole company's clients and sends loans to loan officers, so a loan
 // officer is refused with a 403. Importing never contacts anyone (A1).
 //   POST /api/import/preview  multipart "file"   -> a Review of the file with the column mapping this server guessed
@@ -25,7 +25,7 @@ const { requireAuth, requireBroker } = require("../middleware/auth");
 const { requireAccess } = require("../middleware/access");
 const { FIELDS, detectMapping, offeredHeaders, cleanMapping, readFields } = require("../lib/intake/fields");
 const { ingest } = require("../lib/intake/ingest");
-// What counts as funded until the broker ticks their own statuses (shared with the ARIVE feed's dead statuses).
+// What counts as funded until the broker ticks their own statuses (shared with the LOS feed's dead statuses).
 const { looksFunded } = require("../lib/intake/normalize");
 
 const router = express.Router();

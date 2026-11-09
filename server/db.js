@@ -77,7 +77,7 @@ if (!clientCols.some((c) => c.name === "last_contact")) {
   db.exec("UPDATE clients SET last_contact = close_date WHERE (last_contact IS NULL OR last_contact = '') AND close_date <> ''");
 }
 
-// What the client import and the ARIVE feed need (lib/intake/). loan_number is the lender's loan number, uppercased, '' when
+// What the client import and the LOS feed (ARIVE or LendingPad) need (lib/intake/). loan_number is the lender's loan number, uppercased, '' when
 // a client has none; it is the first thing an incoming loan is matched on. source says how the client got here ('manual' for
 // one typed in, anything else for an import or the feed). Clients already stored get '' and 'manual'.
 if (!clientCols.some((c) => c.name === "loan_number")) {
@@ -99,7 +99,7 @@ if (!clientCols.some((c) => c.name === "do_not_email")) {
 // Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
 db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
 
-// integration_keys: one key per user for the loan-officer-system (Zapier) feed. Only a hash of the key is stored, so a key can be
+// integration_keys: one key per user for the LOS (loan origination system) feed, ARIVE or LendingPad, sent through Zapier. Only a hash of the key is stored, so a key can be
 // checked but never read back; last_used_at shows whether the feed is still running. The key goes when its user does. `los` is
 // the system the key's Zap reads from ('arive' or 'lendingpad'); keys made before LendingPad existed get 'arive'.
 db.exec(`

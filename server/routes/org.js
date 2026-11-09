@@ -70,7 +70,7 @@ router.patch("/los/:id/stage", (req, res) => {
 // DELETE /api/org/los/:id — a broker removes an accepted loan officer, or cancels a pending invitation (spec §6.3).
 // A pending invite is simply deleted (no seat was ever counted). An accepted LO is kept as a row, so history (Charli's
 // recommendations, the contact log, assistant usage) stays whole, but every way in is closed in ONE transaction: their clients move
-// to the broker, the login is blanked and their session version raised, the address is freed, and their ARIVE key, Google
+// to the broker, the login is blanked and their session version raised, the address is freed, and their LOS feed key, Google
 // connection, a Google sign-in begun but not finished, reset link and email change are deleted. The placeholder email has no "@",
 // so no address validator (invite, sign-up, forgot-password, email change) can ever accept it: it cannot be squatted. Then, BEFORE the
 // answer (Cloud Run throttles work left after it), the new user count goes to Stripe, waiting 8 seconds at most: a failure or a
@@ -87,7 +87,7 @@ router.delete("/los/:id", (req, res) => {
   try {
     db.transaction(() => {
       if (!lo.invite_accepted) {
-        // An import or the ARIVE feed can already have routed clients to a pending invitee (lib/intake/owner.js), and clients
+        // An import or the LOS feed can already have routed clients to a pending invitee (lib/intake/owner.js), and clients
         // cascade-delete with their user: they move to the broker first, so cancelling an invite never loses a client.
         db.prepare("UPDATE clients SET user_id = ? WHERE user_id = ?").run(req.user.id, lo.id);
         db.prepare("DELETE FROM users WHERE id = ? AND org_id = ? AND invite_accepted = 0").run(lo.id, orgId);

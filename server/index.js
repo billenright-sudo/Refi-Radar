@@ -35,7 +35,7 @@ const app = express();
 // Trust Cloud Run's load balancer so express-rate-limit reads the real client IP
 app.set("trust proxy", 1);
 
-// The ARIVE (Zapier) feed reads its own 32 KB body and no cookie on /loans, so it is mounted BEFORE the app-wide 20 MB JSON
+// The LOS (ARIVE or LendingPad, via Zapier) feed reads its own 32 KB body and no cookie on /loans, so it is mounted BEFORE the app-wide 20 MB JSON
 // parser below (R9): that parser would otherwise take the body first and the 32 KB limit would never apply.
 app.use("/api/integrations", integrationRoutes);
 // The Stripe webhook checks a signature over the exact bytes Stripe sent, so it reads its own raw body and must come before the JSON

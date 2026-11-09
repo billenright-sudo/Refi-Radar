@@ -2,15 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { loadConnection, connectLos, disconnectLos, utcTextToDate } from "./profile.mjs";
 import { LOS_CHOICES, CARD_HINT, LOS_QUESTION, CHECKING, connectionCopy } from "./connections.mjs";
 
-// The Connections card on the Profile page: a broker or loan officer connects their LOS here, ARIVE or LendingPad (picked before connecting; once
-// connected the card shows the LOS the server holds, and Regenerate keeps it). The LOS sends each funded loan to Broker Radar
-// through a Zap (Zapier's "Webhooks by Zapier"), signed with a key made on this card. The key is shown once, when it is made, and is
-// kept only in this card's state: leaving the page, or a reload, loses it for good (the server holds only a hash). The calls are
+// The Connections card on the Profile page: a broker or loan officer connects their LOS here, ARIVE or LendingPad. The LOS is picked
+// before connecting; once connected the card shows the LOS the server holds, and Regenerate keeps it. A Zap ("Webhooks by Zapier")
+// sends each funded loan to Broker Radar, signed with a key made on this card. The key is shown once, when it is made, and is kept
+// only in this card's state: leaving the page, or a reload, loses it for good (the server holds only a hash). The calls are
 // profile.mjs's; the server is server/routes/integrations.js.
 //
-// Props: ui = { C, card, mono, Icon, $c } (App's design tokens), isBroker (a broker's loans are routed by loan_officer_email, a loan
-// officer's all go to their own book, so the closing line differs). Every line that differs by LOS comes from connections.mjs. The card makes its own server calls, so ProfileView renders it whether
-// or not the profile has loaded.
+// Props: ui = { C, card, mono, Icon, $c } (App's design tokens), isBroker (a broker's loans are routed by loan_officer, an email or a
+// full name, or by loan_officer_email; a loan officer's all go to their own book, so the closing line differs). Every line that
+// differs by LOS comes from connections.mjs. The card makes its own server calls, so ProfileView renders it whether or not the
+// profile has loaded.
 
 const KEY_ONCE = "Copy your key now. It won't be shown again.";
 const REGENERATE_CONFIRM = "Make a new key? The old one stops working right away, so update your Zap.";
