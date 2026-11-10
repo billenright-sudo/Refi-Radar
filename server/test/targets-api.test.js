@@ -57,6 +57,7 @@ before(async () => {
   app.use(express.json());
   app.use(cookieParser());
   app.use("/api/clients", clientRoutes);
+  app.use("/api/sweeps", require("../routes/sweeps"));
   server = app.listen(0);
   await new Promise((r) => server.once("listening", r));
   base = `http://localhost:${server.address().port}`;
@@ -322,4 +323,112 @@ test("an import of the matched loan leaves the target", () => {
   const after = row(id);
   assert.strictEqual(after.current_rate, 6.25, "the import did update the loan");
   for (const col of TARGET_COLS) assert.strictEqual(after[col], stored[col], col);
+});
+
+// ── reading the list: only the rows the check wrote are read again ──────────
+
+test("presentClients re-reads only the rows the check wrote, in the given order", () => {
+  snap("2026-11-02", LOW);
+  const hit = addClient(orgA, ann, "Hit");
+  const plain = addClient(orgA, ann, "Plain");
+  const done = addClient(orgA, ann, "Done");
+  db.prepare("UPDATE clients SET target_rate = 6 WHERE id IN (?, ?)").run(hit, done);
+  db.prepare("UPDATE clients SET target_checked_on = '2026-11-02', target_checked_rate = 6.2 WHERE id = ?").run(done);
+  // what the caller read before the check, marked so a re-read shows: the check writes Hit only
+  const given = [done, hit, plain].map((id) => ({ ...row(id), name: `${row(id).name} (as given)` }));
+  const out = clientRoutes.presentClients(db, userRow(ann), given);
+  assert.deepStrictEqual(out.map((c) => c.id), [done, hit, plain]);
+  assert.deepStrictEqual(out.map((c) => c.name), ["Done (as given)", "Hit", "Plain (as given)"]);
+  assert.deepStrictEqual([out[1].target.state, out[1].target.reachedOn], ["at_target", "2026-11-02"]);
+  assert.deepStrictEqual([out[0].target.state, out[0].target.estRate], ["watching", 6.2]);
+  assert.strictEqual(out[2].target, null);
+  assert.deepStrictEqual(clientRoutes.presentClients(db, userRow(ann), []), []);
+});
+
+// Every statement run while `fn` runs, with the number of values bound to it.
+async function boundCounts(fn) {
+  const realPrepare = db.prepare;
+  const seen = [];
+  db.prepare = function prepare(sql) {
+    const stmt = realPrepare.call(this, sql);
+    return new Proxy(stmt, {
+      get(target, key) {
+        const value = target[key];
+        if (["run", "get", "all", "iterate"].includes(key)) return (...args) => { seen.push({ sql, bound: args.length }); return value.apply(target, args); };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+  try { await fn(); } finally { db.prepare = realPrepare; }
+  return seen;
+}
+
+test("GET /api/clients binds no value per client, with every client checked, at target and called", async () => {
+  snap("2026-11-02", LOW);
+  const ids = [];
+  for (let i = 0; i < 60; i++) ids.push(addClient(orgA, i % 2 ? lou : ann, `Client ${String(i).padStart(2, "0")}`));
+  db.prepare("UPDATE clients SET target_rate = 6").run();
+  for (const id of ids) db.prepare("INSERT INTO contact_log (client_id, user_id, at, outcome) VALUES (?, ?, '2099-01-01 00:00:00', 'reached')").run(id, ann);
+  let res;
+  const seen = await boundCounts(async () => { res = await as(ann)("GET", "/api/clients"); });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.data.clients.length, 60);
+  assert.ok(res.data.clients.every((c) => c.target.state === "handled"), "the check wrote every row, and each answer shows it");
+  const widest = seen.reduce((m, s) => (s.bound > m.bound ? s : m), { bound: 0 });
+  assert.ok(widest.bound < 10, `a query bound ${widest.bound} values: ${widest.sql}`);
+});
+
+// ── a check that fails never fails the read ──────────────────────────────────
+
+const FAIL_CHECK = `CREATE TEMP TRIGGER fail_target_check BEFORE UPDATE OF target_checked_on ON clients
+  WHEN NEW.target_checked_on IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write failed for Helen Brandt'); END`;
+async function withFailingCheck(fn) {
+  const realError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args.join(" "));
+  db.exec(FAIL_CHECK);
+  try { await fn(); } finally {
+    db.exec("DROP TRIGGER IF EXISTS fail_target_check");
+    console.error = realError;
+  }
+  return logged;
+}
+
+test("a target check that throws: the client routes and the sweep still answer, from the stored target state", async () => {
+  snap("2026-11-02", LOW);
+  const helen = addClient(orgA, ann, "Helen Brandt");
+  db.prepare(FULL_HIT).run(ann, helen);                                 // a stored hit, announced
+  db.prepare("UPDATE clients SET target_announced_on = NULL WHERE id = ?").run(helen);
+  const watched = addClient(orgA, ann, "Watched");
+  db.prepare("UPDATE clients SET target_rate = 6, target_checked_on = '2026-11-01', target_checked_rate = 6.3 WHERE id = ?").run(watched);
+  const fresh = addClient(orgA, ann, "Fresh");
+  db.prepare("UPDATE clients SET target_rate = 6 WHERE id = ?").run(fresh);   // never checked: the check would write it
+
+  const logged = await withFailingCheck(async () => {
+    const list = await as(ann)("GET", "/api/clients");
+    assert.strictEqual(list.status, 200);
+    const byId = Object.fromEntries(list.data.clients.map((c) => [c.id, c.target]));
+    assert.deepStrictEqual([byId[helen].state, byId[helen].reachedOn], ["at_target", "2026-11-02"]);
+    assert.deepStrictEqual([byId[watched].state, byId[watched].estRate, byId[watched].asOf], ["watching", 6.3, "2026-11-01"]);
+    assert.strictEqual(byId[fresh].state, "no_rates");
+
+    const edit = await as(ann)("PUT", `/api/clients/${watched}`, formBody("Watched", { notes: "saved anyway" }));
+    assert.strictEqual(edit.status, 200);
+    assert.strictEqual(row(watched).notes, "saved anyway");
+
+    const call = await as(ann)("POST", `/api/clients/${helen}/contact`);
+    assert.strictEqual(call.status, 200);
+    assert.strictEqual(call.data.client.target.state, "handled");
+    assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM contact_log WHERE client_id = ?").get(helen).n, 1);
+
+    const set = await as(ann)("PUT", `/api/clients/${fresh}/target`, { targetRate: 5.5 });
+    assert.strictEqual(set.status, 200);
+    assert.strictEqual(set.data.client.target.rate, 5.5);
+
+    const sweep = await as(ann)("POST", "/api/sweeps", { rates: live("2026-11-02", LOW) });
+    assert.strictEqual(sweep.status, 200);
+    assert.strictEqual(sweep.data.success, true);
+  });
+  assert.strictEqual(row(fresh).target_checked_on, null, "the failed checks wrote nothing");
+  assert.ok(logged.length >= 5 && logged.every((line) => line === "target check skipped: SqliteError"), logged.join(" | "));
 });

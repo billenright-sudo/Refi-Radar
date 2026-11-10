@@ -173,6 +173,9 @@ test("checkTargets", () => {
   recordSnapshot(live("2026-11-06"), "2026-11-09", "fred");
   const snap = T.checkTargets(db, orgA, Date.UTC(2026, 10, 9, 15, 0, 0));
   assert.equal(snap.obsDate, "2026-11-06");
+  assert.equal(snap.rates.date, "2026-11-06");
+  assert.deepEqual(snap.patchedIds, [a1]);              // the clients it wrote, and no other
+  assert.deepEqual(T.checkTargets(db, orgA, Date.UTC(2026, 10, 9, 16, 0, 0)).patchedIds, []);   // the same observation again
 
   const r1 = get(a1);
   assert.equal(r1.target_checked_on, "2026-11-06");
@@ -185,6 +188,34 @@ test("checkTargets", () => {
   assert.equal(get(a3).target_checked_on, null);        // no target
   assert.equal(get(b1).target_checked_on, null);        // another org
   assert.equal(get(a2).updated_at, stamp);
+});
+
+// A check whose write fails (as a full disk or a locked database would), with client data in the error's message.
+const FAIL_CHECK = `CREATE TEMP TRIGGER fail_target_check BEFORE UPDATE OF target_checked_on ON clients
+  WHEN NEW.target_checked_on IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write failed for Helen Brandt'); END`;
+const quietLog = (fn) => {
+  const realError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args.join(" "));
+  try { return { result: fn(), logged }; } finally { console.error = realError; }
+};
+
+test("safeCheck: a check that throws is logged by name only and falls back to the stored snapshot, writing nothing", () => {
+  const id = addClient(orgA, ann, "Helen Brandt", { rate: 7.5, balance: 320000, value: 400000 });
+  setCols(id, { target_rate: 6.0 });
+  assert.equal(T.safeCheck(db, orgA, Date.UTC(2026, 10, 9, 15)), null);   // no snapshot: as checkTargets
+  recordSnapshot(live("2026-11-06"), "2026-11-09", "fred");
+  db.exec(FAIL_CHECK);
+  try {
+    assert.throws(() => T.checkTargets(db, orgA, Date.UTC(2026, 10, 9, 15)), /write failed/);
+    const { result, logged } = quietLog(() => T.safeCheck(db, orgA, Date.UTC(2026, 10, 9, 15)));
+    assert.deepEqual(result, { rates: live("2026-11-06"), obsDate: "2026-11-06", patchedIds: [] });
+    assert.deepEqual(logged, ["target check skipped: SqliteError"]);
+    assert.equal(get(id).target_checked_on, null, "the failed check's transaction wrote nothing");
+  } finally {
+    db.exec("DROP TRIGGER IF EXISTS fail_target_check");
+  }
+  assert.deepEqual(T.safeCheck(db, orgA, Date.UTC(2026, 10, 9, 15)).patchedIds, [id]);   // a check that works: as checkTargets
 });
 
 test("targetView states, from the stored check", () => {

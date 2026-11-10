@@ -97,12 +97,13 @@ function runSweepTool(_args, ctx) {
   return { data: result, source: "sweep engine" };
 }
 
-// The target check (lib/targets checkTargets) for the caller's org, against the latest FRED observation, on the tools' clock: run
-// before the client rows are read, so a target it reaches shows at once (the views read what the check stored).
+// The target check (lib/targets safeCheck) for the caller's org, against the latest FRED observation, on the tools' clock: run
+// before the client rows are read, so a target it reaches shows at once (the views read what the check stored). A check that
+// fails is logged by name, and the lookup answers from the stored target state.
 function checkedTargets(ctx) {
   const { user, db } = ctx || {};
   if (!user || !db) throw new Error("assistant tool ctx requires { user, db }");
-  return targets.checkTargets(db, user.org_id, clockOf(ctx));
+  return targets.safeCheck(db, user.org_id, clockOf(ctx));
 }
 
 // Each match carries `target`: its target view (lib/targets viewsFor), or null when it has no target.

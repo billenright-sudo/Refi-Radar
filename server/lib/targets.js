@@ -75,6 +75,8 @@ function nextTargetFields(row, est, obsDate, nowUtc) {
 }
 
 // Check every target in the org against the latest FRED observation; writes only the patch columns, never updated_at.
+// -> { rates, obsDate, patchedIds }: the snapshot it used and the clients it wrote (usually none: an observation is checked
+// once), or null when there is no FRED snapshot.
 function checkTargets(db, orgId, nowMs = Date.now()) {
   const snap = latestRealSnapshot(db);
   if (!snap) return null;
@@ -82,17 +84,42 @@ function checkTargets(db, orgId, nowMs = Date.now()) {
   const rows = db.prepare(
     "SELECT * FROM clients WHERE org_id = ? AND target_rate IS NOT NULL AND (target_checked_on IS NULL OR target_checked_on < ?)"
   ).all(orgId, snap.obsDate);
+  const patchedIds = [];
   const apply = db.transaction(() => {
     for (const row of rows) {
       const patch = nextTargetFields(row, estimateRate(row, snap.rates), snap.obsDate, nowUtc);
       if (!patch) continue;
       const cols = Object.keys(patch);
       db.prepare(`UPDATE clients SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...cols.map((c) => patch[c]), row.id);
+      patchedIds.push(row.id);
     }
   });
   apply();
-  return snap;
+  return { ...snap, patchedIds };
 }
+
+// A failure is logged by the error's name only: never a message, which could carry client data (as the briefing's skip).
+const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error");
+
+// checkTargets for a read that has to answer anyway (the client routes, the sweep, Charlie's lookups): a check that throws is
+// logged by name and the read goes on with the stored target state, on the latest FRED snapshot read without writing.
+// -> as checkTargets, with patchedIds [] when the check failed.
+function safeCheck(db, orgId, nowMs = Date.now()) {
+  try {
+    return checkTargets(db, orgId, nowMs);
+  } catch (err) {
+    console.error("target check skipped:", errName(err));
+    try {
+      const snap = latestRealSnapshot(db);
+      return snap ? { ...snap, patchedIds: [] } : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+}
+
+// One bound value for a list of ids, however long (SQLite allows 32,766 per statement): `IN (SELECT value FROM json_each(?))`.
+const idList = (ids) => JSON.stringify(ids);
 
 // Earliest `reached` contact at or after each hit's target_reached_at, in one query: Map<clientId, atUtc>.
 function handledAtFor(db, rows) {
@@ -101,8 +128,8 @@ function handledAtFor(db, rows) {
   if (!hits.length) return map;
   const reachedAt = new Map(hits.map((r) => [r.id, r.target_reached_at]));
   const found = db.prepare(
-    `SELECT client_id, at FROM contact_log WHERE outcome = 'reached' AND client_id IN (${hits.map(() => "?").join(",")}) ORDER BY at`
-  ).all(...hits.map((r) => r.id));
+    "SELECT client_id, at FROM contact_log WHERE outcome = 'reached' AND client_id IN (SELECT value FROM json_each(?)) ORDER BY at"
+  ).all(idList(hits.map((r) => r.id)));
   for (const c of found) {
     if (!map.has(c.client_id) && c.at >= reachedAt.get(c.client_id)) map.set(c.client_id, c.at);
   }
@@ -142,7 +169,7 @@ function viewsFor(db, rows, viewerId) {
   const ownerIds = [...new Set(withTarget.filter((r) => r.user_id !== viewerId).map((r) => r.user_id))];
   const owners = new Map();
   if (ownerIds.length) {
-    const users = db.prepare(`SELECT id, first_name, last_name FROM users WHERE id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds);
+    const users = db.prepare("SELECT id, first_name, last_name FROM users WHERE id IN (SELECT value FROM json_each(?))").all(idList(ownerIds));
     for (const u of users) owners.set(u.id, `${u.first_name} ${u.last_name}`.trim());
   }
   const out = new Map();
@@ -156,5 +183,5 @@ function viewsFor(db, rows, viewerId) {
 
 module.exports = {
   TARGET_MIN, TARGET_MAX, REARM_MARGIN, round3, parseTarget, notBelowError, estimateRate, latestRealSnapshot,
-  nextTargetFields, checkTargets, handledAtFor, targetView, viewsFor,
+  nextTargetFields, checkTargets, safeCheck, idList, handledAtFor, targetView, viewsFor,
 };

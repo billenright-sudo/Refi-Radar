@@ -1045,6 +1045,29 @@ test("Task 4: targetRatesTool lists the caller's clients with a target: at targe
   assert.deepStrictEqual(many.slice(0, 2).map((c) => c.name), ["Zoe Hart", "Amy Lowe"]);
 });
 
+test("a target check that throws: findClient and targetRatesTool still answer, from the stored target state", () => {
+  setTarget(helenH, 6);
+  db.prepare("UPDATE clients SET target_checked_on = '2026-11-09', target_checked_rate = 6.3 WHERE id = ?").run(helenH);
+  fredDay("2026-11-10", 5.875);   // a newer observation: the check would write Helen's hit
+  db.exec(`CREATE TEMP TRIGGER fail_target_check BEFORE UPDATE OF target_checked_on ON clients
+    WHEN NEW.target_checked_on IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write failed for Helen Brandt'); END`);
+  const realError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args.join(" "));
+  try {
+    const found = findClient({ query: "helen" }, brokerHCtx).data.matches[0].target;
+    assert.deepStrictEqual([found.state, found.estRate, found.asOf], ["watching", 6.3, "2026-11-09"]);
+    const listed = targetRatesTool({}, brokerHCtx).data.clients;
+    assert.deepStrictEqual(listed.map((c) => [c.name, c.target.state]), [["Helen Brandt", "watching"]]);
+    assert.deepStrictEqual(logged, ["target check skipped: SqliteError", "target check skipped: SqliteError"]);
+    assert.equal(clientRow(helenH).target_reached_on, null, "the failed check wrote nothing");
+  } finally {
+    console.error = realError;
+    db.exec("DROP TRIGGER IF EXISTS fail_target_check");
+    db.prepare("UPDATE clients SET target_rate = NULL, target_checked_on = NULL, target_checked_rate = NULL WHERE id = ?").run(helenH);
+  }
+});
+
 // ── TOOL_SCHEMA ─────────────────────────────────────────────────────────────
 
 test("Task 4: TOOL_SCHEMA: setTargetRateTool takes a clientId and a targetRate (null clears) and only prepares; targetRatesTool takes nothing", () => {

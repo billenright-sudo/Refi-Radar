@@ -4,8 +4,10 @@
 //   POST /api/assistant/confirm  the ONLY path that writes from a voice action
 //   GET  /api/assistant/usage    org-wide cost totals (broker only)
 //
-// /turn never writes and never 500s: a model or tool failure is a 200 error turn, and so is a turn that runs past its
-// deadline (CHARLI_TURN_DEADLINE_MS, see turnDeadlineMs). A change Charli
+// /turn never writes client data the broker typed, and never 500s: a model or tool failure is a 200 error turn, and so is a turn
+// that runs past its deadline (CHARLI_TURN_DEADLINE_MS, see turnDeadlineMs). On a client it only records target state: the
+// check's own columns (findClient and targetRatesTool run lib/targets safeCheck first, as the client list does) and the
+// briefing's announcement day. A change Charli
 // proposes comes back as `sideEffect` with a code-authored read-back; the browser echoes it to
 // /confirm only after the user says yes. That body is UNTRUSTED browser input, so /confirm accepts
 // six action types, takes org/user from the session alone, and runs the same validation and checks

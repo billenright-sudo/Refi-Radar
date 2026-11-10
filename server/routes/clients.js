@@ -25,15 +25,21 @@ function toClient(row) {
   };
 }
 
-// Clients the way the screens get them: the check runs first (one FRED observation, once), then the rows are re-read by id so a
-// stored hit shows, in `rows` order (a row deleted in between is skipped). Each answer carries `target` (a View, or null).
+// Clients the way the screens get them, from `rows` (raw clients rows, in their order). The check runs first (one FRED
+// observation, once; a check that fails is logged and the stored target state is shown), then only the rows it wrote are read
+// again (usually none), so a hit it records shows at once (one of them deleted in between is skipped). Each answer carries
+// `target` (a View, or null).
 function presentClients(db, user, rows, nowMs = Date.now()) {
-  targets.checkTargets(db, user.org_id, nowMs);
-  const ids = rows.map((r) => r.id);
-  if (!ids.length) return [];
-  const found = db.prepare(`SELECT * FROM clients WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids);
-  const byId = new Map(found.map((r) => [r.id, r]));
-  const fresh = ids.map((id) => byId.get(id)).filter(Boolean);
+  const check = targets.safeCheck(db, user.org_id, nowMs);
+  if (!rows.length) return [];
+  const given = new Set(rows.map((r) => r.id));
+  const stale = new Set((check ? check.patchedIds : []).filter((id) => given.has(id)));
+  const reread = new Map();
+  if (stale.size) {
+    const found = db.prepare("SELECT * FROM clients WHERE id IN (SELECT value FROM json_each(?))").all(targets.idList([...stale]));
+    for (const r of found) reread.set(r.id, r);
+  }
+  const fresh = rows.map((r) => (stale.has(r.id) ? reread.get(r.id) : r)).filter(Boolean);
   const views = targets.viewsFor(db, fresh, user.id);
   return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
 }
@@ -124,7 +130,8 @@ function setTargetForUser(db, user, id, raw, nowMs = Date.now()) {
         .run(rate, user.id, sqliteUtc(nowMs), id);
     }
   }
-  return { status: 200, client: presentClients(db, user, [{ id }], nowMs)[0], receipt: { id, name: row.name, targetRate: rate } };
+  const saved = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+  return { status: 200, client: presentClients(db, user, [saved], nowMs)[0], receipt: { id, name: row.name, targetRate: rate } };
 }
 
 // GET /api/clients — brokers get all org clients, LOs get their own
@@ -260,7 +267,7 @@ router.post("/:id/contact", (req, res) => {
       return done;
     })();
     if (result.error) return res.status(result.status).json({ success: false, error: result.error });
-    res.json({ success: true, client: presentClients(db, req.user, [result.client])[0] });
+    res.json({ success: true, client: presentClients(db, req.user, [db.prepare("SELECT * FROM clients WHERE id = ?").get(id)])[0] });
   } catch (err) {
     console.error("POST /api/clients/:id/contact:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
