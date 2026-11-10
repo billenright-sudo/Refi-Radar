@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dayLabel, targetStatusLine, closestToTarget, isAtTarget } from "./targets.mjs";
+import { dayLabel, targetStatusLine, closestToTarget, isAtTarget, targetToSave, TARGET_RANGE_ERROR, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 
 const TODAY = new Date(2026, 10, 12, 9, 0, 0);
 
@@ -59,4 +59,40 @@ test("isAtTarget: only at_target", () => {
   assert.equal(isAtTarget({ state: "handled" }), false);
   assert.equal(isAtTarget(null), false);
   assert.equal(isAtTarget(undefined), false);
+});
+
+test("targetToSave: an empty field sends nothing; a field that is not a number shows the range copy, never asking the server", () => {
+  assert.equal(TARGET_RANGE_ERROR, "A target rate is a number from 1.000 to 15.000.");
+  for (const raw of ["", "   ", null, undefined]) assert.deepEqual(targetToSave(raw), { send: false }, String(raw));
+  for (const raw of ["abc", "6,5", "6.0.1", "-", "NaN", "Infinity"]) {
+    assert.deepEqual(targetToSave(raw), { send: false, error: TARGET_RANGE_ERROR }, raw);
+  }
+  // a number input the browser couldn't read reports "" with validity.badInput: the broker typed something, so say why
+  assert.deepEqual(targetToSave("", { badInput: true }), { send: false, error: TARGET_RANGE_ERROR });
+  assert.deepEqual(targetToSave("6"), { send: true, targetRate: 6 });
+  assert.deepEqual(targetToSave(" 5.875 "), { send: true, targetRate: 5.875 });
+  // the range and "below the current rate" are the server's to refuse, with its own copy
+  assert.deepEqual(targetToSave("20"), { send: true, targetRate: 20 });
+  assert.ok(!Number.isNaN(targetToSave("6.25").targetRate));
+});
+
+test("ratesMayMoveTargets: a live rates answer re-reads the client list (its target check may have a new day), an estimate does not", () => {
+  const rates = { rate_30yr_fixed: 6.12, date: "2026-11-10", source: "Optimal Blue lock data (2026-11-10)" };
+  assert.equal(ratesMayMoveTargets({ success: true, rates }), true);
+  assert.equal(ratesMayMoveTargets({ success: false, error: "Rate fetch timed out", rates: { ...rates, source: "Estimated — live fetch unavailable" } }), false);
+  assert.equal(ratesMayMoveTargets({ success: true }), false);
+  assert.equal(ratesMayMoveTargets(null), false);
+  assert.equal(ratesMayMoveTargets(undefined), false);
+});
+
+test("replaceClient: the answer's client takes its row's place, in order; anything else leaves the list as it is", () => {
+  const list = [{ id: 1, name: "A" }, { id: 2, name: "B", target: { state: "at_target" } }, { id: 3, name: "C" }];
+  const handled = { id: 2, name: "B", target: { state: "handled" } };
+  const out = replaceClient(list, handled);
+  assert.deepEqual(out, [list[0], handled, list[2]]);
+  assert.notEqual(out, list, "a new list, so React redraws");
+  assert.deepEqual(list[1].target.state, "at_target", "the old list is not changed");
+  assert.equal(replaceClient(list, { id: 9, name: "Z" }), list);
+  assert.equal(replaceClient(list, null), list);
+  assert.equal(replaceClient(list, {}), list);
 });

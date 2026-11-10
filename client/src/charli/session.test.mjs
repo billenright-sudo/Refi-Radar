@@ -1350,7 +1350,7 @@ test("a career-stage change confirmed by voice (the user asked Charlie to set it
   assert.ok(server.calls.filter((c) => c.url === "/api/auth/me").length > meCallsBefore, "re-read /api/auth/me after the stage was set");
 });
 
-test("a confirmed setTargetRate calls onClientsChanged once; other confirmed types do not", async () => {
+test("a confirmed setTargetRate calls onClientsChanged once; a career stage change does not", async () => {
   const TARGET_EFFECT = { type: "setTargetRate", clientId: 7, targetRate: 6, confirmId: "6b1d2c3e-4b5f-4a6b-8c7d-9e0f1a2b3c4d" };
   const make = (effect, onClientsChanged) => setup({
     options: { onClientsChanged },
@@ -1375,6 +1375,44 @@ test("a confirmed setTargetRate calls onClientsChanged once; other confirmed typ
   await b.session.submit("set my stage");
   await b.session.submit("yes");
   assert.equal(m, 0);
+});
+
+test("a confirmed logContact calls onClientsChanged once, reached or not (a reached call takes At target off the screens)", async () => {
+  for (const outcome of ["reached", "not_reached"]) {
+    const effect = { ...SIDE_EFFECT, outcome, notes: "" };
+    let n = 0;
+    const { session } = setup({
+      options: { onClientsChanged: () => { n += 1; } },
+      routes: {
+        "POST /api/assistant/turn": queue(
+          turnReply("Good morning, Ann. Want a full sweep?"),
+          turnReply("Just to confirm — log a contact for Helen Brandt?", { sideEffect: effect }),
+        ),
+        "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done — I logged a contact for Helen Brandt." }),
+      },
+    });
+    await session.open();
+    await session.submit("I reached Helen");
+    await session.submit("yes");
+    assert.equal(n, 1, outcome);
+  }
+
+  // a refused one changes nothing on the screens
+  let refused = 0;
+  const { session } = setup({
+    options: { onClientsChanged: () => { refused += 1; } },
+    routes: {
+      "POST /api/assistant/turn": queue(
+        turnReply("Good morning, Ann. Want a full sweep?"),
+        turnReply("Just to confirm — log a contact for Helen Brandt?", { sideEffect: { ...SIDE_EFFECT } }),
+      ),
+      "POST /api/assistant/confirm": () => reply(404, { success: false, error: "Client not found" }),
+    },
+  });
+  await session.open();
+  await session.submit("I reached Helen");
+  await session.submit("yes");
+  assert.equal(refused, 0);
 });
 
 // ── plumbing ─────────────────────────────────────────────────────────────────

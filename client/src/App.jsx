@@ -23,7 +23,7 @@ import {
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
-import { targetStatusLine, closestToTarget, isAtTarget } from "./targets.mjs";
+import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
 
 // ---------------------------------------------------------------------------
@@ -1483,6 +1483,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
   const [targetInput, setTargetInput] = useState(client.target ? client.target.rate.toFixed(3) : "");
   const [targetSaving, setTargetSaving] = useState(false);
   const [targetError, setTargetError] = useState("");
+  const targetField = useRef(null);   // its validity says when something was typed that the number field can't read (value "")
   const shownTargetRate = client.target ? client.target.rate : null;
   useEffect(() => { setTargetInput(shownTargetRate != null ? shownTargetRate.toFixed(3) : ""); }, [shownTargetRate]);   // Charlie changed it
 
@@ -1504,9 +1505,12 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
       setTargetSaving(false);
     }
   };
+  // An empty field saves nothing; one that is not a number says why and never reaches the server (a NaN would clear the target).
   const onSaveTarget = () => {
-    if (String(targetInput).trim() === "") return;
-    saveTarget(Number(targetInput));
+    const badInput = Boolean(targetField.current && targetField.current.validity && targetField.current.validity.badInput);
+    const plan = targetToSave(targetInput, { badInput });
+    if (plan.error) { setTargetError(plan.error); return; }
+    if (plan.send) saveTarget(plan.targetRate);
   };
   const statusLine = targetStatusLine(client.target, new Date());
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1600,7 +1604,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
         <div style={{ display: "flex", gap: 8, alignItems: "center", ...ph(isPhone, { flexWrap: "wrap" }) }}>
           <input
             type="number" step="0.001" inputMode="decimal" placeholder="6.000" aria-label="Target rate"
-            value={targetInput} onChange={e => setTargetInput(e.target.value)}
+            ref={targetField} value={targetInput} onChange={e => setTargetInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !targetSaving) onSaveTarget(); }}
             style={{ ...inputStyle, width: 140, ...ph(isPhone, { width: "100%" }) }}
           />
@@ -2327,7 +2331,7 @@ const PRI_BADGE = {
 const fmtHeadline = (o) =>
   o.unit === "%" ? `${(+o.headline).toFixed(2)}%` : (o.unit === "$/mo" ? `${$c(o.headline)}/mo` : $c(o.headline));
 
-const SweepsView = ({ rates, clients, setSelected, setView }) => {
+const SweepsView = ({ rates, clients, setSelected, setView, onClientUpdated }) => {
   const isPhone = useIsPhone();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2349,7 +2353,14 @@ const SweepsView = ({ rates, clients, setSelected, setView }) => {
 
   const openClient = (id) => { const c = clients.find(x => x.id === id); if (c) { setSelected(c); setView("client-detail"); } };
   const logContact = async (id) => {
-    try { const res = await fetch(`/api/clients/${id}/contact`, { method: "POST" }); const d = await res.json(); if (d.success) setLogged(p => ({ ...p, [id]: true })); } catch { /* ignore */ }
+    try {
+      const res = await fetch(`/api/clients/${id}/contact`, { method: "POST" });
+      const d = await res.json();
+      if (d.success) {
+        setLogged(p => ({ ...p, [id]: true }));
+        if (d.client && onClientUpdated) onClientUpdated(d.client);   // the call handles a target: "At target" leaves the list
+      }
+    } catch { /* ignore */ }
   };
 
   return (
@@ -2860,7 +2871,8 @@ export default function App() {
       .finally(() => setClientsLoading(false));
   }, [appOpen]);
 
-  // Charlie changed a client (a target rate): re-read the list, and the open client page with it.
+  // Charlie changed a client (a target rate, a logged call), or a day of live rates came in (the list's target check runs on it):
+  // re-read the list, and the open client page with it.
   const selectedIdRef = useRef(null);
   selectedIdRef.current = selected ? selected.id : null;
   const reloadClients = useCallback(async () => {
@@ -2878,6 +2890,8 @@ export default function App() {
     setClients(prev => prev.map(x => (x.id === client.id ? client : x)));
     setSelected(client);
   };
+  // A route's answer for one client, put into the list (the Sweeps page's Log contact: its answer is handled, not At target).
+  const applyClient = useCallback((client) => setClients(prev => replaceClient(prev, client)), []);
 
   const ratesAskedOn = useRef(null);   // the local day rates were last asked for (see the new-day check below)
   const fetchRates = useCallback(async () => {
@@ -2892,6 +2906,8 @@ export default function App() {
         setLastFetched(new Date());
         if (!data.success) setRatesError(data.error || "Could not fetch the latest rates — showing estimates");
       }
+      // The list loaded before these rates did: read it again so its target check runs on the day just stored (Refresh Now too).
+      if (ratesMayMoveTargets(data)) reloadClients().catch(err => console.error("Failed to reload clients:", err));
     } catch {
       setRatesError("Server error — showing estimated rates");
       setRates({ rate_30yr_fixed: 6.87, rate_15yr_fixed: 6.18, rate_5_1_arm: 6.52, date: new Date().toISOString().split("T")[0], source: "Estimated — server error" });
@@ -2899,7 +2915,7 @@ export default function App() {
     } finally {
       setRatesLoading(false);
     }
-  }, []);
+  }, [reloadClients]);
 
   const fetchTreasury = useCallback(async () => {
     try {
@@ -3058,7 +3074,7 @@ export default function App() {
                 scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn}
               />
             )}
-            {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} />}
+            {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} onClientUpdated={applyClient} />}
             {view === "profile"       && profileAsk && <ProfilePrompt missing={profileAsk} onSkip={skipProfile} />}
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} onProfile={handleProfileTaken} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}

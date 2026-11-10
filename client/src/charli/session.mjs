@@ -252,6 +252,7 @@ export const localDateOf = (date) =>
 //   speakGreeting  true (the default) speaks the greeting on open(); false shows it, in the transcript and the history, but says
 //              nothing until briefMe() (the morning briefing is read, not played at the user). Applies to the greeting only.
 //   now        () -> Date, the device clock (injected so tests can move it); defaults to new Date()
+//   onClientsChanged  () -> (Promise), called once after a confirmed setTargetRate or logContact, so the client screens re-read
 // Returns { getState, subscribe, setRates, open, leave, submit, heard, confirmPending, cancelPending, setStage,
 //           briefMe, notice, dispose }.
 //
@@ -528,7 +529,9 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
       addTurn({ role: "assistant", content: reply });
       speak(reply);
       if (sideEffect.type === "setCareerStage") await refreshStage(res.data.result && res.data.result.stage);
-      if (sideEffect.type === "setTargetRate" && typeof onClientsChanged === "function") { try { await onClientsChanged(); } catch { /* the list refreshes next load */ } }
+      // a target set or cleared, or a logged call (a reached one takes "At target" off the list and Rate Watch): the screens re-read
+      const changesClients = sideEffect.type === "setTargetRate" || sideEffect.type === "logContact";
+      if (changesClients && typeof onClientsChanged === "function") { try { await onClientsChanged(); } catch { /* the list refreshes next load */ } }
       return;
     }
     if (away && (stillWorking(res) || isRetryable(res))) {

@@ -60,3 +60,29 @@ export function closestToTarget(clients, limit = 5) {
 }
 
 export const isAtTarget = (target) => target != null && target.state === "at_target";
+
+// The server's range copy (server/lib/targets.js RANGE_ERROR), shown here for a field that is not a number at all.
+export const TARGET_RANGE_ERROR = "A target rate is a number from 1.000 to 15.000.";
+
+// What the client page's target Save does with the field: { send: false } for an empty one (nothing to save); { send: false,
+// error } for one that is not a number (a number input the browser couldn't read says "" with badInput), so a typo never reaches
+// the server, where a NaN body would read as null and clear the target; else { send: true, targetRate } for PUT
+// /api/clients/:id/target. The range and "below the current rate" are the server's to refuse.
+export function targetToSave(raw, { badInput = false } = {}) {
+  const text = String(raw ?? "").trim();
+  if (text === "") return badInput ? { send: false, error: TARGET_RANGE_ERROR } : { send: false };
+  const n = Number(text);
+  if (!Number.isFinite(n)) return { send: false, error: TARGET_RANGE_ERROR };
+  return { send: true, targetRate: n };
+}
+
+// Whether a POST /api/rates answer may have stored a new day of live rates: then the client list is read again, so its target
+// check runs on that day (as the briefing's does) and the screens say what Charlie says. An estimate never moves a target.
+export const ratesMayMoveTargets = (data) => Boolean(data && data.success === true && data.rates);
+
+// `clients` with the row of `client.id` replaced by `client` (a route's answer for that client), in order; the same list when
+// there is no such row.
+export function replaceClient(clients, client) {
+  if (!client || client.id == null || !(clients || []).some((c) => c.id === client.id)) return clients;
+  return clients.map((c) => (c.id === client.id ? client : c));
+}
