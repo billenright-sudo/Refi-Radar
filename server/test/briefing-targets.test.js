@@ -221,6 +221,19 @@ test("five at once: the overflow says clients", async () => {
   assert.ok(r.reply.includes(" Plus 2 more clients at their target."), r.reply);
 });
 
+test("an overflow client at target with a check-in due is counted once, as at target", async () => {
+  const set = HIT();
+  for (const name of ["Abe Ames", "Bo Banks", "Cy Cole"]) addClient(annId, name, { target: 6 });
+  const di = addClient(annId, "Di Dunn", { target: 6, lastContact: "2026-01-01" });   // a check-in is due too
+  const ed = addClient(annId, "Ed Ely", { rate: 4.0, lastContact: "2026-01-02" });    // no target, a check-in due
+  const r = await brief(annId, { set, localDate: DAY1 });
+  const dueIds = refi.runSweep(db.prepare("SELECT * FROM clients WHERE user_id = ?").all(annId), set, new Date(at(DAY1, 8)))
+    .checkIns.map((c) => c.clientId).sort();
+  assert.deepStrictEqual(dueIds, [di, ed].sort(), "Di and Ed are due a check-in");
+  assert.ok(r.reply.includes(" Plus 1 more client at their target. Plus 1 more check-in due."), r.reply);
+  assert.deepStrictEqual(announced(di), [null]);
+});
+
 test("bypasses the 7-day and 3-day exclusions", async () => {
   const set = HIT();
   const gil = addClient(annId, "Gil Hart", { target: 6 });

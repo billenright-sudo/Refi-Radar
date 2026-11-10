@@ -12,7 +12,8 @@
 //   3. the call list (callList.js) over the user's OWN clients, less the ones its follow-ups ask about, recorded
 //      as today's 'briefing' recommendations (a carried client it lists is no longer carried), then "Plus N more clients at their
 //      target." for the newly-at-target clients it had no room for, and "Plus N more check-ins due." for the due clients it could
-//      have listed but did not. Clients at their target rate (target-rate alerts spec 4.5, read after targets.checkTargets has run
+//      have listed but did not (one already counted as at target is not counted again). Clients at their target rate (target-rate
+//      alerts spec 4.5, read after targets.checkTargets has run
 //      on the latest FRED observation) come right after the carried ones: first the newly reached, "<name> is at target,
 //      estimated 5.875% against a 6.000% target", whatever the sweep or the 7- and 3-day exclusions say, and only a client the
 //      follow-ups ask about waits. The first briefing that lists one announces it (target_announced_on = today, in the same
@@ -306,13 +307,14 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
 
   // The newly-at-target clients the list had no room for (one listed as carried is listed).
   const picked = new Set(picks.map((p) => p.clientId));
-  const unlisted = newly.filter((t) => !picked.has(t.clientId)).length;
-  const targetLine = unlisted > 0 ? `Plus ${plural(unlisted, "more client", "more clients")} at their target.` : null;
+  const unlisted = new Set(newly.filter((t) => !picked.has(t.clientId)).map((t) => t.clientId));
+  const targetLine = unlisted.size > 0 ? `Plus ${plural(unlisted.size, "more client", "more clients")} at their target.` : null;
 
-  // The due check-ins the list could have named and did not: own and speakable, not left off, not listed, not asked about.
+  // The due check-ins the list could have named and did not: own and speakable, not left off, not listed, not asked about, and
+  // not already counted as at their target.
   const listable = new Set(speakableRows.map((r) => r.id));
   const more = new Set(((sweep && sweep.checkIns) || []).map((r) => r.clientId)
-    .filter((id) => listable.has(id) && !excludeIds.has(id) && !picked.has(id) && !followUpClientIds.has(id))).size;
+    .filter((id) => listable.has(id) && !excludeIds.has(id) && !picked.has(id) && !followUpClientIds.has(id) && !unlisted.has(id))).size;
   let moreLine = null;
   if (more > 0) moreLine = picks.length ? `Plus ${more} more check-in${more === 1 ? "" : "s"} due.` : `You have ${plural(more, "check-in")} due.`;
 
