@@ -1505,6 +1505,25 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
       setTargetSaving(false);
     }
   };
+  // A client at target who isn't on Sweeps had no one-tap way to log the call (Bill 2026-11-10): the same route as Sweeps' Log
+  // contact, and its answer carries the handled target, so the badge and Rate Watch row clear at once.
+  const logTargetContact = async () => {
+    setTargetSaving(true);
+    setTargetError("");
+    try {
+      const res = await fetch(`/api/clients/${client.id}/contact`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.client) {
+        if (onUpdated) onUpdated(data.client);
+      } else {
+        setTargetError(data.error || "Could not log the contact. Try again.");
+      }
+    } catch {
+      setTargetError("Could not log the contact. Try again.");
+    } finally {
+      setTargetSaving(false);
+    }
+  };
   // An empty field saves nothing; one that is not a number says why and never reaches the server (a NaN would clear the target).
   const onSaveTarget = () => {
     const badInput = Boolean(targetField.current && targetField.current.validity && targetField.current.validity.badInput);
@@ -1611,6 +1630,9 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
           <button onClick={onSaveTarget} disabled={targetSaving} style={{ ...btnPrimary, opacity: targetSaving ? 0.6 : 1 }}>Save</button>
           {client.target && (
             <button onClick={() => saveTarget(null)} disabled={targetSaving} style={{ ...btnGhost, opacity: targetSaving ? 0.6 : 1 }}>Clear</button>
+          )}
+          {isAtTarget(client.target) && (
+            <button onClick={logTargetContact} disabled={targetSaving} style={{ ...btnGhost, color: C.green, opacity: targetSaving ? 0.6 : 1 }}>Log contact</button>
           )}
         </div>
         {targetError && <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>{targetError}</div>}
