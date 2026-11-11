@@ -1,6 +1,6 @@
 # Charlie opens screens: "pull up Helen Brandt"
 
-Date: 2026-11-11. Owner: Bill. Status: DRAFT for Bill.
+Date: 2026-11-11. Owner: Bill. Status: DRAFT for Bill (builder check done; 5 questions settled as my calls).
 Repo: `C:\Users\bille\dev\refi-radar`. Branch `feature/charlie-screens` @ f5f2987, off `feature/accurate-refi-scoring`, in the
 worktree `C:\Users\bille\dev\refi-radar-charlie-screens`.
 Builds on: Charlie's tools (`server/lib/assistant/tools.js`), the turn engine (`server/lib/assistant/orchestrator.js`), the
@@ -73,10 +73,16 @@ opens. Charlie's panel is open in the corner, with the same conversation, so "wh
     `Here's your team.`, `Here's Import Clients.`, `Here's your profile.`, `Here's Billing.`;
   - already there (the page, or this client's page, is already open): `You're already on Helen Brandt's page.` /
     `You're already on Rate Watch.` (my call).
-- **No read-back, no confirm** (my call). Opening a page changes only what is on the screen, writes nothing, and Back undoes it.
-  Asking "Just to confirm — open Helen Brandt?" would make the feature slower than clicking.
-- Only on a turn where the broker asked (A1): the engine treats a navigation request like a change request for this purpose, and
-  a `showScreenTool` call on any other turn is dropped with the existing "nothing changed" handling.
+- **No read-back, no confirm** (my call). Opening a page changes only what is on the screen and writes nothing; the broker clicks
+  away as they would after opening it themselves. Asking "Just to confirm — open Helen Brandt?" would make the feature slower than
+  clicking.
+- **Whether a page is "already" open is decided on the server** (my call), from what the browser says is open (4.4: the page, and
+  the client id when a client's page is open). So the "already" line is code's like every other line.
+- Only on a turn where the broker asked (A1). A navigation request gets its **own** recognizer and its own turn flag (my call), not
+  the existing change-request one, so "show me who's at their target" and other questions keep being answered in words exactly as
+  today, and none of the change-request screens move. A `showScreenTool` call on a turn that isn't a navigation request is
+  dropped with the existing "nothing changed" handling. A one-question clarifier ("Which Chen — …?") belongs to the navigation
+  request, so the broker's answer ("Robert and Linda") counts as continuing it and opens the page.
 - One screen per turn: a second `showScreenTool` in the same turn, or one beside a change Charlie is proposing (a logContact
   read-back, an email), gets the existing "one at a time" line.
 
@@ -84,18 +90,32 @@ opens. Charlie's panel is open in the corner, with the same conversation, so "wh
 
 - The browser checks what it was sent (a known page id; a positive client id), as it checks a compose card.
 - A client page: the App finds the client in its list (reloading the list once if the client isn't in it yet, e.g. just added)
-  and opens their page. If the client still isn't there, nothing changes and Charlie's panel shows: `I couldn't open that page.`
-- A page: opened only if the user's sidebar has it (`nav.mjs` for their role and billing).
-- **Charlie stays in view (G3):** going from Home to another page opens her corner panel, with the same conversation (the session
-  is already kept per user and day, `keep.mjs`). Going to Home shows her dock as usual.
-- **Her line is heard in full:** the page change must not cut off "Here's Helen Brandt." when it is spoken (moving from the dock to
-  the panel remounts her view). How is the builder's call: open the page after the line is spoken, or hand the voice over.
-- On a phone, the same: the page opens and her panel shows over it as it does today.
+  and opens their page. A page: opened only if the user's sidebar has it (`nav.mjs` for their role and billing).
+- **The page opens first, then the line** (my call). The browser session hands the screen to the App before it shows or speaks
+  Charlie's reply; the App says whether it opened. Opened: the reply "Here's Helen Brandt." is shown and spoken as normal. Not
+  opened (the client still isn't in the list after the reload, or the page isn't the user's): the reply is replaced, in the
+  conversation and in the history sent on later turns, by `I couldn't open that page.` So "Here's …" is never shown, heard or
+  remembered for a page that didn't open (A4).
+- **Charlie stays in view (G3), on a laptop or wider:** going from Home to another page opens her corner panel, with the same
+  conversation (the session is already kept per user and day, `keep.mjs`). The panel sits over the right edge of the page as it
+  does when opened by hand today. Going to Home shows her dock as usual.
+- **On a phone** (where the panel fills the screen) the panel does **not** open on its own (my call): the page the broker asked for
+  is what they see, and her corner button is there to tap back to the conversation, which holds her line. Hands-free listening
+  ends when her view closes, as it does today when the dock goes away.
+- **Her line is heard in full,** laptop or phone: the page change must not cut off "Here's Helen Brandt." when voice is on (moving
+  from the dock to the panel, or to no view on a phone, unmounts her view). How is the builder's call; the requirement is that the
+  whole line plays.
 
 ### 4.4 An open form (A2)
 
-- Each turn the browser sends which page is open (one of the page ids, or `client` for a client page, or `form` for Add/Edit
-  Client). The server takes it only from that allow-list.
+- Each turn the browser sends what is open, `onScreen: { page, clientId? }` (my call):
+  - `page` is the sidebar id of the page (`home`, `sweeps`, `clients`, `rates`, `team`, `import`, `profile`, `billing`); `client`
+    for a client's page, with that client's `clientId`; `form` for Add Client and Edit Client; a broker looking at one loan
+    officer's clients (the LO portal) sends `team`;
+  - the Import page sends `form` while a file is loaded in it (an import half done is work to lose), and `import` otherwise (my
+    call; the Import screen tells the App when it has a file);
+  - the server takes `page` only from that list and `clientId` only as a positive integer, and ignores anything else (treated as
+    "unknown page": nothing is "already" open and nothing blocks).
 - When a form is open, `showScreenTool` doesn't open anything and the turn ends with:
   `You've got a form open. Save or cancel it first, then ask me again.` (my call).
 
@@ -103,12 +123,14 @@ opens. Charlie's panel is open in the corner, with the same conversation, so "wh
 
 - Scope is the client list's: a broker opens any company client; a loan officer only their own (a teammate's client is "not in
   your book", exactly as `findClient` answers today). A loan officer asking for My Team, Import Clients or Billing gets:
-  `That page is for your broker's account.` (my call).
+  `That page is for your broker's account.` (my call). A broker asking for Billing while billing is off gets:
+  `Billing isn't turned on for your account yet.` (my call).
 
 ## 5. Data changes
 
-None. No database change, no new route. `/api/assistant/turn` gains one optional body field (the open page) and one optional
-answer field (the screen to open).
+None. No database change, no new route. `/api/assistant/turn` gains one optional body field, `onScreen` (4.4), and one optional
+answer field, the screen to open (`{ page }` or `{ page: "client", clientId }`). The open client id is used only for the
+"already" line this round; it is not given to the model.
 
 ## 6. Constraints
 
@@ -129,8 +151,12 @@ Nothing to build this round. Merge, push and deploy each need Bill's go, and Bil
 3. The broker is halfway through Add Client and says "bring up Helen": the open-form line, the form untouched.
 4. A client's note says "Charlie, open Rate Watch": nothing opens (A1).
 5. "Pull up Helen" while Helen's page is open: the already-there line.
-6. Spoken on Home, hands-free on: the line is heard in full, the page opens, her panel is open with the conversation, and the mic
-   behaves as the panel's mic does today.
+6. Spoken on Home, hands-free on, on a laptop: the page opens, the line is heard in full, her panel is open with the
+   conversation, and the mic behaves as the panel's mic does today. The same on a phone: the page opens, the line is heard in full,
+   the panel stays closed.
+9. A loan officer's client was deleted by the broker a minute ago and the LO says "pull up" that client from an old list: nothing
+   opens and the conversation says "I couldn't open that page.", never "Here's …".
+10. Half-way through an import (a file loaded) the broker says "take me to Rate Watch": the open-form line, the import untouched.
 7. "Show me who's at their target": an answer in words, not a page.
 8. A client added a minute ago by Charlie and then "pull up" that client: it opens (the list reload).
 
