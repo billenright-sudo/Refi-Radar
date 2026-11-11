@@ -519,7 +519,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "center", margin: "0.2rem 0 1rem" }}>
-          <CharliePortrait state={face} shape="portrait" width={168} micOpen={mic === "live" && !paused} />
+          <CharliePortrait state={face} shape="portrait" width={168} />
         </div>
         {statusRow}
         {banners}
@@ -552,8 +552,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
           under 100px tall; the portrait fills the slot's height and keeps its shape (dockLayout.mjs portraitSlot) */}
       <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", ...(stacked || width != null ? { flex: "none" } : portraitSlot()) }}>
         {stacked
-          ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} micOpen={mic === "live" && !paused} ariaHideName />
-          : <CharliePortrait state={face} shape="portrait" {...(width != null ? { width } : { height: "100%" })} micOpen={mic === "live" && !paused} ariaHideName />}
+          ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} ariaHideName />
+          : <CharliePortrait state={face} shape="portrait" {...(width != null ? { width } : { height: "100%" })} ariaHideName />}
       </div>
 
       {statusRow}

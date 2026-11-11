@@ -1,4 +1,4 @@
-// Pure rules for the portrait card: which clip plays, and the small status chip under her name.
+// Pure rules for the portrait card: which clip plays, and its box.
 
 export { PORTRAIT } from "./face.mjs";
 
@@ -6,13 +6,6 @@ export { PORTRAIT } from "./face.mjs";
 export function clipToPlay({ state, hidden = false, reducedMotion = false } = {}) {
   if (hidden || reducedMotion) return null;
   return state === "talking" ? "talk" : "idle";
-}
-
-export function statusTag({ state, micOpen = false } = {}) {
-  if (state === "talking") return { text: "Speaking…", tone: "blue" };
-  if (state === "thinking") return { text: "Thinking…", tone: "amber" };
-  if (micOpen) return { text: "Listening", tone: "green" };
-  return null;
 }
 
 // The card's box. A `height` (CSS length) keeps her whole 4:5 frame, head and shoulders, and the width follows from it (the dock);
