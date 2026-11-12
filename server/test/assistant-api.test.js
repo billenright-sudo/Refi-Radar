@@ -2539,3 +2539,78 @@ test("Task 4: /turn hands up setTargetRateTool's change with its read-back and c
   assert.equal(ok.data.reply, "Done — Hope Lin's target rate is 6.000%.");
   assert.equal(targetRow(hope).target_rate, 6);
 });
+
+// ── screens: onScreen in, screen out ─────────────────────────────────────────
+
+const { FORM_OPEN, BILLING_OFF } = require("../lib/assistant/navigation");
+const { TERMS_VERSION, PRIVACY_VERSION } = require("../lib/terms");
+const helenScreen = addClientRow(orgA, ann, { name: "Helen Brandt", lastContact: "2024-01-01" });
+const turnBody = (text, extra = {}) => ({ messages: userMsgs(text), rates: LIVE, ...extra });
+const pullUpHelen = () => fakeClient([
+  useTool("findClient", { query: "Helen Brandt" }),
+  useTool("showScreenTool", { page: "client", clientId: helenScreen }, "toolu_2"),
+  say("Pulling up Helen Brandt now."),
+]);
+
+test("turn screens: a page request answers screen and the code's line", async () => {
+  setClient(pullUpHelen());
+  const r = await as(ann)("POST", "/api/assistant/turn", turnBody("pull up Helen Brandt"));
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, "Here's Helen Brandt.");
+  assert.deepStrictEqual(r.data.screen, { page: "client", clientId: helenScreen });
+  assert.equal(r.data.sideEffect, undefined);
+  setClient(fakeClient([useTool("showScreenTool", { page: "rates" }), say("Taking you there.")]));
+  const rw = await as(ann)("POST", "/api/assistant/turn", turnBody("take me to Rate Watch"));
+  assert.equal(rw.data.reply, "Here's Rate Watch.");
+  assert.deepStrictEqual(rw.data.screen, { page: "rates" });
+});
+
+test("turn screens: onScreen form answers the form line and no screen", async () => {
+  setClient(fakeClient([useTool("showScreenTool", { page: "rates" }), say("Taking you there.")]));
+  const r = await as(ann)("POST", "/api/assistant/turn", turnBody("take me to Rate Watch", { onScreen: { page: "form" } }));
+  assert.equal(r.data.reply, FORM_OPEN);
+  assert.equal("screen" in r.data, false);
+});
+
+test("turn screens: a bad onScreen is ignored, the turn answers as with none", async () => {
+  for (const onScreen of ["rates", { page: "admin" }, { page: "client", clientId: -1 }]) {
+    setClient(fakeClient([useTool("showScreenTool", { page: "rates" }), say("Taking you there.")]));
+    const r = await as(ann)("POST", "/api/assistant/turn", turnBody("take me to Rate Watch", { onScreen }));
+    assert.equal(r.data.reply, "Here's Rate Watch.", JSON.stringify(onScreen));
+    assert.deepStrictEqual(r.data.screen, { page: "rates" });
+  }
+});
+
+test("turn screens: Billing opens only with billingConfig enabled and a gateway on the app", async () => {
+  const askBilling = async () => {
+    setClient(fakeClient([useTool("showScreenTool", { page: "billing" }), say("Opening it.")]));
+    return as(ann)("POST", "/api/assistant/turn", turnBody("take me to Billing"));
+  };
+  const saved = { c: app.get("billingConfig"), g: app.get("billingGateway") };
+  try {
+    app.set("billingConfig", undefined); app.set("billingGateway", undefined);
+    const off = await askBilling();
+    assert.equal(off.data.reply, BILLING_OFF);
+    assert.equal("screen" in off.data, false);
+    // with billing on, the access gate wants the broker's terms accepted and the org exempt
+    db.prepare("UPDATE organizations SET billing_exempt = 1 WHERE id = ?").run(orgA);
+    for (const [doc, v] of [["terms", TERMS_VERSION], ["privacy", PRIVACY_VERSION]]) {
+      db.prepare("INSERT INTO terms_acceptances (user_id, document, version, accepted_at, ip) VALUES (?, ?, ?, ?, '127.0.0.1')").run(ann, doc, v, Date.now());
+    }
+    app.set("billingConfig", { enabled: true }); app.set("billingGateway", {});
+    const on = await askBilling();
+    assert.equal(on.data.reply, "Here's Billing.");
+    assert.deepStrictEqual(on.data.screen, { page: "billing" });
+  } finally {
+    app.set("billingConfig", saved.c); app.set("billingGateway", saved.g);
+    db.prepare("UPDATE organizations SET billing_exempt = 0 WHERE id = ?").run(orgA);
+    db.prepare("DELETE FROM terms_acceptances WHERE user_id = ?").run(ann);
+  }
+});
+
+test("turn screens: a greeting-style chat turn with onScreen is unchanged", async () => {
+  setClient(fakeClient([say("Hello there.")]));
+  const r = await as(ann)("POST", "/api/assistant/turn", turnBody("hello", { onScreen: { page: "home" } }));
+  assert.equal(r.data.reply, "Hello there.");
+  assert.equal("screen" in r.data, false);
+});

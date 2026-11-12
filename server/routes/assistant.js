@@ -15,6 +15,8 @@
 // synchronously, in one transaction; the sixth, createEvent, books on the user's own Google calendar, which a transaction cannot wait for.
 // A broker who declines the briefing's follow-up question ("skip it", with its followUpRecId) is answered by code: see skipFollowUp.
 // An email Charli sets up for the broker (draftEmailTool) comes back from /turn as `compose` and is never confirmed or sent.
+// The browser sends what it has open as `onScreen` ({ page } or { page: "client", clientId }, cleaned by cleanOnScreen); when the broker asks
+// Charli to open a page, /turn answers `screen` ({ page } or { page: "client", clientId }) with the code's own line. Nothing to confirm.
 const crypto = require("crypto");
 const express = require("express");
 const rateLimit = require("express-rate-limit");
@@ -36,6 +38,8 @@ const {
   normalizeHistory, hasOversizedMessage, hasOversizedNormalizedMessage, SESSION_STARTED, MAX_MESSAGE_CHARS, MAX_RAW_MESSAGES,
 } = require("../lib/assistant/history");
 const { recordUsage, getOrgUsage } = require("../lib/assistant/metering");
+const { cleanOnScreen } = require("../lib/assistant/navigation");
+const { billingIsOn } = require("./billing");
 const { createClientForUser, logContactForUser, clientInReach, toClient, setTargetForUser } = require("./clients");
 const { round3 } = require("../lib/targets");
 const { googleFor } = require("../lib/google");
@@ -488,6 +492,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
       const localDate = userLocalDate(body.localDate) || undefined;
       // callListTool dates a carry by it too (the UTC date when there is none)
       if (localDate) ctx.localDate = localDate;
+      const onScreen = cleanOnScreen(body.onScreen);
+      if (onScreen) ctx.onScreen = onScreen;
+      ctx.billingOn = billingIsOn(req.app);
       ctx.live = req.app.get("liveLookup") || makeLive({ client, db, userId: req.user.id, turnId, localDate });
       out = await runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs: turnDeadlineMs() });
     } catch (err) {
@@ -513,6 +520,8 @@ function createAssistantRouter({ limiter = {} } = {}) {
     // An email Charli set up (draftEmailTool): the compose links for the browser to open. Nothing to confirm and nothing is sent;
     // the broker sends it from their own mail app.
     if (out.compose) payload.compose = out.compose;
+    // a page Charli opens: the browser goes there (it re-checks for an open form at arrival). Nothing to confirm.
+    if (out.screen) payload.screen = out.screen;
     res.json(payload);
   });
 
