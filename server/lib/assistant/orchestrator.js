@@ -14,12 +14,19 @@
 //   * a client email is never written or sent here: a successful draftEmailTool ends the turn at once with a code-authored line
 //     and its `compose` links (the model never sees the address or the body), and a Google / NMLS / no-email failure is a
 //     code-authored line too (the model is not asked to put it into words);
+//   * a page request ("pull up Helen Brandt", "take me to Rate Watch") ends at once with a code-written line and the `screen`
+//     showScreenTool named, for the browser to open, only on a turn whose own words ask for a page (isNavigationTurn); a
+//     showScreenTool call on any other turn is dropped, an open form, a broker-only page and billing that is off are code-written
+//     lines, and on a page request with no screen handed up a reply that says a page was opened is the couldn't-open line;
 //   * an unknown tool name, or a loop that never settles, resolves to the can't-verify line.
 //
 // `client` is anything with messages.create(params) -> a Messages API response (the real
 // @anthropic-ai/sdk client in production, a scripted fake in tests); this file never imports it.
 const refi = require("../refi");
-const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, withTurnClientNames } = require("./tools");
+const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, namesClient, withTurnClientNames } = require("./tools");
+const {
+  FORM_OPEN, BROKER_ONLY, BILLING_OFF, COULDNT_OPEN, screenLine, alreadyLine, isAlreadyOn, isNavigationRequest, claimsScreenOpened,
+} = require("./navigation");
 const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG,
@@ -50,8 +57,9 @@ const FIND_CLIENT_MAX_MATCHES = 5;
 // The tools that only PACKAGE a change (they never write; see tools.js).
 const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool", "setTargetRateTool"]);
 // On the last allowed model call these are the only tools run, because nothing else's result could be used: a change to
-// confirm, and an email to set up (its result ends the turn in code, so no later model call is needed to narrate it).
-const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool"]);
+// confirm, an email to set up and a screen to open (their results end the turn in code, so no later model call is needed to
+// narrate them).
+const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool", "showScreenTool"]);
 
 // Charlie's own model setting. CLAUDE_MODEL stays the setting of routes/rates.js (and index.js's log line) and does not move her.
 // Read per call so the env can change.
@@ -1346,6 +1354,32 @@ function answersActionQuestion(messages) {
   return false;
 }
 
+// A page request (Charlie opens screens, A1): the user's latest message asks to see, open or go to a client or a page
+// (navigation.js isNavigationRequest, which reads a client's name with namesClient), or answers the one question Charlie asked
+// right after such a request: the latest message is answer-shaped, the message before it is hers and ends with "?", and the
+// user's message before that is the request ("pull up Chen" -> "Which Chen — Robert and Linda, or Chen Wei?" -> "Robert and
+// Linda"). One hop only. Its own recognizer: the change-request one (isActionRequest, answersActionQuestion) is not touched. A
+// book whose names can't be read names no client here, so "show me <a name>" is then no page request.
+function isNavigationTurn(messages, ctx) {
+  if (!Array.isArray(messages)) return false;
+  const named = (s) => {
+    try {
+      return namesClient(s, ctx);
+    } catch (_err) {
+      return false;
+    }
+  };
+  const latest = messages[messages.length - 1];
+  if (!latest || latest.role !== "user") return false;
+  const text = messageText(latest);
+  if (isNavigationRequest(text, named)) return true;
+  if (!isAnswerShaped(text)) return false;
+  const asked = messages[messages.length - 2];
+  const before = messages[messages.length - 3];
+  return !!asked && asked.role === "assistant" && messageText(asked).trim().endsWith("?") &&
+    !!before && before.role === "user" && isNavigationRequest(messageText(before), named);
+}
+
 // The claim guard (Rulings 24, 25, 30, 31, 33). A reply to an offer to act that is no yes makes a plain turn, so the action
 // backstop does not hold what Charli says on it, and this does instead; on every action turn (a yes to an offer, a request) it runs
 // beside the backstop, which lets through one question, and a question can carry a claim. The reply is a claim nothing backs when
@@ -1847,14 +1881,16 @@ const cleanName = (n) => (typeof n === "string" ? n.replace(/\s+/g, " ").trim() 
 
 // Runs one tool and shapes what goes back to the model. A throwing tool never leaks its error
 // text to the model: it becomes an is_error result the model can apologise for (a tool that returns a Promise, as the Google
-// ones do, is awaited, and one that rejects is the same). Returns { source, sideEffect?, compose?, data, toolResult }; `compose`
-// is the email draftEmailTool set up, carried to the caller and never shown to the model.
+// ones do, is awaited, and one that rejects is the same). Returns { source, sideEffect?, compose?, screen?, data, toolResult };
+// `compose` is the email draftEmailTool set up and `screen` the page showScreenTool named, each carried to the caller and never
+// shown to the model.
 async function runTool(block, ctx) {
   try {
     const result = await tools[block.name](block.input && typeof block.input === "object" ? block.input : {}, ctx);
     if (!result || typeof result !== "object") throw new Error("tool returned no result");
     let { sideEffect } = result;
     const compose = result.compose && typeof result.compose === "object" ? result.compose : undefined;
+    const screen = result.screen && typeof result.screen === "object" ? result.screen : undefined;
     if (sideEffect && sideEffect.type === "addClient") {
       // The saved name must be the one the read-back speaks; no usable name means nothing to confirm.
       const fields = sideEffect.fields || {};
@@ -1866,7 +1902,7 @@ async function runTool(block, ctx) {
       sideEffect = { ...sideEffect, fields: { ...fields, name } };
     }
     return {
-      source: result.source, sideEffect, compose, data: result.data,
+      source: result.source, sideEffect, compose, screen, data: result.data,
       toolResult: toolResultBlock(block.id, result.source, forModel(block.name, result.data)),
     };
   } catch (_err) {
@@ -2600,8 +2636,9 @@ const googleCodeOf = (ctx) => {
 // expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool), and a target
 // setTargetRateTool refused (target_refused: out of range, or not below the client's current rate), said in the tool's own copy
 // (lib/targets): told by the model, a statement on a change request would be held by the action backstop, and the range's figures
-// are in no cited result. Only the non-citing error results carry these codes. The first such result, in the order the tools ran,
-// decides.
+// are in no cited result; and a page showScreenTool refused (broker_only: a loan officer asked for a broker's page; billing_off:
+// billing isn't on), in navigation.js's copy. Only the non-citing error results carry these codes. The first such result, in the
+// order the tools ran, decides.
 // Ruling 55: a calendar READ the user did not ask for does not decide the turn. When getCalendarTool came back with a Google code
 // beside a tool that is no calendar tool, and the user's message is not about the calendar or availability (`aboutCalendar`), its
 // result is handed back to the model like any other ("who should I call today?" with the sweep and a read in parallel, Google not
@@ -2624,6 +2661,8 @@ function codeAuthoredLine(outs, blocks, aboutCalendar) {
     if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
     if (code === "do_not_email") return doNotEmailLine(cleanName(o.data.client) || "That client");
     if (code === "target_refused" && blocks[i].name === "setTargetRateTool" && typeof o.data.error === "string") return o.data.error;
+    if (code === "broker_only" && blocks[i].name === "showScreenTool") return BROKER_ONLY;
+    if (code === "billing_off" && blocks[i].name === "showScreenTool") return BILLING_OFF;
   }
   return null;
 }
@@ -2720,11 +2759,13 @@ const changeEventLine = (text, before) => {
   return !PAST_QUESTION_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
 };
 
-// runTurn({ messages, ctx, client, judge?, adviceJudge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, error?, reason?, usage }
+// runTurn({ messages, ctx, client, judge?, adviceJudge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, screen?, error?, reason?, usage }
 //   (reason, with error:true: why the turn ended in an error, "deadline" or "refusal"; final review M-2)
 //   messages:   Messages API history ending with the user's latest message (not mutated)
-//   ctx:        { user, rates, db, google?, live? }, handed to the tools (google = the per-user Google adapter; without one the
-//               calendar tools say Google is not connected; live = live.js makeLive, lookUpLive's search; without one it is unavailable)
+//   ctx:        { user, rates, db, google?, live?, onScreen?, billingOn? }, handed to the tools (google = the per-user Google adapter;
+//               without one the calendar tools say Google is not connected; live = live.js makeLive, lookUpLive's search; without one
+//               it is unavailable; onScreen = what the browser says is open, navigation.js cleanOnScreen's output; billingOn = true
+//               while billing is on)
 //   judge:      judge({ previous?, user, reply, timeoutMs }) -> { verdict, usage, ms } (judge.js makeJudge), asked only about a
 //               soft-blocked ungrounded reply (classifyUngrounded) and about the reply of a turn whose only citations are live
 //               lookups (and the glossary); its tokens are added to `usage`. Without one a soft block, like such a turn, is the
@@ -2743,6 +2784,8 @@ const changeEventLine = (text, before) => {
 //   details:    with a sideEffect, the rows the pending card shows under the read-back (changeDetails)
 //   compose:    with a successful draftEmailTool, the email it set up ({ to, subject, body, links }) for the screen to open in the
 //               user's own mail app; it is never sent to the model, and nothing is sent by anyone
+//   screen:     on a page request, the page showScreenTool named ({ page } or { page: "client", clientId }) for the browser to
+//               open, beside the code-written "Here's …" line; never on any other turn, and never with the already-there line
 async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
@@ -2752,11 +2795,12 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
   if (ctx && typeof ctx === "object") ctx = withTurnClientNames(ctx);
   const deadline = Date.now() + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : DEFAULT_TURN_DEADLINE_MS);
   const usage = { inputTokens: 0, outputTokens: 0 };
-  const finish = (reply, cited, sideEffect, details, compose) => {
+  const finish = (reply, cited, sideEffect, details, compose, screen) => {
     const out = { reply, sources: cited || [], usage };
     if (sideEffect) out.sideEffect = sideEffect;
     if (sideEffect && details) out.details = details;
     if (compose) out.compose = compose;
+    if (screen) out.screen = screen;
     return out;
   };
   // A turn that ends in an error says why (final review M-2), so the route can log a refusal as one: "deadline" or "refusal".
@@ -2775,6 +2819,8 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
   // R5-3 applies to this turn if the user asked for an action now, or is answering a question about one (a yes to an offer to act
   // included).
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
+  // A page may open only on a turn whose own words ask for one (A1): the request now, or the answer to her one question about it.
+  const navTurn = isNavigationTurn(messages, ctx);
   // the class of the user's message when the assistant message right before it offered to act (null otherwise, Ruling 24)
   const afterOffer = offerReplyOf(messages[messages.length - 2], last);
   const sources = [];   // citing sources of the read tools run this turn
@@ -2853,6 +2899,9 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       // grounded turns only: process narration ahead of the answer is not said (stripProcessOpeners), and every screen below
       // runs on what is left
       const text = sources.length > 0 ? stripProcessOpeners(said).trim() : said;
+      // A4: a page request that ends in text handed no screen up (a screen ends the turn below), so a reply that says she pulled
+      // up, opened or brought up a page, or took them there, is false: nothing opened. Ahead of every other screen.
+      if (navTurn && claimsScreenOpened(text)) return finish(COULDNT_OPEN);
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
       // Rulings 52 and 67: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
       const noSend = sendLine(userText, messages[messages.length - 2]);
@@ -3015,21 +3064,39 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       }
     });
 
-    // Google not connected / expired / unreachable, no NMLS ID, no email on the client's record: code says so, before anything
-    // below and before the model is handed the results (it would only put it into its own words). It wins over a change another
-    // tool packaged in the same response: the user asked for both, so nothing is handed up and they ask again. (A calendar read the
-    // user did not ask for, beside other tools, is the exception: its result goes back to the model like any other, Ruling 55.)
+    // A page opens only on a page request (A1): showScreenTool called on any other turn (an instruction planted in a note or a
+    // calendar title can do that) is dropped, and nothing in its response is handed up. On a page request with a form open (A2),
+    // nothing opens and code says why.
+    if (runBlocks.some((b) => b.name === "showScreenTool")) {
+      if (!navTurn) return finish(NOTHING_CHANGED);
+      if (ctx && ctx.onScreen && ctx.onScreen.page === "form") return finish(FORM_OPEN);
+    }
+
+    // Google not connected / expired / unreachable, no NMLS ID, no email on the client's record, a page that isn't the user's:
+    // code says so, before anything below and before the model is handed the results (it would only put it into its own words). It
+    // wins over a change another tool packaged in the same response: the user asked for both, so nothing is handed up and they ask
+    // again. (A calendar read the user did not ask for, beside other tools, is the exception: its result goes back to the model like
+    // any other, Ruling 55.)
     const line = codeAuthoredLine(outs, runBlocks, asksAboutCalendar(userText));
     if (line) return finish(line);
 
     // The tools only package a change; here it is handed up for confirmation, not acted on. An email set up by draftEmailTool
     // counts as a change for the one-at-a-time rule (it changes what is on the user's screen), though it has nothing to confirm:
-    // it ends the turn at once with a code-authored reply and its compose links, and the model never narrates it.
-    const changes = outs.filter((o) => o.sideEffect || o.compose);
+    // it ends the turn at once with a code-authored reply and its compose links, and the model never narrates it. A screen to open
+    // counts the same way and ends the turn the same way, with its own code-written line.
+    const changes = outs.filter((o) => o.sideEffect || o.compose || o.screen);
     if (changes.length > 1) return finish(ONE_AT_A_TIME);
     if (changes.length === 1) {
       const change = changes[0];
       const cited = isCitation(change.source) ? [change.source] : [];
+      if (change.screen) {
+        // the stored client name, from the tool's own data; the page already open is said so, and nothing is handed up
+        const name = cleanName(change.data && change.data.name);
+        if (isAlreadyOn(change.screen, ctx && ctx.onScreen)) return finish(alreadyLine(change.screen, name));
+        const opened = screenLine(change.screen, name);
+        if (opened === COULDNT_OPEN) return finish(COULDNT_OPEN);
+        return finish(opened, cited, undefined, undefined, undefined, change.screen);
+      }
       if (change.compose) {
         // An email is set up only for a user who asked for one (or said yes to the offer of one): on any other turn the model
         // drafted unasked (an instruction planted in a calendar title or a note can do that), so nothing is handed up.
@@ -3082,5 +3149,5 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
-  classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip,
+  classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip, isNavigationTurn,
 };
