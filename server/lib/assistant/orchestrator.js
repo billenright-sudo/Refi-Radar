@@ -17,13 +17,14 @@
 //   * a page request ("pull up Helen Brandt", "take me to Rate Watch") ends at once with a code-written line and the `screen`
 //     showScreenTool named, for the browser to open, only on a turn whose own words ask for a page (isNavigationTurn); a
 //     showScreenTool call on any other turn is dropped, an open form, a broker-only page and billing that is off are code-written
-//     lines, and on a page request with no screen handed up a reply that says a page was opened is the couldn't-open line;
+//     lines, and on a page request with no screen handed up a reply that says a page was opened is the couldn't-open line; a
+//     browser that never said it can open a screen (ctx.screensSupported) is handed none, and hears the couldn't-open line;
 //   * an unknown tool name, or a loop that never settles, resolves to the can't-verify line.
 //
 // `client` is anything with messages.create(params) -> a Messages API response (the real
 // @anthropic-ai/sdk client in production, a scripted fake in tests); this file never imports it.
 const refi = require("../refi");
-const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, namesClient, withTurnClientNames } = require("./tools");
+const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, withTurnClientNames } = require("./tools");
 const {
   FORM_OPEN, BROKER_ONLY, BILLING_OFF, COULDNT_OPEN, screenLine, alreadyLine, isAlreadyOn, isNavigationRequest, claimsScreenOpened,
   targetsScreen,
@@ -1356,19 +1357,21 @@ function answersActionQuestion(messages) {
 }
 
 // A page request (Charlie opens screens, A1): the user's latest message asks to see, open or go to a client or a page
-// (navigation.js isNavigationRequest, which reads a client's name with namesClient), or answers the one question Charlie asked
+// (navigation.js isNavigationRequest, handed the client-name test below), or answers the one question Charlie asked
 // right after such a request: the latest message is answer-shaped, the message before it is hers, ends with "?" and is no offer to
 // act (offersAction, as answersActionQuestion reads one: "Want me to draft her a check-in?" -> "yes" asks for no page; Ruling R7),
 // and the user's message before that is the request ("pull up Chen" -> "Which Chen — Robert and Linda, or Chen Wei?" -> "Robert
 // and Linda"). One hop only. Its own recognizer: the change-request one (isActionRequest, answersActionQuestion) is not touched. A
-// book whose names can't be read names no client here, so "show me <a name>" is then no page request.
+// client here is any word of a client's name (mentionsClient: "show me Helen" by her first name too; final review I1). A book whose
+// names can't be read names no client here, so "show me <a name>" is then no page request. Filler and speech-to-text tags ahead of
+// the request are navigation.js's to strip.
 // navigationRequestOf is the text of the request (the latest message, or for the one hop the message it answers), null on any other
 // turn; isNavigationTurn is whether there is one.
 function navigationRequestOf(messages, ctx) {
   if (!Array.isArray(messages)) return null;
   const named = (s) => {
     try {
-      return namesClient(s, ctx);
+      return mentionsClient(s, ctx);
     } catch (_err) {
       return false;
     }
@@ -2769,10 +2772,11 @@ const changeEventLine = (text, before) => {
 // runTurn({ messages, ctx, client, judge?, adviceJudge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, screen?, error?, reason?, usage }
 //   (reason, with error:true: why the turn ended in an error, "deadline" or "refusal"; final review M-2)
 //   messages:   Messages API history ending with the user's latest message (not mutated)
-//   ctx:        { user, rates, db, google?, live?, onScreen?, billingOn? }, handed to the tools (google = the per-user Google adapter;
-//               without one the calendar tools say Google is not connected; live = live.js makeLive, lookUpLive's search; without one
-//               it is unavailable; onScreen = what the browser says is open, navigation.js cleanOnScreen's output; billingOn = true
-//               while billing is on)
+//   ctx:        { user, rates, db, google?, live?, onScreen?, screensSupported?, billingOn? }, handed to the tools (google = the
+//               per-user Google adapter; without one the calendar tools say Google is not connected; live = live.js makeLive,
+//               lookUpLive's search; without one it is unavailable; onScreen = what the browser says is open, navigation.js
+//               cleanOnScreen's output; screensSupported = true when the browser can open a screen (it sent the onScreen key); without
+//               it a screen is the couldn't-open line; billingOn = true while billing is on)
 //   judge:      judge({ previous?, user, reply, timeoutMs }) -> { verdict, usage, ms } (judge.js makeJudge), asked only about a
 //               soft-blocked ungrounded reply (classifyUngrounded) and about the reply of a turn whose only citations are live
 //               lookups (and the glossary); its tokens are added to `usage`. Without one a soft block, like such a turn, is the
@@ -2792,7 +2796,8 @@ const changeEventLine = (text, before) => {
 //   compose:    with a successful draftEmailTool, the email it set up ({ to, subject, body, links }) for the screen to open in the
 //               user's own mail app; it is never sent to the model, and nothing is sent by anyone
 //   screen:     on a page request, the page showScreenTool named ({ page } or { page: "client", clientId }) for the browser to
-//               open, beside the code-written "Here's …" line; never on any other turn, and never with the already-there line
+//               open, beside the code-written "Here's …" line; never on any other turn, never with the already-there line, and never
+//               without ctx.screensSupported
 async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
@@ -3115,6 +3120,9 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
         if (isAlreadyOn(change.screen, ctx && ctx.onScreen)) return finish(alreadyLine(change.screen, name));
         const opened = screenLine(change.screen, name);
         if (opened === COULDNT_OPEN) return finish(COULDNT_OPEN);
+        // (final review I5, R13) only a browser that said it can open a page (the route's screensSupported: the body carried the
+        // `onScreen` key) is handed one; a tab still on the old bundle would show "Here's …" with nothing opened (A4)
+        if (!ctx || ctx.screensSupported !== true) return finish(COULDNT_OPEN);
         return finish(opened, cited, undefined, undefined, undefined, change.screen);
       }
       if (change.compose) {

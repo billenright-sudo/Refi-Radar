@@ -6,7 +6,7 @@ import { localDateOf } from "./charli/session.mjs";
 import { DEFAULT_VIEW, navGroups, viewFor } from "./nav.mjs";
 import { gridCols } from "./layout.mjs";
 import { useIsPhone } from "./useIsPhone.js";
-import { onScreenOf, pageAllowed, panelAfter, viewForScreen } from "./charlieNav.mjs";
+import { onScreenOf, prepareScreenFor } from "./charlieNav.mjs";
 import { DOCK_WIDTH } from "./homeLayout.mjs";
 import { useHomeLayout } from "./useHomeLayout.js";
 import { OVERVIEW_COPY, opportunityCount, ratesHeading, tileFigureSize } from "./overview.mjs";
@@ -2921,30 +2921,14 @@ export default function App() {
     const n = navRef.current;
     return onScreenOf({ view: n.view, selectedId: n.selectedId, importHasFile: importHasFile.current });
   }, []);
+  // The decision is charlieNav.mjs prepareScreenFor's (the form checked again after the list reload; go() scrolls to the top).
   const prepareScreen = useCallback(async (screen) => {
-    if (!screen) return { ok: false, reason: "missing" };
-    if (screenNow()?.page === "form") return { ok: false, reason: "form" };
-    let client = null;
-    if (screen.page === "client") {
-      const find = (list) => (list || []).find(x => x.id === screen.clientId) || null;
-      client = find(navRef.current.clients);
-      if (!client) {
-        let fresh = null;
-        try { fresh = await reloadClients(); } catch { fresh = null; }
-        client = find(fresh);
-      }
-      if (!client) return { ok: false, reason: "missing" };
-    } else if (!pageAllowed(screen.page, navRef.current.user?.role, navRef.current.billingOn)) {
-      return { ok: false, reason: "not-allowed" };
-    }
-    const target = viewForScreen(screen);
-    const go = () => {
-      if (client) setSelected(client);
-      setView(target);
-      setPanelOpen(panelAfter({ target, isPhone: navRef.current.isPhone }) === "open");
-    };
-    return { ok: true, go };
-  }, [reloadClients, setView]);
+    const n = navRef.current;
+    return prepareScreenFor(screen, {
+      screenNow, clients: n.clients, reloadClients, role: n.user?.role, billingOn: n.billingOn,
+      isPhone: () => navRef.current.isPhone, setSelected, setView, setPanelOpen, scrollTo: (x, y) => window.scrollTo(x, y),
+    });
+  }, [reloadClients, setView, screenNow]);
   const handleClientUpdated = (client) => {
     setClients(prev => prev.map(x => (x.id === client.id ? client : x)));
     setSelected(client);

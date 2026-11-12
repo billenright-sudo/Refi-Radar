@@ -8733,8 +8733,9 @@ const chensS = screensClient(brokerS, "Robert & Linda Chen");
 screensClient(brokerS, "Chen Wei");
 screensClient(loS, "Omar Haddad");
 const danaS = screensClient(teammateS, "Dana Fox");
-const screensCtx = { user: user(brokerS, "broker", orgScreens), rates: LIVE, db };
-const loScreensCtx = { user: user(loS, "lo", orgScreens), rates: LIVE, db };
+// (final review I5, R13) a browser that can open screens says so: the route sets screensSupported when the body carries `onScreen`
+const screensCtx = { user: user(brokerS, "broker", orgScreens), rates: LIVE, db, screensSupported: true };
+const loScreensCtx = { user: user(loS, "lo", orgScreens), rates: LIVE, db, screensSupported: true };
 // Several tool calls in one response.
 const useTools = (...blocks) =>
   resp(blocks.map(([name, input], i) => ({ type: "tool_use", id: `toolu_${i + 1}`, name, input })), "tool_use");
@@ -9021,11 +9022,111 @@ test("Screens: CHARLI_SYSTEM carries the screens rule exactly, once, right after
   const SCREENS =
     "Screens: when the user asks to pull up, bring up, open, show or go to a client or one of the app's pages, call showScreenTool " +
     "(after findClient for a client) and say nothing about it yourself. A line in your earlier messages that starts with \"Here's\" or " +
-    "\"You're already on\" right after such a request was written by the app when it opened that page; it is true.";
+    "\"You're already on\" right after such a request was written by the app when it opened that page; it is true. " +
+    "Never offer to open a page; open it only when asked.";
   assert.equal(CHARLI_SYSTEM.split(SCREENS).length, 2, "the rule appears once, exactly");
   const paragraphs = CHARLI_SYSTEM.split("\n\n");
   const at = paragraphs.indexOf(SCREENS);
   assert.ok(at > 0, "it is a paragraph of its own");
   assert.ok(paragraphs[at - 1].startsWith("Confirmed changes: a line in your earlier messages that starts with \"Done —\""));
   assert.ok(buildCharliSystem({ career_stage: "veteran" }).includes(`\n\n${SCREENS}\n\n`));
+});
+
+// ── Charlie opens screens, the final review's fixes ──────────────────────────────────────────────────────────────────────────────
+
+const HELEN_PAGE = { page: "client", clientId: helenS };
+const openHelen = (query) => [useTool("findClient", { query }), useTool("showScreenTool", HELEN_PAGE, "toolu_2")];
+
+test("Screens (final review I1): filler, a speech-to-text tag, the split and \"back\" forms and a first name open the page", async () => {
+  for (const [messages, script, line, screen] of [
+    [userSays("Okay, pull up Helen Brandt"), openHelen("Helen Brandt"), "Here's Helen Brandt.", HELEN_PAGE],
+    [userSays("(background noise) Pull up Helen Brandt."), openHelen("Helen Brandt"), "Here's Helen Brandt.", HELEN_PAGE],
+    [history("how's Helen Brandt doing?", "Helen Brandt is at 7.9 percent.", "pull her up"), openHelen("Helen Brandt"), "Here's Helen Brandt.", HELEN_PAGE],
+    [userSays("show me Helen"), openHelen("Helen"), "Here's Helen Brandt.", HELEN_PAGE],
+    [userSays("take me back to Home"), [useTool("showScreenTool", { page: "home" })], "Here's Home.", { page: "home" }],
+    [userSays("Alright, now open Rate Watch"), [useTool("showScreenTool", { page: "rates" })], "Here's Rate Watch.", { page: "rates" }],
+    [userSays("Good morning Charlie, go back home"), [useTool("showScreenTool", { page: "home" })], "Here's Home.", { page: "home" }],
+    [userSays("Charlie — bring the Chens up"), [useTool("showScreenTool", { page: "client", clientId: chensS })], "Here's Robert & Linda Chen.",
+      { page: "client", clientId: chensS }],
+  ]) {
+    const said = messages[messages.length - 1].content;
+    assert.equal(isNavigationTurn(messages, screensCtx), true, said);
+    const r = await runTurn({ messages, ctx: screensCtx, client: fakeClient(script) });
+    assert.equal(r.reply, line, said);
+    assert.deepStrictEqual(r.screen, screen, said);
+  }
+  // (my call) "pull her up" targets a screen: a claim with nothing handed up is the couldn't-open line
+  const claimed = await runTurn({
+    messages: history("how's Helen Brandt doing?", "Helen Brandt is at 7.9 percent.", "pull her up"), ctx: screensCtx,
+    client: fakeClient([say("Pulling her up now.")]),
+  });
+  assert.equal(claimed.reply, COULDNT_OPEN);
+  noScreen(claimed);
+});
+
+test("Screens (final review I1, R16): a showScreenTool call dropped on a turn that asks for no page keeps the nothing-changed line", async () => {
+  const r = await runTurn({
+    messages: userSays("Okay, what's Helen's rate?"), ctx: screensCtx, client: fakeClient([useTool("showScreenTool", HELEN_PAGE)]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+  noScreen(r);
+});
+
+test("Screens (final review I2): after a compose card, \"pull up Helen's email\" is no page request and her reply stands", async () => {
+  const DRAFTED_HELEN = "Here's a check-in email for Helen Brandt, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
+  const DRAFTED_CHENS = "Here's a check-in email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.";
+  const SAID = "It's on your screen — tap Open in Gmail on the card.";
+  for (const [ask, drafted, u, navTurn] of [
+    ["draft Helen Brandt a check-in", DRAFTED_HELEN, "pull up Helen's email", false],
+    ["draft the Chens a check-in", DRAFTED_CHENS, "bring up the Chen email", false],
+    ["draft Helen Brandt a check-in", DRAFTED_HELEN, "pull up that email for Helen", false],
+    ["draft the Chens a check-in", DRAFTED_CHENS, "pull up the Chens' email", false],
+    // "it" asks for a page by its verb, but targets none: the card is what "it" is here
+    ["draft Helen Brandt a check-in", DRAFTED_HELEN, "pull it up", true],
+  ]) {
+    const messages = history(ask, drafted, u);
+    assert.equal(isNavigationTurn(messages, screensCtx), navTurn, u);
+    await capturingInfo(async () => {
+      const turn = await runTurn({ messages, ctx: screensCtx, judge: judgeSays("CHAT"), client: fakeClient([say(SAID)]) });
+      assert.equal(turn.reply, SAID, u);
+      noScreen(turn);
+    });
+  }
+});
+
+test("Screens (final review I5, R13): a screen opens only for a browser that says it can open one", async () => {
+  // no screensSupported (a tab opened before this release sends no onScreen key): nothing is handed up, and nothing is said opened
+  const { screensSupported, ...oldTab } = screensCtx;
+  assert.equal(screensSupported, true);
+  for (const [said, script] of [["pull up Helen Brandt", openHelen("Helen Brandt")], ["take me to Rate Watch", [useTool("showScreenTool", { page: "rates" })]]]) {
+    for (const ctx of [oldTab, { ...oldTab, screensSupported: false }, { ...oldTab, screensSupported: "yes" }]) {
+      const r = await runTurn({ messages: userSays(said), ctx, client: fakeClient(script) });
+      assert.equal(r.reply, COULDNT_OPEN, `${said} ${JSON.stringify(ctx.screensSupported)}`);
+      noScreen(r);
+    }
+  }
+  // with it, the line and the screen
+  const r = await runTurn({ messages: userSays("pull up Helen Brandt"), ctx: screensCtx, client: fakeClient(openHelen("Helen Brandt")) });
+  assert.equal(r.reply, "Here's Helen Brandt.");
+  assert.deepStrictEqual(r.screen, HELEN_PAGE);
+  // (my call) the already-there line asks the browser for nothing, so it stays as it is
+  const already = await runTurn({
+    messages: userSays("take me to Rate Watch"), ctx: { ...oldTab, onScreen: { page: "rates" } },
+    client: fakeClient([useTool("showScreenTool", { page: "rates" })]),
+  });
+  assert.equal(already.reply, "You're already on Rate Watch.");
+  noScreen(already);
+});
+
+test("Screens (final review M1): a client's data, asked for with \"pull up\", is answered in words", async () => {
+  for (const [u, said] of [
+    ["pull up Helen's notes", "Helen brought up a refi on your last call."],
+    ["pull up Helen's rate", "Here you go — Helen Brandt is at 7.9 percent."],
+  ]) {
+    const r = await capturingInfo(() => runTurn({
+      messages: userSays(u), ctx: screensCtx, judge: judgeSays("CHAT"), client: fakeClient([useTool("findClient", { query: "Helen" }), say(said)]),
+    }));
+    assert.equal(r.reply, said, u);
+    noScreen(r);
+  }
 });

@@ -2554,15 +2554,33 @@ const pullUpHelen = () => fakeClient([
 
 test("turn screens: a page request answers screen and the code's line", async () => {
   setClient(pullUpHelen());
-  const r = await as(ann)("POST", "/api/assistant/turn", turnBody("pull up Helen Brandt"));
+  // (final review I5) the browser sends the onScreen key with every turn, null when nothing it knows is open
+  const r = await as(ann)("POST", "/api/assistant/turn", turnBody("pull up Helen Brandt", { onScreen: null }));
   assert.equal(r.status, 200);
   assert.equal(r.data.reply, "Here's Helen Brandt.");
   assert.deepStrictEqual(r.data.screen, { page: "client", clientId: helenScreen });
   assert.equal(r.data.sideEffect, undefined);
   setClient(fakeClient([useTool("showScreenTool", { page: "rates" }), say("Taking you there.")]));
-  const rw = await as(ann)("POST", "/api/assistant/turn", turnBody("take me to Rate Watch"));
+  const rw = await as(ann)("POST", "/api/assistant/turn", turnBody("take me to Rate Watch", { onScreen: { page: "home" } }));
   assert.equal(rw.data.reply, "Here's Rate Watch.");
   assert.deepStrictEqual(rw.data.screen, { page: "rates" });
+});
+
+test("turn screens (final review I5, R13): a body with no onScreen key (a tab from before the release) gets no screen", async () => {
+  setClient(pullUpHelen());
+  const r = await as(ann)("POST", "/api/assistant/turn", turnBody("pull up Helen Brandt"));
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, "I couldn't open that page.");
+  assert.equal("screen" in r.data, false);
+  setClient(fakeClient([useTool("showScreenTool", { page: "rates" }), say("Taking you there.")]));
+  const rw = await as(ann)("POST", "/api/assistant/turn", turnBody("take me to Rate Watch"));
+  assert.equal(rw.data.reply, "I couldn't open that page.");
+  assert.equal("screen" in rw.data, false);
+  // with the key, null included: the line and the screen
+  setClient(pullUpHelen());
+  const ok = await as(ann)("POST", "/api/assistant/turn", turnBody("pull up Helen Brandt", { onScreen: null }));
+  assert.equal(ok.data.reply, "Here's Helen Brandt.");
+  assert.deepStrictEqual(ok.data.screen, { page: "client", clientId: helenScreen });
 });
 
 test("turn screens: onScreen form answers the form line and no screen", async () => {
@@ -2584,7 +2602,7 @@ test("turn screens: a bad onScreen is ignored, the turn answers as with none", a
 test("turn screens: Billing opens only with billingConfig enabled and a gateway on the app", async () => {
   const askBilling = async () => {
     setClient(fakeClient([useTool("showScreenTool", { page: "billing" }), say("Opening it.")]));
-    return as(ann)("POST", "/api/assistant/turn", turnBody("take me to Billing"));
+    return as(ann)("POST", "/api/assistant/turn", turnBody("take me to Billing", { onScreen: null }));
   };
   const saved = { c: app.get("billingConfig"), g: app.get("billingGateway") };
   try {

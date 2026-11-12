@@ -63,26 +63,57 @@ function isAlreadyOn(screen, onScreen) {
 
 // ---- Recognizing a page request -------------------------------------------------------------------------------
 
-const FILLER_RE = /^(?:hey\b[\s,]*|charl(?:ie|i)\b[\s,:]*|please\b[\s,]*|(?:can|could|would|will)\s+you\b[\s,]*|let's\s+|i\s+want\s+to\s+)/;
-const STRONG_RE = /^(pull\s+up|bring\s+up|open|go\s+back\s+to|go\s+to|go\s+home|take\s+me\s+to|take\s+me\s+home|jump\s+to|switch\s+to|navigate\s+to|head\s+to)\b\s*(.*)$/;
+// (final review I1) Speech-to-text audio-event tags, "(background noise)", "[laughter]", anywhere: not the user's words. The same
+// tags as orchestrator.js's AUDIO_TAG_RE (kept in step by hand: orchestrator.js requires this module, so this one can't require it).
+const AUDIO_TAG_RE = /\([^()]*\)|\[[^[\]]*\]/g;
+// Words ahead of the request that ask for nothing: the orchestrator's filler (FILLER_RE: hey / hi / hello / ok / okay / so / and /
+// but / well / alright / oh / um / uh / good morning / morning / Charlie), and now / just / yes / yeah / thanks / thank you, with the
+// commas, dashes, colons and ellipses after them; and please, can / could / would / will you, let's, I want to.
+const FILLER_RE = new RegExp(
+  "^(?:(?:hey|hi|hello|ok|okay|so|and|but|well|alright|all\\s+right|oh|um|uh|good\\s+(?:morning|afternoon|evening)|morning|charl(?:ie|i)" +
+    "|now|just|yes|yeah|thanks|thank\\s+you)\\b[\\s,.:;!\\u2014\\u2013\\u2026-]*" +
+    "|please\\b[\\s,]*|(?:can|could|would|will)\\s+you\\b[\\s,]*|let's\\s+|i\\s+want\\s+to\\s+)"
+);
+const STRONG_RE = new RegExp(
+  "^(pull\\s+up|bring\\s+up|open|go\\s+back\\s+to|go\\s+back\\s+home|go\\s+to|go\\s+home|take\\s+me\\s+back\\s+to|take\\s+me\\s+back\\s+home" +
+    "|take\\s+me\\s+to|take\\s+me\\s+home|jump\\s+to|switch\\s+to|navigate\\s+to|head\\s+to)\\b\\s*(.*)$"
+);
+const NO_OBJECT_VERBS = new Set(["go home", "go back home", "take me home", "take me back home"]);
+// (final review I1) The split form, "pull her up", "bring the Chens up": a pronoun or one to three name words between the verb and
+// "up", nothing after it (the trailing please / for me aside). "Bring it up with her" is no page request.
+const NAME_WORD = "[\\p{L}][\\p{L}\\p{N}'.-]*";
+const SPLIT_RE = new RegExp(
+  "^(?:pull|bring)\\s+(it|her|him|them|that|(?:the\\s+)?" + NAME_WORD + "(?:(?:\\s+(?:&|and))?\\s+" + NAME_WORD + "){0,2})\\s+up$", "u"
+);
+const PERSON_PRONOUNS = new Set(["her", "him", "them"]);
 const SOFT_RE = /^(?:show(?:\s+me)?|look\s+up)\b\s*(.*)$/;
-const OPEN_NOT_A_PAGE_RE = /\b(?:e-?mails?|drafts?|gmail|outlook|mail|links?)\b/;
+// (final review I2) an email, a draft, Gmail, Outlook, mail or a link is never a page, whatever the strong verb ("pull up Helen's
+// email" after a compose card is about the card)
+const NOT_A_PAGE_RE = /\b(?:e-?mails?|drafts?|gmail|outlook|mail|links?)\b/;
 const PAGE_NAME_RE = /^(?:the\s+)?(?:home(?:\s+page)?|dashboard|sweeps(?:\s+page)?|(?:all|my)\s+clients|client\s+list|rate\s+watch|rates\s+page|add\s+(?:a\s+)?client|my\s+team|import(?:\s+clients)?|(?:my\s+)?profile|billing(?:\s+page)?)$/;
 const QUESTION_WORD_RE = /\b(?:what|who|whom|whose|when|where|why|how|which|is|are|does|do|did|can)\b/;
 const POSSESSIVE_RE = /['’]s\b|s['’](?:\s|$)/;
 
-const TRAILING_RE = /(?:'s\s+page|\s+(?:page|file|please|for\s+me))$|[\s.?!,;:]+$/;
+// (final review I1) "'s page" / "'s file" and the plural "s' page" / "s' file" go with the rest ("show me the Chens' file" -> "the chens")
+const TRAILING_RE = /(?:'s\s+(?:page|file)|(?<=s)'\s+(?:page|file)|\s+(?:page|file|please|for\s+me))$|[\s.?!,;:]+$/;
 function stripTrailing(s, patterns = TRAILING_RE) {
   let prev;
   do { prev = s; s = s.replace(patterns, ""); } while (s !== prev);
   return s.trim();
 }
 
+// Lower case, one space, no speech-to-text tags and no filler ahead of the request.
 function normalize(text) {
-  let s = String(text).toLowerCase().replace(/’/g, "'").replace(/\s+/g, " ").trim();
+  let s = String(text).toLowerCase().replace(/’/g, "'").replace(AUDIO_TAG_RE, " ").replace(/\s+/g, " ").trim();
   let prev;
   do { prev = s; s = s.replace(FILLER_RE, "").trim(); } while (s !== prev);
   return s;
+}
+
+// The split form's middle word or words ("her", "the chens"), or null when the request is not one.
+function splitFormOf(s) {
+  const m = SPLIT_RE.exec(stripTrailing(s));
+  return m ? m[1] : null;
 }
 
 function isNavigationRequest(text, namesClient) {
@@ -93,18 +124,20 @@ function isNavigationRequest(text, namesClient) {
   if (strong) {
     const verb = strong[1].replace(/\s+/g, " ");
     const rest = stripTrailing(strong[2]);
-    if (verb === "go home" || verb === "take me home") return true;
+    if (NO_OBJECT_VERBS.has(verb)) return true;
     if (!rest) return false;
-    if (verb === "open" && OPEN_NOT_A_PAGE_RE.test(rest)) return false;
-    return true;
+    return !NOT_A_PAGE_RE.test(rest);
   }
+  const split = splitFormOf(s);
+  if (split !== null) return !NOT_A_PAGE_RE.test(split);
 
   const soft = SOFT_RE.exec(s);
   if (soft) {
     const rest = soft[1];
-    // A page name, allowing a trailing "please" / "for me".
+    // A page name, allowing a trailing "please" / "for me", and "page" after a page's name ("show me Rate Watch page"; "the rates
+    // page" is a page name with it, "the rates" is no page without it).
     const pageish = stripTrailing(rest, /(?:\s+(?:please|for\s+me))$|[\s.?!,;:]+$/);
-    if (PAGE_NAME_RE.test(pageish)) return true;
+    if (PAGE_NAME_RE.test(pageish) || PAGE_NAME_RE.test(pageish.replace(/\s+page$/, ""))) return true;
     // A client counts only when the remainder is ONLY about the client: no possessive, no question word.
     if (typeof namesClient !== "function") return false;
     const who = stripTrailing(rest);
@@ -138,10 +171,22 @@ function sentencesOf(t) {
 // after "the", that start no weekday or month, in full or short: "Opening Helen Brandt now", "Opening the Chens now", not "opening
 // I see", "MBS" or "Nov 13"). Never the noun "opening" ("Your only opening this week is Friday at 2.") or the market's "opened"
 // ("Rates opened this morning a touch lower.", "Rates opened the week near record lows.", "Opening balance is 5").
+// (final review M1) She pulled or brought something up only when she is the subject: the sentence starts with it (after a word like
+// "Sure," or "Okay —"), or I / I've / I'm / I have / I'll / I will / let me comes right before it; and not when a colon follows in
+// the sentence, which brings in data ("I pulled up the numbers: Helen is at 7.1%."). "Helen brought up a refi on your last call."
+// is the client's doing. "There / here you go" counts only with nothing after it but punctuation ("Here you go — Helen Brandt is at
+// 7.9 percent." is an answer).
+const CLAIM_LEAD = "(?:(?:sure|okay|ok|alright|all\\s+right|got\\s+it|yes|yep|absolutely|of\\s+course|on\\s+it|one\\s+sec(?:ond)?|right)" +
+  "\\b[\\s,\\u2014\\u2013-]*)*";
+const CLAIM_PULLED_RE = new RegExp(
+  "(?:^" + CLAIM_LEAD + "(?:pull(?:ing|ed)|bringing|brought)" +
+    "|\\b(?:i|i've|i'm|i\\s+have|i'll|i\\s+will|let\\s+me)\\s+(?:just\\s+|now\\s+)?(?:pull(?:ing|ed)?|bring(?:ing)?|brought))" +
+    "\\s+(?:up|(?:it|that|her|him|them)\\s+up)\\b(?=[^:]*$)",
+  "i"
+);
+const CLAIM_HERE_YOU_GO_RE = new RegExp("\\b(?:there|here)\\s+you\\s+go[\\s.!\\u2026]*$", "i");
 const CLAIM_RE = new RegExp(
-  "\\b(?:pull(?:ing|ed)|bring(?:ing)?|brought)\\s+(?:up|(?:it|that|her|him|them)\\s+up)\\b" +
-    "|\\blet\\s+me\\s+pull\\s+(?:up|(?:it|that|her|him|them)\\s+up)\\b" +
-    "|\\b(?:taking|took|take)\\s+you\\s+(?:to|there)\\b|\\bon\\s+(?:your|the)\\s+screen\\b|\\b(?:there|here)\\s+you\\s+go\\b" +
+  "\\b(?:taking|took|take)\\s+you\\s+(?:to|there)\\b|\\bon\\s+(?:your|the)\\s+screen\\b" +
     "|(?:'s|\\b(?:her|his|their|your|the))\\s+page\\s+is\\s+(?:now\\s+)?(?:open|up)\\b",
   "i"
 );
@@ -161,7 +206,8 @@ const NOT_A_NAME = "(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|
   "|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)";
 const CLAIM_OPENED_NAME_RE = new RegExp("\\b[Oo]pen(?:ed|ing)(?:\\s+up)?\\s+(?:the\\s+)?(?!" + NOT_A_NAME + "\\b)\\p{Lu}\\p{Ll}", "u");
 const saysOpened = (sentence) =>
-  !sentence.endsWith("?") && (CLAIM_RE.test(sentence) || CLAIM_OPENED_RE.test(sentence) || CLAIM_OPENED_NAME_RE.test(sentence));
+  !sentence.endsWith("?") && (CLAIM_PULLED_RE.test(sentence) || CLAIM_HERE_YOU_GO_RE.test(sentence) || CLAIM_RE.test(sentence) ||
+    CLAIM_OPENED_RE.test(sentence) || CLAIM_OPENED_NAME_RE.test(sentence));
 
 // The model imitating the app's own line (A4): the whole reply is ONE statement of at most CODE_LINE_MAX_WORDS words, "Here's " or
 // "You're already on " and then only a page's label (the words screenLine uses: "Rate Watch", "your client list") or a client's
@@ -193,10 +239,13 @@ function claimsScreenOpened(text, namesClient) {
 // or "pull up my top opportunities", which are answered in words.
 const PAGE_MENTION_RE = /\b(?:home|dashboard|sweeps|(?:all|my)\s+clients|client\s+list|rate\s+watch|rates\s+page|add\s+(?:a\s+)?client|my\s+team|import(?:\s+clients)?|profile|billing)\b/;
 const SCREEN_WORD_RE = /\b(?:pages?|files?|screens?)\b/;
+// (final review I1, my call) the split form with a person's pronoun, "pull her up", "bring them up", is a client's page: a person is
+// a client here. "Pull it up" / "pull that up" are not (it may be the email card or a figure).
 function targetsScreen(text, namesClient) {
   if (typeof text !== "string" || !text.trim()) return false;
-  const s = text.toLowerCase().replace(/’/g, "'");
+  const s = normalize(text);
   if (PAGE_MENTION_RE.test(s) || SCREEN_WORD_RE.test(s)) return true;
+  if (PERSON_PRONOUNS.has(splitFormOf(s))) return true;
   return typeof namesClient === "function" && Boolean(namesClient(text));
 }
 

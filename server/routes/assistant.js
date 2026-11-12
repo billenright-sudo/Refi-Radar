@@ -17,6 +17,7 @@
 // An email Charli sets up for the broker (draftEmailTool) comes back from /turn as `compose` and is never confirmed or sent.
 // The browser sends what it has open as `onScreen` ({ page } or { page: "client", clientId }, cleaned by cleanOnScreen); when the broker asks
 // Charli to open a page, /turn answers `screen` ({ page } or { page: "client", clientId }) with the code's own line. Nothing to confirm.
+// A body with no `onScreen` key at all (a browser tab from before screens) is never handed a screen: it gets "I couldn't open that page."
 const crypto = require("crypto");
 const express = require("express");
 const rateLimit = require("express-rate-limit");
@@ -492,6 +493,9 @@ function createAssistantRouter({ limiter = {} } = {}) {
       const localDate = userLocalDate(body.localDate) || undefined;
       // callListTool dates a carry by it too (the UTC date when there is none)
       if (localDate) ctx.localDate = localDate;
+      // (final review I5, R13) a browser that can open a page sends the onScreen key with every turn (null when it knows of none); a
+      // tab opened before this release sends none, and is never handed a screen it would ignore
+      ctx.screensSupported = Object.prototype.hasOwnProperty.call(body, "onScreen");
       const onScreen = cleanOnScreen(body.onScreen);
       if (onScreen) ctx.onScreen = onScreen;
       ctx.billingOn = billingIsOn(req.app);

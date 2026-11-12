@@ -7,7 +7,7 @@
 // a spoken or typed "yes" is never sent to /turn (the model would just propose the change again).
 //
 // Server contracts (server/routes/assistant.js):
-//   POST /api/assistant/turn     { messages, rates, localDate, onScreen? } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, screen?, turnId, error? }
+//   POST /api/assistant/turn     { messages, rates, localDate, onScreen } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, screen?, turnId, error? }
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
@@ -271,7 +271,7 @@ export const localDateOf = (date) =>
 //   now        () -> Date, the device clock (injected so tests can move it); defaults to new Date()
 //   onClientsChanged  () -> (Promise), called once after a confirmed setTargetRate or logContact, so the client screens re-read
 //   screenNow  () -> { page, clientId? } | null, what the App has open; sent as `onScreen` with every turn (not the greeting), and
-//              left out when it is null or throws
+//              sent as null when it is missing, null, throws or gives no page (the key itself says this browser can open a screen)
 //   onShowScreen  (screen) -> Promise<{ ok: true, go } | { ok: false, reason?: "form" | "missing" | "not-allowed" }>, the App
 //              preparing a page /turn asked to open; `go()` then shows it
 // Returns { getState, subscribe, setRates, open, leave, submit, heard, confirmPending, cancelPending, setStage,
@@ -572,8 +572,8 @@ export function createSession({
     // the first turn after a briefing answers its closing question: it alone says which follow-up that was
     const followUp = takeFollowUp();
     if (followUp !== null) body.followUpRecId = followUp;
-    const onScreen = currentScreen();
-    if (onScreen !== null) body.onScreen = onScreen;
+    // (final review I5, R13) always the key, null when nothing known is open: its being there tells the server this browser opens screens
+    body.onScreen = currentScreen();
     const res = await request("POST", "/api/assistant/turn", body);
     if (isScreenTurn(res)) await showScreenTurn(res.data, leavesAtStart);
     else showTurnResult(res);

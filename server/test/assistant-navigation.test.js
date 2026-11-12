@@ -10,15 +10,29 @@ const {
   cleanOnScreen, screenLine, alreadyLine, isAlreadyOn, isNavigationRequest, claimsScreenOpened, targetsScreen,
 } = require("../lib/assistant/navigation");
 
-const namesClient = (s) => /helen|brandt/i.test(s);
+const namesClient = (s) => /helen|brandt|chen/i.test(s);
 
 const YES = ["pull up Helen Brandt", "Charlie, bring up the Brandts", "open Helen Brandt", "go to Helen's page",
   "take me to Rate Watch", "open Sweeps", "go home", "show me my clients", "go to my team", "can you pull up Helen",
   "please open rate watch", "look up Helen Brandt", "show me Helen Brandt", "take me home", "switch to sweeps",
-  "Hey Charlie, could you jump to billing?", "show me the home page please", "look up Helen's page"];
+  "Hey Charlie, could you jump to billing?", "show me the home page please", "look up Helen's page",
+  // (final review I1) filler, speech-to-text tags, the split and "back" forms, a trailing "page", the plural possessive
+  "Okay, pull up Helen Brandt", "(background noise) Pull up Helen Brandt.", "pull her up", "take me back to Home",
+  "Alright, now open Rate Watch", "show me Helen", "Good morning Charlie, pull up Helen Brandt", "Hi Charlie, take me to Rate Watch",
+  "Well, open Sweeps", "Charlie — pull up Helen Brandt", "Charlie... pull up Helen", "So pull up Helen", "And open Sweeps",
+  "Just pull up Helen", "Now pull up Helen", "Yes, pull up Helen", "Thanks — take me to Rate Watch", "pull Helen up", "bring them up",
+  "go back home", "show me Rate Watch page", "show me the Chens' file", "show me Helen Brandt's file", "bring her up", "bring him up",
+  "pull it up", "pull that up", "[laughter] open Sweeps", "take me back home", "go back to Rate Watch", "bring Robert & Linda Chen up",
+  "pull the Chens up", "Okay Charlie, pull her up please", "show me the rates page", "show me the profile page"];
 const NO = ["show me who's at their target", "show me today's rates", "what's Helen's target?", "log a call with Helen",
   "open the email", "open it in Gmail", "look up the Cowboys score", "look up Helen's balance", "who should I call?",
-  "what are rates today", "show me Helen's target", "show me what Helen owes", "pull up", "open the draft"];
+  "what are rates today", "show me Helen's target", "show me what Helen owes", "pull up", "open the draft",
+  // (final review I2) an email, a draft, Gmail, Outlook, mail or a link is no page, whatever the strong verb
+  "pull up Helen's email", "bring up the Chen email", "pull up that email for Helen", "pull up the Chens' email",
+  "bring up that email again", "pull that email up", "open my email", "go to my email", "pull up her draft", "bring up the link",
+  "take me to Gmail", "switch to Outlook",
+  // (final review I1) the split form ends with "up"; filler alone asks for nothing
+  "bring it up with her", "bring that up with Helen", "okay", "(background noise)", "yes", "show me the rates"];
 
 test("constants", () => {
   assert.deepStrictEqual([...SCREEN_PAGES], ["home", "sweeps", "clients", "rates", "add", "team", "import", "profile", "billing"]);
@@ -130,6 +144,20 @@ test("claimsScreenOpened (Task 3 fix 2): opening up, a page that is open, and le
   ]) assert.ok(claimsScreenOpened(t, knownNames), t);
 });
 
+test("claimsScreenOpened (final review M1): pull / bring up only with Charlie as the subject; \"here you go\" only alone; no colon", () => {
+  for (const t of [
+    "Helen brought up a refi on your last call.", "Here you go — Helen Brandt is at 7.9 percent.", "I pulled up the numbers: Helen is at 7.1%.",
+    "She brought up refinancing last week.", "Grant brought up his HELOC.", "Here you go: today's 30-year is 6.2%.",
+    "I can't bring up her page from here.", "Bring up her page from All Clients.", "Pulling up today's rates: 30-year 6.2%.",
+  ]) assert.ok(!claimsScreenOpened(t, knownNames), t);
+  for (const t of [
+    "Pulling up Helen now.", "Brought up the Chens for you.", "Pulling her up now.", "Let me pull up her page.", "Let me pull that up.",
+    "I'm pulling up her page.", "I've brought up the Chens.", "I have pulled up Helen Brandt.", "I'll pull up her page now.",
+    "I pulled up Helen Brandt for you.", "Sure, pulling up Helen now.", "Okay — bringing up the Chens.", "Here you go.", "There you go!",
+    "Okay, there you go.", "I’m bringing her up now.", "I just pulled up her page.",
+  ]) assert.ok(claimsScreenOpened(t, knownNames), t);
+});
+
 test("claimsScreenOpened (Task 3 fix 1, 2): a reply that is only the app's own line, imitated, is a claim", () => {
   for (const t of [
     "Here's Helen Brandt.", "You're already on Rate Watch.", "  Here's Robert & Linda Chen. ", "Here’s Helen Brandt",
@@ -164,4 +192,13 @@ test("targetsScreen (Task 3 fix 2): a request that names a page, a client, or a 
   }
   assert.ok(!targetsScreen("pull up Helen Brandt"), "with no name test, a name alone is no screen");
   assert.ok(!targetsScreen(undefined));
+});
+
+test("targetsScreen (final review I1): a person's pronoun in the split form is a client's page; \"it\" / \"that\" are not", () => {
+  for (const t of ["pull her up", "bring them up", "bring him up", "Okay, pull her up please", "(background noise) Pull him up."]) {
+    assert.ok(targetsScreen(t, knownNames), t);
+    assert.ok(targetsScreen(t), `${t} (no name test)`);
+  }
+  // "it" / "that" may be the email card or a figure ("It's on your screen — tap Open in Gmail on the card." stays as it is)
+  for (const t of ["pull it up", "pull that up", "bring it up with her"]) assert.ok(!targetsScreen(t, knownNames), t);
 });

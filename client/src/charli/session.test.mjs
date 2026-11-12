@@ -412,11 +412,12 @@ test("briefing: the first turn after a briefing with a follow-up carries followU
   await session.submit("and the 15-year?");
   const [, first, second, third] = server.turns().map((c) => c.body);
   assert.equal(first.followUpRecId, 7);
-  assert.deepEqual(Object.keys(first).sort(), ["followUpRecId", "localDate", "messages", "rates"]);
+  // (final review I5) every turn also carries the onScreen key (null here: no screenNow)
+  assert.deepEqual(Object.keys(first).sort(), ["followUpRecId", "localDate", "messages", "onScreen", "rates"]);
   assert.deepEqual(first.messages, [{ role: "assistant", content: BRIEFING_TEXT }, { role: "user", content: "yes" }]);
   for (const body of [second, third]) {
     assert.equal("followUpRecId" in body, false);
-    assert.deepEqual(Object.keys(body).sort(), ["localDate", "messages", "rates"]);
+    assert.deepEqual(Object.keys(body).sort(), ["localDate", "messages", "onScreen", "rates"]);
   }
 });
 
@@ -683,7 +684,8 @@ test("final review M-6: every turn carries the user's localDate (YYYY-MM-DD), as
   const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Hello."), turnReply("Sure.")) } });
   await session.open();
   await session.submit("what's in the news?");
-  assert.deepEqual(Object.keys(server.turns()[1].body).sort(), ["localDate", "messages", "rates"]);
+  // (final review I5) and the onScreen key, null here (no screenNow)
+  assert.deepEqual(Object.keys(server.turns()[1].body).sort(), ["localDate", "messages", "onScreen", "rates"]);
   assert.equal(server.turns()[1].body.localDate, "2026-10-28");
 
   // with none handed in: the device's own date at the time of each turn, not the UTC one
@@ -1970,7 +1972,9 @@ test("screens: disposing while the App prepares the page opens nothing and says 
   assert.deepEqual(spoken, []);
 });
 
-test("screens: every turn sends screenNow() as onScreen; null, a throw or no screenNow sends none; the greeting never does", async () => {
+// (final review I5, R13) the onScreen key is on every turn, null when screenNow is missing, gives null, throws or gives junk: the
+// key itself tells the server this browser can open a screen
+test("screens: every turn sends screenNow() as onScreen; null, a throw or no screenNow sends null; the greeting never does", async () => {
   let now = { page: "client", clientId: 7 };
   const { session, server } = setup({
     routes: { "POST /api/assistant/turn": () => turnReply("Sure.") },
@@ -1985,13 +1989,16 @@ test("screens: every turn sends screenNow() as onScreen; null, a throw or no scr
   assert.deepEqual(server.turns()[2].body.onScreen, { page: "form" }, "read again for every turn");
   now = null;
   await session.submit("and rates?");
-  assert.equal(Object.hasOwn(server.turns()[3].body, "onScreen"), false);
+  assert.equal(Object.hasOwn(server.turns()[3].body, "onScreen"), true);
+  assert.equal(server.turns()[3].body.onScreen, null);
   now = "throw";
   assert.deepEqual(await session.submit("okay"), { ok: true, action: "turn" });
-  assert.equal(Object.hasOwn(server.turns()[4].body, "onScreen"), false);
+  assert.equal(server.turns()[4].body.onScreen, null);
+  assert.equal(Object.hasOwn(server.turns()[0].body, "onScreen"), false, "the greeting body is unchanged");
   const plain = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sure.")) } });
   await plain.session.submit("hi");
-  assert.equal(Object.hasOwn(plain.server.turns()[0].body, "onScreen"), false);
+  assert.equal(Object.hasOwn(plain.server.turns()[0].body, "onScreen"), true);
+  assert.equal(plain.server.turns()[0].body.onScreen, null);
 });
 
 test("R11: screenNow's answer is cut down to { page, clientId? } before it is sent, so an odd value never breaks the turn", async () => {
@@ -2001,20 +2008,21 @@ test("R11: screenNow's answer is cut down to { page, clientId? } before it is se
   circularPage.self = circularPage;
   const cases = [
     [{ page: "client", clientId: 7n }, { page: "client" }],   // a BigInt id is not a finite number: dropped, the page kept
-    [circular, undefined],                                    // no string page: no key
+    [circular, null],                                         // no string page: null (final review I5: the key is always there)
     [circularPage, { page: "rates" }],                        // the loop is left behind
     [{ page: "client", clientId: Number.NaN }, { page: "client" }],
     [{ page: "client", clientId: 7, extra: { deep: true } }, { page: "client", clientId: 7 }],
-    [{ page: 3 }, undefined],
-    ["home", undefined],
+    [{ page: 3 }, null],
+    ["home", null],
+    [undefined, null],
   ];
   for (const [value, sent] of cases) {
     const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sure.")) }, options: { screenNow: () => value } });
     assert.deepEqual(await session.submit("hi"), { ok: true, action: "turn" });
     assert.equal(lastTurn(session).content, "Sure.", "the turn went through");
     const body = server.turns()[0].body;
-    if (sent === undefined) assert.equal(Object.hasOwn(body, "onScreen"), false);
-    else assert.deepEqual(body.onScreen, sent);
+    assert.equal(Object.hasOwn(body, "onScreen"), true);
+    assert.deepEqual(body.onScreen, sent);
   }
 });
 
