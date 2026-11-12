@@ -7,7 +7,7 @@
 // a spoken or typed "yes" is never sent to /turn (the model would just propose the change again).
 //
 // Server contracts (server/routes/assistant.js):
-//   POST /api/assistant/turn     { messages, rates, localDate } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, turnId, error? }
+//   POST /api/assistant/turn     { messages, rates, localDate, onScreen? } | { greeting: true, rates, localHour, localDate } -> { reply, sources, sideEffect?, details?, compose?, screen?, turnId, error? }
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
@@ -38,6 +38,11 @@ export const LEFT_UNCONFIRMED = "You left before confirming, so I didn't make th
 // Shown (never spoken) when the user left while a confirmed change was still with the server and it came back unfinished: it may
 // still have gone through, so it is dropped without saying it was not made.
 export const LEFT_UNFINISHED = "You left before I heard back on that change, so I can't tell whether it went through — check before asking again.";
+
+// Keep in sync with COULDNT_OPEN and FORM_OPEN in server/lib/assistant/navigation.js: the lines that replace hers when the page /turn
+// asked to open (its `screen`) did not open, so "Here's …" is never shown, heard or sent back for a page that isn't there.
+export const COULDNT_OPEN = "I couldn't open that page.";
+export const FORM_OPEN = "You've got a form open. Save or cancel it first, then ask me again.";
 
 // What Charli says when /turn did not answer in time (REQUEST_TIMEOUTS): the turn is dropped here and nothing was written. (The
 // server has its own line, TOOK_TOO_LONG, for a turn it cut off itself; that one arrives as an ordinary error reply.)
@@ -177,6 +182,17 @@ function cleanCompose(compose) {
   return { to, subject, body, links: kept };
 }
 
+// A page Charli was asked to open (/turn's `screen`): { page } of the nine sidebar ids (nav.mjs; keep in sync with SCREEN_PAGES in
+// server/lib/assistant/navigation.js) or { page: "client", clientId } with a positive integer id, checked as a compose card is.
+// -> a fresh object with only those fields, or null (nothing opens).
+const SCREEN_PAGES = new Set(["home", "sweeps", "clients", "rates", "add", "team", "import", "profile", "billing"]);
+function cleanScreen(screen) {
+  if (!screen || typeof screen !== "object" || Array.isArray(screen)) return null;
+  const { page, clientId } = screen;
+  if (page === "client") return Number.isInteger(clientId) && clientId > 0 ? { page, clientId } : null;
+  return typeof page === "string" && SCREEN_PAGES.has(page) ? { page } : null;
+}
+
 // The morning briefing the greeting carries (/turn greeting's `briefing`): { kind, strip, followUp }. Kept only as the server documents
 // it: `kind` is "morning" or "catch_up" (anything else is no briefing); `strip` always has the six fields, each null unless it has
 // its documented type (a number, a string, or for nextEvent a { title, start } with a text title and a text start, or null for an
@@ -241,18 +257,23 @@ const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const localDateOf = (date) =>
   `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
-// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting, now, onClientsChanged })
+// createSession({ fetch, rates, localHour, localDate, user, onSpeak, speakGreeting, now, onClientsChanged, screenNow, onShowScreen })
 //   fetch      the window fetch (injected so tests need no network)
 //   rates      today's rates, as App.jsx holds them (may be null at first: setRates() when they arrive)
 //   localHour  0-23 for the greeting; defaults to the clock
 //   localDate  YYYY-MM-DD for the greeting and every turn; defaults to the clock's local date at the time (tests pin it)
 //   user       { careerStage } from /api/auth/me
-//   onSpeak    ({ text, turnId? }) called, in order, for every line Charli should say aloud (the line is
-//              already in the transcript when it is called)
+//   onSpeak    ({ text, turnId?, handoff? }) called, in order, for every line Charli should say aloud (the line is
+//              already in the transcript when it is called). `handoff: true` marks the line of a page that is opening: the App goes
+//              there right after, which may take her view away, and the line should still be heard in full.
 //   speakGreeting  true (the default) speaks the greeting on open(); false shows it, in the transcript and the history, but says
 //              nothing until briefMe() (the morning briefing is read, not played at the user). Applies to the greeting only.
 //   now        () -> Date, the device clock (injected so tests can move it); defaults to new Date()
 //   onClientsChanged  () -> (Promise), called once after a confirmed setTargetRate or logContact, so the client screens re-read
+//   screenNow  () -> { page, clientId? } | null, what the App has open; sent as `onScreen` with every turn (not the greeting), and
+//              left out when it is null or throws
+//   onShowScreen  (screen) -> Promise<{ ok: true, go } | { ok: false, reason?: "form" | "missing" | "not-allowed" }>, the App
+//              preparing a page /turn asked to open; `go()` then shows it
 // Returns { getState, subscribe, setRates, open, leave, submit, heard, confirmPending, cancelPending, setStage,
 //           briefMe, notice, dispose }.
 //
@@ -286,9 +307,18 @@ export const localDateOf = (date) =>
 // A typed or said request for the briefing again (isBriefRequest) is answered locally when there is a briefing: no /turn, the briefing's
 // text is added as a new turn (action: "brief") and spoken. With no briefing it is an ordinary turn; with a stale one it is refused.
 //
+// A turn /turn answers with a `screen` (the broker asked her to open a page) opens the page FIRST, then her line: the screen is
+// checked (cleanScreen) and handed to onShowScreen, and the session stays busy while the App prepares it. Opened: her reply is added
+// and spoken with `handoff: true`, and only then is `go()` called. Not opened (an unknown screen, no onShowScreen, an answer that
+// isn't ok, a throw, or the session left or disposed meanwhile): the reply is replaced, in the transcript and the history, by
+// FORM_OPEN when the App said a form is open, else COULDNT_OPEN, and nothing opens. A screen turn proposes nothing: a sideEffect
+// beside a screen is ignored.
+//
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
-export function createSession({ fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true, now, onClientsChanged } = {}) {
+export function createSession({
+  fetch: fetchFn, rates = null, localHour, localDate, user = null, onSpeak, speakGreeting = true, now, onClientsChanged, screenNow, onShowScreen,
+} = {}) {
   const doFetch = fetchFn || ((...args) => globalThis.fetch(...args));
   const clock = typeof now === "function" ? now : () => new Date();
   let currentRates = rates;
@@ -325,9 +355,10 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     set({ turns: [...state.turns, full] });
     return full;
   };
-  const speak = (text, turnId) => {
+  // `extra` goes into the onSpeak object as is ({ handoff: true } for the line of a page that is opening).
+  const speak = (text, turnId, extra) => {
     if (disposed || away || !text || typeof onSpeak !== "function") return;
-    try { onSpeak({ text, turnId: turnId || undefined }); } catch { /* a speaker problem must not break the session */ }
+    try { onSpeak({ text, turnId: turnId || undefined, ...extra }); } catch { /* a speaker problem must not break the session */ }
   };
   // Said and shown, never sent to the model.
   const addNotice = (text, { say = false } = {}) => {
@@ -426,6 +457,38 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     return null;
   }
 
+  // A /turn reply that asks for a page: not an error, with a line, and a `screen` (checked in showScreenTurn).
+  const isScreenTurn = (res) =>
+    res.ok && !!res.data && res.data.error !== true && typeof res.data.reply === "string" && !!res.data.reply.trim() &&
+    Object.prototype.hasOwnProperty.call(res.data, "screen");
+
+  // The page first, then her line (see the header): the App prepares the screen, her line (or its replacement) is added and spoken,
+  // and only then does the App go. Gone (left or disposed) by the time the App answers is not opened.
+  async function showScreenTurn(data) {
+    const screen = cleanScreen(data.screen);
+    let answer = null;
+    if (screen && !away && !disposed && typeof onShowScreen === "function") {
+      try { answer = await onShowScreen(screen); } catch { answer = null; }
+    }
+    const gone = away || disposed;
+    const opened = !gone && !!answer && answer.ok === true && typeof answer.go === "function";
+    if (opened) {
+      addTurn({ role: "assistant", content: data.reply, sources: cleanSources(data.sources), turnId: data.turnId || null });
+      speak(data.reply, data.turnId, { handoff: true });
+      try { answer.go(); } catch { /* her line is already shown; the page just didn't change */ }
+      return;
+    }
+    const text = !gone && answer && answer.reason === "form" ? FORM_OPEN : COULDNT_OPEN;
+    addTurn({ role: "assistant", content: text });
+    speak(text);
+  }
+
+  // What the App has open, for the turn's `onScreen`; null when it has nothing to say or its answer can't be read.
+  function currentScreen() {
+    if (typeof screenNow !== "function") return null;
+    try { return screenNow() ?? null; } catch { return null; }
+  }
+
   // The briefing's follow-up id for the one exchange that answers its question, or null; either way it is used up.
   function takeFollowUp() {
     const id = followUpRecId;
@@ -498,7 +561,11 @@ export function createSession({ fetch: fetchFn, rates = null, localHour, localDa
     // the first turn after a briefing answers its closing question: it alone says which follow-up that was
     const followUp = takeFollowUp();
     if (followUp !== null) body.followUpRecId = followUp;
-    showTurnResult(await request("POST", "/api/assistant/turn", body));
+    const onScreen = currentScreen();
+    if (onScreen !== null) body.onScreen = onScreen;
+    const res = await request("POST", "/api/assistant/turn", body);
+    if (isScreenTurn(res)) await showScreenTurn(res.data);
+    else showTurnResult(res);
   }
 
   // "Brief me" typed or said: the briefing again, with no request. The exchange is in the transcript and the history like any other (the

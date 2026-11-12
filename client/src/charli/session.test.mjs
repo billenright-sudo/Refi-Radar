@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import {
   createSession, classifyReply, CAREER_STAGES, LEAVE_THAT, DIDNT_CATCH, LATE_ANSWER, pendingRows, voiceNoteFor,
   CANT_VERIFY, GUIDELINE_HANDOFF, REQUEST_TIMEOUTS, TOOK_TOO_LONG_CLIENT, VOICE_BUDGET_NOTE, VOICE_BREAK_NOTE, STILL_WORKING,
-  LEFT_UNCONFIRMED, LEFT_UNFINISHED, isBriefRequest,
+  LEFT_UNCONFIRMED, LEFT_UNFINISHED, isBriefRequest, COULDNT_OPEN, FORM_OPEN,
 } from "./session.mjs";
 
 const RATES = { rate_30yr_fixed: 6.5, rate_15yr_fixed: 5.9, rate_5_1_arm: 6.1, date: "2026-10-25", source: "live" };
@@ -1734,4 +1734,234 @@ test("GET /api/auth/me is given up on at 10 s, and a request that answers in tim
   await flush();
   assert.equal(turnPost.signal.aborted, false, "the timer was cleared when the reply came");
   assert.equal(lastTurn(quick.session).content, "Rates are 6.5%.");
+});
+
+// ── a page she opens (Charlie opens screens) ─────────────────────────────────
+
+const HELEN = "Here's Helen Brandt.";
+const HELEN_SCREEN = { page: "client", clientId: 7 };
+// A screen turn as /turn answers it: the code's line, its sources and turn id, and the screen to open (never a confirm id).
+const screenReply = (text, screen, extra = {}) => turnReply(text, { screen, sources: ["client record"], turnId: "s1", ...extra });
+const isHeres = (content) => content.startsWith("Here's");
+
+// An App stand-in. onShowScreen logs the screen it was handed and answers `answer(go)` (by default { ok: true, go }); `events` logs
+// "show" (with the line the transcript ended on at that moment), "speak" and "go" in the order they happened.
+function screenSetup({ answer = (go) => ({ ok: true, go }), replies = [screenReply(HELEN, HELEN_SCREEN)], route, options = {} } = {}) {
+  const events = [];
+  const shown = [];
+  const go = () => { events.push("go"); };
+  const ctx = setup({
+    routes: { "POST /api/assistant/turn": route || queue(...replies, turnReply("Sure.", { turnId: "next" })) },
+    options: {
+      onShowScreen: async (screen) => {
+        shown.push(screen);
+        events.push(`show (last: ${lastTurn(ctx.session).content})`);
+        return answer(go);
+      },
+      onSpeak: (line) => { events.push("speak"); ctx.spoken.push(line); },
+      ...options,
+    },
+  });
+  return { ...ctx, events, shown };
+}
+// Until the App has been handed the screen (a few hops of promises through the fake fetch), at most ten rounds.
+async function untilShown(shown) {
+  for (let i = 0; i < 10 && !shown.length; i++) await flush();
+  assert.equal(shown.length, 1, "the App was handed the screen");
+}
+const gated = () => { let release; const gate = new Promise((r) => { release = r; }); return { gate, release }; };
+
+test("screens: the client's lines match the server's navigation.js", { skip: !existsSync(new URL("../../../server/lib/assistant/navigation.js", import.meta.url)) }, async () => {
+  const server = createRequire(import.meta.url)("../../../server/lib/assistant/navigation.js");
+  assert.equal(COULDNT_OPEN, server.COULDNT_OPEN);
+  assert.equal(FORM_OPEN, server.FORM_OPEN);
+  assert.equal(COULDNT_OPEN, "I couldn't open that page.");
+  assert.equal(FORM_OPEN, "You've got a form open. Save or cancel it first, then ask me again.");
+  // every page the server may send reaches the App as { page }
+  for (const page of server.SCREEN_PAGES) {
+    const { session, shown } = screenSetup({ replies: [screenReply("Here's that page.", { page })] });
+    await session.submit(`open ${page}`);
+    assert.deepEqual(shown, [{ page }], page);
+    assert.equal(lastTurn(session).content, "Here's that page.", page);
+  }
+});
+
+test("screens: the App prepares the page first; her line is then shown and spoken (handoff: true), and only then does the App go", async () => {
+  const { session, events, shown, spoken } = screenSetup();
+  assert.deepEqual(await session.submit("pull up Helen Brandt"), { ok: true, action: "turn" });
+  assert.deepEqual(shown, [HELEN_SCREEN]);
+  assert.deepEqual(events, ["show (last: pull up Helen Brandt)", "speak", "go"], "prepared before her line exists; spoken before go; go once");
+  const t = lastTurn(session);
+  assert.equal(t.role, "assistant");
+  assert.equal(t.content, HELEN);
+  assert.deepEqual(t.sources, ["client record"]);
+  assert.equal(t.turnId, "s1");
+  assert.equal(t.kind, "message");
+  assert.equal(t.inHistory, true);
+  assert.deepEqual(spoken, [{ text: HELEN, turnId: "s1", handoff: true }]);
+  assert.equal(session.getState().pending, null);
+  assert.equal(session.getState().busy, false);
+});
+
+test("screens: a page the App could not open replaces her line with COULDNT_OPEN, in the transcript and the history; go never runs", async () => {
+  for (const answer of [() => ({ ok: false }), () => ({ ok: false, reason: "missing" }), () => ({ ok: false, reason: "not-allowed" }), () => ({ ok: true }), () => undefined]) {
+    const { session, server, events, spoken } = screenSetup({ answer });
+    await session.submit("pull up Helen Brandt");
+    const t = lastTurn(session);
+    assert.equal(t.content, COULDNT_OPEN);
+    assert.deepEqual(t.sources, []);
+    assert.equal(t.turnId, null);
+    assert.equal(t.inHistory, true);
+    assert.deepEqual(spoken, [{ text: COULDNT_OPEN, turnId: undefined }], "spoken, with no handoff");
+    assert.equal(events.includes("go"), false);
+    await session.submit("and her rate?");
+    const sent = messagesOf(server.turns()[1]);
+    assert.deepEqual(sent.slice(-2), [{ role: "assistant", content: COULDNT_OPEN }, { role: "user", content: "and her rate?" }]);
+    assert.equal(sent.some((m) => isHeres(m.content)), false, "\"Here's …\" is never remembered");
+    assert.equal(session.getState().turns.some((x) => isHeres(x.content)), false, "nor shown");
+  }
+});
+
+test("screens: a form open in the App replaces her line with FORM_OPEN, in the transcript and the history; go never runs", async () => {
+  const { session, server, events, spoken } = screenSetup({ answer: () => ({ ok: false, reason: "form" }) });
+  await session.submit("pull up Helen Brandt");
+  assert.equal(lastTurn(session).content, FORM_OPEN);
+  assert.deepEqual(lastTurn(session).sources, []);
+  assert.deepEqual(spoken, [{ text: FORM_OPEN, turnId: undefined }]);
+  assert.equal(events.includes("go"), false);
+  await session.submit("okay");
+  const sent = messagesOf(server.turns()[1]);
+  assert.deepEqual(sent.at(-2), { role: "assistant", content: FORM_OPEN });
+  assert.equal(sent.some((m) => isHeres(m.content)), false);
+  assert.equal(session.getState().turns.some((x) => isHeres(x.content)), false);
+});
+
+test("screens: a screen that isn't a known page or a positive client id, or no onShowScreen, is COULDNT_OPEN and the App is never asked", async () => {
+  for (const screen of [{ page: "admin" }, "rates", null, ["rates"], { page: "client" }, { page: "client", clientId: 0 }, { page: "client", clientId: "7" }, { page: "client", clientId: 7.5 }]) {
+    const { session, shown, spoken } = screenSetup({ replies: [screenReply("Here's Rate Watch.", screen)] });
+    await session.submit("take me to Rate Watch");
+    assert.deepEqual(shown, [], JSON.stringify(screen));
+    assert.equal(lastTurn(session).content, COULDNT_OPEN, JSON.stringify(screen));
+    assert.deepEqual(spoken.map((s) => s.text), [COULDNT_OPEN]);
+  }
+  const { session, spoken } = setup({ routes: { "POST /api/assistant/turn": queue(screenReply("Here's Rate Watch.", { page: "rates" })) } });
+  await session.submit("take me to Rate Watch");
+  assert.equal(lastTurn(session).content, COULDNT_OPEN, "no onShowScreen: nothing can open");
+  assert.deepEqual(spoken.map((s) => s.text), [COULDNT_OPEN]);
+});
+
+test("screens: an error:true reply is an error line as today, even with a screen beside it; the App is never asked", async () => {
+  const { session, shown } = screenSetup({ replies: [screenReply("Sorry — something went wrong on my end.", { page: "rates" }, { error: true })] });
+  await session.submit("take me to Rate Watch");
+  assert.deepEqual(shown, []);
+  assert.equal(lastTurn(session).content, "Sorry — something went wrong on my end.");
+  assert.equal(lastTurn(session).kind, "error");
+});
+
+test("screens: an onShowScreen that rejects or throws is COULDNT_OPEN; a go() that throws leaves her line and the session going", async () => {
+  for (const options of [{}, { onShowScreen: () => { throw new Error("no list"); } }]) {
+    const { session, spoken } = screenSetup({ answer: () => { throw new Error("reload failed"); }, options });
+    assert.deepEqual(await session.submit("pull up Helen Brandt"), { ok: true, action: "turn" });
+    assert.equal(lastTurn(session).content, COULDNT_OPEN);
+    assert.deepEqual(spoken.map((s) => s.text), [COULDNT_OPEN]);
+    assert.equal(session.getState().busy, false);
+  }
+  const { session, server, spoken } = screenSetup({ answer: () => ({ ok: true, go: () => { throw new Error("router broke"); } }) });
+  assert.deepEqual(await session.submit("pull up Helen Brandt"), { ok: true, action: "turn" });
+  assert.equal(lastTurn(session).content, HELEN, "the line was already shown when go ran");
+  assert.deepEqual(spoken, [{ text: HELEN, turnId: "s1", handoff: true }]);
+  assert.equal(session.getState().busy, false);
+  assert.deepEqual(await session.submit("thanks"), { ok: true, action: "turn" });
+  assert.equal(server.turns().length, 2);
+});
+
+test("Review Focus 1: leaving while the App prepares the page opens nothing and says nothing; the transcript says COULDNT_OPEN", async () => {
+  const { gate, release } = gated();
+  const { session, events, shown, spoken } = screenSetup({ answer: async (go) => { await gate; return { ok: true, go }; } });
+  const inFlight = session.submit("pull up Helen Brandt");
+  await untilShown(shown);
+  session.leave();
+  release();
+  assert.deepEqual(await inFlight, { ok: true, action: "turn" });
+  assert.equal(events.includes("go"), false, "nothing opens");
+  assert.deepEqual(spoken, [], "nothing is said");
+  assert.equal(lastTurn(session).content, COULDNT_OPEN);
+  assert.equal(session.getState().turns.some((t) => isHeres(t.content)), false);
+  assert.equal(session.getState().busy, false);
+});
+
+test("screens: a screen turn that lands after leave() asks the App nothing, opens nothing, says nothing, and keeps COULDNT_OPEN", async () => {
+  const { gate, release } = gated();
+  const { session, events, shown, spoken } = screenSetup({ route: async () => { await gate; return screenReply(HELEN, HELEN_SCREEN); } });
+  const inFlight = session.submit("pull up Helen Brandt");
+  session.leave();
+  release();
+  await inFlight;
+  assert.deepEqual(shown, []);
+  assert.deepEqual(events, []);
+  assert.deepEqual(spoken, []);
+  assert.equal(lastTurn(session).content, COULDNT_OPEN);
+});
+
+test("screens: disposing while the App prepares the page opens nothing and says nothing", async () => {
+  const { gate, release } = gated();
+  const { session, events, shown, spoken } = screenSetup({ answer: async (go) => { await gate; return { ok: true, go }; } });
+  const inFlight = session.submit("pull up Helen Brandt");
+  await untilShown(shown);
+  session.dispose();
+  release();
+  await inFlight;
+  assert.equal(events.includes("go"), false);
+  assert.deepEqual(spoken, []);
+});
+
+test("screens: every turn sends screenNow() as onScreen; null, a throw or no screenNow sends none; the greeting never does", async () => {
+  let now = { page: "client", clientId: 7 };
+  const { session, server } = setup({
+    routes: { "POST /api/assistant/turn": () => turnReply("Sure.") },
+    options: { screenNow: () => { if (now === "throw") throw new Error("no view"); return now; } },
+  });
+  await session.open();
+  assert.deepEqual(server.turns()[0].body, { greeting: true, rates: RATES, localHour: 9, localDate: "2026-10-28" });
+  await session.submit("how is she doing?");
+  assert.deepEqual(server.turns()[1].body.onScreen, { page: "client", clientId: 7 });
+  now = { page: "form" };
+  await session.submit("pull up Helen");
+  assert.deepEqual(server.turns()[2].body.onScreen, { page: "form" }, "read again for every turn");
+  now = null;
+  await session.submit("and rates?");
+  assert.equal(Object.hasOwn(server.turns()[3].body, "onScreen"), false);
+  now = "throw";
+  assert.deepEqual(await session.submit("okay"), { ok: true, action: "turn" });
+  assert.equal(Object.hasOwn(server.turns()[4].body, "onScreen"), false);
+  const plain = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sure.")) } });
+  await plain.session.submit("hi");
+  assert.equal(Object.hasOwn(plain.server.turns()[0].body, "onScreen"), false);
+});
+
+test("screens: one thing at a time: a second submit while the App prepares the page is refused as busy", async () => {
+  const { gate, release } = gated();
+  const { session, server, shown } = screenSetup({ answer: async (go) => { await gate; return { ok: true, go }; } });
+  const first = session.submit("pull up Helen Brandt");
+  await untilShown(shown);
+  assert.equal(session.getState().busy, true);
+  assert.deepEqual(await session.submit("and her rate?"), { ok: false, reason: "busy" });
+  assert.deepEqual(await session.heard(""), { ok: false, reason: "busy" });
+  release();
+  await first;
+  assert.equal(server.turns().length, 1);
+  assert.equal(lastTurn(session).content, HELEN);
+  assert.equal(session.getState().busy, false);
+});
+
+test("screens: a screen turn proposes nothing: a sideEffect beside a screen sets no pending, opened or not, and a yes after it is a turn", async () => {
+  for (const answer of [(go) => ({ ok: true, go }), () => ({ ok: false })]) {
+    const { session, server } = screenSetup({
+      answer, replies: [screenReply(HELEN, HELEN_SCREEN, { sideEffect: SIDE_EFFECT, details: [{ label: "Client", value: "Helen Brandt" }] })],
+    });
+    await session.submit("pull up Helen Brandt");
+    assert.equal(session.getState().pending, null);
+    assert.deepEqual(await session.submit("yes"), { ok: true, action: "turn" });
+    assert.equal(server.confirms().length, 0);
+  }
 });
