@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIsPhone } from "../useIsPhone.js";
 import { uploadFile, reviewAgain, confirmImport, withMapping, withStatus, outcomeText, bookText, summaryText, pageOf } from "./importer.mjs";
 
@@ -273,9 +273,14 @@ const ResultStep = ({ ui, counts, onDone }) => {
 
 // ── the page ──
 
-export default function ImportView({ ui, onImported, onDone }) {
+export default function ImportView({ ui, onImported, onDone, onFileState }) {
   const { C } = ui;
   const [step, setStep] = useState("upload");   // "upload" | "review" | "importing" | "result"
+  // Tells the app when a file is loaded (review, importing), so Charlie won't switch pages out from under it.
+  useEffect(() => {
+    if (onFileState) onFileState(step === "review" || step === "importing");
+  }, [step, onFileState]);
+  useEffect(() => () => { if (onFileState) onFileState(false); }, [onFileState]);
   const [review, setReview] = useState(null);
   const [fileName, setFileName] = useState("");
   const [counts, setCounts] = useState(null);   // the written counts, for the result screen

@@ -6,6 +6,7 @@ import { localDateOf } from "./charli/session.mjs";
 import { DEFAULT_VIEW, navGroups, viewFor } from "./nav.mjs";
 import { gridCols } from "./layout.mjs";
 import { useIsPhone } from "./useIsPhone.js";
+import { onScreenOf, pageAllowed, panelAfter, viewForScreen } from "./charlieNav.mjs";
 import { DOCK_WIDTH } from "./homeLayout.mjs";
 import { useHomeLayout } from "./useHomeLayout.js";
 import { OVERVIEW_COPY, opportunityCount, ratesHeading, tileFigureSize } from "./overview.mjs";
@@ -2900,14 +2901,50 @@ export default function App() {
   const reloadClients = useCallback(async () => {
     const r = await fetch("/api/clients");
     const data = await r.json();
-    if (!data.success) return;
+    if (!data.success) return null;
     setClients(data.clients);
     const id = selectedIdRef.current;
     if (id != null) {
       const fresh = data.clients.find(x => x.id === id);
       if (fresh) setSelected(fresh);
     }
+    return data.clients;
   }, []);
+
+  // Charlie opens screens: the session asks what is open (screenNow) and has the app prepare one (prepareScreen).
+  // The kept session holds the first view's callbacks, so both are stable and read refs that are current on every render.
+  const navRef = useRef({});
+  navRef.current = { clients, user, billingOn, view, selectedId: selectedIdRef.current, isPhone };
+  const importHasFile = useRef(false);
+  const onImportFileState = useCallback((has) => { importHasFile.current = Boolean(has); }, []);
+  const screenNow = useCallback(() => {
+    const n = navRef.current;
+    return onScreenOf({ view: n.view, selectedId: n.selectedId, importHasFile: importHasFile.current });
+  }, []);
+  const prepareScreen = useCallback(async (screen) => {
+    if (!screen) return { ok: false, reason: "missing" };
+    if (screenNow()?.page === "form") return { ok: false, reason: "form" };
+    let client = null;
+    if (screen.page === "client") {
+      const find = (list) => (list || []).find(x => x.id === screen.clientId) || null;
+      client = find(navRef.current.clients);
+      if (!client) {
+        let fresh = null;
+        try { fresh = await reloadClients(); } catch { fresh = null; }
+        client = find(fresh);
+      }
+      if (!client) return { ok: false, reason: "missing" };
+    } else if (!pageAllowed(screen.page, navRef.current.user?.role, navRef.current.billingOn)) {
+      return { ok: false, reason: "not-allowed" };
+    }
+    const target = viewForScreen(screen);
+    const go = () => {
+      if (client) setSelected(client);
+      setView(target);
+      setPanelOpen(panelAfter({ target, isPhone: navRef.current.isPhone }) === "open");
+    };
+    return { ok: true, go };
+  }, [reloadClients, setView]);
   const handleClientUpdated = (client) => {
     setClients(prev => prev.map(x => (x.id === client.id ? client : x)));
     setSelected(client);
@@ -3092,7 +3129,7 @@ export default function App() {
             {view === "home"          && (
               <HomeView
                 layout={homeLayout}
-                charlie={<CharliView key={today} mode="dock" stacked={homeLayout === "stacked"} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} onClientsChanged={reloadClients} />}
+                charlie={<CharliView key={today} mode="dock" stacked={homeLayout === "stacked"} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} onClientsChanged={reloadClients} onShowScreen={prepareScreen} screenNow={screenNow} />}
                 scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn}
               />
             )}
@@ -3107,7 +3144,7 @@ export default function App() {
             {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} billingOn={teamBillingOn} />}
             {view === "lo-portal"     && selectedLO && user?.role === "broker" && <LOPortal lo={selectedLO} rates={rates} setView={setView} />}
             {view === "billing"       && user?.role === "broker" && billingOn && <BillingView billing={billingState.billing} onRefresh={refreshBilling} />}
-            {view === "import"        && <ImportView ui={{ C, card, mono, Icon, $c }} onImported={() => fetch("/api/clients").then(r => r.json()).then(d => { if (d.success) setClients(d.clients); }).catch(() => {})} onDone={() => setView("clients")} />}
+            {view === "import"        && <ImportView ui={{ C, card, mono, Icon, $c }} onImported={() => fetch("/api/clients").then(r => r.json()).then(d => { if (d.success) setClients(d.clients); }).catch(() => {})} onDone={() => setView("clients")} onFileState={onImportFileState} />}
           </main>
         </div>
       </div>
@@ -3124,7 +3161,7 @@ export default function App() {
           <img src={FACE.thumb} alt="" width={26} height={26} style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", boxShadow: "0 0 0 2px #0f2040", display: "block" }} />Charlie
         </button>
       )}
-      {view !== "home" && panelOpen && <CharliView key={today} mode="panel" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} onStale={renderAgain} onClientsChanged={reloadClients} />}
+      {view !== "home" && panelOpen && <CharliView key={today} mode="panel" rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onClose={closePanel} onStale={renderAgain} onClientsChanged={reloadClients} onShowScreen={prepareScreen} screenNow={screenNow} />}
     </div>
   );
 }
