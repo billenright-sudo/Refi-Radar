@@ -1,6 +1,7 @@
 # Charlie opens screens: "pull up Helen Brandt"
 
-Date: 2026-11-11. Owner: Bill. Status: DRAFT for Bill (builder check done; 5 questions settled as my calls).
+Date: 2026-11-11. Owner: Bill. Status: APPROVED (Bill, 2026-11-12: "go" on the plan; builder check done; 5 questions
+settled as my calls).
 Repo: `C:\Users\bille\dev\refi-radar`. Branch `feature/charlie-screens` @ f5f2987, off `feature/accurate-refi-scoring`, in the
 worktree `C:\Users\bille\dev\refi-radar-charlie-screens`.
 Builds on: Charlie's tools (`server/lib/assistant/tools.js`), the turn engine (`server/lib/assistant/orchestrator.js`), the
