@@ -949,3 +949,11 @@ test("/org/stats shows the billing state instead of the old trial date when bill
   const exempt = brokerage({ billing_exempt: 1 });
   assert.deepStrictEqual([(await stats(exempt.broker)).plan, (await stats(exempt.broker)).trialEnds], ["exempt", null]);
 });
+
+test("billingIsOn: off without config, off without a gateway, on with both", () => {
+  const appWith = (config, gateway) => ({ get: (k) => ({ billingConfig: config, billingGateway: gateway })[k] });
+  assert.strictEqual(billingRoutes.billingIsOn(appWith(undefined, undefined)), false);
+  assert.strictEqual(billingRoutes.billingIsOn(appWith({ enabled: true }, undefined)), false);
+  assert.strictEqual(billingRoutes.billingIsOn(appWith({ enabled: false }, {})), false);
+  assert.strictEqual(billingRoutes.billingIsOn(appWith({ enabled: true }, {})), true);
+});

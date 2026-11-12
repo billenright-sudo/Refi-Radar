@@ -45,11 +45,14 @@ const NO_CHARGE = Object.freeze({ success: false, error: "This account has no ch
 const returnUrl = (outcome) => `${email.APP_URL}/?billing=${outcome}`;
 
 // Billing is on when start-up switched it on and put the gateway on the app (index.js), the webhook's rule too.
+function billingIsOn(app) {
+  return Boolean(app.get("billingConfig") && app.get("billingConfig").enabled && app.get("billingGateway"));
+}
 function billingOf(req) {
   const config = req.app.get("billingConfig");
   const gateway = req.app.get("billingGateway");
   const send = req.app.get("sendBillingConfirmation") || email.sendBillingConfirmation;
-  return { config, gateway, send, on: Boolean(config && config.enabled && gateway) };
+  return { config, gateway, send, on: billingIsOn(req.app) };
 }
 const billingOn = (req, res, next) => (billingOf(req).on ? next() : res.status(404).json(NOT_FOUND));
 
@@ -296,4 +299,5 @@ router.get("/export.csv", requireAuth, requireBroker, (req, res) => {
   }
 });
 
+router.billingIsOn = billingIsOn;   // for lib/assistant (Charlie opens Billing only while it is on)
 module.exports = router;

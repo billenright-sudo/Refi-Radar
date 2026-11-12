@@ -11,6 +11,7 @@
 // The two Google Calendar tools (getCalendarTool, createEventTool) return a Promise: a read goes out to Google.
 // draftEmailTool sets up a client email and returns it as compose links at the TOP level of the result (`compose`, next to
 // data and source): nothing is sent and no Google connection is involved; the broker sends it from their own mail app.
+// showScreenTool returns the screen to open at the TOP level (`screen`), the same way, and writes nothing: the browser opens it.
 const refi = require("../refi");
 const targets = require("../targets");
 const { getMovement } = require("../rateHistory");
@@ -20,6 +21,7 @@ const { validateClient } = require("../../routes/clients");   // the one POST /a
 const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../google/time");
 const { PURPOSES, NMLS_PATTERN, renderEmail, composeLinks } = require("./outreach");
 const { isGuidelineQuestion } = require("./guidelines");
+const { SCREEN_PAGES, BROKER_PAGES } = require("./navigation");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -308,6 +310,29 @@ function callListTool(args, ctx) {
 
 // An id as the model may pass it: a positive integer, or a plain digit string (not "1e2", "0x10" or " 5 "). NaN otherwise.
 const idOf = (raw) => (typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN);
+
+// Name the screen to open on the user's screen: a client's page (any client the caller can see) or one of the app's pages. It
+// writes nothing and opens nothing itself: the result carries `screen` at the top level and the app opens it. A loan officer is
+// refused the broker-only pages, and the billing page is refused while billing is off (ctx.billingOn, set by the route).
+function showScreenTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  if (a.page === "client") {
+    const id = idOf(a.clientId);
+    if (!Number.isInteger(id) || id <= 0) return fail("(invalid input)", "a valid clientId is required");
+    const row = scopedClients(ctx).find((r) => r.id === id);
+    if (!row) return fail("(not found)", "no such client in your book");
+    return { data: { page: "client", clientId: row.id, name: row.name }, source: "client record", screen: { page: "client", clientId: row.id } };
+  }
+  if (typeof a.page !== "string" || !SCREEN_PAGES.includes(a.page)) return fail("(invalid input)", `page must be one of: ${[...SCREEN_PAGES, "client"].join(", ")}`);
+  const broker = ctx && ctx.user && ctx.user.role === "broker";
+  if (BROKER_PAGES.has(a.page) && !broker) {
+    return { data: { error: "that page is only on a broker's account", code: "broker_only" }, source: "(not available)" };
+  }
+  if (a.page === "billing" && !(ctx && ctx.billingOn === true)) {
+    return { data: { error: "billing is not turned on", code: "billing_off" }, source: "(not available)" };
+  }
+  return { data: { page: a.page }, source: "(screen)", screen: { page: a.page } };
+}
 
 // Package a client's target rate (`targetRate` a number), or taking it off (null), for the user to confirm. It does NOT write:
 // /api/assistant/confirm does, with setTargetForUser (routes/clients.js). Any client the caller can see, as for the REST route. The
@@ -787,7 +812,7 @@ async function lookUpLive(args, ctx) {
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
-    getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool,
+    getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool,
   })
 );
 
@@ -1001,6 +1026,19 @@ const TOOL_SCHEMA = [
     },
   },
   {
+    name: "showScreenTool",
+    description:
+      "Open a page of the app on the user's screen: a client's page (page \"client\" with the clientId from findClient; never guess it), or one of the app's pages: home (Home), sweeps (Sweeps), clients (All Clients), rates (Rate Watch), add (Add Client), team (My Team), import (Import Clients), profile (Profile), billing (Billing). Use it only when the user asks to see, open, pull up, bring up or go to that client or page, never on your own. It changes nothing but what is on the screen. The app says what opened: say nothing about it yourself. If findClient returns more than one match, ask which one first. A list or figures (\"show me who's at their target\", \"show me today's rates\") is answered in words, not with this.",
+    input_schema: {
+      type: "object",
+      properties: {
+        page: { type: "string", enum: [...SCREEN_PAGES, "client"], description: "The page to open; \"client\" for a client's page." },
+        clientId: { type: "integer", description: "The id of the client, from findClient: only with page \"client\"." },
+      },
+      required: ["page"],
+    },
+  },
+  {
     name: "lookUpLive",
     description:
       "Look something up on the web: a sports score or result, the news (headlines), the weather, or something else happening in " +
@@ -1024,5 +1062,5 @@ const TOOL_SCHEMA = [
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
-  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool,
+  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool, showScreenTool,
 };

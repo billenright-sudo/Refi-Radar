@@ -17,9 +17,10 @@ const { recordSnapshot } = require("../lib/rateHistory");
 const {
   tools, TOOL_SCHEMA,
   getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, callListTool, getCalendarTool, createEventTool, draftEmailTool,
-  callNotes, setTargetRateTool, targetRatesTool,
+  callNotes, setTargetRateTool, targetRatesTool, showScreenTool,
 } = require("../lib/assistant/tools");
 const { PURPOSES, composeLinks } = require("../lib/assistant/outreach");
+const { SCREEN_PAGES } = require("../lib/assistant/navigation");
 
 // Same rate set + Chen top-tier fixture as server/test/sweeps.test.js and refi-math.test.js —
 // this keeps the server engine, the tool layer and the dashboard's analyze() on one known answer.
@@ -1113,7 +1114,7 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
     ["addClientTool", "callListTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "runSweepTool", "setCareerStageTool",
-      "setTargetRateTool", "targetRatesTool"]
+      "setTargetRateTool", "showScreenTool", "targetRatesTool"]
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);
@@ -1182,4 +1183,63 @@ test("draftEmailTool: a do-not-email client is refused before anything else, nam
     setClientEmail(chenCId, "linda.chen@example.com");
   }
   assert.equal(findClient({ query: "chen" }, billCtx).data.matches.find((m) => m.id === chenCId).doNotEmail, false);
+});
+
+// ── showScreenTool: returns the screen to open; writes nothing ───────────────
+
+test("showScreenTool: a broker opens a company client's page (name as stored)", () => {
+  const r = showScreenTool({ page: "client", clientId: chenId }, brokerCtx);
+  const name = clientRow(chenId).name;
+  assert.deepStrictEqual(r, { data: { page: "client", clientId: chenId, name }, source: "client record", screen: { page: "client", clientId: chenId } });
+  assert.strictEqual(tools.showScreenTool, showScreenTool);
+});
+
+test("showScreenTool: a loan officer gets their own client, but not a teammate's or another org's", () => {
+  assert.strictEqual(showScreenTool({ page: "client", clientId: chenId }, lo1Ctx).screen.clientId, chenId);
+  for (const id of [reyesId, otherOrgClientId]) {
+    const r = showScreenTool({ page: "client", clientId: id }, lo1Ctx);
+    assert.deepStrictEqual(r, { data: { error: "no such client in your book" }, source: "(not found)" });
+  }
+});
+
+test("showScreenTool: a digit-string clientId works; zero, missing and junk are invalid input", () => {
+  assert.strictEqual(showScreenTool({ page: "client", clientId: String(chenId) }, brokerCtx).screen.clientId, chenId);
+  for (const args of [{ page: "client", clientId: "7x" }, { page: "client", clientId: 0 }, { page: "client" }, { page: "client", clientId: -1 }, null, undefined]) {
+    assert.strictEqual(showScreenTool(args, brokerCtx).source, "(invalid input)");
+  }
+  assert.strictEqual(showScreenTool({ page: "admin" }, brokerCtx).source, "(invalid input)");
+  assert.strictEqual(showScreenTool({}, brokerCtx).source, "(invalid input)");
+});
+
+test("showScreenTool: a loan officer is refused the broker-only pages", () => {
+  for (const page of ["team", "import", "billing"]) {
+    const r = showScreenTool({ page }, { ...lo1Ctx, billingOn: true });
+    assert.deepStrictEqual(r, { data: { error: "that page is only on a broker's account", code: "broker_only" }, source: "(not available)" });
+  }
+});
+
+test("showScreenTool: billing opens for a broker only while billing is on", () => {
+  const off = { data: { error: "billing is not turned on", code: "billing_off" }, source: "(not available)" };
+  assert.deepStrictEqual(showScreenTool({ page: "billing" }, brokerCtx), off);
+  assert.deepStrictEqual(showScreenTool({ page: "billing" }, { ...brokerCtx, billingOn: false }), off);
+  assert.deepStrictEqual(showScreenTool({ page: "billing" }, { ...brokerCtx, billingOn: true }),
+    { data: { page: "billing" }, source: "(screen)", screen: { page: "billing" } });
+});
+
+test("showScreenTool: every page opens for a broker with billing on, and nothing is written", () => {
+  const before = JSON.stringify(clientRow(chenId));
+  const n = clientCount();
+  for (const page of SCREEN_PAGES) {
+    assert.deepStrictEqual(showScreenTool({ page }, { ...brokerCtx, billingOn: true }).screen, { page });
+  }
+  showScreenTool({ page: "client", clientId: chenId }, brokerCtx);
+  assert.strictEqual(clientCount(), n);
+  assert.strictEqual(JSON.stringify(clientRow(chenId)), before);
+});
+
+test("showScreenTool: TOOL_SCHEMA lists it with the page enum", () => {
+  const def = TOOL_SCHEMA.find((t) => t.name === "showScreenTool");
+  assert.ok(def);
+  assert.deepStrictEqual(def.input_schema.properties.page.enum, [...SCREEN_PAGES, "client"]);
+  assert.deepStrictEqual(def.input_schema.required, ["page"]);
 });
