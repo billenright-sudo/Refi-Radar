@@ -127,6 +127,7 @@ export function createAudio({
 } = {}) {
   const send = fetchFn || ((...args) => window.fetch(...args));
   let disposed = false;
+  let retiring = false;   // retire() was called: no new speech; the instance disposes itself once what is queued is done
 
   // ── ears ──
   let stream = null;
@@ -409,12 +410,13 @@ export function createAudio({
       pumping = false;
       voiceEndedAt = performance.now();
       if (!disposed) onSpeakingChange(false);
+      if (retiring) dispose();
     }
   }
 
   // Queue a line for Charli to say. Lines play in order.
   function speak(job) {
-    if (disposed || !job || !job.text) return;
+    if (disposed || retiring || !job || !job.text) return;
     queue.push({ text: job.text, turnId: job.turnId });
     pump();
   }
@@ -454,5 +456,17 @@ export function createAudio({
     releaseMic();
   }
 
-  return { startMic, stopMic, setCapture, speak, stopSpeaking, unlock, retryBlocked, dispose };
+  // The view that owns this instance is going away but her line should finish (a page change): the mic and capture stop at
+  // once, nothing new is accepted, what is playing or queued (a clip still being fetched included) plays to the end, then
+  // the instance disposes itself. With nothing playing or queued, or only clips the browser blocked, it disposes now.
+  function retire() {
+    if (disposed || retiring) return;
+    retiring = true;
+    setCapture(false);
+    stopMic();
+    blocked = [];
+    if (!pumping) dispose();
+  }
+
+  return { startMic, stopMic, setCapture, speak, stopSpeaking, unlock, retryBlocked, retire, dispose };
 }

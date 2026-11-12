@@ -127,7 +127,7 @@ const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
 
 // ── the view ─────────────────────────────────────────────────────────────────
 
-export default function CharliView({ rates, user, ui, mode = "dock", stacked = false, width, onClose, onStale, onClientsChanged }) {
+export default function CharliView({ rates, user, ui, mode = "dock", stacked = false, width, onClose, onStale, onClientsChanged, onShowScreen, screenNow }) {
   const { C, card, mono, Icon } = ui;
   const panel = mode === "panel";
   const isPhone = useIsPhone();
@@ -155,6 +155,11 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   onStaleRef.current = onStale;
   const onClientsChangedRef = useRef(onClientsChanged);
   onClientsChangedRef.current = onClientsChanged;
+  const onShowScreenRef = useRef(onShowScreen);
+  onShowScreenRef.current = onShowScreen;
+  const screenNowRef = useRef(screenNow);
+  screenNowRef.current = screenNow;
+  const handoffRef = useRef(false);   // a line about the page she just opened is being said: it must outlive this view
   // A brief request refused because the briefing is yesterday's: App rebuilds this screen for today.
   const rebuildIfStale = (result) => { if (result && result.reason === "stale" && onStaleRef.current) onStaleRef.current(); };
 
@@ -169,6 +174,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       onSpeak,
       speakGreeting: false,   // the briefing is read, not played at the user: Brief me speaks it, from a tap
       onClientsChanged: () => (onClientsChangedRef.current ? onClientsChangedRef.current() : undefined),   // the kept session reads the latest
+      screenNow: () => (screenNowRef.current ? screenNowRef.current() : undefined),
+      onShowScreen: (...args) => (onShowScreenRef.current ? onShowScreenRef.current(...args) : undefined),
     }));
 
     const handleUtterance = async (blob) => {
@@ -203,7 +210,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
 
     const audio = createAudio({
       onUtterance: handleUtterance,
-      onSpeakingChange: (on) => { speakingRef.current = on; setSpeaking(on); },
+      onSpeakingChange: (on) => { speakingRef.current = on; if (!on) handoffRef.current = false; setSpeaking(on); },
       onHearing: setHearing,
       onMicChange: (state) => { micLiveRef.current = state === "live"; setMic(state); },
       onAutoplayBlocked: () => setNeedsStart(true),
@@ -220,6 +227,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
     voice.speak = (line) => {
       if (pausedRef.current) { replay.held(line); return; }
       replay.said(line);
+      if (line && line.handoff === true) handoffRef.current = true;
       audio.speak(line);
     };
     // A new turn from the user, or the change she read back being confirmed or cancelled, makes a kept line stale. Watched on the
@@ -230,7 +238,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
     session.open();
     if (panelRef.current) panelRef.current.focus();   // a drawer that opens takes the keyboard with it
     // leaving the screen: mic off, speech cut, a change waiting for a yes dropped; the conversation is kept for coming back
-    return () => { unwatch(); voice.speak = null; session.leave(); audio.dispose(); };
+    return () => { unwatch(); voice.speak = null; session.leave(); if (handoffRef.current) audio.retire(); else audio.dispose(); };
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { session.setRates(rates); }, [rates]);   // eslint-disable-line react-hooks/exhaustive-deps

@@ -216,3 +216,94 @@ test("the echo tail runs from when her voice stopped: a mic opened a second late
   assert.deepEqual(heard, [true], "no tail and no calibration: the first word is heard");
   audio.dispose();
 });
+
+// ── retire(): the view she leaves lets her line finish ──
+
+test("retire() mid-clip: the clip ends, the queued one plays, a later speak is ignored, then the instance is gone", async (t) => {
+  const ears = fakeEars(t);
+  const asked = [];
+  const speaking = [];
+  const audio = createAudio({
+    fetch: async (url, opts) => { asked.push(JSON.parse(opts.body).text); return okClip(); },
+    onSpeakingChange: (on) => speaking.push(on),
+  });
+  audio.speak({ text: "Here's Helen Brandt.", turnId: "t1" });
+  audio.speak({ text: "Second line.", turnId: "t1" });
+  await settle();
+  assert.deepEqual(asked, ["Here's Helen Brandt."]);
+  audio.retire();
+  audio.speak({ text: "Too late.", turnId: "t2" });
+  ears.voice.onended();   // the first clip ends
+  await settle();
+  assert.deepEqual(asked, ["Here's Helen Brandt.", "Second line."], "the queued line still plays; the new one is refused");
+  ears.voice.onended();
+  await settle();
+  assert.deepEqual(asked, ["Here's Helen Brandt.", "Second line."]);
+  assert.deepEqual(speaking, [true, false]);
+  audio.speak({ text: "After.", turnId: "t3" });
+  await settle();
+  assert.equal(asked.length, 2, "disposed after the queue emptied");
+});
+
+test("retire() stops a live mic at once", async (t) => {
+  fakeEars(t);
+  const mic = [];
+  const audio = createAudio({ fetch: okClip, onMicChange: (s) => mic.push(s) });
+  await open(audio);
+  assert.deepEqual(mic, ["live"]);
+  audio.retire();
+  assert.deepEqual(mic, ["live", "off"]);
+  assert.deepEqual(await audio.startMic(), { ok: false, reason: "disposed" }, "nothing opens the mic again");
+});
+
+test("retire() with nothing queued disposes at once: no live mic, nothing plays, dispose() after is harmless", async (t) => {
+  fakeEars(t);
+  const asked = [];
+  const audio = createAudio({ fetch: async (u, o) => { asked.push(o); return okClip(); } });
+  await open(audio);
+  audio.retire();
+  audio.speak({ text: "Nope.", turnId: "t1" });
+  await settle();
+  assert.equal(asked.length, 0);
+  assert.doesNotThrow(() => { audio.dispose(); audio.dispose(); });
+});
+
+test("retire() after a TTS 429 leaves nothing playing and no live mic", async (t) => {
+  fakeEars(t);
+  const mic = [];
+  const errors = [];
+  const audio = createAudio({
+    fetch: async () => failedResponse(429, LIMITER_BODY),
+    onMicChange: (s) => mic.push(s),
+    onTtsError: (...a) => errors.push(a),
+  });
+  await open(audio);
+  audio.speak({ text: "Here's Helen Brandt.", turnId: "t1" });
+  audio.retire();
+  await settle();
+  assert.deepEqual(errors, [[429, LIMITER_BODY]]);
+  assert.deepEqual(mic, ["live", "off"]);
+  assert.doesNotThrow(() => audio.dispose());
+  audio.speak({ text: "Again.", turnId: "t2" });
+  await settle();
+  assert.equal(errors.length, 1);
+});
+
+test("retire() with only autoplay-blocked clips drops them and disposes", async (t) => {
+  const ears = fakeEars(t);
+  let blockedCalls = 0;
+  const asked = [];
+  const audio = createAudio({ fetch: async (u, o) => { asked.push(o); return okClip(); }, onAutoplayBlocked: () => blockedCalls++ });
+  ears.voice = null;
+  audio.speak({ text: "Hi.", turnId: "t1" });
+  // the element exists once speak runs; make its play refuse for lack of a tap
+  await settle();
+  const el = ears.voice;
+  el.play = () => Promise.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+  el.onended && el.onended();
+  await settle();
+  audio.retire();
+  audio.retryBlocked();
+  await settle();
+  assert.equal(asked.length, 1, "the blocked clip is not retried after retire");
+});
