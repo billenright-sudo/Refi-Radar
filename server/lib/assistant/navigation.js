@@ -114,9 +114,40 @@ function isNavigationRequest(text, namesClient) {
   return false;
 }
 
-// True when model text says she pulled up / opened a page, took them somewhere, or put it on their screen.
-const CLAIM_RE = /\b(?:pull(?:ing|ed)|bring(?:ing)?|brought)\s+(?:up|it\s+up|that\s+up)\b|\bopen(?:ed|ing)\b|\b(?:taking|took|take)\s+you\s+(?:to|there)\b|\bon\s+your\s+screen\b|\bthere\s+you\s+go\b/i;
-const claimsScreenOpened = (text) => typeof text === "string" && CLAIM_RE.test(text.replace(/’/g, "'"));
+// True when model text says a page or screen was opened: she pulled up or brought up something, took them to it, it is on their
+// screen, "there / here you go"; or she opened or is opening something named as an object (CLAIM_OPENED_RE): it / that / this /
+// them / him, a page of the app, a page, file, record, profile, list or form ("her page", "the client list", "Helen Brandt's page"),
+// or a name ("Opening Helen Brandt now"; a capital that is no weekday or month). Never the noun "opening" ("Your only opening is
+// Friday at 2.", "There's an opening Friday") or the market's "opened" ("Rates opened lower today.", "Opening balance is 5").
+// Also true when the whole reply is the app's own line imitated (imitatesCodeLine).
+const CLAIM_RE = /\b(?:pull(?:ing|ed)|bring(?:ing)?|brought)\s+(?:up|(?:it|that|her|him|them)\s+up)\b|\b(?:taking|took|take)\s+you\s+(?:to|there)\b|\bon\s+(?:your|the)\s+screen\b|\b(?:there|here)\s+you\s+go\b/i;
+const CLAIM_PAGE_WORD = "(?:page|screen|file|record|profile|list|form)";
+const CLAIM_PAGE_NAME = "(?:rate\\s+watch|sweeps|billing|import\\s+clients|add\\s+client|home\\s+page)";
+const CLAIM_NAME_WORD = "[\\w&'.-]+";
+const CLAIM_OPENED_RE = new RegExp(
+  "\\bopen(?:ed|ing)\\s+(?:(?:it|that|this|them|him)\\b|" + CLAIM_PAGE_NAME + "\\b" +
+    "|(?:her|his|their|your|my|the)\\s+(?:" + CLAIM_NAME_WORD + "\\s+){0,3}?" + CLAIM_PAGE_WORD + "\\b" +
+    "|" + CLAIM_NAME_WORD + "(?:\\s+" + CLAIM_NAME_WORD + "){0,3}?'s\\s+" + CLAIM_PAGE_WORD + "\\b)",
+  "i"
+);
+const NOT_A_NAME = "(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August" +
+  "|September|October|November|December)";
+const CLAIM_OPENED_NAME_RE = new RegExp("\\b[Oo]pen(?:ed|ing)\\s+(?!" + NOT_A_NAME + "\\b)\\p{Lu}", "u");
+// The model imitating the app's own line (A4): the whole reply is ONE short sentence (at most CODE_LINE_MAX_WORDS words) that
+// starts with "Here's " or "You're already on ", with no digit and no colon ("Here's Helen Brandt.", "You're already on Rate
+// Watch."; not "Here are your top opportunities." nor "Here's Helen's rate: 6.5 percent.").
+const CODE_LINE_LEAD_RE = /^(?:here's|you're\s+already\s+on)\s/i;
+const CODE_LINE_MAX_WORDS = 10;
+function imitatesCodeLine(t) {
+  if (!CODE_LINE_LEAD_RE.test(t) || /[\d:]/.test(t)) return false;
+  const sentence = t.replace(/[.!?]+$/, "");
+  return !/[.!?]\s/.test(sentence) && sentence.split(/\s+/).length <= CODE_LINE_MAX_WORDS;
+}
+function claimsScreenOpened(text) {
+  if (typeof text !== "string") return false;
+  const t = text.replace(/’/g, "'").trim();
+  return CLAIM_RE.test(t) || CLAIM_OPENED_RE.test(t) || CLAIM_OPENED_NAME_RE.test(t) || imitatesCodeLine(t);
+}
 
 module.exports = {
   SCREEN_PAGES, BROKER_PAGES, FORM_OPEN, BROKER_ONLY, BILLING_OFF, COULDNT_OPEN,

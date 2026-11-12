@@ -6922,12 +6922,6 @@ test("Task 9 fix 1 (Ruling 69): a question about how the broker's day or week lo
 
 // ── Task 9 fix round 2 (Ruling 70) ───────────────────────────────────────────────────────────────────────────────────────────────
 
-// Charlie opens screens (Task 3): "pull up the Chens" is a page request, so a reply navigation.js claimsScreenOpened reads as a page
-// opened (its bare "opening": "Your only opening is …") is held first, by the couldn't-open line; either way the availability is not
-// said.
-const navigation = require("../lib/assistant/navigation");
-const heldOn = (u, said) => (u === "pull up the Chens" && navigation.claimsScreenOpened(said) ? navigation.COULDNT_OPEN : CANT_VERIFY);
-
 test("Task 9 fix 2 (Ruling 70 a, b, c, e): a client's availability only for this turn's clients or they / he / she; a product's availability only for a product; packed / full / light / taken and openings are availability", async () => {
   const sweep = () => useTool("runSweepTool", {});
   const lookup = () => useTool("findClient", { query: "chen" });
@@ -6951,7 +6945,7 @@ test("Task 9 fix 2 (Ruling 70 a, b, c, e): a client's availability only for this
     // (e) an opening
     "Your only opening is Friday at 2.", "You have one opening: Friday at 2.", "There's an opening Friday at 2.", "Your next opening is Thursday at 10.",
   ]) {
-    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), heldOn(u, said), `${u}: ${said}`);
+    for (const [u, script] of CONTEXTS) assert.equal(await reply(u, script, said), CANT_VERIFY, `${u}: ${said}`);
   }
   // a client this turn's tools returned, a third-person pronoun, a product, "packed with" / "light on" / "full of": said
   for (const [u, script, said] of [
@@ -7039,7 +7033,7 @@ test("Task 9 fix 3 (Ruling 72): 'her' before a day is no client; a client's cont
     "what's a good opening for the Chens?",
   ]) assert.equal((await runTurn({ messages: userSays(u), ctx: nc(), client: fakeClient([par(), say(said)]) })).reply, said, u);
   // ... and an opening said in a reply is still the reply-side availability word (Ruling 70 e)
-  assert.equal(await reply("pull up the Chens", lookup, "Your only opening is Friday at 2."), heldOn("pull up the Chens", "Your only opening is Friday at 2."));
+  assert.equal(await reply("pull up the Chens", lookup, "Your only opening is Friday at 2."), CANT_VERIFY);
 });
 
 // ── Task 9 fix round 4 (Ruling 73) ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -8898,6 +8892,9 @@ test("Screens (A4): on a page request with no screen handed up, a reply that say
     [say("Pulling up Helen now.")],
     [useTool("findClient", { query: "Helen Brandt" }), say("Pulling up Helen now.")],
     [useTool("showScreenTool", { page: "client", clientId: 999999 }), say("Opening Helen's page now.")],
+    // the app's own line, imitated with no showScreenTool call (fix 1)
+    [say("Here's Helen Brandt.")],
+    [useTool("findClient", { query: "Helen Brandt" }), say("Here's Helen Brandt.")],
   ]) {
     const r = await runTurn({ messages: userSays("pull up Helen Brandt"), ctx: screensCtx, client: fakeClient(script) });
     assert.equal(r.reply, COULDNT_OPEN, JSON.stringify(script[script.length - 1]));

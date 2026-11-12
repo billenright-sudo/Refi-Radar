@@ -85,3 +85,33 @@ test("claimsScreenOpened", () => {
     assert.ok(!claimsScreenOpened(t), t);
   assert.ok(!claimsScreenOpened(undefined));
 });
+
+test("claimsScreenOpened (Task 3 fix 1): a page opened, never the noun \"opening\" or the market's \"opened\"", () => {
+  for (const t of [
+    "Here you go.", "Opening her page now.", "Opening it now.", "I'm opening Helen Brandt's page.", "Opening Helen Brandt now.",
+    "I opened Rate Watch for you.", "Brought up the Chens for you.", "Pulling her up now.", "It's on the screen now.",
+    "Opening the client list.", "I’ve opened her page.",
+  ]) assert.ok(claimsScreenOpened(t), t);
+  for (const t of [
+    "Your only opening is Friday at 2.", "Rates opened lower today.", "Opening balance is 5", "There's an opening Friday at 2.",
+    "You have one opening: Friday at 2.", "Your next opening is Thursday at 10.", "Rates opened the week a touch higher.",
+    "Calendar's open after 2 today.", "Want me to open her page?",
+  ]) assert.ok(!claimsScreenOpened(t), t);
+});
+
+test("claimsScreenOpened (Task 3 fix 1): a reply that is only the app's own line, imitated, is a claim", () => {
+  for (const t of ["Here's Helen Brandt.", "You're already on Rate Watch.", "  Here's Robert & Linda Chen. ", "Here’s Helen Brandt",
+    "You're already on Helen Brandt's page."]) assert.ok(claimsScreenOpened(t), t);
+  // every line the app writes, a client's and each page's
+  for (const page of SCREEN_PAGES) {
+    assert.ok(claimsScreenOpened(screenLine({ page })), page);
+    assert.ok(claimsScreenOpened(alreadyLine({ page })), page);
+  }
+  assert.ok(claimsScreenOpened(screenLine({ page: "client", clientId: 7 }, "Robert & Linda Chen")));
+  assert.ok(claimsScreenOpened(alreadyLine({ page: "client", clientId: 7 }, "Robert & Linda Chen")));
+  for (const t of [
+    "Here are your top opportunities.", "Here's Helen's rate: 6.5 percent.", "Here's who to call: Helen Brandt and the Chens.",
+    "Here's 3 to call today.", "Here's Helen Brandt. Want her rate?",
+    "Here's the thing about refinancing when rates move this fast for your whole book.", "Helen Brandt is here.",
+  ]) assert.ok(!claimsScreenOpened(t), t);
+});
