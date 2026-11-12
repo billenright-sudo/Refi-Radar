@@ -1903,6 +1903,61 @@ test("screens: a screen turn that lands after leave() asks the App nothing, open
   assert.equal(lastTurn(session).content, COULDNT_OPEN);
 });
 
+// Her view left during the turn and came back (leave() then open()): the turn's page still never opens (Ruling R10).
+async function openedScreenSetup(opts) {
+  const ctx = screenSetup(opts);
+  await ctx.session.open();
+  ctx.events.length = 0;
+  ctx.spoken.length = 0;
+  return ctx;
+}
+async function assertNotOpenedAfterReturn({ session, server, events, spoken }) {
+  assert.equal(events.includes("go"), false, "nothing opens");
+  assert.deepEqual(spoken, [], "nothing is said");
+  assert.equal(lastTurn(session).content, COULDNT_OPEN);
+  assert.equal(session.getState().busy, false);
+  await session.submit("and her rate?");
+  const sent = messagesOf(server.turns().at(-1));
+  assert.deepEqual(sent.slice(-2), [{ role: "assistant", content: COULDNT_OPEN }, { role: "user", content: "and her rate?" }]);
+  assert.equal(sent.some((m) => isHeres(m.content)), false);
+  assert.equal(session.getState().turns.some((t) => isHeres(t.content)), false);
+}
+
+test("R10: leave() then open() while the App prepares the page: it still opens nothing and says nothing; COULDNT_OPEN is kept", async () => {
+  const { gate, release } = gated();
+  const ctx = await openedScreenSetup({
+    answer: async (go) => { await gate; return { ok: true, go }; },
+    replies: [turnReply("Good morning."), screenReply(HELEN, HELEN_SCREEN)],
+  });
+  const inFlight = ctx.session.submit("pull up Helen Brandt");
+  await untilShown(ctx.shown);
+  ctx.session.leave();
+  await ctx.session.open();
+  release();
+  assert.deepEqual(await inFlight, { ok: true, action: "turn" });
+  await assertNotOpenedAfterReturn(ctx);
+});
+
+test("R10: leave() then open() while /turn is out: the screen that comes back is not opened (the App is not asked), nothing is said", async () => {
+  const { gate, release } = gated();
+  let n = 0;
+  const ctx = await openedScreenSetup({
+    route: async () => {
+      n += 1;
+      if (n === 1) return turnReply("Good morning.");
+      if (n === 2) { await gate; return screenReply(HELEN, HELEN_SCREEN); }
+      return turnReply("Sure.", { turnId: "next" });
+    },
+  });
+  const inFlight = ctx.session.submit("pull up Helen Brandt");
+  ctx.session.leave();
+  await ctx.session.open();
+  release();
+  assert.deepEqual(await inFlight, { ok: true, action: "turn" });
+  assert.deepEqual(ctx.shown, [], "the App was not asked");
+  await assertNotOpenedAfterReturn(ctx);
+});
+
 test("screens: disposing while the App prepares the page opens nothing and says nothing", async () => {
   const { gate, release } = gated();
   const { session, events, shown, spoken } = screenSetup({ answer: async (go) => { await gate; return { ok: true, go }; } });
@@ -1937,6 +1992,30 @@ test("screens: every turn sends screenNow() as onScreen; null, a throw or no scr
   const plain = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sure.")) } });
   await plain.session.submit("hi");
   assert.equal(Object.hasOwn(plain.server.turns()[0].body, "onScreen"), false);
+});
+
+test("R11: screenNow's answer is cut down to { page, clientId? } before it is sent, so an odd value never breaks the turn", async () => {
+  const circular = { note: "loop" };
+  circular.self = circular;
+  const circularPage = { page: "rates" };
+  circularPage.self = circularPage;
+  const cases = [
+    [{ page: "client", clientId: 7n }, { page: "client" }],   // a BigInt id is not a finite number: dropped, the page kept
+    [circular, undefined],                                    // no string page: no key
+    [circularPage, { page: "rates" }],                        // the loop is left behind
+    [{ page: "client", clientId: Number.NaN }, { page: "client" }],
+    [{ page: "client", clientId: 7, extra: { deep: true } }, { page: "client", clientId: 7 }],
+    [{ page: 3 }, undefined],
+    ["home", undefined],
+  ];
+  for (const [value, sent] of cases) {
+    const { session, server } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply("Sure.")) }, options: { screenNow: () => value } });
+    assert.deepEqual(await session.submit("hi"), { ok: true, action: "turn" });
+    assert.equal(lastTurn(session).content, "Sure.", "the turn went through");
+    const body = server.turns()[0].body;
+    if (sent === undefined) assert.equal(Object.hasOwn(body, "onScreen"), false);
+    else assert.deepEqual(body.onScreen, sent);
+  }
 });
 
 test("screens: one thing at a time: a second submit while the App prepares the page is refused as busy", async () => {

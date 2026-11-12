@@ -310,9 +310,9 @@ export const localDateOf = (date) =>
 // A turn /turn answers with a `screen` (the broker asked her to open a page) opens the page FIRST, then her line: the screen is
 // checked (cleanScreen) and handed to onShowScreen, and the session stays busy while the App prepares it. Opened: her reply is added
 // and spoken with `handoff: true`, and only then is `go()` called. Not opened (an unknown screen, no onShowScreen, an answer that
-// isn't ok, a throw, or the session left or disposed meanwhile): the reply is replaced, in the transcript and the history, by
-// FORM_OPEN when the App said a form is open, else COULDNT_OPEN, and nothing opens. A screen turn proposes nothing: a sideEffect
-// beside a screen is ignored.
+// isn't ok, a throw, the session disposed, or her view left at any point since the turn began, even if open() came again since):
+// the reply is replaced, in the transcript and the history, by FORM_OPEN when the App said a form is open (and her view never
+// left), else COULDNT_OPEN, and nothing opens. A screen turn proposes nothing: a sideEffect beside a screen is ignored.
 //
 // submit/heard/confirmPending/cancelPending/setStage all resolve to { ok, reason? }; `reason: "busy"` means a
 // request is already in flight and nothing was done (the caller keeps what the user typed).
@@ -328,6 +328,7 @@ export function createSession({
   let nextId = 1;
   let disposed = false;
   let away = false;   // the Charli screen is not showing (leave() until the next open())
+  let leaves = 0;     // how many times leave() was called: a turn whose count moved never opens its page (showScreenTurn)
   let openPromise = null;
   let emptyRun = false;   // the last transcript was empty and "I didn't catch that" was already said (see heard)
   let releaseRates;
@@ -463,30 +464,39 @@ export function createSession({
     Object.prototype.hasOwnProperty.call(res.data, "screen");
 
   // The page first, then her line (see the header): the App prepares the screen, her line (or its replacement) is added and spoken,
-  // and only then does the App go. Gone (left or disposed) by the time the App answers is not opened.
-  async function showScreenTurn(data) {
+  // and only then does the App go. `leavesAtStart` is the leave() count when the turn began: her view gone at any point since (even
+  // back again now) or the session disposed is not opened, and nothing is said; the transcript keeps COULDNT_OPEN.
+  async function showScreenTurn(data, leavesAtStart) {
+    const gone = () => away || disposed || leaves !== leavesAtStart;
     const screen = cleanScreen(data.screen);
     let answer = null;
-    if (screen && !away && !disposed && typeof onShowScreen === "function") {
+    if (screen && !gone() && typeof onShowScreen === "function") {
       try { answer = await onShowScreen(screen); } catch { answer = null; }
     }
-    const gone = away || disposed;
-    const opened = !gone && !!answer && answer.ok === true && typeof answer.go === "function";
-    if (opened) {
+    if (gone()) {
+      addTurn({ role: "assistant", content: COULDNT_OPEN });
+      return;
+    }
+    if (answer && answer.ok === true && typeof answer.go === "function") {
       addTurn({ role: "assistant", content: data.reply, sources: cleanSources(data.sources), turnId: data.turnId || null });
       speak(data.reply, data.turnId, { handoff: true });
       try { answer.go(); } catch { /* her line is already shown; the page just didn't change */ }
       return;
     }
-    const text = !gone && answer && answer.reason === "form" ? FORM_OPEN : COULDNT_OPEN;
+    const text = answer && answer.reason === "form" ? FORM_OPEN : COULDNT_OPEN;
     addTurn({ role: "assistant", content: text });
     speak(text);
   }
 
-  // What the App has open, for the turn's `onScreen`; null when it has nothing to say or its answer can't be read.
+  // What the App has open, for the turn's `onScreen`: cut down to { page } (a string) and clientId (only a finite number), so a value
+  // JSON can't carry (a BigInt, a loop) never breaks the turn. -> that object, or null when there is no page or the answer can't be read.
   function currentScreen() {
     if (typeof screenNow !== "function") return null;
-    try { return screenNow() ?? null; } catch { return null; }
+    try {
+      const now = screenNow();
+      if (!now || typeof now !== "object" || typeof now.page !== "string") return null;
+      return Number.isFinite(now.clientId) ? { page: now.page, clientId: now.clientId } : { page: now.page };
+    } catch { return null; }
   }
 
   // The briefing's follow-up id for the one exchange that answers its question, or null; either way it is used up.
@@ -555,6 +565,7 @@ export function createSession({
   }
 
   async function runTurn(text) {
+    const leavesAtStart = leaves;
     addTurn({ role: "user", content: text });
     // (final review M-6) every turn says the user's date, so a lookup's "today" and "last night" are theirs, not UTC's
     const body = { messages: history(), rates: currentRates, localDate: todayLocal(clock()) };
@@ -564,7 +575,7 @@ export function createSession({
     const onScreen = currentScreen();
     if (onScreen !== null) body.onScreen = onScreen;
     const res = await request("POST", "/api/assistant/turn", body);
-    if (isScreenTurn(res)) await showScreenTurn(res.data);
+    if (isScreenTurn(res)) await showScreenTurn(res.data, leavesAtStart);
     else showTurnResult(res);
   }
 
@@ -722,7 +733,7 @@ export function createSession({
       if (currentRates) releaseRates();
     },
     open,
-    leave() { away = true; dropIfAway(); },
+    leave() { away = true; leaves += 1; dropIfAway(); },
     submit,
     heard,
     confirmPending,
