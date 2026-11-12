@@ -26,6 +26,7 @@ const refi = require("../refi");
 const { tools, TOOL_SCHEMA, LIVE_SOURCE_PREFIX, mentionsClient, namesClient, withTurnClientNames } = require("./tools");
 const {
   FORM_OPEN, BROKER_ONLY, BILLING_OFF, COULDNT_OPEN, screenLine, alreadyLine, isAlreadyOn, isNavigationRequest, claimsScreenOpened,
+  targetsScreen,
 } = require("./navigation");
 const { isGuidelineQuestion } = require("./guidelines");
 const {
@@ -1356,12 +1357,15 @@ function answersActionQuestion(messages) {
 
 // A page request (Charlie opens screens, A1): the user's latest message asks to see, open or go to a client or a page
 // (navigation.js isNavigationRequest, which reads a client's name with namesClient), or answers the one question Charlie asked
-// right after such a request: the latest message is answer-shaped, the message before it is hers and ends with "?", and the
-// user's message before that is the request ("pull up Chen" -> "Which Chen — Robert and Linda, or Chen Wei?" -> "Robert and
-// Linda"). One hop only. Its own recognizer: the change-request one (isActionRequest, answersActionQuestion) is not touched. A
+// right after such a request: the latest message is answer-shaped, the message before it is hers, ends with "?" and is no offer to
+// act (offersAction, as answersActionQuestion reads one: "Want me to draft her a check-in?" -> "yes" asks for no page; Ruling R7),
+// and the user's message before that is the request ("pull up Chen" -> "Which Chen — Robert and Linda, or Chen Wei?" -> "Robert
+// and Linda"). One hop only. Its own recognizer: the change-request one (isActionRequest, answersActionQuestion) is not touched. A
 // book whose names can't be read names no client here, so "show me <a name>" is then no page request.
-function isNavigationTurn(messages, ctx) {
-  if (!Array.isArray(messages)) return false;
+// navigationRequestOf is the text of the request (the latest message, or for the one hop the message it answers), null on any other
+// turn; isNavigationTurn is whether there is one.
+function navigationRequestOf(messages, ctx) {
+  if (!Array.isArray(messages)) return null;
   const named = (s) => {
     try {
       return namesClient(s, ctx);
@@ -1370,15 +1374,18 @@ function isNavigationTurn(messages, ctx) {
     }
   };
   const latest = messages[messages.length - 1];
-  if (!latest || latest.role !== "user") return false;
+  if (!latest || latest.role !== "user") return null;
   const text = messageText(latest);
-  if (isNavigationRequest(text, named)) return true;
-  if (!isAnswerShaped(text)) return false;
+  if (isNavigationRequest(text, named)) return text;
+  if (!isAnswerShaped(text)) return null;
   const asked = messages[messages.length - 2];
   const before = messages[messages.length - 3];
-  return !!asked && asked.role === "assistant" && messageText(asked).trim().endsWith("?") &&
-    !!before && before.role === "user" && isNavigationRequest(messageText(before), named);
+  if (!asked || asked.role !== "assistant" || !messageText(asked).trim().endsWith("?") || offersAction(asked)) return null;
+  if (!before || before.role !== "user") return null;
+  const request = messageText(before);
+  return isNavigationRequest(request, named) ? request : null;
 }
+const isNavigationTurn = (messages, ctx) => navigationRequestOf(messages, ctx) !== null;
 
 // The claim guard (Rulings 24, 25, 30, 31, 33). A reply to an offer to act that is no yes makes a plain turn, so the action
 // backstop does not hold what Charli says on it, and this does instead; on every action turn (a yes to an offer, a request) it runs
@@ -2820,7 +2827,8 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
   // included).
   const actionTurn = isActionRequest(userText) || answersActionQuestion(messages);
   // A page may open only on a turn whose own words ask for one (A1): the request now, or the answer to her one question about it.
-  const navTurn = isNavigationTurn(messages, ctx);
+  const navRequest = navigationRequestOf(messages, ctx);
+  const navTurn = navRequest !== null;
   // the class of the user's message when the assistant message right before it offered to act (null otherwise, Ruling 24)
   const afterOffer = offerReplyOf(messages[messages.length - 2], last);
   const sources = [];   // citing sources of the read tools run this turn
@@ -2900,8 +2908,20 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       // runs on what is left
       const text = sources.length > 0 ? stripProcessOpeners(said).trim() : said;
       // A4: a page request that ends in text handed no screen up (a screen ends the turn below), so a reply that says she pulled
-      // up, opened or brought up a page, or took them there, is false: nothing opened. Ahead of every other screen.
-      if (navTurn && claimsScreenOpened(text)) return finish(COULDNT_OPEN);
+      // up, opened or brought up a page, or took them there, or that is the app's own line imitated, is false: nothing opened.
+      // Ahead of every other screen. Ruling R5: only when the request targets a screen (a page, page / file / screen, a client):
+      // "pull up today's rates" and "pull up my top opportunities" are answered in words, as they are without the verb. A client
+      // here is any word of a client's name (mentionsClient, so "pull up Helen" counts); a book that can't be read counts as named.
+      if (navTurn) {
+        const named = (s) => {
+          try {
+            return mentionsClient(s, ctx);
+          } catch (_err) {
+            return true;
+          }
+        };
+        if (targetsScreen(navRequest, named) && claimsScreenOpened(text, named)) return finish(COULDNT_OPEN);
+      }
       if (isGuidelineQuestion(userText)) return finish(GUIDELINE_HANDOFF);
       // Rulings 52 and 67: asked to send the email, or whether it was sent, and no email was set up this turn: Charli doesn't send
       const noSend = sendLine(userText, messages[messages.length - 2]);

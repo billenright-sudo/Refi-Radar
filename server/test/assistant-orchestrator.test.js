@@ -8732,7 +8732,7 @@ const helenS = screensClient(brokerS, "Helen Brandt", 7.9);
 const chensS = screensClient(brokerS, "Robert & Linda Chen");
 screensClient(brokerS, "Chen Wei");
 screensClient(loS, "Omar Haddad");
-screensClient(teammateS, "Dana Fox");
+const danaS = screensClient(teammateS, "Dana Fox");
 const screensCtx = { user: user(brokerS, "broker", orgScreens), rates: LIVE, db };
 const loScreensCtx = { user: user(loS, "lo", orgScreens), rates: LIVE, db };
 // Several tool calls in one response.
@@ -8879,12 +8879,33 @@ test("Screens: the answer to her one question after a page request opens the pag
   const r = await runTurn({ messages, ctx: screensCtx, client });
   assert.equal(r.reply, "Here's Robert & Linda Chen.", "the stored name");
   assert.deepStrictEqual(r.screen, { page: "client", clientId: chensS });
-  // the question itself, on the page request's own turn, is said as the model put it
-  const asked = await runTurn({
-    messages: userSays("pull up Chen"), ctx: screensCtx, client: fakeClient([useTool("findClient", { query: "Chen" }), say(ASK)]),
+  // the question itself, on the page request's own turn, is said as the model put it, "bring up" in it or not (fix 2, R6); and the
+  // answer to either opens the page
+  for (const question of [ASK, "Which Chen should I bring up, Robert and Linda or Chen Wei?"]) {
+    const asked = await runTurn({
+      messages: userSays("pull up Chen"), ctx: screensCtx, client: fakeClient([useTool("findClient", { query: "Chen" }), say(question)]),
+    });
+    assert.equal(asked.reply, question);
+    noScreen(asked);
+    const answered = await runTurn({
+      messages: history("pull up Chen", question, "Robert and Linda"), ctx: screensCtx,
+      client: fakeClient([
+        useTool("findClient", { query: "Robert and Linda Chen" }), useTool("showScreenTool", { page: "client", clientId: chensS }, "toolu_2"),
+      ]),
+    });
+    assert.equal(answered.reply, "Here's Robert & Linda Chen.", question);
+    assert.deepStrictEqual(answered.screen, { page: "client", clientId: chensS });
+  }
+});
+
+test("Screens (fix 2, R7): the answer to an offer to act is no page request, so no page opens on it", async () => {
+  const messages = history("pull up my top opportunities", "Helen Brandt is your top opportunity. Want me to draft her a check-in?", "yes");
+  assert.equal(isNavigationTurn(messages, screensCtx), false);
+  const r = await runTurn({
+    messages, ctx: screensCtx, client: fakeClient([useTool("showScreenTool", { page: "client", clientId: helenS })]),
   });
-  assert.equal(asked.reply, ASK);
-  noScreen(asked);
+  assert.equal(r.reply, NOTHING_CHANGED);
+  noScreen(r);
 });
 
 test("Screens (A4): on a page request with no screen handed up, a reply that says she opened it is the couldn't-open line", async () => {
@@ -8900,6 +8921,12 @@ test("Screens (A4): on a page request with no screen handed up, a reply that say
     assert.equal(r.reply, COULDNT_OPEN, JSON.stringify(script[script.length - 1]));
     noScreen(r);
   }
+  // (fix 2) a client asked for by first name is a screen request too
+  const byFirstName = await runTurn({
+    messages: userSays("pull up Helen"), ctx: screensCtx, client: fakeClient([useTool("findClient", { query: "Helen" }), say("Pulling up Helen now.")]),
+  });
+  assert.equal(byFirstName.reply, COULDNT_OPEN);
+  noScreen(byFirstName);
   // a client stored with no usable name has no "Here's …" line, so nothing opens either
   const orgBlank = addOrg("Blank Name Lending");
   const brokerBlank = addUser(orgBlank, "broker", "broker@blank.co");
@@ -8935,6 +8962,59 @@ test("Screens (Review Focus 5): \"pull up my top opportunities\" is answered in 
       noScreen(turn);
     });
   }
+});
+
+test("Screens (fix 2, R5): a page-request verb on no page or client is answered in words, whatever the words", async () => {
+  for (const [u, tool, said] of [
+    ["pull up today's rates", "getMarketUpdate", "Rates opened this morning a touch lower."],
+    ["pull up my top opportunities", "runSweepTool", "Here's Helen Brandt, your top opportunity."],
+    ["pull up my top opportunities", "runSweepTool", "Here's who is worth a call today."],
+  ]) {
+    const r = await runTurn({ messages: userSays(u), ctx: screensCtx, client: fakeClient([useTool(tool), say(said)]) });
+    assert.equal(r.reply, said, `${u}: ${said}`);
+    noScreen(r);
+  }
+});
+
+test("Screens (fix 2): showScreenTool works on the last allowed model call", async () => {
+  const client = fakeClient([
+    useTool("findClient", { query: "Helen" }), useTool("findClient", { query: "Brandt" }, "toolu_2"),
+    useTool("findClient", { query: "Helen Brandt" }, "toolu_3"), useTool("showScreenTool", { page: "client", clientId: helenS }, "toolu_4"),
+  ]);
+  const r = await runTurn({ messages: userSays("pull up Helen Brandt"), ctx: screensCtx, client });
+  assert.equal(client.calls.length, 4);
+  assert.equal(r.reply, "Here's Helen Brandt.");
+  assert.deepStrictEqual(r.screen, { page: "client", clientId: helenS });
+});
+
+test("Screens (fix 2, A3): a loan officer's showScreenTool with a teammate's real client id opens nothing", async () => {
+  // the tool says not found, which cites nothing, so the model's book sentence after it is the can't-verify line (as after any
+  // failed read: findClient first is what grounds a not-found sentence)
+  const client = fakeClient([useTool("showScreenTool", { page: "client", clientId: danaS }), say("I don't see a Dana Fox in your book.")]);
+  const r = await runTurn({ messages: userSays("pull up Dana Fox"), ctx: loScreensCtx, client });
+  assert.equal(toolResultPayload(client.calls[1]).source, "(not found)");
+  assert.equal(r.reply, CANT_VERIFY);
+  noScreen(r);
+  assert.deepStrictEqual(r.sources, []);
+});
+
+test("Screens (fix 2): the order of the lines: the form line before the broker's-page line, the dropped call before a Google line", async () => {
+  let r = await runTurn({
+    messages: userSays("take me to My Team"), ctx: { ...loScreensCtx, onScreen: { page: "form" } },
+    client: fakeClient([useTool("showScreenTool", { page: "team" })]),
+  });
+  assert.equal(r.reply, FORM_OPEN);
+  noScreen(r);
+  // a calendar question with Google not connected: alone, its line; beside a showScreenTool call on that non-page turn, dropped
+  const calendar = ["getCalendarTool", { date: "today" }];
+  r = await runTurn({ messages: userSays("what's on my calendar today?"), ctx: screensCtx, client: fakeClient([useTools(calendar)]) });
+  assert.equal(r.reply, GOOGLE_NOT_CONNECTED);
+  r = await runTurn({
+    messages: userSays("what's on my calendar today?"), ctx: screensCtx,
+    client: fakeClient([useTools(calendar, ["showScreenTool", { page: "rates" }])]),
+  });
+  assert.equal(r.reply, NOTHING_CHANGED);
+  noScreen(r);
 });
 
 test("Screens: CHARLI_SYSTEM carries the screens rule exactly, once, right after the \"Done —\" rule", () => {
