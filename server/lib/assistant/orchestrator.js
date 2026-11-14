@@ -54,6 +54,7 @@ const MAX_LOOKUPS_PER_TURN = 3;
 const LOOKUP_LIMIT = "the lookup limit for this turn is reached: at most 3 lookups a turn";
 const SWEEP_TOP_OPPORTUNITIES = 10;
 const SWEEP_TOP_CHECKINS = 10;
+const SWEEP_TOP_UPGRADES = 5;
 const FIND_CLIENT_MAX_MATCHES = 5;
 
 // The tools that only PACKAGE a change (they never write; see tools.js).
@@ -1834,6 +1835,12 @@ function trimSweep(data) {
     .slice(0, SWEEP_TOP_CHECKINS)
     .map((r) => ({ name: r.name, monthsSince: r.checkIn && r.checkIn.monthsSince }));
   const out = { counts: data.counts, byLens: data.byLens, opportunities: top, checkIns };
+  if (Array.isArray(data.upgrades)) {
+    out.upgrades = data.upgrades
+      .filter((r) => r && r.bestUpgrade)
+      .slice(0, SWEEP_TOP_UPGRADES)
+      .map((r) => (r.doNotEmail ? { name: r.name, doNotEmail: true, best: r.bestUpgrade } : { name: r.name, best: r.bestUpgrade }));
+  }
   if (data.estimated) out.estimated = true;
   return out;
 }

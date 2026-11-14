@@ -17,7 +17,7 @@ const { recordSnapshot } = require("../lib/rateHistory");
 const {
   tools, TOOL_SCHEMA,
   getMarketUpdate, runSweepTool, findClient, addClientTool, logContactTool, callListTool, getCalendarTool, createEventTool, draftEmailTool,
-  callNotes, setTargetRateTool, targetRatesTool, showScreenTool,
+  callNotes, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
 } = require("../lib/assistant/tools");
 const { PURPOSES, composeLinks } = require("../lib/assistant/outreach");
 const { SCREEN_PAGES } = require("../lib/assistant/navigation");
@@ -1114,7 +1114,7 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
     ["addClientTool", "callListTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "runSweepTool", "setCareerStageTool",
-      "setTargetRateTool", "showScreenTool", "targetRatesTool"]
+      "setTargetRateTool", "showScreenTool", "targetRatesTool", "upgradesTool"]
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);
@@ -1242,4 +1242,106 @@ test("showScreenTool: TOOL_SCHEMA lists it with the page enum", () => {
   assert.ok(def);
   assert.deepStrictEqual(def.input_schema.properties.page.enum, [...SCREEN_PAGES, "client"]);
   assert.deepStrictEqual(def.input_schema.required, ["page"]);
+});
+
+// ── Loan upgrades: upgradesTool and findClient's upgrades (spec 4.7) ─────────
+
+const UP_NOW = Date.UTC(2026, 10, 12, 15, 0);   // 2026-11-12, after the FRED observation below
+const UP_SET = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461, rate_30yr_fha: 6.1, rate_30yr_va: 5.8,
+  date: "2026-11-10", source: "Optimal Blue lock data (2026-11-10)" };
+function addUpgradeClient(orgId, userId, name, f = {}) {
+  return Number(db.prepare(`
+    INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, credit_score_known,
+      loan_program, monthly_mi, close_date, balance_as_of, original_amount, original_value, property_zip, occupancy, last_contact)
+    VALUES (?, ?, ?, '30yr_fixed', ?, ?, 400000, 720, 1, ?, ?, '2025-06-15', '2025-06-15', 300000, 400000, '85016', 'primary', '2026-11-01')
+  `).run(orgId, userId, name, f.rate ?? 7.5, f.balance ?? 300000, f.program ?? "va", f.mi ?? null).lastInsertRowid);
+}
+const upCtx = (orgId, userId, role) => ({ user: { id: userId, role, org_id: orgId }, rates: LIVE, db, now: UP_NOW });
+
+test("Upgrades: upgradesTool lists only the caller's clients with an upgrade; kind filters; the model fields only; findClient carries program and upgrades", () => {
+  db.prepare("DELETE FROM client_upgrades").run();
+  recordSnapshot(UP_SET, UP_SET.date, "fred");
+  const org = addOrg("Upsilon");
+  const broker = addUser(org, "broker", "broker@up.co");
+  const lo = addUser(org, "lo", "lo@up.co");
+  const lo2 = addUser(org, "lo", "lo2@up.co");
+  const vee = addUpgradeClient(org, lo, "Vee Sample");
+  const wes = addUpgradeClient(org, lo2, "Wes Other");
+  addUpgradeClient(org, lo, "Conv Plain", { program: "conventional" });
+  addClientRow(org, lo, { name: "No Program", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 400000, creditScore: 720 });
+
+  const loR = upgradesTool({}, upCtx(org, lo, "lo"));
+  assert.equal(loR.source, "client record");
+  assert.deepStrictEqual(loR.data.clients.map((c) => c.id), [vee], "a loan officer sees their own clients only");
+  assert.deepStrictEqual(Object.keys(loR.data.clients[0]).sort(), ["id", "name", "upgrades"]);
+  const u = loR.data.clients[0].upgrades;
+  assert.ok(u.length >= 1);
+  for (const l of u) {
+    assert.deepStrictEqual(Object.keys(l).sort(), ["detail", "headline", "isNew", "label", "lens", "unit"], "no gaps, priority or today block");
+    assert.equal(typeof l.headline, "number");
+  }
+  assert.equal(u[0].lens, "va_irrrl");
+  // every figure in the detail line is a number in the payload text
+  const payload = JSON.stringify(loR.data);
+  for (const m of u[0].detail.matchAll(/\d[\d,]*(?:\.\d+)?/g)) assert.ok(payload.includes(m[0]), `${m[0]} is in the payload`);
+
+  const brokerR = upgradesTool({}, upCtx(org, broker, "broker"));
+  assert.deepStrictEqual(brokerR.data.clients.map((c) => c.id).sort(), [vee, wes].sort());
+  assert.ok(brokerR.data.clients.every((c) => typeof c.ownerName === "string"), "a teammate's client names its owner");
+
+  assert.deepStrictEqual(upgradesTool({ kind: "streamline" }, upCtx(org, broker, "broker")).data.clients.length, 2);
+  assert.deepStrictEqual(upgradesTool({ kind: "drop_insurance" }, upCtx(org, broker, "broker")), { data: { clients: [] }, source: "client record" });
+  const bad = upgradesTool({ kind: "everything" }, upCtx(org, broker, "broker"));
+  assert.match(bad.source, NON_CITING);
+  assert.ok(bad.data.error);
+
+  // findClient: program and upgrades, still no gaps
+  const found = findClient({ query: "vee" }, upCtx(org, lo, "lo")).data.matches[0];
+  assert.equal(found.program, "va");
+  assert.deepStrictEqual(found.upgrades, u);
+  assert.equal(findClient({ query: "conv plain" }, upCtx(org, lo, "lo")).data.matches[0].program, "conventional");
+  assert.deepStrictEqual(findClient({ query: "conv plain" }, upCtx(org, lo, "lo")).data.matches[0].upgrades, []);
+  assert.equal(findClient({ query: "no program" }, upCtx(org, lo, "lo")).data.matches[0].program, "");
+});
+
+test("Upgrades: new upgrades first, then the best by priority and headline, then name; at most 15", () => {
+  db.prepare("DELETE FROM client_upgrades").run();
+  recordSnapshot(UP_SET, UP_SET.date, "fred");
+  const org = addOrg("Upsilon Two");
+  const broker = addUser(org, "broker", "broker@up2.co");
+  const ctx = upCtx(org, broker, "broker");
+  const big = addUpgradeClient(org, broker, "Big Save", { balance: 380000, rate: 8 });
+  const small = addUpgradeClient(org, broker, "Small Save", { balance: 200000, rate: 7 });
+  const tie = addUpgradeClient(org, broker, "Aaa Tie", { balance: 200000, rate: 7 });
+  const names = () => upgradesTool({}, ctx).data.clients.map((c) => c.name);
+  // all three are new: the best headline first, a tie by name
+  assert.deepStrictEqual(names(), ["Big Save", "Aaa Tie", "Small Save"]);
+  // reaching Big Save ends its "new": the new ones go first
+  db.prepare("INSERT INTO contact_log (client_id, user_id, outcome, at) VALUES (?, ?, 'reached', '2999-01-01 00:00:00')").run(big, broker);
+  assert.deepStrictEqual(names(), ["Aaa Tie", "Small Save", "Big Save"]);
+  assert.ok(upgradesTool({}, ctx).data.clients[0].upgrades.every((l) => l.isNew === true));
+  assert.ok(upgradesTool({}, ctx).data.clients[2].upgrades.every((l) => l.isNew === false));
+  void tie; void small;
+  for (let i = 1; i <= 17; i++) addUpgradeClient(org, broker, `Many ${String(i).padStart(2, "0")}`);
+  assert.equal(upgradesTool({}, ctx).data.clients.length, 15);
+});
+
+test("Upgrades: a check that throws leaves the tool answering with no upgrades", () => {
+  const UA = require("../lib/upgradeAlerts");
+  const org = addOrg("Upsilon Three");
+  const broker = addUser(org, "broker", "broker@up3.co");
+  addUpgradeClient(org, broker, "Vee Three");
+  const real = UA.checkUpgrades, realErr = console.error;
+  UA.checkUpgrades = () => { throw new Error("boom"); };
+  console.error = () => {};
+  try {
+    assert.deepStrictEqual(upgradesTool({}, upCtx(org, broker, "broker")).data.clients.length <= 1, true);
+    assert.ok(Array.isArray(findClient({ query: "vee three" }, upCtx(org, broker, "broker")).data.matches[0].upgrades));
+  } finally { UA.checkUpgrades = real; console.error = realErr; }
+});
+
+test("Upgrades: TOOL_SCHEMA describes upgradesTool with an optional kind", () => {
+  const t = TOOL_SCHEMA.find((x) => x.name === "upgradesTool");
+  assert.deepStrictEqual(t.input_schema, { type: "object", properties: { kind: { type: "string", enum: ["drop_insurance", "streamline"] } }, additionalProperties: false });
+  assert.match(t.description, /qualify for an upgrade/);
 });

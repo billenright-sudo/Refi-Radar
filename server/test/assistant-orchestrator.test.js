@@ -196,7 +196,9 @@ test("screenUngroundedText: guideline domain -> hand-off, even when the model te
     assert.equal(screenUngroundedText(u, "I'm not sure."), GUIDELINE_HANDOFF, u);
   }
   // bare eligibility is NOT the guideline domain: "eligible for a refi" is a sweep question
-  for (const u of ["Is Chen eligible for a refi?", "is she eligible", "who is eligible for cash out"]) {
+  // upgrade questions are tool questions too: the guideline guard stays as it was
+  for (const u of ["Is Chen eligible for a refi?", "is she eligible", "who is eligible for cash out",
+    "Who could drop their mortgage insurance?", "Does Chen have any upgrades?"]) {
     assert.notEqual(screenUngroundedText(u, "I'm not sure."), GUIDELINE_HANDOFF, u);
   }
 });
@@ -9129,4 +9131,23 @@ test("Screens (final review M1): a client's data, asked for with \"pull up\", is
     assert.equal(r.reply, said, u);
     noScreen(r);
   }
+});
+
+test("Upgrades: trimSweep keeps the top five upgrades, each as { name, best } like the opportunities", () => {
+  const up = (i) => ({ name: `Client ${i}`, bestUpgrade: { lens: "va_irrrl", label: "VA IRRRL", priority: "medium", headline: 100 - i, unit: "$/mo", detail: "x", isNew: false },
+    upgrades: [{ lens: "va_irrrl" }], gaps: [], ...(i === 2 ? { doNotEmail: true } : {}) });
+  const sent = forModel("runSweepTool", { counts: { withUpgrade: 7 }, byLens: { va_irrrl: 7 }, opportunities: [], checkIns: [], upgrades: [1, 2, 3, 4, 5, 6, 7].map(up) });
+  assert.equal(sent.upgrades.length, 5);
+  assert.deepStrictEqual(sent.upgrades[0], { name: "Client 1", best: up(1).bestUpgrade });
+  assert.deepStrictEqual(sent.upgrades[1], { name: "Client 2", doNotEmail: true, best: up(2).bestUpgrade });
+  assert.ok(sent.upgrades.every((r) => !("gaps" in r) && !("upgrades" in r)));
+  assert.equal("upgrades" in forModel("runSweepTool", { counts: {}, byLens: {}, opportunities: [], checkIns: [] }), false);
+});
+
+test("Upgrades: CHARLI_SYSTEM carries the upgrades rule exactly, once, as a paragraph of its own", () => {
+  const RULE =
+    "Upgrades: when the user asks who could drop mortgage insurance, leave FHA or USDA, or do a streamline, call upgradesTool; say each " +
+    "client \"looks like\" they qualify and use only the figures it returns. Eligibility rules for a program are still a guideline question.";
+  assert.equal(CHARLI_SYSTEM.split(RULE).length, 2);
+  assert.ok(CHARLI_SYSTEM.split("\n\n").includes(RULE));
 });

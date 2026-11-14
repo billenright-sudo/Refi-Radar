@@ -14,6 +14,7 @@
 // showScreenTool returns the screen to open at the TOP level (`screen`), the same way, and writes nothing: the browser opens it.
 const refi = require("../refi");
 const targets = require("../targets");
+const upgradeAlerts = require("../upgradeAlerts");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
@@ -115,8 +116,56 @@ function findClient(args, ctx) {
   checkedTargets(ctx);
   const rows = scopedClients(ctx).filter((row) => String(row.name || "").toLowerCase().includes(query));
   const views = targets.viewsFor(ctx.db, rows, ctx.user.id);
-  const matches = rows.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
+  const ups = upgradesOf(ctx, rows);
+  const matches = rows.map((row) => ({
+    ...toClient(row), program: row.loan_program || "", target: views.get(row.id) || null, upgrades: (ups.get(row.id) || []).map(forModelLens),
+  }));
   return { data: { matches }, source: "client record" };
+}
+
+// The upgrade lenses (lib/upgradeAlerts views, best first) per client id for `rows`. A check or view that fails gives no upgrades.
+// The model sees only { lens, label, headline, unit, detail, isNew }: no gaps, no PII, no today block.
+const forModelLens = ({ lens, label, headline, unit, detail, isNew }) => ({ lens, label, headline, unit, detail, isNew });
+const byBestLens = (a, b) => (refi.PRIORITY_RANK[b.priority] || 0) - (refi.PRIORITY_RANK[a.priority] || 0) || b.headline - a.headline;
+function upgradesOf(ctx, rows) {
+  const now = clockOf(ctx);
+  const check = upgradeAlerts.safeCheckUpgrades(ctx.db, ctx.user.org_id, now);
+  const views = upgradeAlerts.safeUpgradeViewsFor(ctx.db, rows, check, now);
+  const out = new Map();
+  for (const [id, view] of views) out.set(id, [...view.lenses].sort(byBestLens));
+  return out;
+}
+
+// "Who could drop their insurance, leave FHA or USDA, or do a streamline?": the caller's clients with an upgrade (a broker's whole
+// org, a loan officer's own); a teammate's client also names its owner. Clients with a new upgrade first, then the best upgrade
+// (priority, then headline), then name. At most MAX_UPGRADES_SHOWN.
+const MAX_UPGRADES_SHOWN = 15;
+const UPGRADE_KINDS = { drop_insurance: ["fha_to_conv", "drop_pmi", "usda_to_conv"], streamline: ["fha_streamline", "va_irrrl"] };
+function upgradesTool(args, ctx) {
+  const kind = args && typeof args === "object" && !Array.isArray(args) ? args.kind : undefined;
+  const wanted = kind == null ? null : UPGRADE_KINDS[kind];
+  if (kind != null && !wanted) return fail("(invalid input)", "kind must be drop_insurance or streamline");
+  const rows = scopedClients(ctx);
+  const ups = upgradesOf(ctx, rows);
+  const owners = new Map();
+  for (const row of rows.filter((r) => r.user_id !== ctx.user.id)) {
+    if (owners.has(row.user_id)) continue;
+    const u = ctx.db.prepare("SELECT first_name, last_name FROM users WHERE id = ?").get(row.user_id);
+    if (u) owners.set(row.user_id, `${u.first_name} ${u.last_name}`.trim());
+  }
+  const found = [];
+  for (const row of rows) {
+    const lenses = (ups.get(row.id) || []).filter((l) => !wanted || wanted.includes(l.lens));
+    if (!lenses.length) continue;
+    const owner = owners.get(row.user_id);
+    found.push({ lenses, client: { id: row.id, name: row.name, ...(owner ? { ownerName: owner } : {}), upgrades: lenses.map(forModelLens) } });
+  }
+  const isNew = (f) => (f.lenses.some((l) => l.isNew) ? 0 : 1);
+  const clients = found
+    .sort((a, b) => isNew(a) - isNew(b) || byBestLens(a.lenses[0], b.lenses[0]) || (a.client.name < b.client.name ? -1 : a.client.name > b.client.name ? 1 : 0))
+    .slice(0, MAX_UPGRADES_SHOWN)
+    .map((f) => f.client);
+  return { data: { clients }, source: "client record" };
 }
 
 // "Who's at their target?": the caller's clients with a target (a broker's whole org, a loan officer's own), each with its target
@@ -812,7 +861,7 @@ async function lookUpLive(args, ctx) {
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
-    getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool,
+    getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
   })
 );
 
@@ -953,6 +1002,17 @@ const TOOL_SCHEMA = [
     input_schema: NO_ARGS,
   },
   {
+    name: "upgradesTool",
+    description:
+      "Clients who look like they qualify for an upgrade: leaving FHA or USDA for conventional, dropping PMI, or an FHA/VA streamline. " +
+      "Optional kind filters to drop_insurance or streamline.",
+    input_schema: {
+      type: "object",
+      properties: { kind: { type: "string", enum: ["drop_insurance", "streamline"] } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "setCareerStageTool",
     description:
       "Prepare to record the user's career stage, which only tailors how you coach them. This does NOT save " +
@@ -1062,5 +1122,5 @@ const TOOL_SCHEMA = [
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
-  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool, showScreenTool,
+  withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
 };
