@@ -30,11 +30,33 @@ export function valueLine(today) {
   const est = usd(roundTo(today.cautiousValue, 1000));
   if (today.valueBasis === "flat") return `Value about ${est} (${usd(today.valueFrom)} less 10% for caution)`;
   const year = String(today.valueAsOf || "").slice(0, 4);
-  return `Value about ${est} (from ${usd(today.valueFrom)}${year ? ` in ${year}` : ""}, area prices up ${Math.round(today.growthPct)}%, less 10% for caution)`;
+  const pct = Math.round(today.growthPct) || 0;   // -0 and NaN read as no change
+  const area = pct > 0 ? `, area prices up ${pct}%` : pct < 0 ? `, area prices down ${-pct}%` : "";
+  return `Value about ${est} (from ${usd(today.valueFrom)}${year ? ` in ${year}` : ""}${area}, less 10% for caution)`;
 }
 
 // Credit score for the POST body: the integer when the field parses, else "" (the server then stores 700 and marks it not known).
 export function creditScoreForPost(text) {
   const n = parseInt(text, 10);
   return Number.isFinite(n) ? n : "";
+}
+
+// The credit score chip on the client page: a score the server marks as not known (the 700 default) is not on file.
+export function creditScoreText(client) {
+  if (client && client.creditScoreKnown === false) return "Not on file";
+  return (client && client.creditScore) || "—";
+}
+
+// FHA, VA and USDA loans: the browser's conventional refi analysis doesn't price them (their own checks are the Upgrades).
+const GOV_PROGRAMS = { fha: "an FHA", va: "a VA", usda: "a USDA" };
+export const isGovProgram = (loanProgram) => Object.prototype.hasOwnProperty.call(GOV_PROGRAMS, loanProgram);
+
+// The conventional analysis for a client of `loanProgram`: never "good" (refi-ready) for a government loan.
+export function withGovGuard(a, loanProgram) {
+  return a && isGovProgram(loanProgram) ? { ...a, good: false } : a;
+}
+
+// The client page's line in place of the conventional recommendation, or "" for a conventional (or unknown) program.
+export function govRefiNote(loanProgram) {
+  return isGovProgram(loanProgram) ? `This is ${GOV_PROGRAMS[loanProgram]} loan — its options are checked under Upgrades below.` : "";
 }

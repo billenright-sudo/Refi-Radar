@@ -26,7 +26,7 @@ import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
-import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost } from "./upgrades.mjs";
+import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, isGovProgram, withGovGuard, govRefiNote } from "./upgrades.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1481,7 +1481,8 @@ const Clients = ({ scored, setSelected, setView }) => {
 // ---------------------------------------------------------------------------
 const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
   const isPhone = useIsPhone();
-  const a = analyze(client, rates);
+  const a = withGovGuard(analyze(client, rates), client.loanProgram);   // FHA, VA, USDA: never refi-ready here (Upgrades below)
+  const govNote = govRefiNote(client.loanProgram);
   const [targetInput, setTargetInput] = useState(client.target ? client.target.rate.toFixed(3) : "");
   const [targetSaving, setTargetSaving] = useState(false);
   const [targetError, setTargetError] = useState("");
@@ -1524,6 +1525,26 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
       setTargetError("Could not log the contact. Try again.");
     } finally {
       setTargetSaving(false);
+    }
+  };
+  // A "New" upgrade clears once a reached contact is logged: the same route, and its answer carries the cleared upgrades view.
+  const [upgradeLogging, setUpgradeLogging] = useState(false);
+  const [upgradeLogError, setUpgradeLogError] = useState("");
+  const logUpgradeContact = async () => {
+    setUpgradeLogging(true);
+    setUpgradeLogError("");
+    try {
+      const res = await fetch(`/api/clients/${client.id}/contact`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.client) {
+        if (onUpdated) onUpdated(data.client);
+      } else {
+        setUpgradeLogError(data.error || "Could not log the contact. Try again.");
+      }
+    } catch {
+      setUpgradeLogError("Could not log the contact. Try again.");
+    } finally {
+      setUpgradeLogging(false);
     }
   };
   // An empty field saves nothing; one that is not a number says why and never reaches the server (a NaN would clear the target).
@@ -1590,7 +1611,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
       </div>
 
       <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem", ...ph(isPhone, { flexDirection: "column" }) }}>
-        {[["phone", "Phone", client.phone || "—"], ["mail", "Email", client.email || "—"], ["star", "Credit Score", client.creditScore || "—"]].map(([icon, label, val]) => (
+        {[["phone", "Phone", client.phone || "—"], ["mail", "Email", client.email || "—"], ["star", "Credit Score", creditScoreText(client)]].map(([icon, label, val]) => (
           <div key={label} style={{ ...card, flex: 1, display: "flex", alignItems: "center", gap: 10 }}>
             <Icon name={icon} size={16} color={C.amber} />
             <div style={ph(isPhone, { minWidth: 0, overflowWrap: "anywhere" })}>
@@ -1661,6 +1682,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
               </div>
             ))}
           </div>
+          {govNote && <div style={{ marginTop: "1.25rem", fontSize: 13, color: C.muted }}>{govNote}</div>}
           {a.good && (
             <div style={{ marginTop: "1.25rem", padding: "1rem", background: `${C.greenBg}88`, borderRadius: 8, borderLeft: `3px solid ${C.green}` }}>
               <div style={{ color: C.green, fontWeight: 700, marginBottom: 4 }}>Recommendation</div>
@@ -1688,6 +1710,12 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
               </div>
             );
           })}
+          {client.upgrades.lenses.some((l) => l.isNew) && (
+            <div style={{ marginBottom: 10 }}>
+              <button onClick={logUpgradeContact} disabled={upgradeLogging} style={{ background: C.surfaceHi, color: C.mutedHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Log contact</button>
+              {upgradeLogError && <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>{upgradeLogError}</div>}
+            </div>
+          )}
           {client.upgrades.gaps.map((g, i) => (
             <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 6 }}>{g}</div>
           ))}
@@ -1766,7 +1794,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
             </div>
 
             {/* PMI milestone */}
-            {pmiMonths !== null && (
+            {pmiMonths !== null && !(pmiMonths === 0 && isGovProgram(client.loanProgram)) && (
               <div style={{ padding: "0.75rem 1rem", borderRadius: 8, background: pmiMonths === 0 ? C.greenBg : C.amberBg, borderLeft: `3px solid ${pmiMonths === 0 ? C.green : C.amber}` }}>
                 {pmiMonths === 0
                   ? <span style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>✓ LTV already below 80% — no PMI exposure</span>
@@ -2309,7 +2337,7 @@ const LOPortal = ({ lo, rates, setView }) => {
       .finally(() => setLoading(false));
   }, [lo.id]);
 
-  const scored = clients.map(c => ({ ...c, a: analyze(c, rates) }));
+  const scored = clients.map(c => ({ ...c, a: withGovGuard(analyze(c, rates), c.loanProgram) }));
 
   const sendAlert = async (client) => {
     const a = client.a;
@@ -3091,7 +3119,7 @@ export default function App() {
   }, []);
 
   const scored = clients
-    .map(c => ({ ...c, a: analyze(c, rates) }))
+    .map(c => ({ ...c, a: withGovGuard(analyze(c, rates), c.loanProgram) }))   // FHA, VA, USDA: never refi-ready (their Upgrades cover them)
     .sort((a, b) => (b.a?.good ? 1 : 0) - (a.a?.good ? 1 : 0) || (b.a?.rateDelta || 0) - (a.a?.rateDelta || 0));
 
   const refiReady = scored.filter(c => c.a?.good);
