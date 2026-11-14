@@ -35,6 +35,35 @@ test("cashOut lens: tappable equity over the floor, nothing when underwater", ()
   assert.equal(none, null, "no room — already above 80% LTV");
 });
 
+// Today's figures as lib/upgrades' today block gives them: the cash-out check reads today's balance and cautious value.
+const C650 = { loanType: "30yr_fixed", currentRate: 6.0, loanBalance: 400000, propertyValue: 650000, creditScore: 760 };
+const TODAY = (over = {}) => ({ balance: 400000, cautiousValue: 585000, valueBasis: "flat", ...over });
+
+test("cashOut from today's figures: today's balance and cautious value, saying where the value came from", () => {
+  const flat = refi.cashOut(C650, TODAY());
+  assert.deepStrictEqual([flat.cashAvailable, flat.headline, flat.priority, flat.currentLtv], [68000, 68000, "medium", 68.4]); // 0.80*585k - 400k
+  assert.strictEqual(flat.detail, "~$68,000 tappable to 80% LTV (on the value on file less 10% — verify)");
+  const grown = refi.cashOut(C650, TODAY({ balance: 380000, cautiousValue: 702000, valueBasis: "grown" }));
+  assert.deepStrictEqual([grown.cashAvailable, grown.priority], [181600, "high"]);
+  assert.strictEqual(grown.detail, "~$181,600 tappable to 80% LTV (on today's estimated value less 10% — verify)");
+  const typed = refi.cashOut(C650, TODAY({ cautiousValue: 650000, valueBasis: "typed" }));
+  assert.strictEqual(typed.cashAvailable, 120000);
+  assert.strictEqual(typed.detail, "~$120,000 tappable to 80% LTV (on the value you entered — verify)");
+  assert.strictEqual(refi.cashOut(C650, TODAY({ valueBasis: undefined })).detail, "~$68,000 tappable to 80% LTV (est. on today's value — verify)");
+  assert.strictEqual(refi.cashOut(C650, TODAY({ cautiousValue: 540000 })), null, "$32,000 is under the $40,000 floor");
+  assert.strictEqual(refi.cashOut(C650, TODAY({ balance: 0 })), null, "no loan today: nothing to cash out, as with a stored 0");
+});
+
+test("cashOut without usable today's figures: the figures on file, as before", () => {
+  const stored = refi.cashOut(C650);
+  assert.strictEqual(stored.cashAvailable, 120000);
+  assert.strictEqual(stored.detail, "~$120,000 tappable to 80% LTV (est. on origination value — verify)");
+  for (const t of [undefined, null, {}, TODAY({ cautiousValue: null }), TODAY({ cautiousValue: 0 }), TODAY({ cautiousValue: Number.NaN }),
+    TODAY({ balance: null }), TODAY({ balance: Number.NaN }), TODAY({ balance: -5 })]) {
+    assert.deepStrictEqual(refi.cashOut(C650, t), stored, JSON.stringify(t));
+  }
+});
+
 test("armToFixed lens: ARMs only", () => {
   const hit = refi.armToFixed({ loanType: "5_1_arm", currentRate: 8.25, loanBalance: 560000, propertyValue: 720000, creditScore: 720 }, RATES);
   assert.equal(hit.lens, "arm_to_fixed");
@@ -105,7 +134,7 @@ const fhaClient = (over = {}) => ({
   creditScore: 720, creditScoreKnown: true, monthlyMi: null, editedByHand: "", ...over,
 });
 
-test("no-program client: identical to before", () => {
+test("no-program client: no upgrades; the rate lenses as before, cash-out from today's figures", () => {
   const now = new Date("2026-10-21T00:00:00Z");
   const cs = [
     { id: 1, name: "Rate", loan_type: "30yr_fixed", current_rate: 7.85, loan_balance: 485000, property_value: 650000, credit_score: 760, last_contact: "2026-01-01" },
@@ -115,7 +144,8 @@ test("no-program client: identical to before", () => {
   const want = [
     {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":455,"unit":"$/mo","detail":"Drop ~1.39% to 6.46% → save ~$455/mo, break-even 17 mo","monthlySavings":455,"rateDelta":1.39,"breakEven":17,"effRate":6.46},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":455,"unit":"$/mo","detail":"Drop ~1.39% to 6.46% → save ~$455/mo, break-even 17 mo","monthlySavings":455,"rateDelta":1.39,"breakEven":17,"effRate":6.46},{"lens":"term_swap","label":"Term Swap","priority":"medium","headline":6.04,"unit":"%","detail":"15-yr refi at ~6.04% — pay off ~15 yrs sooner, +$594/mo","newRate":6.04,"paymentChange":594}],"checkIn":{"due":true,"monthsSince":9,"basis":"last_contact"}},
     {"best":{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":589,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$589/mo","effRate":6.71,"monthlySavings":589},"opportunities":[{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":589,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$589/mo","effRate":6.71,"monthlySavings":589}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
-    {"best":{"lens":"cash_out","label":"Cash-Out","priority":"high","headline":100000,"unit":"$","detail":"~$100,000 tappable to 80% LTV (est. on origination value — verify)","cashAvailable":100000,"currentLtv":60},"opportunities":[{"lens":"cash_out","label":"Cash-Out","priority":"high","headline":100000,"unit":"$","detail":"~$100,000 tappable to 80% LTV (est. on origination value — verify)","cashAvailable":100000,"currentLtv":60},{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},{"lens":"term_swap","label":"Term Swap","priority":"low","headline":842,"unit":"$/mo","detail":"Cash-flow option: 30-yr refi cuts the payment ~$842/mo","paymentChange":-842}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
+    // Cash-out from today's figures: no ZIP or value date, so the $500,000 on file less 10% → 0.80*450k - 300k = $60,000 (medium).
+    {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},{"lens":"cash_out","label":"Cash-Out","priority":"medium","headline":60000,"unit":"$","detail":"~$60,000 tappable to 80% LTV (on the value on file less 10% — verify)","cashAvailable":60000,"currentLtv":66.7},{"lens":"term_swap","label":"Term Swap","priority":"low","headline":842,"unit":"$/mo","detail":"Cash-flow option: 30-yr refi cuts the payment ~$842/mo","paymentChange":-842}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
   ];
   cs.forEach((c, i) => {
     const s = refi.sweepClient(c, RATES, now, { index: UP_INDEX });
@@ -136,6 +166,20 @@ test("an FHA client gets cash-out only from the old lenses plus its upgrades", (
   assert.strictEqual(s.bestUpgrade, s.upgrades[0]);
   const conv = refi.sweepClient({ ...c, loanProgram: "conventional" }, UP_RATES, UP_NOW, { index: UP_INDEX });
   assert.ok(conv.opportunities.some((o) => o.lens === "rate_term"), "same client as conventional gets rate_term");
+});
+
+test("sweepClient: the cash-out check reads the same today's figures as the upgrade checks", () => {
+  // ZIP3 850 goes 100 → 140 in UP_INDEX: $500,000 in 2021 → $700,000 today, less 10% → $630,000; the 2021 balance is rolled forward.
+  const c = fhaClient({ propertyValue: 500000, currentRate: 7.9 });
+  const t = require("../lib/upgrades").upgradesFor(refi.norm(c), UP_RATES, "2026-11-13", { index: UP_INDEX }).today;
+  assert.deepStrictEqual([t.valueBasis, t.cautiousValue, t.balanceBasis], ["grown", 630000, "rolled"]);
+  assert.ok(t.balance < 289500);
+  const co = refi.sweepClient(c, UP_RATES, UP_NOW, { index: UP_INDEX }).opportunities.find((o) => o.lens === "cash_out");
+  assert.strictEqual(co.cashAvailable, Math.round(0.8 * 630000 - t.balance));
+  assert.match(co.detail, /on today's estimated value less 10% — verify\)$/);
+  // runSweep passes the same figures through
+  const run = refi.runSweep([c], UP_RATES, UP_NOW, { index: UP_INDEX });
+  assert.strictEqual(run.opportunities[0].best.cashAvailable, co.cashAvailable);
 });
 
 test("runSweep lists upgrades separately and counts them", () => {
@@ -197,6 +241,9 @@ test("M3: upgrade checks that throw leave the sweep row with no upgrades and no 
     const s = refi.sweepClient(fhaClient({ propertyValue: 500000, currentRate: 7.9 }), UP_RATES, UP_NOW, { index: UP_INDEX });
     assert.deepStrictEqual([s.upgrades, s.bestUpgrade, s.upgradeGaps], [[], null, []]);
     assert.deepStrictEqual(s.opportunities.map((o) => o.lens), ["cash_out"], "the rate lenses still run");
+    // no today's figures: cash-out from the figures on file (0.80*500k - 289,500)
+    assert.strictEqual(s.best.cashAvailable, 110500);
+    assert.match(s.best.detail, /est\. on origination value — verify\)$/);
   } finally { U.upgradesFor = real; console.error = realErr; }
   assert.deepStrictEqual(logged, ["upgrade checks skipped: TypeError"]);
 });

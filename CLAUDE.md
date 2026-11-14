@@ -41,7 +41,7 @@ server/    index.js (entry, wires routes), db.js (SQLite schema + idempotent mig
            routes/google.js     /api/google/{connect,callback,status,disconnect}  (per-user Google OAuth)
            routes/profile.js    /api/profile/{nmls,org-nmls}  (sender / company NMLS ID, printed on every email)
            routes/voice.js      /api/voice/{tts,stt}  (ElevenLabs proxy; key never leaves the server)
-           lib/refi.js (deterministic sweep engine), lib/upgrades.js (the five upgrade checks),
+           lib/refi.js (deterministic sweep engine; cash-out reads the upgrades' `today` block), lib/upgrades.js (the five upgrade checks),
            lib/mortgageInsurance.js (current MI estimate + when it ends), lib/equity.js (today's balance and value),
            lib/hpi.js + hpiData.json (bundled FHFA home-price index), lib/upgradeAlerts.js (first-seen / announced / "New"),
            lib/rateHistory.js (daily rate snapshots, movement "since <day>"),

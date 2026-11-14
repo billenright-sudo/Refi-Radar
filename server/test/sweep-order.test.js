@@ -11,8 +11,9 @@ const client = (id, name, fields) => ({ id, name, loanType: "30yr_fixed", credit
 
 test("runSweep lists opportunities by priority, then dollar impact, not by name", () => {
   const clients = [
-    client(1, "Aaron Able", { currentRate: 7.2, loanBalance: 200000, propertyValue: 310000 }),   // cash-out ~$48,000, medium
-    client(2, "Mia Middle", { currentRate: 7.2, loanBalance: 200000, propertyValue: 325000 }),   // cash-out ~$60,000, medium
+    // Cash-out on today's figures: no ZIP or value date, so the value on file less 10%.
+    client(1, "Aaron Able", { currentRate: 7.2, loanBalance: 200000, propertyValue: 345000 }),   // cash-out ~$48,400, medium
+    client(2, "Mia Middle", { currentRate: 7.2, loanBalance: 200000, propertyValue: 362000 }),   // cash-out ~$60,640, medium
     client(3, "Zed Zulu", { currentRate: 8.5, loanBalance: 400000, propertyValue: 600000 }),     // rate-and-term, high
   ];
   const { opportunities } = refi.runSweep(clients, RATES, NOW);
@@ -21,6 +22,7 @@ test("runSweep lists opportunities by priority, then dollar impact, not by name"
     ["Mia Middle", "medium"],
     ["Aaron Able", "medium"],
   ]);
+  assert.deepEqual(opportunities.slice(1).map((r) => [r.best.lens, r.best.cashAvailable]), [["cash_out", 60640], ["cash_out", 48400]]);
 });
 
 test("runSweep breaks a full tie by name", () => {

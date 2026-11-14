@@ -6,12 +6,20 @@ cleanly after compaction / a new session. Newest notes at the top of each list.
 _Last updated: 2026-11-14_
 
 ## Done
+- **Sweeps cash-out from today's figures — BUILT 2026-11-14 on `feature/cashout-today`** (server 1661
+  node:tests, `check-scoring.js` ok). `sweepClient` runs the upgrade checks first and passes their `today`
+  block to `cashOut(c, today)`: tappable = 80% of today's cautious value − today's balance (same as the
+  Equity Projection card's Today row); the $40k floor / $100k high bar unchanged. Falls back to the stored
+  figures when the block has no cautious value or balance (or the upgrade checks throw). The row note says
+  where the value came from (typed / grown less 10% / on file less 10% / origination). Charlie's call list
+  and briefing follow. Not changed: the rate lenses (Rate & Term, ARM → Fixed, Term Swap) still price from
+  the stored balance and value.
 - **Equity from today's figures — BUILT 2026-11-14 on `feature/equity-today`** (client 378 node:tests, build
   ok). The Equity Projection card, the PMI-removal timing, the dashboard's Portfolio Equity tiles and the
   client-list equity now start from the server's Upgrades `today` block (rolled-forward balance + cautious
   value, 10% off unless typed in the last 12 months), falling back to the stored figures when it's missing.
   Helpers moved from `App.jsx` to `client/src/equity.mjs` (`equityStart`, `equityAt`,
-  `monthsToSubEightyLTV`). Not changed: Sweeps' cash-out lens still uses the stored value.
+  `monthsToSubEightyLTV`). Sweeps' cash-out lens followed on `feature/cashout-today` (above).
 - **Loan upgrades — BUILT 2026-11-13 on `feature/loan-upgrades` (off `feature/accurate-refi-scoring`
   @ `03f9ea3`), NOT merged, NOT deployed** (**server 1658 + client 370 node:tests**, build ok,
   `check-scoring.js` ok; final Opus review → fix wave `f43ac26..c749a1c`). Brokers now see clients who

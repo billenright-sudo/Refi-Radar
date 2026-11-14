@@ -128,17 +128,29 @@ function rateTerm(c, rates) {
   };
 }
 
-function cashOut(c) {
-  const value = c.propertyValue, balance = c.loanBalance;
+// Where the cash-out figure's value came from (lib/upgrades today block's valueBasis).
+const CASH_OUT_NOTE = {
+  typed: "on the value you entered — verify",
+  grown: "on today's estimated value less 10% — verify",
+  flat: "on the value on file less 10% — verify",
+};
+
+// `today` (optional) is the upgrades' today block: when it has a cautious value and a balance, the check uses those (the same figures
+// as the client page's Upgrades and Equity Projection cards); otherwise the figures on file.
+function cashOut(c, today) {
+  const useToday = !!today && Number.isFinite(today.cautiousValue) && today.cautiousValue > 0 &&
+    Number.isFinite(today.balance) && today.balance >= 0;
+  const value = useToday ? today.cautiousValue : c.propertyValue, balance = useToday ? today.balance : c.loanBalance;
   if (!(value > 0) || !(balance > 0)) return null;
   const maxLoan = 0.80 * value;
   const gross = maxLoan - balance; // cash available to 80% LTV, before costs
   if (gross < CASH_OUT_FLOOR) return null;
   const ltv = (balance / value) * 100;
+  const note = useToday ? (CASH_OUT_NOTE[today.valueBasis] || "est. on today's value — verify") : "est. on origination value — verify";
   return {
     lens: "cash_out", label: "Cash-Out", priority: gross >= 100000 ? "high" : "medium",
     headline: Math.round(gross), unit: "$",
-    detail: `~$${money(gross)} tappable to 80% LTV (est. on origination value — verify)`,
+    detail: `~$${money(gross)} tappable to 80% LTV (${note})`,
     cashAvailable: Math.round(gross), currentLtv: r1(ltv),
   };
 }
@@ -215,21 +227,21 @@ const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{
 // FRED snapshot's (lib/upgradeAlerts upgradeRates). The four rate lenses always price from `rates`. Without it, upgrades use `rates`.
 function sweepClient(raw, rates, now = new Date(), opts = {}) {
   const c = norm(raw);
-  // Government loans skip the conventional rate lenses (their own upgrade checks cover them); equity still counts.
-  const lenses = (GOV_PROGRAMS.has(c.loanProgram)
-    ? [cashOut(c)]
-    : [rateTerm(c, rates), cashOut(c), armToFixed(c, rates), termSwap(c, rates)]).filter(Boolean);
-  lenses.sort((x, y) => (PRIORITY_RANK[y.priority] - PRIORITY_RANK[x.priority]) || (impact(y) - impact(x)));
-  const doNotEmail = raw.do_not_email === 1 || raw.doNotEmail === true;
   // Lazy: upgrades.js destructures from this module at load time.
   const { upgradesFor } = require("./upgrades");
   const upgradeRates = opts.upgradeRates !== undefined ? opts.upgradeRates : rates;
-  let up = { lenses: [], gaps: [] };   // checks that throw: no upgrades and no gaps, the rest of the row as usual
+  let up = { lenses: [], gaps: [] };   // checks that throw: no upgrades and no gaps (cash-out from the figures on file), the rest as usual
   try {
     up = upgradesFor(c, upgradeRates, now.toISOString().slice(0, 10), { index: opts.index });
   } catch (err) {
     console.error("upgrade checks skipped:", errName(err));
   }
+  // Government loans skip the conventional rate lenses (their own upgrade checks cover them); equity still counts.
+  const lenses = (GOV_PROGRAMS.has(c.loanProgram)
+    ? [cashOut(c, up.today)]
+    : [rateTerm(c, rates), cashOut(c, up.today), armToFixed(c, rates), termSwap(c, rates)]).filter(Boolean);
+  lenses.sort((x, y) => (PRIORITY_RANK[y.priority] - PRIORITY_RANK[x.priority]) || (impact(y) - impact(x)));
+  const doNotEmail = raw.do_not_email === 1 || raw.doNotEmail === true;
   return {
     clientId: c.id, name: c.name, doNotEmail, best: lenses[0] || null, opportunities: lenses, checkIn: checkInStatus(c, now),
     upgrades: up.lenses, bestUpgrade: up.lenses[0] || null, upgradeGaps: up.gaps,
