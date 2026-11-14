@@ -1,7 +1,7 @@
 # Loan upgrades: loan program, mortgage insurance and today's equity
 
-Date: 2026-11-13. Owner: Bill. Status: DRAFT (for Bill's approval; builder check done, nothing left for Bill, my calls listed
-in chat).
+Date: 2026-11-13. Owner: Bill. Status: APPROVED (Bill, 2026-11-13: "go" — plan and build it the same way as Charlie opening pages;
+builder check done; my calls listed in chat and accepted with the go).
 Repo: `C:\Users\bille\dev\refi-radar`. Branch `feature/loan-upgrades` @ 03f9ea3, off `feature/accurate-refi-scoring`, in the
 worktree `C:\Users\bille\dev\refi-radar-upgrades`.
 Builds on: the sweep engine (`server/lib/refi.js`, mirrored in `client/src/refiAnalysis.mjs`), target-rate alerts
