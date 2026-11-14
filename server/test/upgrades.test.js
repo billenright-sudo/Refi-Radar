@@ -128,13 +128,20 @@ describe("fha_to_conv", () => {
     assert.ok(!r.gaps.includes(GAP.credit));
   });
 
-  test("FHA closed 2012 with no MI typed: MI unknown, no flag; typed MI flags", () => {
+  test("FHA closed 2012 with no MI typed: MI unknown, no flag; typed MI flags until the old 78% rule ends it", () => {
     // 7.75% so the principal-and-interest saving alone would pass the break-even: the MI guard is what stops it.
     const old = closedOn("2012-06-01", { currentRate: 7.75 });
     const r = run(old);
     assert.strictEqual(r.mi.basis, "unknown");
     assert.strictEqual(lensOf(r, "fha_to_conv"), null);
-    assert.ok(lensOf(run({ ...old, monthlyMi: 150 }), "fha_to_conv"));
+    // Typed MI, closed before 2013-06-03: it ended on its own when the scheduled balance reached 78% of the original value.
+    const typed = run({ ...old, monthlyMi: 150 });
+    assert.deepStrictEqual([typed.mi.endsReason, typed.mi.endsOn, typed.mi.monthly], ["78_percent", "2025-09-01", 0]);
+    assert.strictEqual(lensOf(typed, "fha_to_conv"), null);
+    // At 10.5% that date is 2028-05-01, more than 12 months out: the typed MI flags.
+    const slow = run({ ...old, currentRate: 10.5, monthlyMi: 150 });
+    assert.strictEqual(slow.mi.endsOn, "2028-05-01");
+    assert.ok(lensOf(slow, "fha_to_conv"));
   });
 
   test("insurance ending on its own within 12 months: no flag", () => {
@@ -266,6 +273,17 @@ describe("fha_streamline", () => {
     assert.strictEqual(l.breakEven, Math.ceil(costs / savings));
   });
 
+  test("insurance that ends on its own within 12 months: no flag (the same loan that never ends flags)", () => {
+    // Closed 2016-01-15 at 90% original LTV: the insurance ends 2027-01-15, two months after today.
+    const s16 = (over = {}) => closedOn("2016-01-15", { currentRate: 7.75, propertyZip: "", loanBalance: 270000, originalAmount: 270000, originalValue: 300000, ...over });
+    const r = run(s16());
+    assert.strictEqual(r.mi.endsOn, "2027-01-15");
+    assert.ok(r.mi.monthly > 0);
+    assert.strictEqual(lensOf(r, "fha_streamline"), null);
+    // 96.5% original LTV: the insurance never ends, so the streamline flags.
+    assert.ok(lensOf(run(s16({ loanBalance: 289500, originalAmount: 289500 })), "fha_streamline"));
+  });
+
   test("break-even over 36 months: no flag", () => {
     // Case-1 client: the rate test passes but the upfront insurance takes over 36 months to recover.
     const r = run(base());
@@ -395,6 +413,27 @@ describe("drop_pmi", () => {
     const r = run(conv({ closeDate: "2010-03-15", currentRate: 4.5, originalAmount: 240000, originalValue: 250000, loanBalance: 150000 }));
     assert.ok(r.mi.endsOn && r.mi.endsOn <= TODAY, String(r.mi.endsOn));
     assert.deepStrictEqual(r.lenses, []);
+  });
+
+  test("original amount unknown, balance already at or under 78% of the original value: no flag (it ended on its own)", () => {
+    const r = run(conv({ originalAmount: null, loanBalance: 220000 }));
+    assert.strictEqual(r.mi.endsOn, null);
+    assert.deepStrictEqual(r.lenses, []);
+    // Between 78% and 80% of the original value it is still the borrower's to ask for.
+    const l = lensOf(run(conv({ originalAmount: null, loanBalance: 236000 })), "drop_pmi");
+    assert.ok(l);
+    assert.strictEqual(l.path, "original");
+  });
+
+  test("past the Homeowners Protection Act midpoint (half the term since the first payment): no flag", () => {
+    // Originals unknown, typed value 400,000 (LTV 70).
+    const mid = (closeDate, over = {}) => seasoned(closeDate, 280000, over);
+    assert.ok(lensOf(run(mid("2011-11-14")), "drop_pmi"));                    // first payment 2012-01-01: 178 months
+    assert.ok(lensOf(run(mid("2011-10-14")), "drop_pmi"));                    // first payment 2011-12-01: 179 months
+    assert.strictEqual(lensOf(run(mid("2011-09-14")), "drop_pmi"), null);     // first payment 2011-11-01: 180 months
+    // A 15-year loan: 90 months.
+    assert.ok(lensOf(run(mid("2019-04-14", { loanType: "15yr_fixed" })), "drop_pmi"));                 // first payment 2019-06-01: 89 months
+    assert.strictEqual(lensOf(run(mid("2019-03-14", { loanType: "15yr_fixed" })), "drop_pmi"), null);   // first payment 2019-05-01: 90 months
   });
 
   test("runs without rates, for jumbo too, and needs no score", () => {

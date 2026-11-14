@@ -112,6 +112,42 @@ test("insurance past its end date has ended", () => {
   assert.ok(c.endsOn < TODAY, c.endsOn);
 });
 
+test("FHA 90% end test on the base amount: the imported total less the financed 1.75% upfront insurance", () => {
+  // 274,725 = 270,000 × 1.0175: a 90.0% base loan on 300,000, so it ends 11 years after closing.
+  const a = mi({ loanProgram: "fha", closeDate: "2016-07-01", originalAmount: 274725, originalValue: 300000 });
+  assert.strictEqual(a.endsOn, "2027-07-01");
+  assert.strictEqual(a.endsReason, "11_years");
+  assert.strictEqual(a.originalLtv, 91.575, "originalLtv stays the stored figures' ratio");
+  const b = mi({ loanProgram: "fha", closeDate: "2016-07-01", originalAmount: 274726, originalValue: 300000 });
+  assert.strictEqual(b.endsOn, null, "a base just over 90%: never");
+  // Conventional has no upfront insurance: its 78% test reads the original amount as is (pinned above).
+});
+
+test("FHA closed before 2013-06-03 with MI on file and both originals: ends at 78% of the original value (the old rule)", () => {
+  const c = { loanProgram: "fha", closeDate: "2012-05-01", currentRate: 7.5, monthlyMi: 150, originalAmount: 289500, originalValue: 300000 };
+  const pmt = calcPayment(289500, 7.5, 30);
+  let bal = 289500, n = 0;
+  while (bal > 0.78 * 300000) { bal = bal * (1 + 7.5 / 1200) - pmt; n++; }
+  const [y, m] = firstPaymentFromClosing("2012-05-01").split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + (n - 1), 1)).toISOString().slice(0, 10);
+  const r = mi(c);
+  assert.strictEqual(r.endsReason, "78_percent");
+  assert.strictEqual(r.endsOn, d);
+  assert.ok(d <= TODAY, d);
+  assert.deepStrictEqual([r.monthly, r.annualRate, r.basis], [0, 0, "none"], "past that date it has ended");
+  // Still before it: the typed amount stands, with the end date.
+  const early = currentMi({ loanType: "30yr_fixed", ...c }, BAL, "2020-01-01");
+  assert.deepStrictEqual([early.monthly, early.basis, early.endsOn, early.endsReason], [150, "typed", d, "78_percent"]);
+  // At 90% original LTV it is still the old rule, not 11 years.
+  assert.strictEqual(mi({ ...c, originalAmount: 270000 }).endsReason, "78_percent");
+  // Without the typed amount, or without both originals, nothing changes.
+  assert.strictEqual(mi({ ...c, monthlyMi: null }).endsOn, null);
+  assert.strictEqual(mi({ ...c, originalValue: null }).endsOn, null);
+  assert.strictEqual(mi({ ...c, originalValue: null }).monthly, 150);
+  // On or after 2013-06-03 the 78% rule does not apply: 96.5% never ends.
+  assert.strictEqual(mi({ ...c, closeDate: "2013-06-03" }).endsOn, null);
+});
+
 test("endsWithinMonths", () => {
   assert.strictEqual(endsWithinMonths({ endsOn: "2027-07-01" }, TODAY, 12), true);
   assert.strictEqual(endsWithinMonths({ endsOn: "2028-07-01" }, TODAY, 12), false);

@@ -11,6 +11,8 @@ const BOUNDARY_GRACE_DAYS = 90;
 const FHA_ESTIMATE_FROM = "2013-09-01";
 const FHA_END_MAX_LTV = 90;
 const FHA_END_YEARS = 11;
+const FHA_UPFRONT = 0.0175;               // upfront FHA insurance, financed into the loan amount
+const FHA_OLD_RULE_BEFORE = "2013-06-03"; // closed before this: FHA insurance ended at 78% of the original value
 const CONV_END_FRACTION = 0.78;
 
 // Annual rate in percent, in effect from `from`. FHA uses the lower LTV tier (LTV is unknown for an estimate).
@@ -60,11 +62,19 @@ function currentMi(c, balance, today) {
   const program = c.loanProgram || "";
   const originalLtv = pos(c.originalAmount) && pos(c.originalValue) ? round4((c.originalAmount / c.originalValue) * 100) : null;
   const out = { monthly: null, annualRate: null, basis: "unknown", endsOn: null, endsReason: null, originalLtv };
+  const typedMi = num(c.monthlyMi) && c.monthlyMi > 0;
+  // The FHA 90% test reads the base loan: the upfront insurance is usually financed into the imported original amount.
+  const fhaBaseLtv = originalLtv == null ? null : round4((c.originalAmount / (1 + FHA_UPFRONT) / c.originalValue) * 100);
+  const fhaOldRule = program === "fha" && c.closeDate && day(c.closeDate) < day(FHA_OLD_RULE_BEFORE);
 
-  if (program === "fha" && c.closeDate && originalLtv != null && originalLtv <= FHA_END_MAX_LTV) {
+  if (fhaOldRule && typedMi) {
+    // Before 2013-06-03 FHA insurance ended at 78% of the original value, as conventional PMI does.
+    const d = seventyEightDate(c);
+    if (d) { out.endsOn = d; out.endsReason = "78_percent"; }
+  } else if (program === "fha" && c.closeDate && fhaBaseLtv != null && fhaBaseLtv <= FHA_END_MAX_LTV) {
     out.endsOn = addMonths(c.closeDate, FHA_END_YEARS * 12);
     out.endsReason = "11_years";
-  } else if ((program === "conventional" || program === "jumbo") && num(c.monthlyMi) && c.monthlyMi > 0) {
+  } else if ((program === "conventional" || program === "jumbo") && typedMi) {
     const d = seventyEightDate(c);
     if (d) { out.endsOn = d; out.endsReason = "78_percent"; }
   }

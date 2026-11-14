@@ -32,6 +32,9 @@ const PMI_ORIGINAL_FRACTION = 0.8;  // Drop PMI on the original value
 const PMI_SEASONED_LTV = 75;        // Drop PMI on today's value, 2 to 5 years after closing
 const PMI_SEASONED_MONTHS = 24;
 const PMI_LONG_MONTHS = 60;         // more than this (not the anniversary itself): the 80% bar
+const PMI_AUTO_END_FRACTION = 0.78; // PMI ends on its own at 78% of the original value
+const PMI_MIDPOINT_MONTHS_30 = 180; // and at the Homeowners Protection Act midpoint: half the term since the first payment
+const PMI_MIDPOINT_MONTHS_15 = 90;
 
 const GAPS = {
   program: "Add the loan program to check upgrades.",
@@ -135,6 +138,8 @@ function fhaStreamline(x, rates) {
   const fhaRate = rates && rates.rate_30yr_fha;
   if (!pos(fhaRate)) return null;
   if (today < later(addDays(c.closeDate, WAITING_DAYS), addMonths(first, FHA_SEASON_MONTHS))) return null;
+  // Insurance ending on its own within 12 months (spec 3.3). An ended one has monthly 0, and endsWithinMonths counts past dates.
+  if (mi && mi.monthly > 0 && endsWithinMonths(mi, today, MI_ENDING_SOON_MONTHS)) return null;
   const oldMiRate = miMayEnd ? 0 : (mi && mi.annualRate) ?? 0;
   const oldMiMonthly = miMayEnd ? 0 : (mi && mi.monthly) ?? 0;
   const newMip = t.balance > FHA_HIGH_BALANCE ? FHA_NEW_ANNUAL_MIP_HIGH : FHA_NEW_ANNUAL_MIP;
@@ -172,12 +177,16 @@ function vaIrrrl(x, rates) {
 }
 
 // 2: Drop PMI, only with a typed or imported monthly figure (an estimate can't tell lender-paid or single-premium MI). Path
-// "original" carries the share of the original value it used as `originalLtv`.
+// "original" carries the share of the original value it used as `originalLtv`. PMI that ended on its own is not flagged: the
+// scheduled balance reached 78% of the original value; or, with no schedule (the original amount unknown), today's balance is at
+// or under 78% of it; or the Homeowners Protection Act midpoint (half the term since the first payment) has passed.
 function dropPmi(x) {
-  const { c, t, rawLtv, mi, today } = x;
+  const { c, t, rawLtv, mi, first, today } = x;
   if (!(fin(c.monthlyMi) && c.monthlyMi > 0)) return null;
-  if (mi && mi.endsOn && mi.endsOn <= today) return null; // the scheduled balance reached 78%: it ended on its own
+  if (mi && mi.endsOn && mi.endsOn <= today) return null;
   const originalValue = numOrNull(c.originalValue);
+  if (!(mi && mi.endsOn) && pos(originalValue) && t.balance <= PMI_AUTO_END_FRACTION * originalValue) return null;
+  if (monthsBetween(first, today) >= (c.loanType === "15yr_fixed" ? PMI_MIDPOINT_MONTHS_15 : PMI_MIDPOINT_MONTHS_30)) return null;
   let path = null, originalLtv = null;
   if (pos(originalValue) && t.balance <= PMI_ORIGINAL_FRACTION * originalValue) {
     path = "original";
