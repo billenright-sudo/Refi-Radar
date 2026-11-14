@@ -14,6 +14,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/auth/ src/charli/ src/profile/ src/import/ src/legal/ src/billing/ src/nav.test.mjs src/layout.test.mjs src/homeLayout.test.mjs src/overview.test.mjs src/refiAnalysis.test.mjs src/calls.test.mjs src/feedback.test.mjs src/targets.test.mjs src/charlieNav.test.mjs"
+    "test": "node --test src/auth/ src/charli/ src/profile/ src/import/ src/legal/ src/billing/ src/nav.test.mjs src/layout.test.mjs src/homeLayout.test.mjs src/overview.test.mjs src/refiAnalysis.test.mjs src/calls.test.mjs src/feedback.test.mjs src/targets.test.mjs src/charlieNav.test.mjs src/upgrades.test.mjs"
   }
 }

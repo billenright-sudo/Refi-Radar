@@ -26,6 +26,7 @@ import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
+import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine } from "./upgrades.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1673,6 +1674,29 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
         <div style={{ ...card, textAlign: "center", color: C.muted, padding: "2rem" }}>Fetch the latest rates to see refi analysis.</div>
       )}
 
+      {/* ── Upgrades ──────────────────────────────────────────────────── */}
+      {client.upgrades && (
+        <div style={{ ...card, marginTop: "1.5rem" }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Upgrades</h3>
+          {client.upgrades.lenses.map((l) => {
+            const m = LENS_META[l.lens] || LENS_META.drop_pmi;
+            return (
+              <div key={l.lens} style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                <span style={{ background: m.bg, color: m.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{l.label || m.label}</span>
+                {l.isNew && <NewChip />}
+                <div style={{ flex: 1, minWidth: 200, fontSize: 13.5, color: C.mutedHi }}>{l.detail}</div>
+              </div>
+            );
+          })}
+          {client.upgrades.gaps.map((g, i) => (
+            <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 6 }}>{g}</div>
+          ))}
+          {[balanceLine(client.upgrades.today), valueLine(client.upgrades.today)].filter(Boolean).map((t) => (
+            <div key={t} style={{ fontSize: 12.5, color: C.muted, marginTop: 6 }}>{t}</div>
+          ))}
+        </div>
+      )}
+
       {/* ── Equity Projection ─────────────────────────────────────────── */}
       {(() => {
         const now   = equityAt(client, 0);
@@ -1869,7 +1893,19 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
 // ---------------------------------------------------------------------------
 // Shared client form (Add + Edit)
 // ---------------------------------------------------------------------------
-const EMPTY_FORM = { name: "", email: "", phone: "", loanType: "30yr_fixed", currentRate: "", loanBalance: "", propertyValue: "", closeDate: "", creditScore: "", notes: "", doNotEmail: false };
+const EMPTY_FORM = { name: "", email: "", phone: "", loanType: "30yr_fixed", currentRate: "", loanBalance: "", propertyValue: "", closeDate: "", creditScore: "", notes: "", doNotEmail: false,
+  loanProgram: "", monthlyMi: "", originalAmount: "", originalValue: "", propertyZip: "", occupancy: "" };
+
+// The six upgrade keys are always sent: a key left out of a PUT keeps the stored value, "" or null clears it.
+const numOrNull = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
+const upgradeFields = (form) => ({
+  loanProgram:    form.loanProgram || "",
+  monthlyMi:      numOrNull(form.monthlyMi),
+  originalAmount: numOrNull(form.originalAmount),
+  originalValue:  numOrNull(form.originalValue),
+  propertyZip:    (form.propertyZip || "").trim(),
+  occupancy:      form.occupancy || "",
+});
 
 function clientToForm(c) {
   return {
@@ -1881,9 +1917,16 @@ function clientToForm(c) {
     loanBalance:   c.loanBalance != null ? String(c.loanBalance) : "",
     propertyValue: c.propertyValue != null ? String(c.propertyValue) : "",
     closeDate:     c.closeDate || "",
-    creditScore:   c.creditScore != null ? String(c.creditScore) : "",
+    // A defaulted 700 is not a known score: show it blank so saving doesn't make it "known".
+    creditScore:   c.creditScore != null && c.creditScoreKnown !== false ? String(c.creditScore) : "",
     notes:         c.notes || "",
     doNotEmail:    c.doNotEmail === true,
+    loanProgram:    c.loanProgram || "",
+    monthlyMi:      c.monthlyMi != null ? String(c.monthlyMi) : "",
+    originalAmount: c.originalAmount != null ? String(c.originalAmount) : "",
+    originalValue:  c.originalValue != null ? String(c.originalValue) : "",
+    propertyZip:    c.propertyZip || "",
+    occupancy:      c.occupancy || "",
   };
 }
 
@@ -1907,6 +1950,15 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
     if (Object.keys(e).length) { setErrors(e); return; }
     onSave(form);
   };
+
+  const select = (key, label, options) => (
+    <div>
+      <label style={{ display: "block", fontSize: 12, color: C.muted, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</label>
+      <select value={form[key]} onChange={e => set(key, e.target.value)} style={{ ...inputStyle }}>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </div>
+  );
 
   const field = (key, label, placeholder, type = "text") => (
     <div>
@@ -1932,9 +1984,15 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
               <option value="5_1_arm">5/1 ARM</option>
             </select>
           </div>
+          {select("loanProgram", "Loan Program", PROGRAM_OPTIONS)}
+          {field("monthlyMi", "Monthly Mortgage Insurance ($)", "leave blank if you don't know", "number")}
+          {field("originalAmount", "Original Loan Amount ($)", "400000", "number")}
+          {field("originalValue", "Original Home Value ($)", "500000", "number")}
+          {field("propertyZip", "Property ZIP", "85254")}
+          {select("occupancy", "Occupancy", OCCUPANCY_OPTIONS)}
           {field("currentRate", "Current Rate (%)", "7.25", "number")}
           {field("loanBalance", "Remaining Balance ($)", "350000", "number")}
-          {field("propertyValue", "Property Value ($)", "500000", "number")}
+          {field("propertyValue", "Property Value ($) — today's value, if you know it", "500000", "number")}
           {field("creditScore", "Credit Score", "760", "number")}
           {field("closeDate", "Original Close Date", "", "date")}
         </div>
@@ -1980,6 +2038,7 @@ const AddClient = ({ setClients, setView }) => {
           creditScore:   parseInt(form.creditScore) || 700,
           notes:         form.notes,
           doNotEmail:    form.doNotEmail === true,
+          ...upgradeFields(form),
         }),
       });
       const data = await res.json();
@@ -2035,6 +2094,7 @@ const EditClient = ({ client, setClients, setSelected, setView }) => {
           creditScore:   parseInt(form.creditScore) || 700,
           notes:         form.notes,
           doNotEmail:    form.doNotEmail === true,
+          ...upgradeFields(form),
         }),
       });
       const data = await res.json();
@@ -2345,7 +2405,13 @@ const LENS_META = {
   cash_out:     { label: "Cash-Out",    color: C.green,  bg: C.greenBg },
   arm_to_fixed: { label: "ARM → Fixed", color: C.blue,   bg: "#0b1f3a" },
   term_swap:    { label: "Term Swap",   color: C.purple, bg: "#1a1230" },
+  fha_to_conv:    { label: "FHA → Conventional", color: C.green,  bg: C.greenBg },
+  fha_streamline: { label: "FHA Streamline",         color: C.amber,  bg: C.amberBg },
+  va_irrrl:       { label: "VA IRRRL",               color: C.blue,   bg: "#0b1f3a" },
+  usda_to_conv:   { label: "USDA → Conventional", color: C.purple, bg: "#1a1230" },
+  drop_pmi:       { label: "Drop PMI",               color: C.muted,  bg: C.surfaceHi },
 };
+const NewChip = () => <span style={{ background: C.amberBg, color: C.amber, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>New</span>;
 const PRI_BADGE = {
   high:   { bg: C.redBg,   color: C.red,   label: "High" },
   medium: { bg: C.amberBg, color: C.amber, label: "Medium" },
@@ -2434,6 +2500,29 @@ const SweepsView = ({ rates, clients, setSelected, setView, onClientUpdated }) =
                     </div>
                     <div style={{ ...mono, fontSize: 16, fontWeight: 700, color: m.color, whiteSpace: "nowrap" }}>{fmtHeadline(o)}</div>
                     <span style={{ background: p.bg, color: p.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700 }}>{p.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: "0.75rem" }}>Upgrades ({data.counts.withUpgrade})</h2>
+          {(data.upgrades || []).length === 0 ? (
+            <div style={{ ...card, color: C.muted, marginBottom: "2rem" }}>No upgrades at today&rsquo;s rates.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: "2rem" }}>
+              {data.upgrades.map((r) => {
+                const o = r.bestUpgrade; const m = LENS_META[o.lens] || LENS_META.drop_pmi; const bd = badgeFor(o); const p = PRI_BADGE[bd.tone];
+                return (
+                  <div key={r.clientId} onClick={() => openClient(r.clientId)} style={{ display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 11, padding: "13px 16px", cursor: "pointer", ...ph(isPhone, { flexWrap: "wrap", gap: "8px 10px", padding: "12px" }) }}>
+                    <span style={{ background: m.bg, color: m.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{m.label}</span>
+                    {o.isNew && <NewChip />}
+                    <div style={{ flex: 1, minWidth: 0, ...ph(isPhone, { flex: "1 1 100%", order: 1 }) }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{r.name}{r.upgrades.length > 1 && <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>  +{r.upgrades.length - 1} more</span>}</div>
+                      <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>{o.detail}</div>
+                    </div>
+                    <div style={{ ...mono, fontSize: 16, fontWeight: 700, color: m.color, whiteSpace: "nowrap" }}>{fmtHeadline(o)}</div>
+                    <span style={{ background: p.bg, color: p.color, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700 }}>{bd.label}</span>
                   </div>
                 );
               })}
