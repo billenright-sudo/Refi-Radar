@@ -339,6 +339,35 @@ test("a live FRED resolve is snapshotted", async () => {
   }
 });
 
+test("a live FRED resolve serves (and snapshots) the VA 30-year, series OBMMIVA30YF, as rate_30yr_va", async () => {
+  process.env.FRED_API_KEY = "test-fred-key";
+  delete process.env.ANTHROPIC_API_KEY;
+  const realFetch = global.fetch;
+  const asked = [];
+  global.fetch = async (url, opts) => {
+    if (String(url).startsWith("https://api.stlouisfed.org/")) {
+      const id = new URL(url).searchParams.get("series_id");
+      asked.push(id);
+      return { ok: true, json: async () => ({ observations: [{ date: "2026-10-20", value: id === "OBMMIVA30YF" ? "5.81" : "6.50" }] }) };
+    }
+    return realFetch(url, opts);
+  };
+  const app = await startRatesApp();
+  try {
+    const data = await app.post();
+    assert.equal(data.success, true);
+    assert.ok(asked.includes("OBMMIVA30YF"), asked.join(","));
+    assert.equal(data.rates.rate_30yr_va, 5.81);
+    assert.equal(data.rates.rate_30yr_fha, 6.5);
+    const stored = JSON.parse(db.prepare("SELECT rates FROM rate_snapshots").get().rates);
+    assert.equal(stored.rate_30yr_va, 5.81);
+  } finally {
+    app.close();
+    global.fetch = realFetch;
+    delete process.env.FRED_API_KEY;
+  }
+});
+
 test("the rates cache does not outlive the UTC day, so every served response has a same-day snapshot", async (t) => {
   process.env.FRED_API_KEY = "test-fred-key";
   delete process.env.ANTHROPIC_API_KEY;

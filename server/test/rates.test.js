@@ -35,6 +35,9 @@ test("rates endpoint degrades gracefully when all feeds are down", async () => {
     }
     assert.equal(data.success, false, "reports that it fell back to estimates");
     assert.ok(/estimat/i.test(data.rates.source || ""), "source labels the estimate");
+    // The estimate carries no FHA or VA rate, so the streamline upgrade checks never run on it.
+    assert.equal(data.rates.rate_30yr_fha, undefined);
+    assert.equal(data.rates.rate_30yr_va, undefined);
   } finally {
     server.close();
   }

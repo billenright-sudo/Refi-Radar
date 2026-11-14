@@ -16,6 +16,7 @@ const OBMMI_SERIES = {
   rate_15yr_fixed:    "OBMMIC15YF",             // 15yr conforming
   rate_30yr_jumbo:    "OBMMIJUMBO30YF",         // 30yr jumbo
   rate_30yr_fha:      "OBMMIFHA30YF",           // 30yr FHA
+  rate_30yr_va:       "OBMMIVA30YF",            // 30yr VA
   rate_30yr_top_tier: "OBMMIC30YFLVLE80FGE740", // 30yr, LTV≤80 FICO≥740
 };
 
@@ -129,6 +130,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
         rate_5_1_arm: arm,
         rate_30yr_jumbo: obmmi.rate_30yr_jumbo.value,
         rate_30yr_fha: obmmi.rate_30yr_fha.value,
+        rate_30yr_va: obmmi.rate_30yr_va.value,
         rate_30yr_top_tier: obmmi.rate_30yr_top_tier.value,
         date: obmmi.rate_30yr_fixed.date,
         source: `Optimal Blue lock data (${obmmi.rate_30yr_fixed.date}) · ${armSource}`,
