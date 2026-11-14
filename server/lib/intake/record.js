@@ -20,6 +20,7 @@ const MAX_RATE = 20;
 const MIN_CREDIT_SCORE = 300;
 const MAX_CREDIT_SCORE = 850;
 const MAX_MONTHLY_MI = 5000;
+const MIN_MONTHLY_MI = 10;
 
 // What a failed row is called on the review page. A closing date that is missing or in the future means the loan has not funded;
 // one that is there but cannot be read is said plainly, so the broker fixes the column rather than wait on the loan.
@@ -86,10 +87,11 @@ function zipOf(v) {
   return m ? m[1] : "";
 }
 
-// The monthly mortgage insurance, 0 to 5000, else null.
+// The monthly mortgage insurance: 0 (none), or MIN_MONTHLY_MI to 5000, else null. A figure under $10 is not a monthly amount (most
+// likely the annual rate, such as 0.55), so it is unknown rather than a near-zero insurance.
 function monthlyMiOf(v) {
   const n = parseMoney(v);
-  return n !== null && n >= 0 && n <= MAX_MONTHLY_MI ? n : null;
+  return n !== null && (n === 0 || (n >= MIN_MONTHLY_MI && n <= MAX_MONTHLY_MI)) ? n : null;
 }
 
 const hasText = (v) => typeof v === "string" && v.trim() !== "";

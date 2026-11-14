@@ -144,3 +144,7 @@ test("occupancy, ZIP and monthly MI are cleaned", () => {
   const mi = [["$212.50", 212.5], ["0", 0], ["5000", 5000], ["6000", null], ["-5", null], ["n/a", null], ["", null]];
   for (const [text, value] of mi) assert.equal(rec({ monthlyMi: text }).monthlyMi, value, text);
 });
+test("M12: a monthly MI under $10 is not a monthly amount (a rate such as 0.55, or a stray figure); 0 still means none", () => {
+  const mi = [["0.55", null], ["0.85%", null], ["1", null], ["9.99", null], ["10", 10], ["$10.00", 10], ["0", 0], ["0.00", 0]];
+  for (const [text, value] of mi) assert.equal(rec({ monthlyMi: text }).monthlyMi, value, text);
+});

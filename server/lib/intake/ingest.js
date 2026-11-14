@@ -84,7 +84,10 @@ function loanChanges(client, record, rel, today) {
 
   number("current_rate", record.rate);
   number("property_value", record.propertyValue);
+  // A written value is as of its basis day. So is an unchanged one the broker didn't type: that records the basis of a value
+  // stored before the import knew it (spec 8.12). A hand-kept value keeps the broker's date.
   if ("property_value" in changes) changes.value_as_of = valueAsOf(record, today);
+  else if (sameNumber(client.property_value, record.propertyValue) && !marks.has("property_value")) text("value_as_of", valueAsOf(record, today));
   keptText("loan_program", record.loanProgram);
   optionalNumber("monthly_mi", record.monthlyMi);
   optionalNumber("original_amount", record.originalAmount);
@@ -103,7 +106,9 @@ function loanChanges(client, record, rel, today) {
   if (record.closeDate) text("close_date", record.closeDate);
   if (record.creditScore !== null) {
     number("credit_score", record.creditScore);
-    if (client.credit_score_known !== 1) changes.credit_score_known = 1;
+    // Known once the stored score is the file's (written now, or already the same); a held hand-kept score says nothing of the kind.
+    const isFiles = "credit_score" in changes || sameNumber(client.credit_score, record.creditScore);
+    if (isFiles && client.credit_score_known !== 1) changes.credit_score_known = 1;
   }
   // A refinance replaces the loan, number and all: an unnumbered new loan clears the old number, which belongs to the loan it
   // paid off (kept, it would match that old loan as "same" on the next import and roll the client back to it). The same loan
