@@ -1277,7 +1277,9 @@ test("Upgrades: upgradesTool lists only the caller's clients with an upgrade; ki
   const u = loR.data.clients[0].upgrades;
   assert.ok(u.length >= 1);
   for (const l of u) {
-    assert.deepStrictEqual(Object.keys(l).sort(), ["detail", "headline", "isNew", "label", "lens", "unit"], "no gaps, priority or today block");
+    // the lens's numbers (M4), and no gaps, priority, path or today block
+    assert.deepStrictEqual(Object.keys(l).sort(),
+      ["breakEven", "currentRate", "detail", "effRate", "headline", "isNew", "label", "lens", "ltv", "monthlySavings", "unit"]);
     assert.equal(typeof l.headline, "number");
   }
   assert.equal(u[0].lens, "va_irrrl");
@@ -1362,4 +1364,55 @@ test("Upgrades: TOOL_SCHEMA describes upgradesTool with an optional kind", () =>
   const t = TOOL_SCHEMA.find((x) => x.name === "upgradesTool");
   assert.deepStrictEqual(t.input_schema, { type: "object", properties: { kind: { type: "string", enum: ["drop_insurance", "streamline"] } }, additionalProperties: false });
   assert.match(t.description, /qualify for an upgrade/);
+});
+
+// ── final review fixes ───────────────────────────────────────────────────────
+
+test("I5: runSweepTool prices the upgrades from the latest FRED snapshot (ctx rates without VA still get the IRRRL); 11 days old: none", () => {
+  db.prepare("DELETE FROM client_upgrades").run();
+  db.prepare("DELETE FROM rate_snapshots").run();
+  recordSnapshot(UP_SET, UP_SET.date, "fred");
+  const org = addOrg("Sweep Rates");
+  const broker = addUser(org, "broker", "broker@sweeprates.co");
+  const vee = addUpgradeClient(org, broker, "Vee Sweep");
+  const pmi = addUpgradeClient(org, broker, "Pam Sweep", { program: "conventional", mi: 95, balance: 238000 });
+  db.prepare("UPDATE clients SET balance_as_of = ?, original_amount = 285000, original_value = 300000 WHERE id = ?")
+    .run(new Date().toISOString().slice(0, 10), pmi);
+  const ctx = upCtx(org, broker, "broker");   // ctx.rates = LIVE: no VA rate
+  const lensesOf = (r, id) => (r.data.upgrades.find((u) => u.clientId === id) || { upgrades: [] }).upgrades.map((l) => [l.lens, l.effRate]);
+  const fresh = runSweepTool({}, ctx);
+  assert.deepStrictEqual(lensesOf(fresh, vee), [["va_irrrl", 5.8]]);
+  assert.deepStrictEqual(lensesOf(fresh, pmi), [["drop_pmi", undefined]]);
+  const stale = runSweepTool({}, { ...ctx, now: Date.parse("2026-11-21T15:00:00Z") });   // the 2026-11-10 snapshot is 11 days old
+  assert.deepStrictEqual(lensesOf(stale, vee), []);
+  assert.deepStrictEqual(lensesOf(stale, pmi), [["drop_pmi", undefined]]);
+  assert.deepStrictEqual(fresh.data.opportunities, stale.data.opportunities, "the rate lenses still price from ctx.rates");
+});
+
+test("M4: the model's upgrade lens carries the lens's numbers where present", () => {
+  db.prepare("DELETE FROM client_upgrades").run();
+  recordSnapshot(UP_SET, UP_SET.date, "fred");
+  const org = addOrg("Lens Numbers");
+  const broker = addUser(org, "broker", "broker@lensnumbers.co");
+  addUpgradeClient(org, broker, "Vee Numbers");
+  const [l] = upgradesTool({}, upCtx(org, broker, "broker")).data.clients[0].upgrades;
+  assert.deepStrictEqual(Object.keys(l).sort(),
+    ["breakEven", "currentRate", "detail", "effRate", "headline", "isNew", "label", "lens", "ltv", "monthlySavings", "unit"]);
+  assert.equal(l.lens, "va_irrrl");
+  assert.equal(l.effRate, 5.8);
+  assert.equal(l.currentRate, 7.5);
+  assert.equal(l.monthlySavings, l.headline);
+  for (const k of ["breakEven", "ltv"]) assert.equal(typeof l[k], "number", k);
+});
+
+test("M7: Charlie's client shape sends no credit score when it is not known", () => {
+  const org = addOrg("Score Known");
+  const broker = addUser(org, "broker", "broker@scoreknown.co");
+  const unknown = addClientRow(org, broker, { name: "Una Unknown", loanType: "30yr_fixed", currentRate: 7, loanBalance: 300000, propertyValue: 400000, creditScore: 700 });
+  const known = addClientRow(org, broker, { name: "Kay Known", loanType: "30yr_fixed", currentRate: 7, loanBalance: 300000, propertyValue: 400000, creditScore: 700 });
+  db.prepare("UPDATE clients SET credit_score_known = 0 WHERE id = ?").run(unknown);
+  db.prepare("UPDATE clients SET credit_score_known = 1 WHERE id = ?").run(known);
+  const ctx = { user: user(broker, "broker", org), rates: LIVE, db };
+  assert.strictEqual(findClient({ query: "una unknown" }, ctx).data.matches[0].creditScore, null);
+  assert.strictEqual(findClient({ query: "kay known" }, ctx).data.matches[0].creditScore, 700);
 });

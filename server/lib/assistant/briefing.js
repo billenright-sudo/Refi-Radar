@@ -167,9 +167,10 @@ function marketSection({ ctx, db, userId, localDate }) {
   return { line, source: market.source, strip };
 }
 
-// The sweep of `rows` at the briefing's own clock, with the label runSweepTool gives the same sweep.
-function sweepOf(rows, rates, nowMs) {
-  const result = refi.runSweep(rows, rates, new Date(nowMs));
+// The sweep of `rows` at the briefing's own clock, with the label runSweepTool gives the same sweep. `upgradeRates` (when given) is
+// what its upgrade checks price from (refi.sweepClient).
+function sweepOf(rows, rates, nowMs, upgradeRates) {
+  const result = refi.runSweep(rows, rates, new Date(nowMs), { upgradeRates });
   const source = !isEstimated(rates) ? "sweep engine" : rates.date ? `sweep engine (estimated rates ${rates.date})` : "sweep engine (estimated rates)";
   return { result, source };
 }
@@ -275,9 +276,10 @@ function upgradePicks({ db, localDate, nowMs, speakableRows, upgradeCheck, follo
   const byClient = new Map();
   for (const q of upgradeAlerts.newlyQualified(db, rows, views, localDate)) {
     const lens = views.get(q.clientId).lenses.find((l) => l.lens === q.lens);
-    const phrase = lens && opportunityPhrase(lens);
+    const name = speakable(q.name);
+    const phrase = lens && opportunityPhrase(lens, name);
     if (!phrase) continue;
-    if (!byClient.has(q.clientId)) byClient.set(q.clientId, { name: speakable(q.name), lenses: [] });
+    if (!byClient.has(q.clientId)) byClient.set(q.clientId, { name, lenses: [] });
     byClient.get(q.clientId).lenses.push({ lens, phrase });
   }
   const ranked = [...byClient].map(([clientId, c]) => ({ clientId, name: c.name, lenses: c.lenses.sort((a, b) => cmpLens(a.lens, b.lens)) }))
@@ -425,6 +427,10 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   // the org's upgrade alerts, recorded on the latest FRED observation. A check that throws leaves the "now" lines out and nothing else changes.
   let upgradeCheck = null;
   try { upgradeCheck = upgradeAlerts.checkUpgrades(db, user.org_id, nowMs); } catch (err) { skip("upgrades", err); }
+  // the rates the sweep's upgrades price from, as on every upgrade surface: the latest FRED snapshot's (none when it is more than 10
+  // days old). With no FRED snapshot stored at all, the briefing's own rates still price them, as before.
+  let upgradeRates = null;
+  try { upgradeRates = upgradeCheck ? upgradeCheck.rates : upgradeAlerts.upgradeRates(db, nowMs, rates); } catch (err) { skip("upgrades", err); }
 
   // the user's OWN book and its sweep (for a broker too: the call list is never the team's)
   let ownRows = [];
@@ -433,7 +439,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   try {
     ownRows = db.prepare("SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC").all(userId);
     if (hasRates(rates)) {
-      const swept = sweepOf(ownRows, rates, nowMs);
+      const swept = sweepOf(ownRows, rates, nowMs, upgradeRates);
       sweep = swept.result;
       sweepSource = swept.source;
       strip.opportunities = sweep.counts.withOpportunity;

@@ -169,3 +169,34 @@ test("norm keeps null monthly MI as null", () => {
   assert.strictEqual(refi.norm({ credit_score_known: 0 }).creditScoreKnown, false);
   assert.strictEqual(refi.norm({ creditScoreKnown: true }).creditScoreKnown, true);
 });
+
+test("I5: opts.upgradeRates prices the upgrades (null: none but Drop PMI); the four rate lenses keep the rates given", () => {
+  const c = fhaClient({ currentRate: 7.75, propertyZip: "" , closeDate: "2023-09-15", balanceAsOf: "2023-09-15", valueAsOf: "2023-09-15" });
+  const { rate_30yr_fha, ...noFha } = UP_RATES;
+  assert.deepStrictEqual(refi.sweepClient(c, noFha, UP_NOW, { index: UP_INDEX }).upgrades, [], "the given rates have no FHA rate");
+  const s = refi.sweepClient(c, noFha, UP_NOW, { index: UP_INDEX, upgradeRates: UP_RATES });
+  assert.deepStrictEqual(s.upgrades.map((l) => [l.lens, l.effRate]), [["fha_streamline", 5.9]]);
+  assert.deepStrictEqual(refi.sweepClient(c, UP_RATES, UP_NOW, { index: UP_INDEX, upgradeRates: null }).upgrades, []);
+  // a conventional client's rate lens prices from the given rates, not the upgrade rates
+  const chen = { id: 1, name: "Chen", loan_type: "30yr_fixed", current_rate: 7.85, loan_balance: 485000, property_value: 650000, credit_score: 760 };
+  const cheap = { ...UP_RATES, rate_30yr_top_tier: 4.0 };
+  assert.strictEqual(refi.sweepClient(chen, RATES, UP_NOW, { upgradeRates: cheap }).best.effRate, 6.46);
+  // runSweep passes it through
+  const run = refi.runSweep([c], noFha, UP_NOW, { index: UP_INDEX, upgradeRates: UP_RATES });
+  assert.deepStrictEqual(run.upgrades.map((r) => r.bestUpgrade.lens), ["fha_streamline"]);
+});
+
+test("M3: upgrade checks that throw leave the sweep row with no upgrades and no gaps, logging only the error name", () => {
+  const U = require("../lib/upgrades");
+  const real = U.upgradesFor;
+  const realErr = console.error;
+  const logged = [];
+  U.upgradesFor = () => { throw new TypeError("secret client name"); };
+  console.error = (...a) => logged.push(a.join(" "));
+  try {
+    const s = refi.sweepClient(fhaClient({ propertyValue: 500000, currentRate: 7.9 }), UP_RATES, UP_NOW, { index: UP_INDEX });
+    assert.deepStrictEqual([s.upgrades, s.bestUpgrade, s.upgradeGaps], [[], null, []]);
+    assert.deepStrictEqual(s.opportunities.map((o) => o.lens), ["cash_out"], "the rate lenses still run");
+  } finally { U.upgradesFor = real; console.error = realErr; }
+  assert.deepStrictEqual(logged, ["upgrade checks skipped: TypeError"]);
+});

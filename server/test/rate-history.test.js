@@ -368,6 +368,42 @@ test("a live FRED resolve serves (and snapshots) the VA 30-year, series OBMMIVA3
   }
 });
 
+test("I6: only the VA series failing still serves (and snapshots) every other FRED rate, with no rate_30yr_va", async () => {
+  process.env.FRED_API_KEY = "test-fred-key";
+  delete process.env.ANTHROPIC_API_KEY;
+  const realFetch = global.fetch;
+  const realError = console.error;
+  const logged = [];
+  global.fetch = async (url, opts) => {
+    if (String(url).startsWith("https://api.stlouisfed.org/")) {
+      const id = new URL(url).searchParams.get("series_id");
+      if (id === "OBMMIVA30YF") return { ok: false, status: 500, json: async () => ({}) };
+      return { ok: true, json: async () => ({ observations: [{ date: "2026-10-20", value: id === "OBMMIFHA30YF" ? "6.10" : "6.50" }] }) };
+    }
+    return realFetch(url, opts);
+  };
+  console.error = (...a) => logged.push(a.join(" "));
+  const app = await startRatesApp();
+  try {
+    const data = await app.post();
+    assert.equal(data.success, true, "the FRED path still answers");
+    assert.match(data.rates.source, /^Optimal Blue lock data \(2026-10-20\)/);
+    assert.equal(data.rates.rate_30yr_fixed, 6.5);
+    assert.equal(data.rates.rate_30yr_fha, 6.1);
+    assert.equal("rate_30yr_va" in data.rates, false);
+    const stored = JSON.parse(db.prepare("SELECT rates FROM rate_snapshots").get().rates);
+    assert.equal(db.prepare("SELECT provider FROM rate_snapshots").get().provider, "fred");
+    assert.equal("rate_30yr_va" in stored, false);
+    assert.equal(stored.rate_30yr_fha, 6.1);
+    assert.ok(logged.some((l) => l.includes("OBMMIVA30YF")), logged.join(" | "));
+  } finally {
+    app.close();
+    global.fetch = realFetch;
+    console.error = realError;
+    delete process.env.FRED_API_KEY;
+  }
+});
+
 test("the web-search fallback passes only the keys it asks for: a model-made FHA or VA rate never gets through", async (t) => {
   delete process.env.FRED_API_KEY; // FRED is skipped, so the full rate set comes from the web-search fallback
   process.env.ANTHROPIC_API_KEY = "test-anthropic-key";

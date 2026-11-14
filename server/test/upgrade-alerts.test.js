@@ -161,3 +161,55 @@ test("newlyQualified skips a handled alert", () => {
   const rows = rowsOf(id);
   assert.deepStrictEqual(A.newlyQualified(db, rows, A.upgradeViewsFor(db, rows, check, NOW), "2026-11-13"), []);
 });
+
+// ── I5: one rate set for every upgrade surface, and no refi upgrade on a snapshot more than 10 days old ─────────────────────
+// A conventional client whose typed PMI can be dropped (balance under 80% of the original value): Drop PMI prices nothing.
+function addPmi(name = "Pam Sample") {
+  return Number(db.prepare(`
+    INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, credit_score_known,
+      loan_program, monthly_mi, close_date, balance_as_of, original_amount, original_value, property_zip, occupancy)
+    VALUES (?, ?, ?, '30yr_fixed', 6.5, 238000, 300000, 700, 0, 'conventional', 95, '2022-03-15', '2026-11-13', 285000, 300000, '', 'primary')
+  `).run(orgId, userId, name).lastInsertRowid);
+}
+
+test("ratesForUpgrades: the snapshot's rates up to 10 days old, else (or without one) null", () => {
+  const snap = (obsDate) => ({ rates: live(obsDate), obsDate });
+  assert.deepStrictEqual(A.ratesForUpgrades(snap("2026-11-03"), "2026-11-13"), live("2026-11-03"));   // 10 days
+  assert.deepStrictEqual(A.ratesForUpgrades(snap("2026-11-13"), "2026-11-13"), live("2026-11-13"));
+  assert.equal(A.ratesForUpgrades(snap("2026-11-02"), "2026-11-13"), null);                           // 11 days
+  assert.equal(A.ratesForUpgrades(null, "2026-11-13"), null);
+  assert.equal(A.ratesForUpgrades(snap("garbage"), "2026-11-13"), null);
+});
+
+test("upgradeRates / safeUpgradeRates: the latest FRED snapshot's rates on the clock's UTC day; a failure logs its name only", () => {
+  assert.equal(A.upgradeRates(db, NOW), null, "no snapshot");
+  assert.equal(A.upgradeRates(db, NOW, "fallback"), "fallback", "no snapshot: the caller's fallback");
+  snapshot("2026-11-02");
+  assert.equal(A.upgradeRates(db, NOW, "fallback"), null, "11 days old: none, even with a fallback");
+  snapshot("2026-11-03");
+  assert.deepStrictEqual(A.safeUpgradeRates(db, NOW), live("2026-11-03"));
+  const seen = [];
+  const saved = console.error;
+  console.error = (...a) => seen.push(a.join(" "));
+  try {
+    assert.equal(A.safeUpgradeRates({ prepare() { throw new TypeError("secret client name"); } }, NOW), null);
+  } finally { console.error = saved; }
+  assert.deepStrictEqual(seen, ["upgrade rates skipped: TypeError"]);
+});
+
+test("a snapshot 11 days old: no refi upgrade is checked (its alert re-arms), Drop PMI still qualifies", () => {
+  const va = addVa();
+  const pmi = addPmi();
+  snapshot("2026-11-03");   // 10 days: the IRRRL qualifies
+  let check = A.checkUpgrades(db, orgId, NOW);
+  assert.deepStrictEqual(check.results.get(va).lenses.map((l) => l.lens), ["va_irrrl"]);
+  assert.deepStrictEqual(alerts().map((a) => a.lens).sort(), ["drop_pmi", "va_irrrl"]);
+  check = A.checkUpgrades(db, orgId, NOW + 86400_000);   // the next day the same snapshot is 11 days old
+  assert.equal(check.rates, null);
+  assert.deepStrictEqual(check.results.get(va).lenses, []);
+  assert.deepStrictEqual(check.results.get(pmi).lenses.map((l) => l.lens), ["drop_pmi"]);
+  assert.deepStrictEqual(alerts().map((a) => a.lens), ["drop_pmi"]);
+  const views = A.upgradeViewsFor(db, rowsOf(va, pmi), check, NOW + 86400_000);
+  assert.deepStrictEqual(views.get(va).lenses, []);
+  assert.deepStrictEqual(views.get(pmi).lenses.map((l) => l.lens), ["drop_pmi"]);
+});

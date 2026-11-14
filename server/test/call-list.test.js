@@ -586,6 +586,19 @@ test("upgrade phrases, verbatim, with a rounded and grouped figure", () => {
   }
 });
 
+test("M1: a couple looks like... reads \"look like\" (\" & \" or \" and \", any case); one person keeps \"looks like\"", () => {
+  const say = (name, extra = {}) => pickCallList({ sweep: upSweep([upRow(1, name, null, upgrade("va_irrrl", "high", 143))]), ownClientIds: [1], carriedIds: [], excludeIds: [], ...extra })[0].reason;
+  assert.equal(say("Robert & Linda Chen"), "Robert & Linda Chen look like they could do a VA streamline and save about $143 a month");
+  assert.equal(say("Robert and Linda Chen"), "Robert and Linda Chen look like they could do a VA streamline and save about $143 a month");
+  assert.equal(say("ROBERT AND LINDA CHEN"), "ROBERT AND LINDA CHEN look like they could do a VA streamline and save about $143 a month");
+  assert.equal(say("Sandy Anderson"), "Sandy Anderson looks like they could do a VA streamline and save about $143 a month");
+  assert.equal(say("Robert & Linda Chen", { carriedIds: [1] }),
+    "Robert & Linda Chen, who you put on today's list, look like they could do a VA streamline and save about $143 a month");
+  // the other phrases have no verb to agree
+  const rt = pickCallList({ sweep: upSweep([upRow(1, "Robert & Linda Chen", rateTerm("high", 300), null)]), ownClientIds: [1], carriedIds: [], excludeIds: [] })[0];
+  assert.equal(rt.reason, "Robert & Linda Chen could save about $300 a month");
+});
+
 test("an upgrade with no usable figure says nothing", () => {
   const sweep = upSweep([upRow(1, "Una", null, upgrade("fha_streamline", "high", 0))]);
   assert.deepStrictEqual(pickCallList({ sweep, ownClientIds: [1], carriedIds: [], excludeIds: [] }), []);

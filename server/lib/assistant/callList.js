@@ -29,14 +29,16 @@ const { PRIORITY_RANK, impact } = require("../refi");
 
 const DEFAULT_LIMIT = 3;
 // Lenses that read as "saves $X a month". cash_out is the other kind; term_swap is neither.
-// The upgrade lenses (spec 4.7) read the same way, so they share the savings kind.
+// The upgrade lenses (spec 4.7) read the same way, so they share the savings kind. `looks` agrees with the name ("look" for a couple).
 const UPGRADE_PHRASES = {
-  fha_to_conv: (x) => `looks like they could leave FHA for a conventional loan and save about $${x} a month`,
-  usda_to_conv: (x) => `looks like they could leave USDA for a conventional loan and save about $${x} a month`,
-  fha_streamline: (x) => `looks like they could do an FHA streamline and save about $${x} a month`,
-  va_irrrl: (x) => `looks like they could do a VA streamline and save about $${x} a month`,
-  drop_pmi: (x) => `looks like they could ask their lender to drop about $${x} a month of PMI`,
+  fha_to_conv: (x, looks) => `${looks} like they could leave FHA for a conventional loan and save about $${x} a month`,
+  usda_to_conv: (x, looks) => `${looks} like they could leave USDA for a conventional loan and save about $${x} a month`,
+  fha_streamline: (x, looks) => `${looks} like they could do an FHA streamline and save about $${x} a month`,
+  va_irrrl: (x, looks) => `${looks} like they could do a VA streamline and save about $${x} a month`,
+  drop_pmi: (x, looks) => `${looks} like they could ask their lender to drop about $${x} a month of PMI`,
 };
+// "Robert & Linda Chen" and "Robert and Linda Chen" are two people: they "look like".
+const isCouple = (name) => / & | and /i.test(String(name == null ? "" : name));
 const SAVINGS_LENSES = new Set(["rate_term", "arm_to_fixed", ...Object.keys(UPGRADE_PHRASES)]);
 const KIND_SAVINGS = 0;
 const KIND_CASH = 1;
@@ -56,9 +58,9 @@ function paymentChange(change) {
   return "payment about the same";
 }
 
-// What the opportunity says about the client, written to follow the name ("<name> could save ..."). Null when the sweep row
-// lacks the figure the sentence is built on, so nothing is ever said without its number.
-function opportunityPhrase(best) {
+// What the opportunity says about the client, written to follow the name ("<name> could save ..."), its verb agreeing with `name`.
+// Null when the sweep row lacks the figure the sentence is built on, so nothing is ever said without its number.
+function opportunityPhrase(best, name) {
   if (!best || typeof best !== "object") return null;
   switch (best.lens) {
     case "rate_term": {
@@ -87,7 +89,7 @@ function opportunityPhrase(best) {
     default: {
       const say = Object.prototype.hasOwnProperty.call(UPGRADE_PHRASES, best.lens) ? UPGRADE_PHRASES[best.lens] : null;
       const monthly = Math.round(best.headline);
-      return say && monthly > 0 ? say(money(monthly)) : null;
+      return say && monthly > 0 ? say(money(monthly), isCouple(name) ? "look" : "looks") : null;
     }
   }
 }
@@ -114,9 +116,9 @@ function describe(row) {
   if (!name) return null;
   // The client's lead is whichever of the best opportunity and the best upgrade ranks higher (the opportunity on a tie); one with
   // nothing to say is passed over for the other.
-  const leads = [row.best, row.bestUpgrade].filter((l) => opportunityPhrase(l));
+  const leads = [row.best, row.bestUpgrade].filter((l) => opportunityPhrase(l, name));
   const lead = leads.length === 2 && cmpLens(leads[0], leads[1]) > 0 ? leads[1] : leads[0] || null;
-  const phrase = lead ? opportunityPhrase(lead) : null;
+  const phrase = lead ? opportunityPhrase(lead, name) : null;
   const checkIn = checkInPhrase(row.checkIn);
   if (!phrase && !checkIn) return null;
   return { clientId: row.clientId, name, best: lead, phrase, checkIn, monthsSince: checkIn ? Math.floor(row.checkIn.monthsSince) : 0 };

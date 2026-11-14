@@ -134,6 +134,8 @@ test("a failing isNew marking never fails the sweep: the rows go out unmarked, t
     addBroker(db, { email: "cy@test.co", firstName: "Cy", lastName: "B", orgName: "Charlie Org" });
     assert.equal((await s("POST", "/api/auth/login", { email: "cy@test.co", password: "password123" })).status, 200);
     const rates = { ...RATES, rate_30yr_fha: 6.1, rate_30yr_va: 5.8 };
+    const obs = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);   // the upgrades price from the latest FRED snapshot
+    require("../lib/rateHistory").recordSnapshot({ ...rates, date: obs, source: `Optimal Blue lock data (${obs})` }, obs, "fred");
     const made = await s("POST", "/api/clients", {
       name: "Wes Sample", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 400000, creditScore: 720,
       loanProgram: "va", closeDate: "2025-06-15", originalAmount: 300000, originalValue: 400000, propertyZip: "85016", occupancy: "primary",
@@ -152,6 +154,83 @@ test("a failing isNew marking never fails the sweep: the rows go out unmarked, t
   } finally {
     upgradeAlerts.newAlertRows = real;
     console.error = savedErr;
+    server.close();
+  }
+});
+
+// ── I5: the sweep's upgrades price from the latest FRED snapshot, and a snapshot more than 10 days old prices none ──────────
+const dayAgo = (n) => new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
+const fredSnapshot = (obs, rates) => require("../lib/rateHistory")
+  .recordSnapshot({ ...rates, date: obs, source: `Optimal Blue lock data (${obs})` }, obs, "fred");
+async function upgradeOrg(email, orgName) {
+  const server = app().listen(0);
+  await new Promise((r) => server.once("listening", r));
+  const s = session(`http://localhost:${server.address().port}`);
+  addBroker(db, { email, firstName: "Up", lastName: "B", orgName });
+  assert.equal((await s("POST", "/api/auth/login", { email, password: "password123" })).status, 200);
+  return { s, server };
+}
+
+test("I5: a sweep whose body rates lack FHA still shows the streamline, priced on the snapshot; the rate lenses use the body's rates", async () => {
+  db.prepare("DELETE FROM rate_snapshots").run();
+  fredSnapshot(dayAgo(1), { ...RATES, rate_30yr_top_tier: 4.0, rate_30yr_fha: 5.9, rate_30yr_va: 5.8 });
+  const { s, server } = await upgradeOrg("fha@test.co", "Foxtrot");
+  try {
+    const made = await s("POST", "/api/clients", {
+      name: "Fay Sample", loanType: "30yr_fixed", currentRate: 7.75, loanBalance: 289500, propertyValue: 300000, creditScore: 720,
+      loanProgram: "fha", closeDate: "2023-09-15", originalAmount: 289500, originalValue: 300000, propertyZip: "", occupancy: "primary",
+    });
+    assert.equal(made.status, 201, JSON.stringify(made.data));
+    db.prepare("UPDATE clients SET balance_as_of = '2023-09-15', value_as_of = '2023-09-15' WHERE id = ?").run(made.data.client.id);
+    await s("POST", "/api/clients", { name: "Chen Conv", loanType: "30yr_fixed", currentRate: 7.85, loanBalance: 485000, propertyValue: 650000, creditScore: 760 });
+    const r = await s("POST", "/api/sweeps", { rates: RATES });   // no FHA or VA rate in the body
+    assert.equal(r.status, 200);
+    const row = r.data.upgrades.find((u) => u.clientId === made.data.client.id);
+    assert.ok(row, JSON.stringify(r.data.upgrades));
+    assert.deepStrictEqual(row.upgrades.map((l) => [l.lens, l.effRate]), [["fha_streamline", 5.9]]);
+    // a body FHA rate of its own changes nothing
+    const other = await s("POST", "/api/sweeps", { rates: { ...RATES, rate_30yr_fha: 4.5 } });
+    assert.equal(other.data.upgrades.find((u) => u.clientId === made.data.client.id).bestUpgrade.effRate, 5.9);
+    // the conventional rate lens prices from the body's top tier (6.461 → 6.46), not the snapshot's 4.0
+    assert.equal(r.data.opportunities.find((o) => o.name === "Chen Conv").best.effRate, 6.46);
+  } finally {
+    server.close();
+  }
+});
+
+test("I5: a snapshot 11 days old: no refi upgrades in the sweep or on the client views, Drop PMI still shows; 10 days old they come back", async () => {
+  db.prepare("DELETE FROM rate_snapshots").run();
+  const upRates = { ...RATES, rate_30yr_fha: 6.1, rate_30yr_va: 5.8 };
+  fredSnapshot(dayAgo(11), upRates);
+  const { s, server } = await upgradeOrg("stale@test.co", "Stale Org");
+  try {
+    const va = await s("POST", "/api/clients", {
+      name: "Vee Stale", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 400000, creditScore: 720,
+      loanProgram: "va", closeDate: "2025-06-15", originalAmount: 300000, originalValue: 400000, propertyZip: "85016", occupancy: "primary",
+    });
+    db.prepare("UPDATE clients SET balance_as_of = '2025-06-15' WHERE id = ?").run(va.data.client.id);
+    const pmi = await s("POST", "/api/clients", {
+      name: "Pam Stale", loanType: "30yr_fixed", currentRate: 6.5, loanBalance: 238000, propertyValue: 300000,
+      loanProgram: "conventional", monthlyMi: 95, closeDate: "2022-03-15", originalAmount: 285000, originalValue: 300000, occupancy: "primary",
+    });
+    const lensesOf = (rows, id) => (rows.find((u) => u.clientId === id) || { upgrades: [] }).upgrades.map((l) => l.lens);
+    const viewOf = (clients, id) => clients.find((c) => c.id === id).upgrades.lenses.map((l) => l.lens);
+
+    let r = await s("POST", "/api/sweeps", { rates: upRates });
+    assert.equal(r.status, 200);
+    assert.deepStrictEqual(lensesOf(r.data.upgrades, va.data.client.id), []);
+    assert.deepStrictEqual(lensesOf(r.data.upgrades, pmi.data.client.id), ["drop_pmi"]);
+    assert.equal(r.data.byLens.va_irrrl, undefined);
+    let list = (await s("GET", "/api/clients")).data.clients;
+    assert.deepStrictEqual(viewOf(list, va.data.client.id), []);
+    assert.deepStrictEqual(viewOf(list, pmi.data.client.id), ["drop_pmi"]);
+
+    fredSnapshot(dayAgo(10), upRates);
+    r = await s("POST", "/api/sweeps", { rates: upRates });
+    assert.deepStrictEqual(lensesOf(r.data.upgrades, va.data.client.id), ["va_irrrl"]);
+    list = (await s("GET", "/api/clients")).data.clients;
+    assert.deepStrictEqual(viewOf(list, va.data.client.id), ["va_irrrl"]);
+  } finally {
     server.close();
   }
 });

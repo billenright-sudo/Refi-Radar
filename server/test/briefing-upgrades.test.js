@@ -123,3 +123,27 @@ test("no FRED snapshot: no 'now', the sweep still names the upgrade", async () =
   assert.ok(!r.reply.includes(" now looks like"), r.reply);
   assert.match(callListOf(r.reply), /^Today's call: Vee Sample looks like they could do a VA streamline/, r.reply);
 });
+
+test("M1: a couple newly qualified reads 'now look like'", async () => {
+  const set = fred();
+  addVa("Robert & Linda Chen");
+  const r = await brief(annId, { set, localDate: DAY1 });
+  assert.match(callListOf(r.reply),
+    /^Today's call: Robert & Linda Chen now look like they could do a VA streamline and save about \$[\d,]+ a month\.$/, r.reply);
+});
+
+test("I5: the sweep's upgrades price from the latest FRED snapshot: rates without VA still name the IRRRL; 11 days old, none", async () => {
+  fred();
+  const vee = addVa("Vee Sample");
+  // announced on an earlier day, so only the sweep can name her (no "now")
+  UA.checkUpgrades(db, orgId, at(DAY1, 8));
+  db.prepare("UPDATE client_upgrades SET announced_on = '2026-11-01' WHERE client_id = ?").run(vee);
+  const { rate_30yr_va, ...noVa } = SET;
+  const r = await brief(annId, { set: noVa, localDate: DAY1 });
+  assert.match(callListOf(r.reply), /^Today's call: Vee Sample looks like they could do a VA streamline/, r.reply);
+
+  for (const table of ["charlie_recommendations", "user_briefing_state", "client_upgrades", "rate_snapshots"]) db.prepare(`DELETE FROM ${table}`).run();
+  fred({ ...SET, date: "2026-10-31", source: "Optimal Blue lock data (2026-10-31)" });   // 11 days before DAY1
+  const stale = await brief(annId, { set: SET, localDate: DAY1 });
+  assert.ok(!stale.reply.includes("VA streamline"), stale.reply);
+});

@@ -8,13 +8,30 @@ const targets = require("./targets");
 // first_seen_at and contact_log.at are both SQLite UTC text, so "reached at or after" is a plain string compare.
 const sqliteUtc = (ms) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
 const utcDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+const DAY_MS = 86400000;
 
-// Record and re-arm alert rows for every org client with a loan program, on the latest FRED snapshot.
-// -> { rates, obsDate, today, results: Map<clientId, UpgradesResult> }, or null without a FRED snapshot. Writes only differences.
+// Every upgrade surface (the client views, Sweeps, Charlie) prices from one rate set: the latest FRED snapshot's. One whose observation
+// is more than MAX_RATES_AGE_DAYS before today prices nothing (null rates: only Drop PMI, which needs none, runs).
+const MAX_RATES_AGE_DAYS = 10;
+function ratesForUpgrades(snap, today) {
+  if (!snap || !snap.rates) return null;
+  const age = (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${snap.obsDate}T00:00:00Z`)) / DAY_MS;
+  return age <= MAX_RATES_AGE_DAYS ? snap.rates : null;   // an unreadable date (NaN) is no rates too
+}
+// The upgrade rates on the UTC day of `nowMs`; `noSnapshot` when no FRED snapshot is stored at all (null unless the caller says).
+function upgradeRates(db, nowMs = Date.now(), noSnapshot = null) {
+  const snap = targets.latestRealSnapshot(db);
+  return snap ? ratesForUpgrades(snap, utcDay(nowMs)) : noSnapshot;
+}
+
+// Record and re-arm alert rows for every org client with a loan program, on the latest FRED snapshot (its rates per ratesForUpgrades).
+// -> { rates, obsDate, today, results: Map<clientId, UpgradesResult> }, or null without a FRED snapshot. `rates` is what the checks
+// priced from (null for a stale snapshot). Writes only differences.
 function checkUpgrades(db, orgId, nowMs = Date.now()) {
   const snap = targets.latestRealSnapshot(db);
   if (!snap) return null;
   const today = utcDay(nowMs);
+  const rates = ratesForUpgrades(snap, today);
   const rows = db.prepare("SELECT * FROM clients WHERE org_id = ? AND loan_program IS NOT NULL AND loan_program != ''").all(orgId);
   const stored = db.prepare(
     "SELECT u.client_id, u.lens FROM client_upgrades u JOIN clients c ON c.id = u.client_id WHERE c.org_id = ?"
@@ -25,7 +42,7 @@ function checkUpgrades(db, orgId, nowMs = Date.now()) {
   const nowKeys = new Set();
   const add = [];
   for (const row of rows) {
-    const result = upgradesFor(refi.norm(row), snap.rates, today);
+    const result = upgradesFor(refi.norm(row), rates, today);
     results.set(row.id, result);
     for (const l of result.lenses) {
       const key = `${row.id}:${l.lens}`;
@@ -43,11 +60,21 @@ function checkUpgrades(db, orgId, nowMs = Date.now()) {
       for (const r of drop) del.run(r.client_id, r.lens);
     })();
   }
-  return { ...snap, today, results };
+  return { ...snap, rates, today, results };
 }
 
 // checkUpgrades for a read that has to answer anyway: a failure is logged by the error's name only, and the read goes on without it.
 const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error");
+
+// upgradeRates for a read that has to answer anyway: a failure is logged by name and no rates (null).
+function safeUpgradeRates(db, nowMs = Date.now(), noSnapshot = null) {
+  try {
+    return upgradeRates(db, nowMs, noSnapshot);
+  } catch (err) {
+    console.error("upgrade rates skipped:", errName(err));
+    return null;
+  }
+}
 
 function safeCheckUpgrades(db, orgId, nowMs = Date.now()) {
   try {
@@ -146,4 +173,6 @@ function announceUpgrades(db, pairs, localDate) {
   db.transaction(() => { for (const p of pairs) upd.run(localDate, p.clientId, p.lens); })();
 }
 
-module.exports = { checkUpgrades, safeCheckUpgrades, safeUpgradeViewsFor, markSweepUpgrades, newAlertRows, markNew, upgradeViewsFor, newlyQualified, announceUpgrades };
+module.exports = {
+  MAX_RATES_AGE_DAYS, ratesForUpgrades, upgradeRates, safeUpgradeRates,
+  checkUpgrades, safeCheckUpgrades, safeUpgradeViewsFor, markSweepUpgrades, newAlertRows, markNew, upgradeViewsFor, newlyQualified, announceUpgrades };

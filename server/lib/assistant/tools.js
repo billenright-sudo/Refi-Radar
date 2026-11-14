@@ -47,13 +47,13 @@ function scopedClients(ctx) {
 }
 
 // Row -> the camelCase client shape of routes/clients.js, minus org/user ids and timestamps
-// the model has no use for.
+// the model has no use for. A credit score that isn't known (the 700 default) goes as null, so it is never said as a real one.
 function toClient(row) {
   return {
     id: row.id, name: row.name, email: row.email, phone: row.phone,
     loanType: row.loan_type, currentRate: row.current_rate,
     loanBalance: row.loan_balance, propertyValue: row.property_value,
-    closeDate: row.close_date, creditScore: row.credit_score,
+    closeDate: row.close_date, creditScore: row.credit_score_known === 0 ? null : row.credit_score,
     notes: row.notes, lastContact: row.last_contact, doNotEmail: row.do_not_email === 1,
   };
 }
@@ -92,7 +92,11 @@ function getMarketUpdate(_args, ctx) {
 function runSweepTool(_args, ctx) {
   const rates = ctx && ctx.rates;
   if (!hasRates(rates)) return fail("(unavailable)", "current rates are unavailable");
-  const result = refi.runSweep(scopedClients(ctx), rates);
+  const rows = scopedClients(ctx);
+  // The four rate lenses price from ctx.rates; the upgrades from the rates every upgrade surface uses (the latest FRED snapshot, none
+  // when it is more than 10 days old), as Sweeps does.
+  const upgradeRates = upgradeAlerts.safeUpgradeRates(ctx.db, clockOf(ctx));
+  const result = refi.runSweep(rows, rates, new Date(), { upgradeRates });
   // Same sweep either way; when the inputs were the hard-coded fallback, say so in the result.
   if (isEstimated(rates)) {
     return { data: { ...result, estimated: true }, source: `sweep engine (estimated rates ${ratesDate(rates)})` };
@@ -124,8 +128,14 @@ function findClient(args, ctx) {
 }
 
 // The upgrade lenses (lib/upgradeAlerts views, best first) per client id for `rows`. A check or view that fails gives no upgrades.
-// The model sees only { lens, label, headline, unit, detail, isNew }: no gaps, no PII, no today block.
-const forModelLens = ({ lens, label, headline, unit, detail, isNew }) => ({ lens, label, headline, unit, detail, isNew });
+// The model sees only { lens, label, headline, unit, detail, isNew } and the lens's numbers it has (the figures its detail line
+// says): no gaps, no PII, no today block.
+const MODEL_LENS_NUMBERS = ["monthlySavings", "breakEven", "effRate", "ltv", "miMonthly", "currentRate"];
+function forModelLens(l) {
+  const out = { lens: l.lens, label: l.label, headline: l.headline, unit: l.unit, detail: l.detail, isNew: l.isNew };
+  for (const k of MODEL_LENS_NUMBERS) if (Number.isFinite(l[k])) out[k] = l[k];
+  return out;
+}
 const byBestLens = (a, b) => (refi.PRIORITY_RANK[b.priority] || 0) - (refi.PRIORITY_RANK[a.priority] || 0) || b.headline - a.headline;
 function upgradesOf(ctx, rows) {
   const now = clockOf(ctx);

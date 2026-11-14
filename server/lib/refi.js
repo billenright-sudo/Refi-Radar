@@ -208,7 +208,11 @@ function checkInStatus(c, now = new Date()) {
 // ── Sweep ────────────────────────────────────────────────────────────────────
 const PRIORITY_RANK = { high: 3, medium: 2, low: 1 };
 const impact = (o) => o.monthlySavings || o.cashAvailable || o.headline || 0;
+// A failure is logged by the error's name only: never a message, which could carry client data.
+const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error");
 
+// `opts.upgradeRates`, when given (null included), is the rate set the upgrade checks price from: every upgrade surface uses the latest
+// FRED snapshot's (lib/upgradeAlerts upgradeRates). The four rate lenses always price from `rates`. Without it, upgrades use `rates`.
 function sweepClient(raw, rates, now = new Date(), opts = {}) {
   const c = norm(raw);
   // Government loans skip the conventional rate lenses (their own upgrade checks cover them); equity still counts.
@@ -219,7 +223,13 @@ function sweepClient(raw, rates, now = new Date(), opts = {}) {
   const doNotEmail = raw.do_not_email === 1 || raw.doNotEmail === true;
   // Lazy: upgrades.js destructures from this module at load time.
   const { upgradesFor } = require("./upgrades");
-  const up = upgradesFor(c, rates, now.toISOString().slice(0, 10), { index: opts.index });
+  const upgradeRates = opts.upgradeRates !== undefined ? opts.upgradeRates : rates;
+  let up = { lenses: [], gaps: [] };   // checks that throw: no upgrades and no gaps, the rest of the row as usual
+  try {
+    up = upgradesFor(c, upgradeRates, now.toISOString().slice(0, 10), { index: opts.index });
+  } catch (err) {
+    console.error("upgrade checks skipped:", errName(err));
+  }
   return {
     clientId: c.id, name: c.name, doNotEmail, best: lenses[0] || null, opportunities: lenses, checkIn: checkInStatus(c, now),
     upgrades: up.lenses, bestUpgrade: up.lenses[0] || null, upgradeGaps: up.gaps,
