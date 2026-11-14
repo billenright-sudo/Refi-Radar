@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, UPGRADE_LENSES, badgeFor, balanceLine, valueLine } from "./upgrades.mjs";
+import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, UPGRADE_LENSES, badgeFor, balanceLine, valueLine, creditScoreForPost } from "./upgrades.mjs";
 
 test("option lists and lens ids", () => {
   assert.deepEqual(PROGRAM_OPTIONS, [["", "Not set"], ["conventional", "Conventional"], ["fha", "FHA"], ["va", "VA"], ["usda", "USDA"], ["jumbo", "Jumbo"]]);
@@ -29,4 +29,12 @@ test("valueLine: grown, typed, flat", () => {
   assert.equal(valueLine({ valueBasis: "flat", valueFrom: 355000, value: 355000, cautiousValue: 319500 }),
     "Value about $320,000 ($355,000 less 10% for caution)");
   assert.equal(valueLine({ valueFrom: null }), "");
+});
+
+test("creditScoreForPost: integer when it parses, else blank", () => {
+  assert.equal(creditScoreForPost("760"), 760);
+  assert.equal(creditScoreForPost(" 740 "), 740);
+  assert.equal(creditScoreForPost(""), "");
+  assert.equal(creditScoreForPost("abc"), "");
+  assert.equal(creditScoreForPost(undefined), "");
 });

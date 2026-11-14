@@ -26,7 +26,7 @@ import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
-import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine } from "./upgrades.mjs";
+import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost } from "./upgrades.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -2035,7 +2035,7 @@ const AddClient = ({ setClients, setView }) => {
           loanBalance:   parseFloat(form.loanBalance),
           propertyValue: parseFloat(form.propertyValue),
           closeDate:     form.closeDate,
-          creditScore:   parseInt(form.creditScore) || 700,
+          creditScore:   creditScoreForPost(form.creditScore),
           notes:         form.notes,
           doNotEmail:    form.doNotEmail === true,
           ...upgradeFields(form),
@@ -2091,7 +2091,7 @@ const EditClient = ({ client, setClients, setSelected, setView }) => {
           loanBalance:   parseFloat(form.loanBalance),
           propertyValue: parseFloat(form.propertyValue),
           closeDate:     form.closeDate,
-          creditScore:   parseInt(form.creditScore) || 700,
+          creditScore:   creditScoreForPost(form.creditScore),
           notes:         form.notes,
           doNotEmail:    form.doNotEmail === true,
           ...upgradeFields(form),

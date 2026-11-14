@@ -32,3 +32,9 @@ export function valueLine(today) {
   const year = String(today.valueAsOf || "").slice(0, 4);
   return `Value about ${est} (from ${usd(today.valueFrom)}${year ? ` in ${year}` : ""}, area prices up ${Math.round(today.growthPct)}%, less 10% for caution)`;
 }
+
+// Credit score for the POST body: the integer when the field parses, else "" (the server then stores 700 and marks it not known).
+export function creditScoreForPost(text) {
+  const n = parseInt(text, 10);
+  return Number.isFinite(n) ? n : "";
+}
