@@ -36,14 +36,18 @@ const optNumber = (v) => (blank(v) ? null : Number(String(v).trim()));
 // Today as the server's UTC date, "YYYY-MM-DD" (the as-of dates).
 const utcToday = () => new Date().toISOString().slice(0, 10);
 // The new optional fields of a valid body as column values: '' for blank text, NULL for a blank number.
-function upgradeValues(body) {
+// With `existing` (a PUT), a key absent from the body keeps the stored value (a page opened before this shipped must not wipe
+// imported data); an explicit "" or null clears it.
+function upgradeValues(body, existing) {
+  const keep = (key, col, make) => (existing && body[key] === undefined ? existing[col] : make(body[key]));
+  const text = (v) => (blank(v) ? "" : String(v).trim());
   return {
-    loan_program: blank(body.loanProgram) ? "" : body.loanProgram,
-    monthly_mi: optNumber(body.monthlyMi),
-    original_amount: optNumber(body.originalAmount),
-    original_value: optNumber(body.originalValue),
-    property_zip: blank(body.propertyZip) ? "" : String(body.propertyZip).trim(),
-    occupancy: blank(body.occupancy) ? "" : body.occupancy,
+    loan_program: keep("loanProgram", "loan_program", text),
+    monthly_mi: keep("monthlyMi", "monthly_mi", optNumber),
+    original_amount: keep("originalAmount", "original_amount", optNumber),
+    original_value: keep("originalValue", "original_value", optNumber),
+    property_zip: keep("propertyZip", "property_zip", text),
+    occupancy: keep("occupancy", "occupancy", text),
   };
 }
 // credit_score_known: 1 for a typed, parseable score (a 0 is stored as the 700 default, so it is not one).
@@ -216,7 +220,7 @@ router.put("/:id", (req, res) => {
       credit_score: parseInt(req.body.creditScore)||700, notes: (req.body.notes||"").trim(),
       // A save that doesn't say (an older page) keeps the flag as it was; only true or false changes it.
       do_not_email: typeof req.body.doNotEmail === "boolean" ? (req.body.doNotEmail ? 1 : 0) : existing.do_not_email,
-      ...upgradeValues(req.body),
+      ...upgradeValues(req.body, existing),
       credit_score_known: creditKnown(req.body.creditScore),
       // The as-of dates move to today only when their figure changed.
       balance_as_of: balanceChanged ? utcToday() : existing.balance_as_of,

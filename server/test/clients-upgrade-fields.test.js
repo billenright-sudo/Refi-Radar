@@ -166,3 +166,16 @@ test("PUT with a new credit score sets creditScoreKnown true; PUT with a blank o
   r = await api("PUT", `/api/clients/${c.id}`, putBody(c, { creditScore: "" }));
   assert.deepStrictEqual([r.data.client.creditScore, r.data.client.creditScoreKnown], [700, false]);
 });
+
+test("PUT without the new keys keeps them", async () => {
+  const c = (await create({ loanProgram: "fha", monthlyMi: "212.5", originalAmount: "289500", originalValue: "300000",
+    propertyZip: "85016", occupancy: "primary" })).data.client;
+  const six = (row) => [row.loan_program, row.monthly_mi, row.original_amount, row.original_value, row.property_zip, row.occupancy];
+  const before = six(clientRow(c.id));
+  const r = await api("PUT", `/api/clients/${c.id}`, putBody(c, { name: "Pat Renamed" }));
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(six(clientRow(c.id)), before);
+  assert.deepStrictEqual(before, ["fha", 212.5, 289500, 300000, "85016", "primary"]);
+  await api("PUT", `/api/clients/${c.id}`, putBody(c, { loanProgram: "", monthlyMi: null }));
+  assert.deepStrictEqual(six(clientRow(c.id)), ["", null, 289500, 300000, "85016", "primary"]);
+});
