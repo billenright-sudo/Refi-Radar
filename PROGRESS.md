@@ -17,7 +17,9 @@ _Last updated: 2026-11-13_
   forward) and today's value (FHFA HPI, 10% caution cut), VA rate series `OBMMIVA30YF`. Conservative by
   design: no program / date / known score → no flag, with a gap line. Design:
   `docs/superpowers/specs/2026-11-13-loan-upgrades-design.md`; plan:
-  `docs/superpowers/plans/2026-11-13-loan-upgrades.md`. The HPI file ships empty until Bill's go.
+  `docs/superpowers/plans/2026-11-13-loan-upgrades.md`. HPI data loaded 2026-11-14 from FHFA
+  `hpi_at_3zip.xlsx` (quarterly, NSA): 882 ZIP3 areas, 2000Q1–2026Q2. Refresh each quarter with
+  `node server/scripts/update-hpi.js <file>`.
 - **Charli Plan B — Google Calendar + client email — BUILT 2026-10-27 on `feature/charli-google`
   (branched from `feature/accurate-refi-scoring` @ `b542904`), NOT merged, NOT deployed**
   (**server 642/642 + client 83/83 node:tests**, up from 415/64). Charli reads the broker's own
@@ -186,16 +188,15 @@ _Last updated: 2026-11-13_
 - Garbled org-1 name on Bill's real account (`wenright1@gmail.com`) — no org-rename
   API; needs a small DB fix.
 - Sweeps Phase 2 data (2026-11-13, `feature/loan-upgrades`): loan program, MI, occupancy, ZIP and
-  originals are now captured. Still open: no AVM — today's value is an HPI estimate only; and the HPI data
-  load is pending Bill's go (`hpiData.json` ships empty, so values don't grow yet).
+  originals are now captured. Still open: no AVM — today's value is an HPI estimate only (FHFA ZIP3 data
+  loaded 2026-11-14; refresh quarterly).
 - Loan upgrades follow-ups: MI band sources other than HUD ML 2023-05 (older FHA bands, USDA) are
   unverified; a rate gap (snapshot > 10 days old, or a day without VA) deletes refi alert rows, so those
   clients come back "New" and Charlie re-announces them once (keep rows when the lens's rate is missing);
   I7: a re-import of "current"-basis values reports "updated" (import counts over-count);
   M9: pre-2013 FHA 78% date uses the stored, possibly premium-inclusive original amount (apply the
   /1.0175 base); the pre-existing amber "PMI removal" line on the Equity Projection card still shows for
-  FHA/VA/USDA clients; run `node server/scripts/update-hpi.js` once on the real FHFA file and check it
-  picks the NSA index column.
+  FHA/VA/USDA clients.
 - `scripts/import` xlsx flow has no automated test yet (see Next steps).
 - gcloud auth tokens expire often → deploys intermittently need `gcloud auth login`.
 

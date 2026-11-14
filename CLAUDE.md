@@ -107,8 +107,8 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
   Last-resort is a hardcoded "Estimated" rate set so the UI never breaks. The Claude rates fallback
   is whitelisted to 30yr / 15yr / 5-1 ARM / date / source — a model-produced FHA or VA rate never drives a flag.
 - **FHFA House Price Index** (free, no key), bundled as the 3-digit-ZIP quarterly `server/lib/hpiData.json` (no
-  runtime fetch). It **ships EMPTY** until Bill's go to download the FHFA file and run
-  `node server/scripts/update-hpi.js <xlsx>`; until then values don't grow and FHA → Conventional rarely flags.
+  runtime fetch). Loaded 2026-11-14 from FHFA `hpi_at_3zip.xlsx` (NSA, 2000Q1–2026Q2). Refresh quarterly:
+  download the file (Bill's go), then `node server/scripts/update-hpi.js <xlsx>`. A ZIP3 not in the file stays flat.
 - **ElevenLabs** (`ELEVENLABS_API_KEY`): Charli's voice **Bella**
   (`ELEVENLABS_VOICE_ID_CHARLI`, model `ELEVENLABS_TTS_MODEL`) and Scribe
   speech-to-text (`ELEVENLABS_STT_MODEL`). Receives only the broker's audio and

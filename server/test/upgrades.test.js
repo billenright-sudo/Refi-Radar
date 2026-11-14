@@ -521,11 +521,11 @@ describe("gates", () => {
   });
 
   test("uses the bundled index by default", () => {
-    // The shipped snapshot is empty until the FHFA refresh, so the value stays flat.
+    // With no index passed, the shipped FHFA snapshot grows the value (ZIP3 850 is in it).
+    const { defaultIndex } = require("../lib/hpi");
     const r = upgradesFor(base(), RATES, TODAY);
-    assert.strictEqual(r.today.valueBasis, "flat");
-    assert.strictEqual(r.today.cautiousValue, 270000);
-    assert.strictEqual(lensOf(r, "fha_to_conv"), null);
+    assert.strictEqual(r.today.valueBasis, "grown");
+    assert.deepStrictEqual(r, upgradesFor(base(), RATES, TODAY, { index: defaultIndex }));
   });
 });
 

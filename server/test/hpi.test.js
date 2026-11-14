@@ -48,9 +48,15 @@ test("quarterOf", () => {
 });
 
 test("shipped data loads", () => {
+  // The shipped FHFA snapshot: checks its shape, not this quarter's values, so a refresh keeps it green.
   const l = defaultIndex.latestQuarter;
-  assert.ok(l === null || typeof l === "string");
-  assert.strictEqual(defaultIndex.growth("85016", "2021-06-30", "2026-11-13"), null);
+  assert.match(l, /^\d{4}Q[1-4]$/);
+  const g = defaultIndex.growth("85016", "2021-06-30", "2026-11-13");
+  assert.strictEqual(g.area, "850");
+  assert.strictEqual(g.fromQuarter, "2021Q2");
+  assert.match(g.toQuarter, /^\d{4}Q[1-4]$/);
+  assert.ok(g.toQuarter <= l);
+  assert.ok(Number.isFinite(g.factor) && g.factor > 0);
 });
 
 test("update-hpi.js builds the snapshot from a local xlsx", () => {
