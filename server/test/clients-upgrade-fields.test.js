@@ -56,6 +56,7 @@ before(async () => {
   app.use(express.json());
   app.use(cookieParser());
   app.use("/api/clients", clientRoutes);
+  app.use("/api/org", require("../routes/org"));
   server = app.listen(0);
   await new Promise((r) => server.once("listening", r));
   base = `http://localhost:${server.address().port}`;
@@ -167,6 +168,38 @@ test("PUT with a new credit score sets creditScoreKnown true; PUT with a blank o
   assert.deepStrictEqual([r.data.client.creditScore, r.data.client.creditScoreKnown], [700, false]);
 });
 
+// A page opened before this shipped posts `parseInt(form.creditScore)||700` and no loanProgram key: its 700 says nothing.
+const OLD_PAGE = { name: "Pat Upgrade", currentRate: 6.5, loanBalance: 300000, propertyValue: 400000, loanType: "30yr_fixed", creditScore: 700 };
+
+test("I1: an old page's POST with the 700 default stores the score as not known; with the new page's key a 700 is known", async () => {
+  const old = await api("POST", "/api/clients", OLD_PAGE);
+  assert.strictEqual(old.status, 201);
+  assert.deepStrictEqual([old.data.client.creditScore, old.data.client.creditScoreKnown], [700, false]);
+  assert.strictEqual(clientRow(old.data.client.id).credit_score_known, 0);
+  // The old page with a real score other than 700 still records it as known.
+  assert.strictEqual((await api("POST", "/api/clients", { ...OLD_PAGE, creditScore: 742 })).data.client.creditScoreKnown, true);
+  // The new page always sends loanProgram: a typed 700 is a real score.
+  assert.strictEqual((await api("POST", "/api/clients", { ...OLD_PAGE, loanProgram: "" })).data.client.creditScoreKnown, true);
+});
+
+test("I1: an old page's PUT with the 700 default keeps credit_score_known as it was", async () => {
+  for (const known of [0, 1]) {
+    const c = (await create({ creditScore: "700", loanProgram: "fha" })).data.client;
+    db.prepare("UPDATE clients SET credit_score_known = ? WHERE id = ?").run(known, c.id);
+    const r = await api("PUT", `/api/clients/${c.id}`, { ...OLD_PAGE, name: "Pat Renamed" });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(clientRow(c.id).credit_score_known, known, `kept ${known}`);
+    assert.strictEqual(r.data.client.creditScoreKnown, known === 1);
+  }
+  // A real score from the old page is still recorded; the new page's 700 is known.
+  const c = (await create({ creditScore: "", loanProgram: "fha" })).data.client;
+  await api("PUT", `/api/clients/${c.id}`, { ...OLD_PAGE, creditScore: 655 });
+  assert.strictEqual(clientRow(c.id).credit_score_known, 1);
+  db.prepare("UPDATE clients SET credit_score_known = 0 WHERE id = ?").run(c.id);
+  await api("PUT", `/api/clients/${c.id}`, { ...OLD_PAGE, loanProgram: "fha" });
+  assert.strictEqual(clientRow(c.id).credit_score_known, 1);
+});
+
 test("PUT without the new keys keeps them", async () => {
   const c = (await create({ loanProgram: "fha", monthlyMi: "212.5", originalAmount: "289500", originalValue: "300000",
     propertyZip: "85016", occupancy: "primary" })).data.client;
@@ -178,4 +211,26 @@ test("PUT without the new keys keeps them", async () => {
   assert.deepStrictEqual(before, ["fha", 212.5, 289500, 300000, "85016", "primary"]);
   await api("PUT", `/api/clients/${c.id}`, putBody(c, { loanProgram: "", monthlyMi: null }));
   assert.deepStrictEqual(six(clientRow(c.id)), ["", null, 289500, 300000, "85016", "primary"]);
+});
+
+test("M11: POST answers with the upgrades view, the same as GET gives the row", async () => {
+  const r = await create({ loanProgram: "", creditScore: "720" });
+  assert.strictEqual(r.status, 201);
+  const view = r.data.client.upgrades;
+  assert.ok(view && Array.isArray(view.lenses) && Array.isArray(view.gaps) && view.today, JSON.stringify(r.data.client));
+  assert.deepStrictEqual(view.gaps, ["Add the loan program to check upgrades."]);
+  assert.strictEqual(r.data.client.target, null);
+  const listed = (await api("GET", "/api/clients")).data.clients.find((c) => c.id === r.data.client.id);
+  assert.deepStrictEqual(r.data.client, listed);
+});
+
+test("I2: the broker's LO view (GET /api/org/los/:id/clients) carries each client's loanProgram", async () => {
+  const lo = addUser(orgA, "lo", `lo-${Date.now()}@upgrade.test`, "Lou");
+  const ins = db.prepare(`INSERT INTO clients (org_id, user_id, name, current_rate, loan_balance, property_value, loan_program)
+    VALUES (?, ?, ?, 6.5, 300000, 400000, ?)`);
+  ins.run(orgA, lo, "Fha Sample", "fha");
+  ins.run(orgA, lo, "Blank Sample", "");
+  const r = await api("GET", `/api/org/los/${lo}/clients`);
+  assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+  assert.deepStrictEqual(r.data.clients.map((c) => [c.name, c.loanProgram]), [["Blank Sample", ""], ["Fha Sample", "fha"]]);
 });

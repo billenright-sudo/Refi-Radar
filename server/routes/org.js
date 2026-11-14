@@ -40,6 +40,7 @@ router.get("/los/:id/clients", (req, res) => {
     loanBalance: row.loan_balance, propertyValue: row.property_value,
     closeDate: row.close_date, creditScore: row.credit_score,
     notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at,
+    loanProgram: row.loan_program,   // the page's conventional analysis leaves FHA, VA and USDA loans out
   })) });
 });
 

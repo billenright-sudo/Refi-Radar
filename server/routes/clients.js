@@ -53,6 +53,12 @@ function upgradeValues(body, existing) {
 }
 // credit_score_known: 1 for a typed, parseable score (a 0 is stored as the 700 default, so it is not one).
 const creditKnown = (raw) => (parseInt(raw) ? 1 : 0);
+// A page opened before this shipped sends no loanProgram key and posts a blank score as `parseInt(...)||700`, so its 700 can be the
+// default: on create it is not known, on a PUT the stored flag stays (`kept`).
+function creditKnownFrom(body, kept = 0) {
+  const oldPage = !Object.prototype.hasOwnProperty.call(body, "loanProgram");
+  return oldPage && parseInt(body.creditScore) === 700 ? kept : creditKnown(body.creditScore);
+}
 
 // Clients the way the screens get them, from `rows` (raw clients rows, in their order). The check runs first (one FRED
 // observation, once; a check that fails is logged and the stored target state is shown), then only the rows it wrote are read
@@ -113,7 +119,7 @@ function createClientForUser(db, user, body) {
     VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes, @do_not_email,
       @loan_program, @monthly_mi, @original_amount, @original_value, @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known)
   `).run({
-    ...upgradeValues(input), balance_as_of: utcToday(), value_as_of: utcToday(), credit_score_known: creditKnown(input.creditScore),
+    ...upgradeValues(input), balance_as_of: utcToday(), value_as_of: utcToday(), credit_score_known: creditKnownFrom(input),
     org_id: user.org_id, user_id: user.id,
     name: input.name.trim(), email: (input.email||"").trim(),
     phone: (input.phone||"").trim(), loan_type: input.loanType,
@@ -195,7 +201,9 @@ router.post("/", (req, res) => {
   try {
     const result = createClientForUser(db, req.user, req.body);
     if (result.errors) return res.status(400).json({ success: false, errors: result.errors });
-    res.status(201).json({ success: true, client: result.client });
+    // Presented as GET presents it (target and upgrades views), so the new client's page has its Upgrades card at once.
+    const row = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.client.id);
+    res.status(201).json({ success: true, client: presentClients(db, req.user, [row])[0] });
   } catch (err) {
     console.error("POST /api/clients:", err.message);
     res.status(500).json({ success: false, error: "Database error" });
@@ -224,7 +232,7 @@ router.put("/:id", (req, res) => {
       // A save that doesn't say (an older page) keeps the flag as it was; only true or false changes it.
       do_not_email: typeof req.body.doNotEmail === "boolean" ? (req.body.doNotEmail ? 1 : 0) : existing.do_not_email,
       ...upgradeValues(req.body, existing),
-      credit_score_known: creditKnown(req.body.creditScore),
+      credit_score_known: creditKnownFrom(req.body, existing.credit_score_known),
       // The as-of dates move to today only when their figure changed.
       balance_as_of: balanceChanged ? utcToday() : existing.balance_as_of,
       value_as_of: valueChanged ? utcToday() : existing.value_as_of,

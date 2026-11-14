@@ -115,21 +115,24 @@ if (!hadCheckedRate) db.exec("UPDATE clients SET target_checked_on = NULL WHERE 
 // insurance (NULL = unknown), the original loan amount and home value, the property ZIP, the occupancy, the dates the balance and the
 // value were true, and whether credit_score is a real figure. Clients already stored get blanks/NULLs; the as-of dates start at the
 // row's last update (created date if none) and credit_score_known at "not the 700 default, or typed by hand". Each backfill runs only
-// in the guard that adds its column.
-for (const col of ["loan_program TEXT NOT NULL DEFAULT ''", "monthly_mi REAL", "original_amount REAL", "original_value REAL",
-  "property_zip TEXT NOT NULL DEFAULT ''", "occupancy TEXT NOT NULL DEFAULT ''"]) {
-  if (!clientCols.some((c) => c.name === col.split(" ")[0])) db.exec(`ALTER TABLE clients ADD COLUMN ${col}`);
-}
-for (const col of ["balance_as_of", "value_as_of"]) {
-  if (!clientCols.some((c) => c.name === col)) {
-    db.exec(`ALTER TABLE clients ADD COLUMN ${col} TEXT`);
-    db.exec(`UPDATE clients SET ${col} = date(COALESCE(NULLIF(updated_at, ''), created_at))`);
+// in the guard that adds its column, and the block is one transaction: a start that fails part-way keeps none of it, so the next
+// start adds every column with its backfill.
+db.transaction(() => {
+  for (const col of ["loan_program TEXT NOT NULL DEFAULT ''", "monthly_mi REAL", "original_amount REAL", "original_value REAL",
+    "property_zip TEXT NOT NULL DEFAULT ''", "occupancy TEXT NOT NULL DEFAULT ''"]) {
+    if (!clientCols.some((c) => c.name === col.split(" ")[0])) db.exec(`ALTER TABLE clients ADD COLUMN ${col}`);
   }
-}
-if (!clientCols.some((c) => c.name === "credit_score_known")) {
-  db.exec("ALTER TABLE clients ADD COLUMN credit_score_known INTEGER NOT NULL DEFAULT 0");
-  db.exec("UPDATE clients SET credit_score_known = CASE WHEN credit_score != 700 OR instr(edited_by_hand, 'credit_score') > 0 THEN 1 ELSE 0 END");
-}
+  for (const col of ["balance_as_of", "value_as_of"]) {
+    if (!clientCols.some((c) => c.name === col)) {
+      db.exec(`ALTER TABLE clients ADD COLUMN ${col} TEXT`);
+      db.exec(`UPDATE clients SET ${col} = date(COALESCE(NULLIF(updated_at, ''), created_at))`);
+    }
+  }
+  if (!clientCols.some((c) => c.name === "credit_score_known")) {
+    db.exec("ALTER TABLE clients ADD COLUMN credit_score_known INTEGER NOT NULL DEFAULT 0");
+    db.exec("UPDATE clients SET credit_score_known = CASE WHEN credit_score != 700 OR instr(edited_by_hand, 'credit_score') > 0 THEN 1 ELSE 0 END");
+  }
+})();
 // Matching looks across the whole company, not one loan officer's book, so the index leads with org_id.
 db.exec("CREATE INDEX IF NOT EXISTS idx_clients_org_loan ON clients (org_id, loan_number)");
 
