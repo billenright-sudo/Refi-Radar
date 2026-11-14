@@ -51,7 +51,7 @@ const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{
 
 function safeCheckUpgrades(db, orgId, nowMs = Date.now()) {
   try {
-    return checkUpgrades(db, orgId, nowMs);
+    return module.exports.checkUpgrades(db, orgId, nowMs);   // via exports: a test can swap it
   } catch (err) {
     console.error("upgrade check skipped:", errName(err));
     return null;

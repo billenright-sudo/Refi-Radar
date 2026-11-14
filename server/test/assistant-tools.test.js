@@ -1281,9 +1281,12 @@ test("Upgrades: upgradesTool lists only the caller's clients with an upgrade; ki
     assert.equal(typeof l.headline, "number");
   }
   assert.equal(u[0].lens, "va_irrrl");
-  // every figure in the detail line is a number in the payload text
-  const payload = JSON.stringify(loR.data);
-  for (const m of u[0].detail.matchAll(/\d[\d,]*(?:\.\d+)?/g)) assert.ok(payload.includes(m[0]), `${m[0]} is in the payload`);
+  // every figure in a detail line is grounded by the tool_result payload exactly as the orchestrator hands it to the model
+  const { ungroundedNumbers } = require("../lib/assistant/orchestrator");
+  const payloads = [JSON.stringify({ source: loR.source, data: loR.data })];
+  assert.ok(u[0].detail.includes("$") && u[0].detail.includes("/mo"));
+  assert.deepStrictEqual(ungroundedNumbers(`They look like ${u[0].label}: ${u[0].detail}.`, payloads), []);
+  assert.deepStrictEqual(ungroundedNumbers("They could save about $98,765 a month.", payloads), ["$98,765"], "a figure not in the payload is caught");
 
   const brokerR = upgradesTool({}, upCtx(org, broker, "broker"));
   assert.deepStrictEqual(brokerR.data.clients.map((c) => c.id).sort(), [vee, wes].sort());
@@ -1321,23 +1324,38 @@ test("Upgrades: new upgrades first, then the best by priority and headline, then
   assert.deepStrictEqual(names(), ["Aaa Tie", "Small Save", "Big Save"]);
   assert.ok(upgradesTool({}, ctx).data.clients[0].upgrades.every((l) => l.isNew === true));
   assert.ok(upgradesTool({}, ctx).data.clients[2].upgrades.every((l) => l.isNew === false));
-  void tie; void small;
   for (let i = 1; i <= 17; i++) addUpgradeClient(org, broker, `Many ${String(i).padStart(2, "0")}`);
   assert.equal(upgradesTool({}, ctx).data.clients.length, 15);
 });
 
-test("Upgrades: a check that throws leaves the tool answering with no upgrades", () => {
+test("Upgrades: a check or a view that throws leaves the tools answering, logging only the error name", () => {
   const UA = require("../lib/upgradeAlerts");
+  db.prepare("DELETE FROM client_upgrades").run();
+  recordSnapshot(UP_SET, UP_SET.date, "fred");
   const org = addOrg("Upsilon Three");
   const broker = addUser(org, "broker", "broker@up3.co");
   addUpgradeClient(org, broker, "Vee Three");
-  const real = UA.checkUpgrades, realErr = console.error;
-  UA.checkUpgrades = () => { throw new Error("boom"); };
-  console.error = () => {};
+  const ctx = upCtx(org, broker, "broker");
+  const realCheck = UA.checkUpgrades, realViews = UA.upgradeViewsFor, realErr = console.error;
+  const logged = [];
+  console.error = (...a) => logged.push(a.join(" "));
   try {
-    assert.deepStrictEqual(upgradesTool({}, upCtx(org, broker, "broker")).data.clients.length <= 1, true);
-    assert.ok(Array.isArray(findClient({ query: "vee three" }, upCtx(org, broker, "broker")).data.matches[0].upgrades));
-  } finally { UA.checkUpgrades = real; console.error = realErr; }
+    // (a) the check throws: the views still run (without rates), the tools still answer
+    UA.checkUpgrades = () => { throw new Error("secret check detail"); };
+    assert.ok(Array.isArray(upgradesTool({}, ctx).data.clients));
+    assert.equal(findClient({ query: "vee three" }, ctx).data.matches.length, 1);
+    assert.ok(logged.length >= 1 && logged.every((l) => l === "upgrade check skipped: Error"), logged.join("|"));
+    UA.checkUpgrades = realCheck;
+
+    // (b) the views throw: no upgrades anywhere, the match still comes back
+    logged.length = 0;
+    UA.upgradeViewsFor = () => { throw new Error("secret view detail"); };
+    assert.deepStrictEqual(upgradesTool({}, ctx).data.clients, []);
+    const m = findClient({ query: "vee three" }, ctx).data.matches;
+    assert.equal(m.length, 1);
+    assert.deepStrictEqual(m[0].upgrades, []);
+    assert.ok(logged.length >= 1 && logged.every((l) => l === "upgrade views skipped: Error"), logged.join("|"));
+  } finally { UA.checkUpgrades = realCheck; UA.upgradeViewsFor = realViews; console.error = realErr; }
 });
 
 test("Upgrades: TOOL_SCHEMA describes upgradesTool with an optional kind", () => {
