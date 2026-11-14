@@ -27,6 +27,7 @@ import { analyze } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
 import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, isGovProgram, withGovGuard, govRefiNote } from "./upgrades.mjs";
+import { equityAt, monthsToSubEightyLTV } from "./equity.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -37,44 +38,6 @@ const LOAN_LABELS = { "30yr_fixed": "30-Yr Fixed", "15yr_fixed": "15-Yr Fixed", 
 
 const $c = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 const $r = (n) => `${(+n).toFixed(2)}%`;
-
-// ---------------------------------------------------------------------------
-// Equity helpers (3.5% annual appreciation)
-// ---------------------------------------------------------------------------
-const APPRECIATION_RATE = 0.035;
-
-// Project remaining loan balance N additional months from current balance
-function projectedBalance(balance, annualRate, loanType, additionalMonths) {
-  const totalMonths = loanType === "15yr_fixed" ? 180 : 360;
-  const r = annualRate / 100 / 12;
-  if (r === 0) return Math.max(0, balance - (balance / totalMonths) * additionalMonths);
-  const pmt = balance * (r * Math.pow(1 + r, totalMonths)) / (Math.pow(1 + r, totalMonths) - 1);
-  const fut  = balance * Math.pow(1 + r, additionalMonths) - pmt * (Math.pow(1 + r, additionalMonths) - 1) / r;
-  return Math.max(0, fut);
-}
-
-// Equity snapshot N years from now
-function equityAt(client, yearsFromNow) {
-  const months   = yearsFromNow * 12;
-  const futBal   = projectedBalance(client.loanBalance, client.currentRate, client.loanType, months);
-  const futVal   = client.propertyValue * Math.pow(1 + APPRECIATION_RATE, yearsFromNow);
-  const equity   = futVal - futBal;
-  const ltvPct   = (futBal / futVal) * 100;
-  const cashOut  = Math.max(0, futVal * 0.80 - futBal); // max cash-out at 80% LTV
-  return { equity, futVal, futBal, ltvPct, equityPct: 100 - ltvPct, cashOut };
-}
-
-// Months until LTV drops below 80% (PMI removal threshold)
-function monthsToSubEightyLTV(client) {
-  const currentLtv = (client.loanBalance / client.propertyValue) * 100;
-  if (currentLtv <= 80) return 0;
-  for (let m = 1; m <= 360; m++) {
-    const bal = projectedBalance(client.loanBalance, client.currentRate, client.loanType, m);
-    const val = client.propertyValue * Math.pow(1 + APPRECIATION_RATE, m / 12);
-    if ((bal / val) * 100 <= 80) return m;
-  }
-  return null; // never reaches 80% in 30 years
-}
 
 // ---------------------------------------------------------------------------
 // Design tokens

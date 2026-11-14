@@ -3,9 +3,15 @@
 Living status file. **Update at the end of every major task** so work resumes
 cleanly after compaction / a new session. Newest notes at the top of each list.
 
-_Last updated: 2026-11-13_
+_Last updated: 2026-11-14_
 
 ## Done
+- **Equity from today's figures — BUILT 2026-11-14 on `feature/equity-today`** (client 378 node:tests, build
+  ok). The Equity Projection card, the PMI-removal timing, the dashboard's Portfolio Equity tiles and the
+  client-list equity now start from the server's Upgrades `today` block (rolled-forward balance + cautious
+  value, 10% off unless typed in the last 12 months), falling back to the stored figures when it's missing.
+  Helpers moved from `App.jsx` to `client/src/equity.mjs` (`equityStart`, `equityAt`,
+  `monthsToSubEightyLTV`). Not changed: Sweeps' cash-out lens still uses the stored value.
 - **Loan upgrades — BUILT 2026-11-13 on `feature/loan-upgrades` (off `feature/accurate-refi-scoring`
   @ `03f9ea3`), NOT merged, NOT deployed** (**server 1658 + client 370 node:tests**, build ok,
   `check-scoring.js` ok; final Opus review → fix wave `f43ac26..c749a1c`). Brokers now see clients who
