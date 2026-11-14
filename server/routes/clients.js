@@ -22,8 +22,32 @@ function toClient(row) {
     closeDate: row.close_date, creditScore: row.credit_score,
     notes: row.notes, lastContact: row.last_contact, doNotEmail: row.do_not_email === 1,
     createdAt: row.created_at, updatedAt: row.updated_at,
+    loanProgram: row.loan_program, monthlyMi: row.monthly_mi, originalAmount: row.original_amount,
+    originalValue: row.original_value, propertyZip: row.property_zip, occupancy: row.occupancy,
+    balanceAsOf: row.balance_as_of, valueAsOf: row.value_as_of, creditScoreKnown: row.credit_score_known === 1,
   };
 }
+
+const PROGRAMS = ["conventional", "fha", "va", "usda", "jumbo"];
+const OCCUPANCIES = ["primary", "second_home", "investment"];
+const blank = (v) => v == null || String(v).trim() === "";
+// A new optional number: null when blank, NaN when not a number.
+const optNumber = (v) => (blank(v) ? null : Number(String(v).trim()));
+// Today as the server's UTC date, "YYYY-MM-DD" (the as-of dates).
+const utcToday = () => new Date().toISOString().slice(0, 10);
+// The new optional fields of a valid body as column values: '' for blank text, NULL for a blank number.
+function upgradeValues(body) {
+  return {
+    loan_program: blank(body.loanProgram) ? "" : body.loanProgram,
+    monthly_mi: optNumber(body.monthlyMi),
+    original_amount: optNumber(body.originalAmount),
+    original_value: optNumber(body.originalValue),
+    property_zip: blank(body.propertyZip) ? "" : String(body.propertyZip).trim(),
+    occupancy: blank(body.occupancy) ? "" : body.occupancy,
+  };
+}
+// credit_score_known: 1 for a typed, parseable score (a 0 is stored as the 700 default, so it is not one).
+const creditKnown = (raw) => (parseInt(raw) ? 1 : 0);
 
 // Clients the way the screens get them, from `rows` (raw clients rows, in their order). The check runs first (one FRED
 // observation, once; a check that fails is logged and the stored target state is shown), then only the rows it wrote are read
@@ -54,6 +78,15 @@ function validateClient(body) {
   const val = parseFloat(body.propertyValue);
   if (isNaN(val) || val <= 0) errors.propertyValue = "Valid property value required";
   if (!["30yr_fixed","15yr_fixed","5_1_arm"].includes(body.loanType)) errors.loanType = "Invalid loan type";
+  if (!blank(body.loanProgram) && !PROGRAMS.includes(body.loanProgram)) errors.loanProgram = "Invalid loan program";
+  const mi = optNumber(body.monthlyMi);
+  if (mi != null && (isNaN(mi) || mi < 0 || mi > 5000)) errors.monthlyMi = "Mortgage insurance is a monthly amount from 0 to 5,000";
+  const oa = optNumber(body.originalAmount);
+  if (oa != null && (isNaN(oa) || oa <= 0)) errors.originalAmount = "Valid original loan amount required";
+  const ov = optNumber(body.originalValue);
+  if (ov != null && (isNaN(ov) || ov <= 0)) errors.originalValue = "Valid original home value required";
+  if (!blank(body.propertyZip) && !/^\d{5}$/.test(String(body.propertyZip).trim())) errors.propertyZip = "ZIP is 5 digits";
+  if (!blank(body.occupancy) && !OCCUPANCIES.includes(body.occupancy)) errors.occupancy = "Invalid occupancy";
   return errors;
 }
 
@@ -68,9 +101,12 @@ function createClientForUser(db, user, body) {
   const errors = validateClient(input);
   if (Object.keys(errors).length) return { errors };
   const info = db.prepare(`
-    INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes, do_not_email)
-    VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes, @do_not_email)
+    INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes, do_not_email,
+      loan_program, monthly_mi, original_amount, original_value, property_zip, occupancy, balance_as_of, value_as_of, credit_score_known)
+    VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes, @do_not_email,
+      @loan_program, @monthly_mi, @original_amount, @original_value, @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known)
   `).run({
+    ...upgradeValues(input), balance_as_of: utcToday(), value_as_of: utcToday(), credit_score_known: creditKnown(input.creditScore),
     org_id: user.org_id, user_id: user.id,
     name: input.name.trim(), email: (input.email||"").trim(),
     phone: (input.phone||"").trim(), loan_type: input.loanType,
@@ -170,6 +206,8 @@ router.put("/:id", (req, res) => {
   const errors = validateClient(req.body);
   if (Object.keys(errors).length) return res.status(400).json({ success: false, errors });
   try {
+    const balanceChanged = parseFloat(req.body.loanBalance) !== existing.loan_balance;
+    const valueChanged = parseFloat(req.body.propertyValue) !== existing.property_value;
     const values = {
       id, name: req.body.name.trim(), email: (req.body.email||"").trim(),
       phone: (req.body.phone||"").trim(), loan_type: req.body.loanType,
@@ -178,6 +216,11 @@ router.put("/:id", (req, res) => {
       credit_score: parseInt(req.body.creditScore)||700, notes: (req.body.notes||"").trim(),
       // A save that doesn't say (an older page) keeps the flag as it was; only true or false changes it.
       do_not_email: typeof req.body.doNotEmail === "boolean" ? (req.body.doNotEmail ? 1 : 0) : existing.do_not_email,
+      ...upgradeValues(req.body),
+      credit_score_known: creditKnown(req.body.creditScore),
+      // The as-of dates move to today only when their figure changed.
+      balance_as_of: balanceChanged ? utcToday() : existing.balance_as_of,
+      value_as_of: valueChanged ? utcToday() : existing.value_as_of,
     };
     // A rate, property value or credit score this save changes is marked as edited by hand, so the import keeps it.
     const marks = readMarks(existing.edited_by_hand);
@@ -189,7 +232,9 @@ router.put("/:id", (req, res) => {
     db.prepare(`
       UPDATE clients SET name=@name, email=@email, phone=@phone, loan_type=@loan_type,
         current_rate=@current_rate, loan_balance=@loan_balance, property_value=@property_value,
-        close_date=@close_date, credit_score=@credit_score, notes=@notes, do_not_email=@do_not_email, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
+        close_date=@close_date, credit_score=@credit_score, credit_score_known=@credit_score_known, notes=@notes,
+        loan_program=@loan_program, monthly_mi=@monthly_mi, original_amount=@original_amount, original_value=@original_value,
+        property_zip=@property_zip, occupancy=@occupancy, balance_as_of=@balance_as_of, value_as_of=@value_as_of, do_not_email=@do_not_email, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
         ${repriced ? ", target_checked_on=NULL, target_checked_rate=NULL" : ""}
       WHERE id=@id
     `).run({ ...values, edited_by_hand: writeMarks(marks) });
@@ -274,4 +319,4 @@ router.post("/:id/contact", (req, res) => {
   }
 });
 
-module.exports = Object.assign(router, { validateClient, toClient, createClientForUser, logContactForUser, clientInReach, presentClients, setTargetForUser });
+module.exports = Object.assign(router, { PROGRAMS, OCCUPANCIES, validateClient, toClient, createClientForUser, logContactForUser, clientInReach, presentClients, setTargetForUser });

@@ -3,9 +3,14 @@
 // for the same loan (Bill, 2026-11-03; ingest.js). clients.edited_by_hand holds them as column names, comma-separated, in
 // HAND_KEPT's order, and '' when there are none.
 
-const HAND_KEPT = Object.freeze(["current_rate", "property_value", "credit_score"]);
+const HAND_KEPT = Object.freeze(["current_rate", "property_value", "credit_score", "loan_program", "monthly_mi",
+  "original_amount", "original_value", "property_zip", "occupancy"]);
 // How the import's review names each one.
-const LABELS = Object.freeze({ current_rate: "rate", property_value: "property value", credit_score: "credit score" });
+const LABELS = Object.freeze({
+  current_rate: "rate", property_value: "property value", credit_score: "credit score",
+  loan_program: "loan program", monthly_mi: "mortgage insurance", original_amount: "original loan amount",
+  original_value: "original home value", property_zip: "property ZIP", occupancy: "occupancy",
+});
 
 // The stored text as a Set of column names; anything that is not one of HAND_KEPT is dropped.
 const readMarks = (text) => new Set(String(text ?? "").split(",").map((s) => s.trim()).filter((c) => HAND_KEPT.includes(c)));
