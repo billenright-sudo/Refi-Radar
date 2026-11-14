@@ -50,8 +50,8 @@ describe("constants and gap lines", () => {
   test("constants", () => {
     assert.deepStrictEqual(
       [U.CONV_MIN_SCORE, U.STREAMLINE_MIN_SCORE, U.MAX_BREAK_EVEN, U.HIGH_SAVINGS, U.NTB_MIN_DROP, U.FHA_UFMIP, U.FHA_NEW_ANNUAL_MIP,
-        U.VA_FUNDING_FEE, U.MI_ENDING_SOON_MONTHS, U.CONV_MAX_LTV, U.WAITING_DAYS],
-      [620, 580, 36, 200, 0.5, 0.0175, 0.55, 0.005, 12, 80, 210],
+        U.FHA_NEW_ANNUAL_MIP_HIGH, U.FHA_HIGH_BALANCE, U.VA_FUNDING_FEE, U.MI_ENDING_SOON_MONTHS, U.CONV_MAX_LTV, U.WAITING_DAYS],
+      [620, 580, 36, 200, 0.5, 0.0175, 0.55, 0.75, 726200, 0.005, 12, 80, 210],
     );
   });
 
@@ -82,9 +82,9 @@ describe("fha_to_conv", () => {
     assert.strictEqual(l.priority, "high");
     assert.strictEqual(
       l.detail,
-      `FHA, about ${Math.round(l.ltv)}% of value, insurance about $${money(l.miMonthly)}/mo; conventional at ${l.effRate.toFixed(2)}% saves about $${money(l.monthlySavings)}/mo, break-even ${l.breakEven} mo`,
+      `FHA, about ${Math.round(l.ltv)}% of value, insurance about $${money(l.miMonthly)}/mo; conventional at about ${l.effRate.toFixed(2)}% saves about $${money(l.monthlySavings)}/mo, break-even ${l.breakEven} mo`,
     );
-    assert.match(l.detail, /^FHA, about \d+% of value, insurance about \$[\d,]+\/mo; conventional at \d+\.\d{2}% saves about \$[\d,]+\/mo, break-even \d+ mo$/);
+    assert.match(l.detail, /^FHA, about \d+% of value, insurance about \$[\d,]+\/mo; conventional at about \d+\.\d{2}% saves about \$[\d,]+\/mo, break-even \d+ mo$/);
     assert.deepStrictEqual(r.gaps, []);
   });
 
@@ -145,6 +145,16 @@ describe("fha_to_conv", () => {
     const later = run(closedOn("2017-05-13", { originalAmount: 270000, loanBalance: 270000 }));
     assert.strictEqual(later.mi.endsOn, "2028-05-13");
     assert.ok(lensOf(later, "fha_to_conv"));
+  });
+
+  test("original LTV unknown, closed 10+ years ago: the insurance may end any time, no flag", () => {
+    const known = run(closedOn("2014-03-15"));
+    assert.strictEqual(known.mi.originalLtv, 96.5);
+    assert.ok(lensOf(known, "fha_to_conv"), JSON.stringify(known));
+    const unknown = run(closedOn("2014-03-15", { originalAmount: null, originalValue: null }));
+    assert.strictEqual(unknown.mi.originalLtv, null);
+    assert.ok(unknown.mi.monthly > 0 && unknown.today.ltv <= 80);
+    assert.strictEqual(lensOf(unknown, "fha_to_conv"), null);
   });
 
   test("break-even over 36 months, or no saving: no flag", () => {
@@ -221,6 +231,41 @@ describe("fha_streamline", () => {
     assert.strictEqual(lensOf(run(s23({ loanType: "5_1_arm" })), "fha_streamline"), null);
   });
 
+  test("original LTV unknown, closed 10+ years ago: the old insurance counts as none", () => {
+    const old = (currentRate, over = {}) => closedOn("2014-03-15", { currentRate, propertyZip: "", ...over });
+    // 8.0%: flags only when the old insurance (1.30%, never ending at 96.5% LTV) counts.
+    assert.ok(lensOf(run(old(8)), "fha_streamline"));
+    assert.strictEqual(lensOf(run(old(8, { originalAmount: null, originalValue: null })), "fha_streamline"), null);
+    // 8.5%: flags either way; with the LTV unknown the saving leaves the old insurance out.
+    const r = run(old(8.5, { originalAmount: null, originalValue: null }));
+    const l = lensOf(r, "fha_streamline");
+    assert.ok(l, JSON.stringify(r));
+    assert.ok(r.mi.monthly > 0);
+    const bal = r.today.balance;
+    const savings = calcPayment(bal, 8.5, 30) - (calcPayment(bal, 5.9, 30) + (bal * 0.0055) / 12);
+    assert.strictEqual(l.monthlySavings, Math.round(savings));
+    assert.strictEqual(l.breakEven, Math.ceil((estClosingCosts(bal) + 0.0175 * bal) / savings));
+  });
+
+  test("today's balance over $726,200: the new loan pays 0.75% annual insurance", () => {
+    const big = (currentRate) => s23({ currentRate, loanBalance: 800000, balanceAsOf: TODAY, originalAmount: 820000, originalValue: 850000, propertyValue: 850000 });
+    const newPmt = (bal, mip) => calcPayment(bal, 5.9, 30) + (bal * mip) / 1200;
+    // 7.3%: at 0.55% it would recover the costs in 35 months; at 0.75% it takes 43.
+    const r = run(big(7.3));
+    assert.strictEqual(r.today.balance, 800000);
+    const costs = estClosingCosts(800000) + 0.0175 * 800000;
+    const at = (mip) => calcPayment(800000, 7.3, 30) + r.mi.monthly - newPmt(800000, mip);
+    assert.ok(Math.ceil(costs / at(0.55)) <= 36 && Math.ceil(costs / at(0.75)) > 36);
+    assert.strictEqual(lensOf(r, "fha_streamline"), null);
+    // 7.6%: flags, priced at 0.75%.
+    const hi = run(big(7.6));
+    const l = lensOf(hi, "fha_streamline");
+    assert.ok(l, JSON.stringify(hi));
+    const savings = calcPayment(800000, 7.6, 30) + hi.mi.monthly - newPmt(800000, 0.75);
+    assert.strictEqual(l.monthlySavings, Math.round(savings));
+    assert.strictEqual(l.breakEven, Math.ceil(costs / savings));
+  });
+
   test("break-even over 36 months: no flag", () => {
     // Case-1 client: the rate test passes but the upfront insurance takes over 36 months to recover.
     const r = run(base());
@@ -259,7 +304,9 @@ describe("va_irrrl", () => {
     assert.ok(lensOf(run(va("2026-02-20")), "va_irrrl"));
   });
 
-  test("a 0.4-point drop: no flag", () => {
+  test("a 0.4-point drop: no flag (the 36-month break-even blocks it first)", () => {
+    // With 1.5% + $2,500 in costs, a VA refi needs about a 0.64-point drop to break even in 36 months, so the 0.5-point rule can't be
+    // the one that decides; this pins the outcome.
     assert.strictEqual(lensOf(run(va("2023-09-15", { currentRate: 6.2 })), "va_irrrl"), null);
   });
 
@@ -323,6 +370,12 @@ describe("drop_pmi", () => {
     assert.strictEqual(lensOf(run(seasoned("2025-09-01", 280000)), "drop_pmi"), null); // 1 year, LTV 70
   });
 
+  test("on the 5-year anniversary the 75% bar still applies", () => {
+    assert.strictEqual(lensOf(run(seasoned("2021-11-13", 316000)), "drop_pmi"), null); // 60 months, LTV 79
+    assert.ok(lensOf(run(seasoned("2021-11-13", 296000)), "drop_pmi")); // 60 months, LTV 74
+    assert.ok(lensOf(run(seasoned("2021-10-13", 316000)), "drop_pmi")); // 61 months, LTV 79
+  });
+
   test("MI not typed: no flag and the MI line (original LTV over 80 or unknown)", () => {
     const r = run(conv({ monthlyMi: null }));
     assert.deepStrictEqual(r.lenses, []);
@@ -371,7 +424,7 @@ describe("usda_to_conv", () => {
     assert.strictEqual(l.priority, "medium"); // under $200 a month
     assert.strictEqual(
       l.detail,
-      `USDA, about ${Math.round(l.ltv)}% of value, fee about $${money(l.miMonthly)}/mo; conventional at ${l.effRate.toFixed(2)}% saves about $${money(l.monthlySavings)}/mo, break-even ${l.breakEven} mo`,
+      `USDA, about ${Math.round(l.ltv)}% of value, fee about $${money(l.miMonthly)}/mo; conventional at about ${l.effRate.toFixed(2)}% saves about $${money(l.monthlySavings)}/mo, break-even ${l.breakEven} mo`,
     );
   });
 
@@ -421,11 +474,19 @@ describe("gates", () => {
       for (const [k, v] of Object.entries(r.today)) assert.ok(!(typeof v === "number" && Number.isNaN(v)), k);
       assert.strictEqual(r.today.ltv, null);
     }
+    for (const loanBalance of [null, "", undefined]) assert.strictEqual(run(base({ loanBalance })).today.balance, null, String(loanBalance));
+    for (const propertyValue of [null, "", undefined]) {
+      const t = run(base({ propertyValue })).today;
+      assert.deepStrictEqual([t.value, t.cautiousValue, t.valueFrom], [null, null, null], String(propertyValue));
+    }
   });
 
   test("uses the bundled index by default", () => {
+    // The shipped snapshot is empty until the FHFA refresh, so the value stays flat.
     const r = upgradesFor(base(), RATES, TODAY);
-    assert.ok(Array.isArray(r.lenses) && Array.isArray(r.gaps));
+    assert.strictEqual(r.today.valueBasis, "flat");
+    assert.strictEqual(r.today.cautiousValue, 270000);
+    assert.strictEqual(lensOf(r, "fha_to_conv"), null);
   });
 });
 

@@ -17,16 +17,21 @@ const HIGH_SAVINGS = 200;           // $/mo for a "high" refi upgrade
 const NTB_MIN_DROP = 0.5;           // points: HUD's net tangible benefit, and the VA rate drop
 const FHA_UFMIP = 0.0175;           // upfront FHA insurance on a streamline (no refund credit: leans high)
 const FHA_NEW_ANNUAL_MIP = 0.55;    // % a year: today's FHA annual insurance at its top tier
+const FHA_NEW_ANNUAL_MIP_HIGH = 0.75; // % a year: the same above the FHA high-balance line (new-loan costs lean high)
+const FHA_HIGH_BALANCE = 726200;    // today's balance above which the new FHA loan pays FHA_NEW_ANNUAL_MIP_HIGH
 const VA_FUNDING_FEE = 0.005;       // IRRRL funding fee, counted as a cost
 const MI_ENDING_SOON_MONTHS = 12;   // insurance ending on its own this soon: no refi upgrade
 const CONV_MAX_LTV = 80;            // today's LTV for a conventional refi; and for Drop PMI after 5 years
+// FHA insurance at <= 90% original LTV ends 11 years after closing (mortgageInsurance.js). With the original LTV unknown, from 10
+// years on it may end within 12 months, or have ended already.
+const FHA_MAY_END_MONTHS = 11 * 12 - MI_ENDING_SOON_MONTHS;
 const WAITING_DAYS = 210;           // streamline seasoning
 const FHA_SEASON_MONTHS = 6;        // FHA: 6 full months since the first payment
 const VA_SEASON_MONTHS = 5;         // VA: 6 payments made = the first payment + 5 months
 const PMI_ORIGINAL_FRACTION = 0.8;  // Drop PMI on the original value
 const PMI_SEASONED_LTV = 75;        // Drop PMI on today's value, 2 to 5 years after closing
 const PMI_SEASONED_MONTHS = 24;
-const PMI_LONG_MONTHS = 60;
+const PMI_LONG_MONTHS = 60;         // more than this (not the anniversary itself): the 80% bar
 
 const GAPS = {
   program: "Add the loan program to check upgrades.",
@@ -73,13 +78,16 @@ const points = (n) => Math.round(n * 1e6) / 1e6;
 function todayBlock(c, today, index) {
   const b = balanceToday(c, today);
   const v = valueToday(c, today, index);
-  const balance = orNull(Number(b.balance));
-  const cautiousValue = orNull(v.cautious);
+  // A missing stored figure stays null (equity.js reads it as 0 or NaN).
+  const balanceFrom = numOrNull(c.loanBalance), valueFrom = numOrNull(c.propertyValue);
+  const balance = balanceFrom == null ? null : orNull(Number(b.balance));
+  const value = valueFrom == null ? null : orNull(v.value);
+  const cautiousValue = valueFrom == null ? null : orNull(v.cautious);
   const rawLtv = pos(balance) && pos(cautiousValue) ? (balance / cautiousValue) * 100 : null;
   return {
     t: {
-      balance, balanceFrom: numOrNull(c.loanBalance), balanceAsOf: c.balanceAsOf || null, balanceBasis: b.basis,
-      value: orNull(v.value), valueFrom: numOrNull(c.propertyValue), cautiousValue, valueAsOf: c.valueAsOf || null,
+      balance, balanceFrom, balanceAsOf: c.balanceAsOf || null, balanceBasis: b.basis,
+      value, valueFrom, cautiousValue, valueAsOf: c.valueAsOf || null,
       valueBasis: v.basis, growthPct: v.growthPct, ltv: rawLtv == null ? null : r1(rawLtv),
     },
     rawLtv,
@@ -96,10 +104,10 @@ function breakEvenWithin(costs, savings) {
 
 // 1 and 5: FHA or USDA to a conventional loan, leaving the insurance (or the USDA annual fee) behind.
 function govToConv(x, rates) {
-  const { c, program, score, scoreKnown, rate, t, rawLtv, mi, today } = x;
+  const { c, program, score, scoreKnown, rate, t, rawLtv, mi, miMayEnd, today } = x;
   if (!scoreKnown || !(score >= CONV_MIN_SCORE)) return null;
-  if (!(mi && mi.monthly > 0) || endsWithinMonths(mi, today, MI_ENDING_SOON_MONTHS)) return null;
-  if (!(rawLtv <= CONV_MAX_LTV)) return null;
+  if (!(mi && mi.monthly > 0) || miMayEnd || endsWithinMonths(mi, today, MI_ENDING_SOON_MONTHS)) return null;
+  if (!(fin(rawLtv) && rawLtv <= CONV_MAX_LTV)) return null;
   const a = analyze({
     loanType: c.loanType === "15yr_fixed" ? "15yr_fixed" : "30yr_fixed",
     currentRate: rate, loanBalance: t.balance, propertyValue: t.cautiousValue, creditScore: score,
@@ -114,23 +122,25 @@ function govToConv(x, rates) {
     lens: fha ? "fha_to_conv" : "usda_to_conv", label: fha ? "FHA → Conventional" : "USDA → Conventional",
     priority: refiPriority(savings), headline: monthlySavings, unit: "$/mo",
     detail: `${fha ? "FHA" : "USDA"}, about ${Math.round(ltv)}% of value, ${fha ? "insurance" : "fee"} about $${money(miMonthly)}/mo; ` +
-      `conventional at ${rate2(effRate)}% saves about $${money(monthlySavings)}/mo, break-even ${be} mo`,
+      `conventional at about ${rate2(effRate)}% saves about $${money(monthlySavings)}/mo, break-even ${be} mo`,
     monthlySavings, breakEven: be, effRate, ltv, miMonthly,
   };
 }
 
-// 3: FHA streamline. Old insurance leans low (unknown counts as none); the new loan pays today's top-tier annual insurance and the
-// upfront insurance as a cost.
+// 3: FHA streamline. Old insurance leans low (unknown, or possibly ended, counts as none); the new loan pays today's top-tier
+// annual insurance (the higher one above the high-balance line) and the upfront insurance as a cost.
 function fhaStreamline(x, rates) {
-  const { c, score, scoreKnown, rate, t, mi, first, today } = x;
+  const { c, score, scoreKnown, rate, t, mi, miMayEnd, first, today } = x;
   if (c.loanType !== "30yr_fixed" || !scoreKnown || !(score >= STREAMLINE_MIN_SCORE)) return null;
   const fhaRate = rates && rates.rate_30yr_fha;
   if (!pos(fhaRate)) return null;
   if (today < later(addDays(c.closeDate, WAITING_DAYS), addMonths(first, FHA_SEASON_MONTHS))) return null;
-  const oldMiRate = (mi && mi.annualRate) ?? 0;
-  if (points(rate + oldMiRate - (fhaRate + FHA_NEW_ANNUAL_MIP)) < NTB_MIN_DROP) return null;
-  const oldPmt = calcPayment(t.balance, rate, 30) + ((mi && mi.monthly) ?? 0);
-  const newPmt = calcPayment(t.balance, fhaRate, 30) + (t.balance * (FHA_NEW_ANNUAL_MIP / 100)) / 12;
+  const oldMiRate = miMayEnd ? 0 : (mi && mi.annualRate) ?? 0;
+  const oldMiMonthly = miMayEnd ? 0 : (mi && mi.monthly) ?? 0;
+  const newMip = t.balance > FHA_HIGH_BALANCE ? FHA_NEW_ANNUAL_MIP_HIGH : FHA_NEW_ANNUAL_MIP;
+  if (points(rate + oldMiRate - (fhaRate + newMip)) < NTB_MIN_DROP) return null;
+  const oldPmt = calcPayment(t.balance, rate, 30) + oldMiMonthly;
+  const newPmt = calcPayment(t.balance, fhaRate, 30) + (t.balance * (newMip / 100)) / 12;
   const savings = oldPmt - newPmt;
   const be = breakEvenWithin(estClosingCosts(t.balance) + FHA_UFMIP * t.balance, savings);
   if (be == null) return null;
@@ -174,8 +184,8 @@ function dropPmi(x) {
     originalLtv = r1((t.balance / originalValue) * 100);
   } else {
     const months = monthsBetween(c.closeDate, today);
-    if ((months >= PMI_SEASONED_MONTHS && months < PMI_LONG_MONTHS && rawLtv <= PMI_SEASONED_LTV) ||
-        (months >= PMI_LONG_MONTHS && rawLtv <= CONV_MAX_LTV)) path = "current";
+    if (fin(rawLtv) && ((months >= PMI_SEASONED_MONTHS && months <= PMI_LONG_MONTHS && rawLtv <= PMI_SEASONED_LTV) ||
+        (months > PMI_LONG_MONTHS && rawLtv <= CONV_MAX_LTV))) path = "current";
   }
   if (!path) return null;
   const miMonthly = Math.round(c.monthlyMi);
@@ -209,7 +219,10 @@ function upgradesFor(c, rates, today, { index } = {}) {
   const rate = Number(c.currentRate);
   if (!first || !pos(rate) || !pos(t.balance) || !pos(t.cautiousValue)) return done(gaps);
 
-  const x = { c, program, score: Number(c.creditScore), scoreKnown, rate, t, rawLtv, mi, first, today };
+  // FHA with the original LTV unknown, 10+ years after closing: it may have been <= 90% LTV, so its insurance may end within 12
+  // months or have ended already (spec 3.3 overrides 4.4's "unknown: never").
+  const miMayEnd = program === "fha" && !!mi && mi.originalLtv == null && addMonths(c.closeDate, FHA_MAY_END_MONTHS) <= today;
+  const x = { c, program, score: Number(c.creditScore), scoreKnown, rate, t, rawLtv, mi, miMayEnd, first, today };
   const found = program === "fha" ? [govToConv(x, rates), fhaStreamline(x, rates)]
     : program === "usda" ? [govToConv(x, rates)]
     : program === "va" ? [vaIrrrl(x, rates)]
@@ -222,5 +235,5 @@ function upgradesFor(c, rates, today, { index } = {}) {
 module.exports = {
   upgradesFor, GAPS,
   CONV_MIN_SCORE, STREAMLINE_MIN_SCORE, MAX_BREAK_EVEN, HIGH_SAVINGS, NTB_MIN_DROP, FHA_UFMIP, FHA_NEW_ANNUAL_MIP,
-  VA_FUNDING_FEE, MI_ENDING_SOON_MONTHS, CONV_MAX_LTV, WAITING_DAYS,
+  FHA_NEW_ANNUAL_MIP_HIGH, FHA_HIGH_BALANCE, VA_FUNDING_FEE, MI_ENDING_SOON_MONTHS, CONV_MAX_LTV, WAITING_DAYS,
 };

@@ -368,6 +368,30 @@ test("a live FRED resolve serves (and snapshots) the VA 30-year, series OBMMIVA3
   }
 });
 
+test("the web-search fallback passes only the keys it asks for: a model-made FHA or VA rate never gets through", async (t) => {
+  delete process.env.FRED_API_KEY; // FRED is skipped, so the full rate set comes from the web-search fallback
+  process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+  const Anthropic = require("@anthropic-ai/sdk");
+  const answer = {
+    rate_30yr_fixed: 6.8, rate_15yr_fixed: 6.1, rate_5_1_arm: 6.4, rate_30yr_fha: 5.1, rate_30yr_va: 5.0, rate_30yr_top_tier: 5.5,
+    date: "2026-10-20", source: "Mortgage News Daily",
+  };
+  t.mock.method(Anthropic.Messages.prototype, "create", async () => ({ content: [{ type: "text", text: JSON.stringify(answer) }] }));
+  const app = await startRatesApp();
+  try {
+    const data = await app.post();
+    assert.equal(data.success, true);
+    assert.deepStrictEqual(data.rates, {
+      rate_30yr_fixed: 6.8, rate_15yr_fixed: 6.1, rate_5_1_arm: 6.4, date: "2026-10-20", source: "Mortgage News Daily",
+    });
+    const stored = JSON.parse(db.prepare("SELECT rates FROM rate_snapshots").get().rates);
+    assert.deepStrictEqual(Object.keys(stored).sort(), ["date", "rate_15yr_fixed", "rate_30yr_fixed", "rate_5_1_arm", "source"]);
+  } finally {
+    app.close();
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+});
+
 test("the rates cache does not outlive the UTC day, so every served response has a same-day snapshot", async (t) => {
   process.env.FRED_API_KEY = "test-fred-key";
   delete process.env.ANTHROPIC_API_KEY;

@@ -20,6 +20,9 @@ const OBMMI_SERIES = {
   rate_30yr_top_tier: "OBMMIC30YFLVLE80FGE740", // 30yr, LTV≤80 FICO≥740
 };
 
+// The keys the Claude web-search fallback may return; anything else in the model's JSON is dropped.
+const FALLBACK_KEYS = ["rate_30yr_fixed", "rate_15yr_fixed", "rate_5_1_arm", "date", "source"];
+
 // OBMMI has no ARM index (Freddie's weekly ARM series was discontinued), so
 // the 5/1 ARM comes from Claude web search, or an estimate as last resort.
 const ARM_SPREAD_ESTIMATE = -0.10; // typical recent 5/1 ARM spread vs 30yr fixed
@@ -143,9 +146,10 @@ router.post("/rates", rateLimiter, async (req, res) => {
     console.error("OBMMI rates error:", err.name === "AbortError" ? "FRED timeout" : err.message);
   }
 
-  // Fallback: Claude web search for the full rate set (previous primary path)
+  // Fallback: Claude web search for the full rate set (previous primary path). Only the keys asked for pass, so a model-made FHA or
+  // VA rate can never reach the upgrade checks.
   try {
-    const rates = await claudeJson(
+    const found = await claudeJson(
       [
         "Search for today's current average US mortgage rates from Mortgage News Daily or Freddie Mac.",
         "Return ONLY a raw JSON object — no markdown, no explanation, no code fences.",
@@ -153,6 +157,8 @@ router.post("/rates", rateLimiter, async (req, res) => {
       ].join(" "),
       15_000
     );
+    const rates = {};
+    for (const key of FALLBACK_KEYS) if (found[key] !== undefined) rates[key] = found[key];
     if (typeof rates.rate_30yr_fixed !== "number") throw new Error("Unexpected rate format");
     const payload = { success: true, rates };
     ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
