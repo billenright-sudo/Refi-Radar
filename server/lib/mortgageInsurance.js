@@ -16,7 +16,7 @@ const CONV_END_FRACTION = 0.78;
 // Annual rate in percent, in effect from `from`. FHA uses the lower LTV tier (LTV is unknown for an estimate).
 const FHA_LONG = [["2013-06-03", 1.3], ["2015-01-26", 0.8], ["2023-03-20", 0.5]];
 const FHA_SHORT = [["2013-06-03", 0.45], ["2015-01-26", 0.45], ["2023-03-20", 0.15]];
-const USDA = [["2011-10-01", 0.3], ["2012-10-01", 0.4], ["2013-10-01", 0.5], ["2016-10-01", 0.35]];
+const USDA = [["2011-10-01", 0.3], ["2012-10-01", 0.4], ["2014-10-01", 0.5], ["2016-10-01", 0.35]];
 
 const num = (v) => typeof v === "number" && Number.isFinite(v);
 const pos = (v) => num(v) && v > 0;
@@ -68,6 +68,8 @@ function currentMi(c, balance, today) {
     const d = seventyEightDate(c);
     if (d) { out.endsOn = d; out.endsReason = "78_percent"; }
   }
+
+  if (out.endsOn && day(out.endsOn) <= day(today)) return { ...out, monthly: 0, annualRate: 0, basis: "none" };
 
   if (num(c.monthlyMi)) {
     out.monthly = cents(c.monthlyMi);

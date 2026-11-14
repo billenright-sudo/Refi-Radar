@@ -61,6 +61,7 @@ test("USDA by fiscal year", () => {
   est({ loanProgram: "usda", closeDate: "2018-01-01" }, 87.5, 0.35);
   est({ loanProgram: "usda", closeDate: "2012-03-01" }, 75, 0.3);
   est({ loanProgram: "usda", closeDate: "2013-01-15" }, 100, 0.4);
+  est({ loanProgram: "usda", closeDate: "2014-03-01" }, 100, 0.4);
   est({ loanProgram: "usda", closeDate: "2015-06-01" }, 125, 0.5);
   est({ loanProgram: "usda", closeDate: "2016-11-01" }, 87.5, 0.35);
   const old = mi({ loanProgram: "usda", closeDate: "2010-05-01" });
@@ -95,6 +96,20 @@ test("conventional typed MI ends at 78% of the original value", () => {
 test("conventional without both originals has no end date", () => {
   const r = mi({ loanProgram: "conventional", closeDate: "2019-05-01", monthlyMi: 95 });
   assert.strictEqual(r.endsOn, null);
+});
+
+test("insurance past its end date has ended", () => {
+  const f = mi({ loanProgram: "fha", closeDate: "2014-07-01", originalAmount: 270000, originalValue: 300000 });
+  assert.strictEqual(f.monthly, 0);
+  assert.strictEqual(f.annualRate, 0);
+  assert.strictEqual(f.basis, "none");
+  assert.strictEqual(f.endsOn, "2025-07-01");
+  assert.strictEqual(f.endsReason, "11_years");
+  const c = mi({ loanProgram: "conventional", closeDate: "2005-01-01", monthlyMi: 95, originalAmount: 270000, originalValue: 300000 });
+  assert.strictEqual(c.monthly, 0);
+  assert.strictEqual(c.basis, "none");
+  assert.strictEqual(c.endsReason, "78_percent");
+  assert.ok(c.endsOn < TODAY, c.endsOn);
 });
 
 test("endsWithinMonths", () => {
