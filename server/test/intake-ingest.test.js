@@ -678,3 +678,17 @@ test("the credit score becomes known when a row brings one", () => {
   run([item(2, { creditScore: "700" })]);
   assert.equal(newCols(id).credit_score_known, 1);
 });
+
+test("a refinance clears the old loan's program, MI and originals when the row has none, and keeps the ZIP and occupancy", () => {
+  const id = addClient(lou, { close_date: "2021-05-01", loan_program: "fha", monthly_mi: 180, property_zip: "85016", occupancy: "primary" });
+  const r = run([item(2, { ...REFI, loanAmount: "", currentBalance: "350000", appraisedValue: "", propertyValue: "520000" })]);
+  assert.deepStrictEqual(outcomes(r), [[2, "updated"]]);
+  const c = newCols(id);
+  assert.deepStrictEqual([c.loan_program, c.monthly_mi, c.original_amount, c.original_value, c.property_zip, c.occupancy], ["", null, null, null, "85016", "primary"]);
+});
+test("a refinance whose row names the program takes it", () => {
+  const id = addClient(lou, { close_date: "2021-05-01", loan_program: "fha", monthly_mi: 180 });
+  run([item(2, { ...REFI, loanProgram: "Conventional" })]);
+  const c = newCols(id);
+  assert.deepStrictEqual([c.loan_program, c.monthly_mi, c.original_amount], ["conventional", null, 400000]);
+});

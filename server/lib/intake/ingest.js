@@ -89,6 +89,14 @@ function loanChanges(client, record, rel, today) {
   optionalNumber("monthly_mi", record.monthlyMi);
   optionalNumber("original_amount", record.originalAmount);
   optionalNumber("original_value", record.originalValue);
+  // A refinance is a new loan: the old loan's program, MI and originals must not survive when the row does not bring new ones.
+  // The ZIP and occupancy belong to the property, so they stay.
+  if (rel === "refinance") {
+    if (record.loanProgram === "" && (client.loan_program ?? "") !== "") changes.loan_program = "";
+    if (record.monthlyMi === null && client.monthly_mi !== null) changes.monthly_mi = null;
+    if (record.originalAmount === null && client.original_amount !== null) changes.original_amount = null;
+    if (record.originalValue === null && client.original_value !== null) changes.original_value = null;
+  }
   keptText("property_zip", record.propertyZip);
   keptText("occupancy", record.occupancy);
   if (record.loanTypeGiven) text("loan_type", record.loanType);
