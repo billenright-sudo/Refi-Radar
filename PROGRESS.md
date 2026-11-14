@@ -3,9 +3,21 @@
 Living status file. **Update at the end of every major task** so work resumes
 cleanly after compaction / a new session. Newest notes at the top of each list.
 
-_Last updated: 2026-10-27_
+_Last updated: 2026-11-13_
 
 ## Done
+- **Loan upgrades — BUILT 2026-11-13 on `feature/loan-upgrades` (off `feature/accurate-refi-scoring`
+  @ `03f9ea3`), NOT merged, NOT deployed** (**server 1658 + client 370 node:tests**, build ok,
+  `check-scoring.js` ok; final Opus review → fix wave `f43ac26..c749a1c`). Brokers now see clients who
+  qualify for a better loan, not just a lower rate: five lenses — FHA → Conventional, Drop PMI, FHA
+  Streamline, VA IRRRL, USDA → Conventional — in an "Upgrades" section in Sweeps and a card on the client
+  page; Charlie answers from `upgradesTool` and names newly qualified clients in her briefing
+  (`client_upgrades` alert table, "New" until a reached contact). New client fields (program, monthly MI,
+  originals, ZIP, occupancy, as-of dates, `credit_score_known`), import mapping, today's balance (rolled
+  forward) and today's value (FHFA HPI, 10% caution cut), VA rate series `OBMMIVA30YF`. Conservative by
+  design: no program / date / known score → no flag, with a gap line. Design:
+  `docs/superpowers/specs/2026-11-13-loan-upgrades-design.md`; plan:
+  `docs/superpowers/plans/2026-11-13-loan-upgrades.md`. The HPI file ships empty until Bill's go.
 - **Charli Plan B — Google Calendar + client email — BUILT 2026-10-27 on `feature/charli-google`
   (branched from `feature/accurate-refi-scoring` @ `b542904`), NOT merged, NOT deployed**
   (**server 642/642 + client 83/83 node:tests**, up from 415/64). Charli reads the broker's own
@@ -173,8 +185,17 @@ _Last updated: 2026-10-27_
 - `main` is behind both feature branches (not merged).
 - Garbled org-1 name on Bill's real account (`wenright1@gmail.com`) — no org-rename
   API; needs a small DB fix.
-- Data gaps blocking Sweeps Phase 2: **loan program, occupancy, MI status, and today's home
-  value (AVM)** are not captured; only origination `propertyValue` exists.
+- Sweeps Phase 2 data (2026-11-13, `feature/loan-upgrades`): loan program, MI, occupancy, ZIP and
+  originals are now captured. Still open: no AVM — today's value is an HPI estimate only; and the HPI data
+  load is pending Bill's go (`hpiData.json` ships empty, so values don't grow yet).
+- Loan upgrades follow-ups: MI band sources other than HUD ML 2023-05 (older FHA bands, USDA) are
+  unverified; a rate gap (snapshot > 10 days old, or a day without VA) deletes refi alert rows, so those
+  clients come back "New" and Charlie re-announces them once (keep rows when the lens's rate is missing);
+  I7: a re-import of "current"-basis values reports "updated" (import counts over-count);
+  M9: pre-2013 FHA 78% date uses the stored, possibly premium-inclusive original amount (apply the
+  /1.0175 base); the pre-existing amber "PMI removal" line on the Equity Projection card still shows for
+  FHA/VA/USDA clients; run `node server/scripts/update-hpi.js` once on the real FHFA file and check it
+  picks the NSA index column.
 - `scripts/import` xlsx flow has no automated test yet (see Next steps).
 - gcloud auth tokens expire often → deploys intermittently need `gcloud auth login`.
 

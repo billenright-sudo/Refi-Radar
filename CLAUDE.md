@@ -41,7 +41,10 @@ server/    index.js (entry, wires routes), db.js (SQLite schema + idempotent mig
            routes/google.js     /api/google/{connect,callback,status,disconnect}  (per-user Google OAuth)
            routes/profile.js    /api/profile/{nmls,org-nmls}  (sender / company NMLS ID, printed on every email)
            routes/voice.js      /api/voice/{tts,stt}  (ElevenLabs proxy; key never leaves the server)
-           lib/refi.js (deterministic sweep engine), lib/rateHistory.js (daily rate snapshots, movement "since <day>"),
+           lib/refi.js (deterministic sweep engine), lib/upgrades.js (the five upgrade checks),
+           lib/mortgageInsurance.js (current MI estimate + when it ends), lib/equity.js (today's balance and value),
+           lib/hpi.js + hpiData.json (bundled FHFA home-price index), lib/upgradeAlerts.js (first-seen / announced / "New"),
+           lib/rateHistory.js (daily rate snapshots, movement "since <day>"),
            lib/assistant/{orchestrator,tools,prompt,coaching,glossary,speech,metering}.js
            lib/assistant/outreach.js  code-authored client-email templates + Gmail / Outlook / mailto compose links
            lib/google/{crypto,oauth,calendar,time,index}.js  crypto = AES-256-GCM token encryption; oauth = PKCE
@@ -53,7 +56,8 @@ client/    src/App.jsx (whole UI), src/index.jsx, index.html, vite.config.js
            src/charli/{session.mjs,vad.mjs,audio.js,CharliView.jsx,google.mjs} (+ *.test.mjs);
            google.mjs = the words of the Calendar & email card, no DOM
 scripts/   seed-demo.js (fake demo broker + 12 fake clients),
-           check-scoring.js (refi-math sanity check)
+           check-scoring.js (refi-math sanity check; requires server/lib/refi.js, no App.jsx eval; has an Upgrades block)
+server/scripts/  update-hpi.js (rebuilds hpiData.json from the FHFA xlsx), charlie-eval.js
 server/test/  node:test suites (refi math, rates, auth/permissions, sweeps, Charli orchestrator/API/voice/coaching)
 docs/superpowers/{specs,plans}/  Charli design + implementation plan
 Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
@@ -83,6 +87,9 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
   brokers: Google app verification for the sensitive `calendar.events` scope (public
   homepage, privacy policy, verified domain). Check the calendar 403 auth-reason mapping
   (`server/lib/google/calendar.js`) against a real account.
+- **Loan upgrades deploy note:** about 13 migration statements run in one transaction on first start (gcsfuse
+  journal warnings expected, as before). Existing clients show "Add the loan program to check upgrades" until the
+  broker re-imports the loan file.
 - **Charli deploy prerequisites:** `ELEVENLABS_API_KEY` in Secret Manager
   (`--update-secrets`: `--set-secrets` replaces every existing secret mapping — ANTHROPIC, FRED,
   JWT_SECRET, the GOOGLE_* ones — and without JWT_SECRET the server exits on start), the other
@@ -93,14 +100,39 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
 ## Data sources
 - **FRED API** (`FRED_API_KEY`): `DGS10` 10-yr Treasury (the Treasury widget) +
   **Optimal Blue** daily mortgage indices (`OBMMIC30YF`, `OBMMIC15YF`, jumbo,
-  FHA, **top-tier** `OBMMIC30YFLVLE80FGE740`) as the primary live-rate source.
+  FHA, **top-tier** `OBMMIC30YFLVLE80FGE740`) as the primary live-rate source. The VA series
+  `rate_30yr_va` = `OBMMIVA30YF` is fetched separately: a VA failure drops only that key, never the rest.
 - **Anthropic Claude** (`ANTHROPIC_API_KEY`, web search) for the 5/1 ARM rate and
   as the full fallback when FRED is down. Rates are cached in-memory for 6h.
-  Last-resort is a hardcoded "Estimated" rate set so the UI never breaks.
+  Last-resort is a hardcoded "Estimated" rate set so the UI never breaks. The Claude rates fallback
+  is whitelisted to 30yr / 15yr / 5-1 ARM / date / source — a model-produced FHA or VA rate never drives a flag.
+- **FHFA House Price Index** (free, no key), bundled as the 3-digit-ZIP quarterly `server/lib/hpiData.json` (no
+  runtime fetch). It **ships EMPTY** until Bill's go to download the FHFA file and run
+  `node server/scripts/update-hpi.js <xlsx>`; until then values don't grow and FHA → Conventional rarely flags.
 - **ElevenLabs** (`ELEVENLABS_API_KEY`): Charli's voice **Bella**
   (`ELEVENLABS_VOICE_ID_CHARLI`, model `ELEVENLABS_TTS_MODEL`) and Scribe
   speech-to-text (`ELEVENLABS_STT_MODEL`). Receives only the broker's audio and
   Charli's reply text — never tool results.
+
+## Loan upgrades (branch `feature/loan-upgrades`, not merged)
+- **Client columns:** `loan_program` (conventional/fha/va/usda/jumbo), `monthly_mi`, `original_amount`,
+  `original_value`, `property_zip`, `occupancy`, `balance_as_of`, `value_as_of`, `credit_score_known`; idempotent
+  ALTERs with backfills (as-of dates = last update; no value growth until a re-import or edit records its basis).
+  `credit_score_known`: a stored 700 that wasn't typed is unknown (the form posts a blank score as blank, never 700);
+  an old page posting 700 with no `loanProgram` key keeps the flag. `HAND_KEPT` is now 9 columns. PUT keeps any new
+  key the body omits (`""` clears it) so an old tab can't wipe imported data.
+- **Five lenses** (`lib/upgrades.js`): `fha_to_conv` "FHA → Conventional", `drop_pmi` "Drop PMI", `fha_streamline`
+  "FHA Streamline", `va_irrrl` "VA IRRRL", `usda_to_conv` "USDA → Conventional". FHA/VA/USDA clients skip Rate & Term,
+  ARM → Fixed and Term Swap (server) and get no conventional recommendation in the browser (a neutral line points to
+  Upgrades; the Equity "no PMI exposure" line is hidden for them). Every upgrade surface prices on the latest FRED
+  snapshot; refi upgrades are off when it is more than 10 days old.
+- **Guards (never loosen to make a case pass):** no program / close date / known credit score → no flag, with a gap
+  line ("Add the loan program to check upgrades."); estimated values are cut 10% before any equity test; estimates of
+  the client's current insurance lean low and costs of the new loan lean high; investment property, a streamline
+  waiting period, or insurance ending within 12 months → no flag; Drop PMI needs a typed MI above $0.
+- **Alerts:** table `client_upgrades` (client, lens, first seen, announced). The first daily check after a client
+  qualifies records it, Charlie's briefing names it once, the client shows "New" until a *reached* contact is logged;
+  a lens that stops qualifying loses its row and re-arms. Nothing is emailed.
 
 ## Branding
 Dark **navy** background (`#15294f`, brightened from near-black 2026-10-15),
@@ -131,7 +163,7 @@ files** (a repo-wide grep once echoed a key into a review transcript).
 - **UI (dev):** `cd client && npx vite` (5173, proxies `/api` → 8080).
 - **Prod-like:** `cd client && npx vite build --outDir ../server/client/build --emptyOutDir`, then run the server (single URL on 8080).
 - **Seed demo:** `node scripts/seed-demo.js http://localhost:8080` → `demo@refiradar.com` / `DemoPass123!`.
-- **Tests:** `cd server && npm test` and `cd client && npm test` (node:test, **Node 20**); plus `node scripts/check-scoring.js`.
+- **Tests:** `cd server && npm test` and `cd client && npm test` (node:test, **Node 20**); plus `node scripts/check-scoring.js` (requires `server/lib/refi.js`; client parity is `client/src/refiAnalysis.test.mjs`).
 - **Charli locally:** needs the `ELEVENLABS_*` vars in `server/.env` for audio (text-only otherwise); **Home** is the Overview with Charlie docked beside it (her morning briefing in the dock; stacked above it on tablet and phone), with a corner Charlie button on every other page. The calendar needs the four `GOOGLE_*` vars (names in `.env.example`); never read or print `server/.env`.
 - **Logs:** `gcloud run services logs read refi-radar --region us-central1 --project refi-radar-496318 --limit N`.
 - Always prepend portable Node 20 to PATH locally:
@@ -146,6 +178,12 @@ files** (a repo-wide grep once echoed a key into a review transcript).
   field that will be written; borrower PII (phone/email/notes) never reaches the model;
   the model never rounds — rates are rounded to 2 decimals at the tool boundary and
   movement is computed in code.
+- **Charlie and upgrades:** `upgradesTool` (16 tools now) lists clients with upgrades in the user's scope, filterable
+  by kind; the prompt says she says "looks like" and uses only returned figures. Eligibility questions ("Is Chen
+  eligible for an FHA streamline?") still hand off. Upgrades show in the call list / briefing as "now looks like…".
+- **Import:** "Loan Type" / "Program" headers now map to the loan program (the amortization field keeps "Amortization
+  Type" / "Product"); new MI, ZIP and occupancy synonyms; a refinance row clears program / MI / originals; imported MI
+  under $10 is ignored; a re-import records the value basis (`value_as_of`).
 - **Orchestrator guards:** every rule is documented in prose directly above its regex
   and pinned in a regression table (`server/test/assistant-orchestrator.test.js`,
   `coaching.test.js`). Extend the tables; **never loosen a guard to make a row pass.**
