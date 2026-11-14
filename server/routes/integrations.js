@@ -90,6 +90,7 @@ const BODY_FIELDS = Object.freeze({
   loan_amount: "loanAmount",
   term_months: "term",
   amortization_type: "amortization",
+  loan_program: "loanProgram",
   first_payment_date: "firstPaymentDate",
   property_value: "propertyValue",
   appraised_value: "appraisedValue",

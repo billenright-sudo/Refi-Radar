@@ -49,16 +49,20 @@ const run = (items, opts = {}) => ingest(db, {
 });
 
 // A stored client: John Smith with ROW's email and ROW's loan as of today (A100, 6.5%, closed 2024-03-14) unless the patch says
-// otherwise, in `userId`'s book.
+// otherwise, in `userId`'s book. It already holds the figures the row would write (original amount and value, a known credit
+// score), so a re-import of the same file is "unchanged".
 const addClient = (userId, f = {}) => Number(db.prepare(`
   INSERT INTO clients (org_id, user_id, name, email, phone, loan_number, loan_type, current_rate, loan_balance, property_value,
-                       close_date, credit_score, notes, last_contact)
+                       close_date, credit_score, notes, last_contact, original_amount, original_value, credit_score_known,
+                       loan_program, monthly_mi, property_zip, occupancy, balance_as_of, value_as_of)
   VALUES (@org_id, @user_id, @name, @email, @phone, @loan_number, @loan_type, @current_rate, @loan_balance, @property_value,
-          @close_date, @credit_score, @notes, @last_contact)
+          @close_date, @credit_score, @notes, @last_contact, @original_amount, @original_value, @credit_score_known,
+          @loan_program, @monthly_mi, @property_zip, @occupancy, @balance_as_of, @value_as_of)
 `).run({
   org_id: orgA, user_id: userId, name: "John Smith", email: "john@x.com", phone: "(555) 123-4567", loan_number: "A100",
   loan_type: "30yr_fixed", current_rate: 6.5, loan_balance: 387830, property_value: 520000, close_date: "2024-03-14",
-  credit_score: 742, notes: "", last_contact: null, ...f,
+  credit_score: 742, notes: "", last_contact: null, original_amount: 400000, original_value: 520000, credit_score_known: 1,
+  loan_program: "", monthly_mi: null, property_zip: "", occupancy: "", balance_as_of: null, value_as_of: null, ...f,
 }).lastInsertRowid);
 const clientRow = (id) => db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 const allClients = () => db.prepare("SELECT * FROM clients ORDER BY id").all();
@@ -608,4 +612,69 @@ test("Bill 11/3: an LO's own key changes only their own clients; another LO's is
   const own = run([item(2, { ...REFI, loanOfficer: "" })], asLou);
   assert.deepStrictEqual(own.results.map((x) => [x.outcome, x.movedFrom]), [["updated", null]]);
   assert.equal(clientRow(mine).current_rate, 6.25);
+});
+
+// ── the loan program, MI, ZIP, occupancy and the as-of dates (loan upgrades, spec 4.5) ────────────────────────────────────
+const NEW_COLS = "loan_program, monthly_mi, original_amount, original_value, property_zip, occupancy, balance_as_of, value_as_of, credit_score_known";
+const newCols = (id) => db.prepare(`SELECT ${NEW_COLS} FROM clients WHERE id = ?`).get(id);
+const EXTRA = { loanProgram: "FHA", monthlyMi: "$212.50", propertyZip: "85016-1234", occupancy: "Primary Residence" };
+
+test("a new client takes the program, MI, ZIP, occupancy, originals, as-of dates and the known credit score", () => {
+  const r = run([item(2, { ...EXTRA, appraisedValue: "355000", purchasePrice: "350000", purpose: "Purchase" })]);
+  assert.deepStrictEqual(outcomes(r), [[2, "created"]]);
+  assert.deepStrictEqual(newCols(allClients()[0].id), {
+    loan_program: "fha", monthly_mi: 212.5, original_amount: 400000, original_value: 350000, property_zip: "85016", occupancy: "primary",
+    balance_as_of: TODAY, value_as_of: "2024-03-14", credit_score_known: 1,
+  });
+});
+test("a current property value is as of the import date; an original-amount balance is as of the closing; no score is not known", () => {
+  run([item(2, { propertyValue: "610000", term: "", amortization: "", creditScore: "" })]);
+  const c = allClients()[0];
+  assert.deepStrictEqual([c.property_value, c.value_as_of, c.balance_as_of, c.credit_score_known, c.credit_score], [610000, TODAY, "2024-03-14", 0, 700]);
+});
+test("a re-import keeps a hand-edited program and ZIP, says so, and fills the unedited columns from the file", () => {
+  const id = addClient(lou, { loan_program: "va", property_zip: "85016", occupancy: "second_home" });
+  handEdited(id, "loan_program,property_zip");
+  const r = run([item(2, { ...EXTRA, propertyZip: "85020" })]);
+  assert.deepStrictEqual(r.results.map((x) => [x.outcome, x.flags]), [["updated", ["kept hand-edited loan program, property ZIP"]]]);
+  const c = newCols(id);
+  assert.deepStrictEqual([c.loan_program, c.property_zip, c.occupancy, c.monthly_mi], ["va", "85016", "primary", 212.5]);
+  assert.equal(clientRow(id).edited_by_hand, "loan_program,property_zip");
+  // again: only the kept values differ, so nothing is written
+  assert.deepStrictEqual(run([item(2, { ...EXTRA, propertyZip: "85020" })]).results.map((x) => x.outcome), ["unchanged"]);
+});
+test("an unedited client takes the file's program and ZIP", () => {
+  const id = addClient(lou, { loan_program: "va", property_zip: "85016" });
+  assert.deepStrictEqual(outcomes(run([item(2, { ...EXTRA, propertyZip: "85020" })])), [[2, "updated"]]);
+  assert.deepStrictEqual([newCols(id).loan_program, newCols(id).property_zip], ["fha", "85020"]);
+});
+test("a blank file cell never overwrites a stored value", () => {
+  const id = addClient(lou, { loan_program: "va", property_zip: "85016", occupancy: "investment", monthly_mi: 99, original_amount: 410000 });
+  const r = run([item(2, { loanProgram: "", amortization: "Fixed", monthlyMi: "", propertyZip: "", occupancy: "", loanAmount: "" , currentBalance: "387830" })]);
+  assert.deepStrictEqual(outcomes(r), [[2, "unchanged"]]);
+  const c = newCols(id);
+  assert.deepStrictEqual([c.loan_program, c.property_zip, c.occupancy, c.monthly_mi, c.original_amount], ["va", "85016", "investment", 99, 410000]);
+});
+test("a new balance writes balance_as_of, and a new property value writes value_as_of", () => {
+  const id = addClient(lou, { loan_balance: 380000, property_value: 500000, balance_as_of: "2026-01-01", value_as_of: "2026-01-01" });
+  run([item(2, { currentBalance: "391002.50", propertyValue: "610000" })]);
+  const c = newCols(id);
+  assert.deepStrictEqual([clientRow(id).loan_balance, clientRow(id).property_value, c.balance_as_of, c.value_as_of], [391002.5, 610000, TODAY, TODAY]);
+});
+test("an unchanged balance and value leave their as-of dates alone", () => {
+  const id = addClient(lou, { balance_as_of: "2026-01-01", value_as_of: "2026-01-01" });
+  assert.deepStrictEqual(outcomes(run([item(2)])), [[2, "unchanged"]]);
+  assert.deepStrictEqual([newCols(id).balance_as_of, newCols(id).value_as_of], ["2026-01-01", "2026-01-01"]);
+});
+test("a refinance replaces a hand-edited program", () => {
+  const id = addClient(lou, { close_date: "2021-05-01", loan_program: "va" });
+  handEdited(id, "loan_program");
+  run([item(2, { ...REFI, ...EXTRA })]);
+  assert.equal(newCols(id).loan_program, "fha");
+  assert.equal(clientRow(id).edited_by_hand, "");
+});
+test("the credit score becomes known when a row brings one", () => {
+  const id = addClient(lou, { credit_score: 700, credit_score_known: 0 });
+  run([item(2, { creditScore: "700" })]);
+  assert.equal(newCols(id).credit_score_known, 1);
 });

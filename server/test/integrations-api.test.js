@@ -651,3 +651,16 @@ test("Bill 11/3: a loan officer's own key skips another loan officer's client an
   const [client] = clientRows();
   assert.deepStrictEqual([client.user_id, client.current_rate], [lia, 7.25]);
 });
+
+test("a feed's loan_program is stored; without it, the amortization text names the program", async () => {
+  const key = giveKey(ann);
+  let r = await post(key, { ...BODY, loan_program: "FHA" });
+  assert.deepStrictEqual([r.status, r.data], [200, { result: "created" }]);
+  assert.strictEqual(clientRows()[0].loan_program, "fha");
+
+  db.prepare("DELETE FROM clients").run();
+  r = await post(key, { ...BODY, amortization_type: "FHA 30 Fixed" });
+  assert.deepStrictEqual([r.status, r.data], [200, { result: "created" }]);
+  assert.strictEqual(clientRows()[0].loan_program, "fha");
+  assert.strictEqual(clientRows()[0].loan_type, "30yr_fixed");
+});

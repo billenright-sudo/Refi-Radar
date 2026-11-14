@@ -14,7 +14,8 @@ test("a full row becomes a record with today's estimated balance", () => {
   assert.deepStrictEqual(r, { ok: true, flags: ["balance estimated from the loan schedule"], record: {
     name: "John Smith", email: "john@x.com", phone: "(555) 123-4567", loanNumber: "A100", rate: 6.5, balance: 387830, balanceBasis: "estimated",
     propertyValue: 520000, loanType: "30yr_fixed", loanTypeGiven: true, closeDate: "2024-03-14", creditScore: 742, purpose: "refinance",
-    loanOfficer: "lou@a.test", notes: "met at open house" } });
+    loanOfficer: "lou@a.test", notes: "met at open house",
+    valueBasis: "origination", originalValue: 520000, originalAmount: 400000, balanceAsOf: TODAY, loanProgram: "", monthlyMi: null, propertyZip: "", occupancy: "" } });
 });
 test("a current balance wins; an amount with no term is the original amount, flagged", () => {
   assert.equal(toRecord({ ...ROW, currentBalance: "391,002.50" }, { today: TODAY }).record.balance, 391002.5);
@@ -83,7 +84,8 @@ test("loan number, phone, purpose and credit score are cleaned; absent optional 
   const min = toRecord({ firstName: "A", noteRate: "6", loanAmount: "100000", appraisedValue: "200000" }, { today: TODAY });
   assert.equal(min.ok, true);
   assert.deepStrictEqual(min.record, { name: "A", email: "", phone: "", loanNumber: "", rate: 6, balance: 100000, balanceBasis: "original", propertyValue: 200000,
-    loanType: "30yr_fixed", loanTypeGiven: false, closeDate: "", creditScore: null, purpose: "", loanOfficer: "", notes: "" });
+    loanType: "30yr_fixed", loanTypeGiven: false, closeDate: "", creditScore: null, purpose: "", loanOfficer: "", notes: "",
+    valueBasis: "origination", originalValue: 200000, originalAmount: 100000, balanceAsOf: TODAY, loanProgram: "", monthlyMi: null, propertyZip: "", occupancy: "" });
   for (const creditScore of ["299", "851", "742.5", "", "n/a"]) assert.equal(toRecord({ ...ROW, creditScore }, { today: TODAY }).record.creditScore, null);
   assert.equal(toRecord({ ...ROW, purpose: "Cash-out" }, { today: TODAY }).record.purpose, "");
 });
@@ -91,4 +93,54 @@ test("with no requireClosingDate, a blank or unreadable date reads as '' and a f
   assert.equal(toRecord({ ...ROW, closingDate: "" }, { today: TODAY }).record.closeDate, "");
   assert.equal(toRecord({ ...ROW, closingDate: undefined }, { today: TODAY }).record.closeDate, "");
   assert.equal(toRecord({ ...ROW, closingDate: "2026-12-25" }, { today: TODAY, requireClosingDate: false }).code, "future_closing_date");
+});
+
+// ── loan program, MI, ZIP, occupancy and the original figures (spec 4.5) ──────────────────────────────────────────────
+const rec = (patch, opts = {}) => toRecord({ ...ROW, ...patch }, { today: TODAY, ...opts }).record;
+
+test("the loan program is read as a whole word from the program column, else the amortization text", () => {
+  const table = [["Conv 30 Fixed", "conventional"], ["FHA 30YR", "fha"], ["VA IRRRL", "va"], ["USDA RD 30", "usda"], ["Rural Housing", "usda"],
+    ["Non-QM", ""], ["Fannie Mae", "conventional"], ["Conforming", "conventional"], ["Evans Special", ""], ["Nevada Special", ""], ["", ""]];
+  for (const [text, program] of table) {
+    assert.equal(rec({ loanProgram: text, amortization: "" }).loanProgram, program, text);
+    assert.equal(rec({ amortization: text }).loanProgram, program, `amortization: ${text}`);
+  }
+  assert.equal(rec({ loanProgram: "FHA", amortization: "Conventional" }).loanProgram, "fha");
+  const jumbo = rec({ loanProgram: "Jumbo ARM 7/1", amortization: "", term: "" });
+  assert.equal(jumbo.loanProgram, "jumbo"); assert.equal(jumbo.loanType, "5_1_arm"); assert.equal(jumbo.loanTypeGiven, true);
+});
+test("an ARM named only in the program column still sets the loan type", () => {
+  const r = rec({ loanProgram: "5/1 ARM", amortization: "", term: "" });
+  assert.equal(r.loanType, "5_1_arm");
+  assert.equal(rec({ loanProgram: "30 Yr Fixed", amortization: "", term: "" }).balanceBasis, "estimated");
+});
+test("the original value: the lesser for a purchase (or unknown purpose), the appraisal for a refinance", () => {
+  const vals = { appraisedValue: "355000", purchasePrice: "350000", propertyValue: "" };
+  assert.equal(rec({ ...vals, purpose: "Purchase" }).originalValue, 350000);
+  assert.equal(rec({ ...vals, purpose: "" }).originalValue, 350000);
+  assert.equal(rec({ ...vals, purpose: "Refinance" }).originalValue, 355000);
+  assert.equal(rec({ appraisedValue: "", purchasePrice: "350000", purpose: "Refinance" }).originalValue, 350000);
+  assert.equal(rec({ appraisedValue: "355000", purchasePrice: "", purpose: "Purchase" }).originalValue, 355000);
+  assert.equal(rec({ appraisedValue: "", purchasePrice: "", propertyValue: "610000" }).originalValue, null);
+  assert.equal(rec({ loanAmount: "" , currentBalance: "300000" }).originalAmount, null);
+});
+test("valueBasis: current when the value came from the property value column", () => {
+  assert.equal(rec({ propertyValue: "610000" }).valueBasis, "current");
+  assert.equal(rec({ propertyValue: "" }).valueBasis, "origination");
+  assert.equal(rec({ propertyValue: "0" }).valueBasis, "origination");
+});
+test("balanceAsOf: the close date for an original-amount balance, else the import date", () => {
+  assert.equal(rec({ term: "", amortization: "" }).balanceAsOf, "2024-03-14");
+  assert.equal(rec({ term: "", amortization: "", closingDate: "" }).balanceAsOf, TODAY);
+  assert.equal(rec({}).balanceAsOf, TODAY);
+  assert.equal(rec({ currentBalance: "391002" }).balanceAsOf, TODAY);
+});
+test("occupancy, ZIP and monthly MI are cleaned", () => {
+  const occ = [["Investment Property", "investment"], ["Non-Owner Occupied", "investment"], ["Rental", "investment"], ["Second Home", "second_home"],
+    ["Vacation", "second_home"], ["Primary Residence", "primary"], ["Owner Occupied", "primary"], ["Principal", "primary"], ["Other", ""], ["", ""]];
+  for (const [text, value] of occ) assert.equal(rec({ occupancy: text }).occupancy, value, text);
+  const zips = [["85016", "85016"], ["85016-1234", "85016"], [" 850161234 ", "85016"], [85016, "85016"], ["8501", ""], ["ABC12", ""], ["850161", ""], ["", ""]];
+  for (const [text, value] of zips) assert.equal(rec({ propertyZip: text }).propertyZip, value, String(text));
+  const mi = [["$212.50", 212.5], ["0", 0], ["5000", 5000], ["6000", null], ["-5", null], ["n/a", null], ["", null]];
+  for (const [text, value] of mi) assert.equal(rec({ monthlyMi: text }).monthlyMi, value, text);
 });

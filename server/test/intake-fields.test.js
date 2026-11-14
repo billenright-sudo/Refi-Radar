@@ -21,9 +21,9 @@ test("FIELDS is the whole whitelist, in order", () => {
   assert.deepStrictEqual(FIELDS.map((f) => [f.id, f.label]), [
     ["borrowerName", "Borrower name"], ["firstName", "First name"], ["lastName", "Last name"], ["email", "Email"], ["phone", "Phone"],
     ["loanNumber", "Loan number"], ["noteRate", "Note rate"], ["currentBalance", "Current balance"], ["loanAmount", "Original loan amount"],
-    ["term", "Loan term"], ["amortization", "Amortization / product"], ["propertyValue", "Property value"], ["appraisedValue", "Appraised value"],
+    ["term", "Loan term"], ["amortization", "Amortization / product"], ["loanProgram", "Loan program"], ["propertyValue", "Property value"], ["appraisedValue", "Appraised value"],
     ["purchasePrice", "Purchase price"], ["closingDate", "Closing / funding date"], ["status", "Loan status"], ["purpose", "Loan purpose"],
-    ["firstPaymentDate", "First payment date"], ["creditScore", "Credit score"], ["loanOfficer", "Loan officer (email or name)"], ["notes", "Notes"],
+    ["firstPaymentDate", "First payment date"], ["creditScore", "Credit score"], ["monthlyMi", "Monthly mortgage insurance"], ["propertyZip", "Property ZIP"], ["occupancy", "Occupancy"], ["loanOfficer", "Loan officer (email or name)"], ["notes", "Notes"],
   ]);
 });
 test("every synonym is in headerKey form, belongs to one field only, and is not a protected header", () => {
@@ -52,15 +52,26 @@ test("a Calyx Point export maps with no picks, and the date-of-birth column is n
 });
 test("a LendingPad funded-loans export maps with no picks; the SSN and the estimated closing date are never used", () => {
   const m = detectMapping(LENDINGPAD);
-  assert.deepStrictEqual(pick(m, LOAN_IDS), LOAN_COLUMNS);
+  // "Loan Program" is the program now, not the amortization (LendingPad has no separate amortization column).
+  assert.deepStrictEqual(pick(m, LOAN_IDS), { ...LOAN_COLUMNS, amortization: -1 });
+  assert.equal(m.loanProgram, 8);
   assert.equal(m.closingDate, 11);
   for (const i of [17, 18, 19]) assert.ok(!Object.values(m).includes(i));
 });
 test("a generic CRM file still maps as today; 'Loan Amount' is the original amount, never the balance", () => {
-  assert.deepStrictEqual(pick(detectMapping(GENERIC), ["borrowerName","email","phone","noteRate","currentBalance","propertyValue","amortization","closingDate","creditScore","notes"]),
-    { borrowerName: 0, email: 1, phone: 2, noteRate: 3, currentBalance: 4, propertyValue: 5, amortization: 6, closingDate: 7, creditScore: 8, notes: 9 });
+  assert.deepStrictEqual(pick(detectMapping(GENERIC), ["borrowerName","email","phone","noteRate","currentBalance","propertyValue","loanProgram","closingDate","creditScore","notes"]),
+    { borrowerName: 0, email: 1, phone: 2, noteRate: 3, currentBalance: 4, propertyValue: 5, loanProgram: 6, closingDate: 7, creditScore: 8, notes: 9 });
   const m = detectMapping(["Name", "Loan Amount", "Rate"]);
   assert.equal(m.loanAmount, 1); assert.equal(m.currentBalance, -1);
+});
+test("the program, product, ZIP, MI and occupancy headers map to their own fields", () => {
+  const both = detectMapping(["Loan Type", "Amortization Type"]);
+  assert.equal(both.loanProgram, 0); assert.equal(both.amortization, 1);
+  const product = detectMapping(["Product"]);
+  assert.equal(product.amortization, 0); assert.equal(product.loanProgram, -1);
+  assert.equal(detectMapping(["Property Zip", "Zip"]).propertyZip, 0);
+  const rest = detectMapping(["Monthly MI", "Occupancy Type"]);
+  assert.equal(rest.monthlyMi, 0); assert.equal(rest.occupancy, 1);
 });
 test("a column goes to one field only, and every field id is always present", () => {
   for (const headers of [ARIVE, CALYX, LENDINGPAD, GENERIC, [], ["Balance", "Balance"]]) {

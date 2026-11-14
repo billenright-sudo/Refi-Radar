@@ -63,7 +63,7 @@ const NAME_ONLY = "matched by name only: check it's the same person";
 // What an update of a matched client would do: `changes`, the columns it would change as { column: new value }, and `held`,
 // the hand-edited columns whose different value from the row it keeps. `rel` is "same" or "refinance". Only the same loan
 // keeps hand edits; a refinance writes over them, and each mark it writes over goes.
-function loanChanges(client, record, rel) {
+function loanChanges(client, record, rel, today) {
   const changes = {};
   const held = [];
   const marks = readMarks(client.edited_by_hand);
@@ -74,12 +74,29 @@ function loanChanges(client, record, rel) {
     else changes[col] = value;
   };
   const text = (col, value) => { if ((client[col] ?? "") !== value) changes[col] = value; };
+  // A hand-kept text column: a blank value never overwrites, an unchanged one is skipped, a hand-edited one is held.
+  const keptText = (col, value) => {
+    if (value === "" || (client[col] ?? "") === value) return;
+    if (kept.has(col)) held.push(col);
+    else changes[col] = value;
+  };
+  const optionalNumber = (col, value) => { if (value !== null) number(col, value); };
 
   number("current_rate", record.rate);
   number("property_value", record.propertyValue);
+  if ("property_value" in changes) changes.value_as_of = valueAsOf(record, today);
+  keptText("loan_program", record.loanProgram);
+  optionalNumber("monthly_mi", record.monthlyMi);
+  optionalNumber("original_amount", record.originalAmount);
+  optionalNumber("original_value", record.originalValue);
+  keptText("property_zip", record.propertyZip);
+  keptText("occupancy", record.occupancy);
   if (record.loanTypeGiven) text("loan_type", record.loanType);
   if (record.closeDate) text("close_date", record.closeDate);
-  if (record.creditScore !== null) number("credit_score", record.creditScore);
+  if (record.creditScore !== null) {
+    number("credit_score", record.creditScore);
+    if (client.credit_score_known !== 1) changes.credit_score_known = 1;
+  }
   // A refinance replaces the loan, number and all: an unnumbered new loan clears the old number, which belongs to the loan it
   // paid off (kept, it would match that old loan as "same" on the next import and roll the client back to it). The same loan
   // keeps its number when the row gives none.
@@ -91,7 +108,10 @@ function loanChanges(client, record, rel) {
   const storedDate = parseDate(client.close_date);
   const loanChanged = rel === "refinance" || (!kept.has("current_rate") && !sameNumber(client.current_rate, record.rate))
     || Boolean(storedDate && record.closeDate && storedDate !== record.closeDate);
-  if (record.balanceBasis === "current" || loanChanged) number("loan_balance", record.balance);
+  if (record.balanceBasis === "current" || loanChanged) {
+    number("loan_balance", record.balance);
+    if ("loan_balance" in changes) changes.balance_as_of = record.balanceAsOf;
+  }
 
   if (blank(client.email) && record.email) changes.email = record.email;
   if (blank(client.phone) && record.phone) changes.phone = record.phone;
@@ -100,6 +120,9 @@ function loanChanges(client, record, rel) {
   if (left.size !== marks.size) changes.edited_by_hand = writeMarks(left);
   return { changes, held };
 }
+
+// The day a stored property value is as of: the import date for a current value, else the day the loan closed.
+const valueAsOf = (record, today) => (record.valueBasis === "current" ? today : record.closeDate || today);
 
 function countsOf(results) {
   const counts = { created: 0, updated: 0, unchanged: 0, ambiguous: 0, skipped: 0, moved: 0, byOwner: [] };
@@ -155,9 +178,11 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
 
   const insertClient = db.prepare(`
     INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date,
-                         credit_score, notes, loan_number, source)
+                         credit_score, notes, loan_number, source, loan_program, monthly_mi, original_amount, original_value,
+                         property_zip, occupancy, balance_as_of, value_as_of, credit_score_known)
     VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date,
-            @credit_score, @notes, @loan_number, @source)
+            @credit_score, @notes, @loan_number, @source, @loan_program, @monthly_mi, @original_amount, @original_value,
+            @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known)
   `);
   const notify = db.prepare("INSERT INTO notifications (org_id, from_user, to_user, client_id, message) VALUES (?, ?, ?, ?, ?)");
   const alreadyTold = db.prepare("SELECT 1 FROM notifications WHERE to_user = ? AND client_id = ? AND message = ?");
@@ -187,7 +212,10 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
       org_id: actor.org_id, user_id: owner.id, name: record.name, email: record.email, phone: record.phone,
       loan_type: record.loanType, current_rate: record.rate, loan_balance: record.balance, property_value: record.propertyValue,
       close_date: record.closeDate, credit_score: record.creditScore ?? DEFAULT_CREDIT_SCORE, notes: record.notes,
-      loan_number: record.loanNumber, source,
+      loan_number: record.loanNumber, source, loan_program: record.loanProgram, monthly_mi: record.monthlyMi,
+      original_amount: record.originalAmount, original_value: record.originalValue, property_zip: record.propertyZip,
+      occupancy: record.occupancy, balance_as_of: record.balanceAsOf, value_as_of: valueAsOf(record, today),
+      credit_score_known: record.creditScore === null ? 0 : 1,
     });
     const id = Number(info.lastInsertRowid);
     createdThisRun.add(id);
@@ -239,7 +267,7 @@ function ingest(db, { actor, source, items, today, nowUtc, requireClosingDate = 
 
     // The same loan or a refinance. A row that named its loan officer takes the client to them (A6a); a row that only fell
     // back to the importer's own book never moves anyone.
-    const { changes, held } = loanChanges(client, record, rel);
+    const { changes, held } = loanChanges(client, record, rel, today);
     const keptFlag = held.length ? [`kept hand-edited ${held.map((col) => LABELS[col]).join(", ")}`] : [];
     const reassigns = owner.named && owner.id !== client.user_id;
     if (reassigns) changes.user_id = owner.id;
