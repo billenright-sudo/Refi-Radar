@@ -46,6 +46,10 @@ const roundEighth = (x) => Math.round(x / 0.125) * 0.125;
 const LLPA_TOP_TIER_EMBEDDED = 0.25;
 const estClosingCosts = (balance) => 2500 + balance * 0.01;
 
+const numOrNull = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+const isTrue = (v) => v === true || v === 1 || v === "1";
+const GOV_PROGRAMS = new Set(["fha", "va", "usda"]);
+
 // Normalize a camelCase/ snake_case client record into the fields the math needs.
 function norm(c) {
   return {
@@ -59,6 +63,16 @@ function norm(c) {
     closeDate: c.closeDate || c.close_date || "",
     lastContact: c.lastContact || c.last_contact || "",
     createdAt: c.createdAt || c.created_at || "",
+    loanProgram: c.loanProgram || c.loan_program || "",
+    monthlyMi: numOrNull(c.monthlyMi !== undefined ? c.monthlyMi : c.monthly_mi),
+    originalAmount: numOrNull(c.originalAmount !== undefined ? c.originalAmount : c.original_amount),
+    originalValue: numOrNull(c.originalValue !== undefined ? c.originalValue : c.original_value),
+    propertyZip: c.propertyZip || c.property_zip || "",
+    occupancy: c.occupancy || "",
+    balanceAsOf: c.balanceAsOf || c.balance_as_of || "",
+    valueAsOf: c.valueAsOf || c.value_as_of || "",
+    creditScoreKnown: isTrue(c.creditScoreKnown !== undefined ? c.creditScoreKnown : c.credit_score_known),
+    editedByHand: Array.isArray(c.editedByHand) ? c.editedByHand.join(",") : (c.editedByHand || c.edited_by_hand || ""),
   };
 }
 
@@ -195,25 +209,36 @@ function checkInStatus(c, now = new Date()) {
 const PRIORITY_RANK = { high: 3, medium: 2, low: 1 };
 const impact = (o) => o.monthlySavings || o.cashAvailable || o.headline || 0;
 
-function sweepClient(raw, rates, now = new Date()) {
+function sweepClient(raw, rates, now = new Date(), opts = {}) {
   const c = norm(raw);
-  const lenses = [rateTerm(c, rates), cashOut(c), armToFixed(c, rates), termSwap(c, rates)].filter(Boolean);
+  // Government loans skip the conventional rate lenses (their own upgrade checks cover them); equity still counts.
+  const lenses = (GOV_PROGRAMS.has(c.loanProgram)
+    ? [cashOut(c)]
+    : [rateTerm(c, rates), cashOut(c), armToFixed(c, rates), termSwap(c, rates)]).filter(Boolean);
   lenses.sort((x, y) => (PRIORITY_RANK[y.priority] - PRIORITY_RANK[x.priority]) || (impact(y) - impact(x)));
   const doNotEmail = raw.do_not_email === 1 || raw.doNotEmail === true;
-  return { clientId: c.id, name: c.name, doNotEmail, best: lenses[0] || null, opportunities: lenses, checkIn: checkInStatus(c, now) };
+  // Lazy: upgrades.js destructures from this module at load time.
+  const { upgradesFor } = require("./upgrades");
+  const up = upgradesFor(c, rates, now.toISOString().slice(0, 10), { index: opts.index });
+  return {
+    clientId: c.id, name: c.name, doNotEmail, best: lenses[0] || null, opportunities: lenses, checkIn: checkInStatus(c, now),
+    upgrades: up.lenses, bestUpgrade: up.lenses[0] || null, upgradeGaps: up.gaps,
+  };
 }
 
-function runSweep(clients, rates, now = new Date()) {
-  const rows = (clients || []).map((c) => sweepClient(c, rates, now));
+function runSweep(clients, rates, now = new Date(), opts = {}) {
+  const rows = (clients || []).map((c) => sweepClient(c, rates, now, opts));
   // Ranked as the call list and Charlie rank them (priority, then dollar impact), the name breaking a tie; the Sweeps page shows this order.
   const opportunities = rows.filter((r) => r.best).sort((a, b) =>
     (PRIORITY_RANK[b.best.priority] - PRIORITY_RANK[a.best.priority]) || (impact(b.best) - impact(a.best)) || String(a.name).localeCompare(String(b.name)));
+  const upgrades = rows.filter((r) => r.bestUpgrade).sort((a, b) =>
+    (PRIORITY_RANK[b.bestUpgrade.priority] - PRIORITY_RANK[a.bestUpgrade.priority]) || (impact(b.bestUpgrade) - impact(a.bestUpgrade)) || String(a.name).localeCompare(String(b.name)));
   const checkIns = rows.filter((r) => r.checkIn.due);
   const byLens = {};
-  for (const r of rows) for (const o of r.opportunities) byLens[o.lens] = (byLens[o.lens] || 0) + 1;
+  for (const r of rows) for (const o of [...r.opportunities, ...r.upgrades]) byLens[o.lens] = (byLens[o.lens] || 0) + 1;
   return {
-    opportunities, checkIns, byLens,
-    counts: { total: rows.length, withOpportunity: opportunities.length, checkInsDue: checkIns.length },
+    opportunities, upgrades, checkIns, byLens,
+    counts: { total: rows.length, withOpportunity: opportunities.length, withUpgrade: upgrades.length, checkInsDue: checkIns.length },
     ranAt: now.toISOString(),
   };
 }
