@@ -5,7 +5,7 @@ const { requireAuth } = require("../middleware/auth");
 const { requireAccess } = require("../middleware/access");
 const refi = require("../lib/refi");
 const { safeCheck } = require("../lib/targets");
-const { safeCheckUpgrades, newAlertRows, markNew } = require("../lib/upgradeAlerts");
+const upgradeAlerts = require("../lib/upgradeAlerts");
 
 const router = express.Router();
 router.use(requireAuth, requireAccess);
@@ -20,17 +20,12 @@ router.post("/", (req, res) => {
   }
   try {
     safeCheck(db, req.user.org_id);   // spec 4.4: a sweep checks the targets too, so a hit it finds is stored (a failed check: logged)
-    safeCheckUpgrades(db, req.user.org_id);   // spec 4.7: and the upgrades, so a lens that newly qualifies is recorded
+    upgradeAlerts.safeCheckUpgrades(db, req.user.org_id);   // spec 4.7: and the upgrades, so a lens that newly qualifies is recorded
     const rows = req.user.role === "broker"
       ? db.prepare("SELECT * FROM clients WHERE org_id = ? ORDER BY name ASC").all(req.user.org_id)
       : db.prepare("SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC").all(req.user.id);
     const sweep = refi.runSweep(rows, rates);
-    const fresh = newAlertRows(db, sweep.upgrades.map((r) => r.clientId));
-    const upgrades = sweep.upgrades.map((r) => {
-      const lenses = markNew(r.upgrades, fresh.get(r.clientId));
-      return { ...r, upgrades: lenses, bestUpgrade: lenses[0] || null };
-    });
-    res.json({ success: true, ...sweep, upgrades });
+    res.json({ success: true, ...sweep, upgrades: upgradeAlerts.markSweepUpgrades(db, sweep.upgrades) });
   } catch (err) {
     console.error("POST /api/sweeps:", err.message);
     res.status(500).json({ success: false, error: "Sweep failed" });

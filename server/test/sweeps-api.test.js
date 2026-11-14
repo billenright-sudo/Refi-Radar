@@ -120,3 +120,38 @@ test("sweep upgrade rows carry isNew from the alert table, and a reached call cl
     server.close();
   }
 });
+
+test("a failing isNew marking never fails the sweep: the rows go out unmarked, the rest unchanged", async () => {
+  const upgradeAlerts = require("../lib/upgradeAlerts");
+  const server = app().listen(0);
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://localhost:${server.address().port}`;
+  const real = upgradeAlerts.newAlertRows;
+  const logged = [];
+  const savedErr = console.error;
+  try {
+    const s = session(base);
+    addBroker(db, { email: "cy@test.co", firstName: "Cy", lastName: "B", orgName: "Charlie Org" });
+    assert.equal((await s("POST", "/api/auth/login", { email: "cy@test.co", password: "password123" })).status, 200);
+    const rates = { ...RATES, rate_30yr_fha: 6.1, rate_30yr_va: 5.8 };
+    const made = await s("POST", "/api/clients", {
+      name: "Wes Sample", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 400000, creditScore: 720,
+      loanProgram: "va", closeDate: "2025-06-15", originalAmount: 300000, originalValue: 400000, propertyZip: "85016", occupancy: "primary",
+    });
+    db.prepare("UPDATE clients SET balance_as_of = '2025-06-15' WHERE id = ?").run(made.data.client.id);
+    upgradeAlerts.newAlertRows = () => { throw new TypeError("secret client name"); };
+    console.error = (...a) => logged.push(a.join(" "));
+    const r = await s("POST", "/api/sweeps", { rates });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.success, true);
+    assert.equal(r.data.counts.total, 1);
+    const row = r.data.upgrades.find((u) => u.clientId === made.data.client.id);
+    assert.ok(row && row.bestUpgrade && row.upgrades.length === 1, "the upgrade row is still there");
+    assert.equal("isNew" in row.bestUpgrade, false);
+    assert.deepStrictEqual(logged, ["upgrade marks skipped: TypeError"]);
+  } finally {
+    upgradeAlerts.newAlertRows = real;
+    console.error = savedErr;
+    server.close();
+  }
+});

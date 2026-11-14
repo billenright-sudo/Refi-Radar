@@ -303,3 +303,20 @@ test("GET /api/clients items carry the upgrade view; a loan officer's list has v
   assert.deepStrictEqual(after.upgrades.newLenses, []);
   assert.equal(after.upgrades.lenses[0].isNew, false);
 });
+
+test("a failing upgrade view never fails the client list: upgrades is null and the rest is unchanged", async () => {
+  const id = addVaClient(orgA, ann, "Ann's VA");
+  fredSet(utcDay(-1));
+  const upgradeAlerts = require("../lib/upgradeAlerts");
+  const real = upgradeAlerts.upgradeViewsFor;
+  upgradeAlerts.upgradeViewsFor = () => { throw new TypeError("secret client name"); };
+  const logged = [];
+  const savedErr = console.error;
+  console.error = (...a) => logged.push(a.join(" "));
+  let r;
+  try { r = await as(ann)("GET", "/api/clients"); } finally { upgradeAlerts.upgradeViewsFor = real; console.error = savedErr; }
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual(r.data.clients.map((c) => [c.id, c.name, c.upgrades]), [[id, "Ann's VA", null]]);
+  assert.ok("target" in r.data.clients[0]);
+  assert.deepStrictEqual(logged, ["upgrade views skipped: TypeError"]);
+});

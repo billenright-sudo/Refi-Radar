@@ -71,7 +71,7 @@ function presentClients(db, user, rows, nowMs = Date.now()) {
   }
   const fresh = rows.map((r) => (stale.has(r.id) ? reread.get(r.id) : r)).filter(Boolean);
   const views = targets.viewsFor(db, fresh, user.id);
-  const upgrades = upgradeAlerts.upgradeViewsFor(db, fresh, upCheck, nowMs);
+  const upgrades = upgradeAlerts.safeUpgradeViewsFor(db, fresh, upCheck, nowMs);
   return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null, upgrades: upgrades.get(row.id) || null }));
 }
 

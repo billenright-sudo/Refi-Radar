@@ -47,13 +47,38 @@ function checkUpgrades(db, orgId, nowMs = Date.now()) {
 }
 
 // checkUpgrades for a read that has to answer anyway: a failure is logged by the error's name only, and the read goes on without it.
+const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error");
+
 function safeCheckUpgrades(db, orgId, nowMs = Date.now()) {
   try {
     return checkUpgrades(db, orgId, nowMs);
   } catch (err) {
-    const name = err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error";
-    console.error("upgrade check skipped:", name);
+    console.error("upgrade check skipped:", errName(err));
     return null;
+  }
+}
+
+// upgradeViewsFor for a read that has to answer anyway: a failure is logged by name and every client gets no view (an empty Map).
+function safeUpgradeViewsFor(db, rows, check, nowMs = Date.now()) {
+  try {
+    return module.exports.upgradeViewsFor(db, rows, check, nowMs);   // via exports: a test can swap it
+  } catch (err) {
+    console.error("upgrade views skipped:", errName(err));
+    return new Map();
+  }
+}
+
+// The sweep's upgrade rows with isNew marked; a failure is logged by name and the rows go out unmarked.
+function markSweepUpgrades(db, rows) {
+  try {
+    const fresh = module.exports.newAlertRows(db, rows.map((r) => r.clientId));
+    return rows.map((r) => {
+      const lenses = markNew(r.upgrades, fresh.get(r.clientId));
+      return { ...r, upgrades: lenses, bestUpgrade: lenses[0] || null };
+    });
+  } catch (err) {
+    console.error("upgrade marks skipped:", errName(err));
+    return rows;
   }
 }
 
@@ -121,4 +146,4 @@ function announceUpgrades(db, pairs, localDate) {
   db.transaction(() => { for (const p of pairs) upd.run(localDate, p.clientId, p.lens); })();
 }
 
-module.exports = { checkUpgrades, safeCheckUpgrades, newAlertRows, markNew, upgradeViewsFor, newlyQualified, announceUpgrades };
+module.exports = { checkUpgrades, safeCheckUpgrades, safeUpgradeViewsFor, markSweepUpgrades, newAlertRows, markNew, upgradeViewsFor, newlyQualified, announceUpgrades };
