@@ -45,9 +45,10 @@
 // read is never started once the wait is used up.
 const refi = require("../refi");   // called as refi.runSweep(): tests can swap it
 const targets = require("../targets");   // called as targets.checkTargets(): tests can swap it
+const upgradeAlerts = require("../upgradeAlerts");   // called as upgradeAlerts.checkUpgrades(): tests can swap it
 const assistantTools = require("./tools");   // called as assistantTools.x(): tests can swap a tool
 const followups = require("./followups");
-const { pickCallList } = require("./callList");
+const { pickCallList, opportunityPhrase, cmpLens } = require("./callList");
 const { collectCalendarFollowUps } = require("./calendarFollowUps");
 const { isCitation } = require("./orchestrator");
 const { openerFor } = require("./openers");
@@ -263,9 +264,33 @@ function targetPicks({ db, userId, localDate, speakableRows, targetCheck, exclud
   return { newly, still };
 }
 
-// -> { picks, line, targetLine, moreLine, consumed, announced, targetSaid }. Only `speakableRows` (the user's own clients whose
+// The user's own clients who newly qualify for an upgrade (upgradeAlerts.newlyQualified: new, and not announced on an earlier day)
+// as call-list targets, one pick per client: its best newly qualified lens, "<name> now <phrase>" (callList.js's upgrade phrases,
+// built on the lens headline). Listed whatever the 7- and 3-day exclusions say, but never while the follow-ups ask about the client.
+// -> { picks, pairs }: `pairs` are every newly qualified lens of the clients picked, which the list announces.
+function upgradePicks({ db, localDate, nowMs, speakableRows, upgradeCheck, followUpClientIds }) {
+  if (!upgradeCheck) return { picks: [], pairs: [] };
+  const rows = speakableRows.filter((r) => !followUpClientIds.has(r.id));
+  const views = upgradeAlerts.upgradeViewsFor(db, rows, upgradeCheck, nowMs);
+  const byClient = new Map();
+  for (const q of upgradeAlerts.newlyQualified(db, rows, views, localDate)) {
+    const lens = views.get(q.clientId).lenses.find((l) => l.lens === q.lens);
+    const phrase = lens && opportunityPhrase(lens);
+    if (!phrase) continue;
+    if (!byClient.has(q.clientId)) byClient.set(q.clientId, { name: speakable(q.name), lenses: [] });
+    byClient.get(q.clientId).lenses.push({ lens, phrase });
+  }
+  const ranked = [...byClient].map(([clientId, c]) => ({ clientId, name: c.name, lenses: c.lenses.sort((a, b) => cmpLens(a.lens, b.lens)) }))
+    .sort((a, b) => cmpLens(a.lenses[0].lens, b.lenses[0].lens));   // stable: equal rank keeps the rows' name order
+  return {
+    picks: ranked.map((c) => ({ clientId: c.clientId, name: c.name, reasonCode: "upgrade", reason: `${c.name} now ${c.lenses[0].phrase}` })),
+    pairs: ranked.flatMap((c) => c.lenses.map((l) => ({ clientId: c.clientId, lens: l.lens.lens }))),
+  };
+}
+
+// -> { picks, line, targetLine, moreLine, consumed, announced, announcedUpgrades, targetSaid }. Only `speakableRows` (the user's own clients whose
 // names may be read) can be listed.
-function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, estimated, followUpClientIds, targetCheck }) {
+function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, estimated, followUpClientIds, targetCheck, upgradeCheck }) {
   const { carried, earlier, carriedToday } = carriesOn(db, userId, localDate);
   // "A logged contact in the last 7 days" (spec 5.2): a reached call in contact_log, or a last_contact the client record has from
   // then until now (the Sweeps page's Log contact writes it as SQLite UTC text, an import or a close date as YYYY-MM-DD; both
@@ -288,13 +313,17 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   for (const id of [...carried, ...carriedToday]) if (!followUpClientIds.has(id)) excludeIds.delete(id);
 
   const { newly, still } = targetPicks({ db, userId, localDate, speakableRows, targetCheck, excludeIds, followUpClientIds });
+  let upgradeNewly = { picks: [], pairs: [] };
+  try {
+    upgradeNewly = upgradePicks({ db, localDate, nowMs, speakableRows, upgradeCheck, followUpClientIds });
+  } catch (err) { skip("upgrades", err); }
   const picks = pickCallList({
     sweep,
     ownClientIds: speakableRows.map((r) => r.id),
     carriedIds: [...new Set([...carriedToday, ...carried])],
     excludeIds,
     clientNames: new Map(speakableRows.map((r) => [r.id, r.name])),   // Ruling R7: a carried client with no sweep row is still named
-    targets: [...newly, ...still],
+    targets: [...newly, ...upgradeNewly.picks, ...still],
     limit: CALL_LIST_LIMIT,
   });
 
@@ -323,8 +352,10 @@ function callListSection({ db, userId, localDate, nowMs, speakableRows, sweep, e
   const consumed = picks.filter((p) => p.reasonCode === "carry" && carriedSet.has(p.clientId)).map((p) => p.clientId);
   // the newly-at-target clients this list announces, and whether it says anything of a target at all
   const announced = picks.filter((p) => p.reasonCode === "target").map((p) => p.clientId);
+  const upgraded = new Set(picks.filter((p) => p.reasonCode === "upgrade").map((p) => p.clientId));
+  const announcedUpgrades = upgradeNewly.pairs.filter((p) => upgraded.has(p.clientId));
   const targetSaid = Boolean(targetLine) || picks.some((p) => p.reasonCode === "target" || p.reasonCode === "target_still");
-  return { picks, line, targetLine, moreLine, consumed, announced, targetSaid };
+  return { picks, line, targetLine, moreLine, consumed, announced, announcedUpgrades, targetSaid };
 }
 
 // The clients a list has just announced as newly at target: announced today, once (a rebuild today leaves the date as it is).
@@ -391,6 +422,10 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   let targetCheck = null;
   try { targetCheck = { snapshot: targets.checkTargets(db, user.org_id, nowMs) }; } catch (err) { skip("targets", err); }
 
+  // the org's upgrade alerts, recorded on the latest FRED observation. A check that throws leaves the "now" lines out and nothing else changes.
+  let upgradeCheck = null;
+  try { upgradeCheck = upgradeAlerts.checkUpgrades(db, user.org_id, nowMs); } catch (err) { skip("upgrades", err); }
+
   // the user's OWN book and its sweep (for a broker too: the call list is never the team's)
   let ownRows = [];
   let sweep = null;
@@ -453,7 +488,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
       speakableRows: ownRows.filter((r) => speakable(r.name)),
       estimated: hasRates(rates) && isEstimated(rates),
       followUpClientIds: new Set(shown.map((f) => f.clientId)),
-      targetCheck,
+      targetCheck, upgradeCheck,
     });
   } catch (err) { skip("call list", err); }
   if (calls && calls.picks.length) {
@@ -463,6 +498,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
           calls.picks.map((p) => ({ clientId: p.clientId, source: "briefing", reasonCode: p.reasonCode })));
         if (calls.consumed.length) followups.consumeCarries(db, userId, calls.consumed, nowUtc, today);
         if (calls.announced.length) announceTargets(db, calls.announced, today);
+        if (calls.announcedUpgrades.length) upgradeAlerts.announceUpgrades(db, calls.announcedUpgrades, today);
       })();
     } catch (err) { skip("recording the call list", err); }
   }

@@ -552,3 +552,90 @@ test("works on a real runSweep result", () => {
   const sweepRita = sweep.opportunities.find((r) => r.clientId === 11);
   assert.ok(rita.reason.includes(`$${sweepRita.best.monthlySavings.toLocaleString("en-US")}`), rita.reason);
 });
+
+// ── upgrades (spec 4.7) ──────────────────────────────────────────────────────
+
+const { ungroundedNumbers } = require("../lib/assistant/orchestrator");
+const upgrade = (lens, priority, headline, extra = {}) => ({ lens, label: lens, priority, headline, unit: "$/mo", detail: "", ...extra });
+// A row as runSweep returns it: opportunities and upgrades both on the row.
+const upRow = (clientId, name, best, bestUpgrade, checkIn = NO_CHECK_IN) => ({
+  clientId, name, best, opportunities: best ? [best] : [], bestUpgrade, upgrades: bestUpgrade ? [bestUpgrade] : [], checkIn,
+});
+const upSweep = (rows) => {
+  const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    opportunities: sorted.filter((r) => r.best), upgrades: sorted.filter((r) => r.bestUpgrade), checkIns: sorted.filter((r) => r.checkIn.due),
+    byLens: {}, counts: {}, ranAt: "2026-11-13T12:00:00.000Z",
+  };
+};
+
+test("upgrade phrases, verbatim, with a rounded and grouped figure", () => {
+  const cases = [
+    ["fha_to_conv", 1234.4, "Una looks like they could leave FHA for a conventional loan and save about $1,234 a month"],
+    ["usda_to_conv", 210, "Una looks like they could leave USDA for a conventional loan and save about $210 a month"],
+    ["fha_streamline", 96, "Una looks like they could do an FHA streamline and save about $96 a month"],
+    ["va_irrrl", 143, "Una looks like they could do a VA streamline and save about $143 a month"],
+    ["drop_pmi", 187, "Una looks like they could ask their lender to drop about $187 a month of PMI"],
+  ];
+  for (const [lens, headline, said] of cases) {
+    const sweep = upSweep([upRow(1, "Una", null, upgrade(lens, lens === "drop_pmi" ? "low" : "high", headline))]);
+    const [pick] = pickCallList({ sweep, ownClientIds: [1], carriedIds: [], excludeIds: [] });
+    assert.equal(pick.reason, said);
+    assert.equal(pick.reasonCode, lens);
+    assert.deepStrictEqual(ungroundedNumbers(pick.reason, [sweep]), [], pick.reason);
+  }
+});
+
+test("an upgrade with no usable figure says nothing", () => {
+  const sweep = upSweep([upRow(1, "Una", null, upgrade("fha_streamline", "high", 0))]);
+  assert.deepStrictEqual(pickCallList({ sweep, ownClientIds: [1], carriedIds: [], excludeIds: [] }), []);
+});
+
+test("an upgrade-only client is on the list with its phrase, next to a check-in", () => {
+  const sweep = upSweep([upRow(1, "Una", null, upgrade("va_irrrl", "medium", 143), DUE(14))]);
+  const [pick] = pickCallList({ sweep, ownClientIds: [1], carriedIds: [], excludeIds: [] });
+  assert.equal(pick.reason, "Una looks like they could do a VA streamline and save about $143 a month, 14 months since your last check-in");
+});
+
+test("a medium rate-term and a high fha_to_conv: the upgrade leads, and the reverse", () => {
+  const rt = rateTerm("medium", 300);
+  const sweep = upSweep([upRow(1, "Una", rt, upgrade("fha_to_conv", "high", 250))]);
+  assert.match(pickCallList({ sweep, ownClientIds: [1], carriedIds: [], excludeIds: [] })[0].reason, /^Una looks like they could leave FHA/);
+  const back = upSweep([upRow(1, "Una", rateTerm("high", 300), upgrade("fha_to_conv", "medium", 250))]);
+  assert.equal(pickCallList({ sweep: back, ownClientIds: [1], carriedIds: [], excludeIds: [] })[0].reason, "Una could save about $300 a month");
+  // a tie on priority goes to the larger dollar figure, and to the opportunity when equal
+  const tie = upSweep([upRow(1, "Una", rateTerm("high", 300), upgrade("fha_to_conv", "high", 400))]);
+  assert.match(pickCallList({ sweep: tie, ownClientIds: [1], carriedIds: [], excludeIds: [] })[0].reason, /FHA/);
+  const equal = upSweep([upRow(1, "Una", rateTerm("high", 300), upgrade("fha_to_conv", "high", 300))]);
+  assert.match(pickCallList({ sweep: equal, ownClientIds: [1], carriedIds: [], excludeIds: [] })[0].reason, /^Una could save/);
+});
+
+test("an unusable lead falls back to the other lens", () => {
+  const sweep = upSweep([upRow(1, "Una", rateTerm("high", 0), upgrade("drop_pmi", "low", 187))]);
+  assert.match(pickCallList({ sweep, ownClientIds: [1], carriedIds: [], excludeIds: [] })[0].reason, /PMI$/);
+});
+
+test("an upgrade client is ranked with the savings kind, alternating with cash-out", () => {
+  const sweep = upSweep([
+    upRow(1, "Alan Cash", cashOut("high", 210000), null),
+    upRow(2, "Bea Up", null, upgrade("fha_streamline", "high", 150)),
+    upRow(3, "Cy Cash", cashOut("medium", 95000), null),
+  ]);
+  const list = pickCallList({ sweep, ownClientIds: [1, 2, 3], carriedIds: [], excludeIds: [], limit: 3 });
+  assert.deepStrictEqual(idsOf(list), [1, 2, 3]);
+});
+
+test("works on a real runSweep result with an FHA client", () => {
+  const rates = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461, rate_30yr_fha: 6.1, rate_30yr_va: 5.8, date: "2026-11-12", source: "Optimal Blue lock data (2026-11-12)" };
+  const now = new Date("2026-11-13T12:00:00Z");
+  const clients = [{
+    id: 31, name: "Vee Sample", loan_type: "30yr_fixed", current_rate: 7.5, loan_balance: 300000, property_value: 400000, credit_score: 720,
+    credit_score_known: 1, loan_program: "va", close_date: "2025-06-15", balance_as_of: "2025-06-15", original_amount: 300000, original_value: 400000,
+    property_zip: "85016", occupancy: "primary", last_contact: "2026-11-01",
+  }];
+  const sweep = refi.runSweep(clients, rates, now);
+  assert.ok(sweep.upgrades.length === 1, "the fixture has a VA upgrade");
+  const [pick] = pickCallList({ sweep, ownClientIds: [31], carriedIds: [], excludeIds: [] });
+  assert.match(pick.reason, /^Vee Sample looks like they could do a VA streamline and save about \$[\d,]+ a month$/);
+  assert.deepStrictEqual(ungroundedNumbers(pick.reason, [sweep]), [], pick.reason);
+});

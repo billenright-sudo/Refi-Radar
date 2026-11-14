@@ -10,7 +10,7 @@
 //   1. carried clients (the broker asked for them on "tomorrow's list"), in the order they were carried;
 //   2. clients at their target rate (target-rate alerts spec 4.5): the caller's `targets` ([{ clientId, name, reason, reasonCode }],
 //      reasonCode "target" or "target_still"), in the order given, each once and never one already carried;
-//   3. the sweep's ranking, alternating a refi-savings client (rate_term, arm_to_fixed) with a cash-out client. The engine ranks
+//   3. the sweep's ranking (upgrades, spec 4.7, count as savings: a client leads with whichever of its best opportunity and best upgrade ranks higher), alternating a refi-savings client (rate_term, arm_to_fixed) with a cash-out client. The engine ranks
 //      a cash-out dollar figure against a monthly saving, so cash-out would otherwise always win. The kind whose best client
 //      ranks higher overall goes first, and when one kind runs out the other fills the list;
 //   4. term_swap clients, which have an opportunity but belong to neither kind;
@@ -29,7 +29,15 @@ const { PRIORITY_RANK, impact } = require("../refi");
 
 const DEFAULT_LIMIT = 3;
 // Lenses that read as "saves $X a month". cash_out is the other kind; term_swap is neither.
-const SAVINGS_LENSES = new Set(["rate_term", "arm_to_fixed"]);
+// The upgrade lenses (spec 4.7) read the same way, so they share the savings kind.
+const UPGRADE_PHRASES = {
+  fha_to_conv: (x) => `looks like they could leave FHA for a conventional loan and save about $${x} a month`,
+  usda_to_conv: (x) => `looks like they could leave USDA for a conventional loan and save about $${x} a month`,
+  fha_streamline: (x) => `looks like they could do an FHA streamline and save about $${x} a month`,
+  va_irrrl: (x) => `looks like they could do a VA streamline and save about $${x} a month`,
+  drop_pmi: (x) => `looks like they could ask their lender to drop about $${x} a month of PMI`,
+};
+const SAVINGS_LENSES = new Set(["rate_term", "arm_to_fixed", ...Object.keys(UPGRADE_PHRASES)]);
 const KIND_SAVINGS = 0;
 const KIND_CASH = 1;
 const KIND_OTHER = 2;
@@ -76,8 +84,11 @@ function opportunityPhrase(best) {
       // No new rate: the longer-term option that cuts the payment.
       return change !== null && Math.round(change) < 0 ? `could cut the payment about $${money(-change)} a month with a longer term` : null;
     }
-    default:
-      return null;
+    default: {
+      const say = Object.prototype.hasOwnProperty.call(UPGRADE_PHRASES, best.lens) ? UPGRADE_PHRASES[best.lens] : null;
+      const monthly = Math.round(best.headline);
+      return say && monthly > 0 ? say(money(monthly)) : null;
+    }
   }
 }
 
@@ -101,10 +112,14 @@ function checkInPhrase(checkIn) {
 function describe(row) {
   const name = typeof row.name === "string" ? row.name.trim() : "";
   if (!name) return null;
-  const phrase = opportunityPhrase(row.best);
+  // The client's lead is whichever of the best opportunity and the best upgrade ranks higher (the opportunity on a tie); one with
+  // nothing to say is passed over for the other.
+  const leads = [row.best, row.bestUpgrade].filter((l) => opportunityPhrase(l));
+  const lead = leads.length === 2 && cmpLens(leads[0], leads[1]) > 0 ? leads[1] : leads[0] || null;
+  const phrase = lead ? opportunityPhrase(lead) : null;
   const checkIn = checkInPhrase(row.checkIn);
   if (!phrase && !checkIn) return null;
-  return { clientId: row.clientId, name, best: phrase ? row.best : null, phrase, checkIn, monthsSince: checkIn ? Math.floor(row.checkIn.monthsSince) : 0 };
+  return { clientId: row.clientId, name, best: lead, phrase, checkIn, monthsSince: checkIn ? Math.floor(row.checkIn.monthsSince) : 0 };
 }
 
 function reasonFor(c, carried) {
@@ -115,7 +130,8 @@ function reasonFor(c, carried) {
 }
 
 // Cross-client rank, the way orchestrator.js trimSweep orders opportunities: priority, then impact, both descending.
-const byRank = (a, b) => (PRIORITY_RANK[b.best.priority] || 0) - (PRIORITY_RANK[a.best.priority] || 0) || impact(b.best) - impact(a.best);
+const cmpLens = (a, b) => (PRIORITY_RANK[b.priority] || 0) - (PRIORITY_RANK[a.priority] || 0) || impact(b) - impact(a);
+const byRank = (a, b) => cmpLens(a.best, b.best);
 
 function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames, targets, limit = DEFAULT_LIMIT } = {}) {
   const max = Math.max(0, Math.floor(limit) || 0);
@@ -134,7 +150,7 @@ function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames
 
   // Every row the sweep has, keyed by client id. A client with an opportunity and a due check-in is in both lists.
   const rows = new Map();
-  for (const list of [sweep && sweep.opportunities, sweep && sweep.checkIns]) {
+  for (const list of [sweep && sweep.opportunities, sweep && sweep.upgrades, sweep && sweep.checkIns]) {
     if (!Array.isArray(list)) continue;
     for (const row of list) {
       if (!row || row.clientId == null) continue;
@@ -198,4 +214,4 @@ function pickCallList({ sweep, ownClientIds, carriedIds, excludeIds, clientNames
   return picked;
 }
 
-module.exports = { pickCallList };
+module.exports = { pickCallList, opportunityPhrase, cmpLens };
