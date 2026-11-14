@@ -6,6 +6,7 @@ const { requireAccess } = require("../middleware/access");
 const followups = require("../lib/assistant/followups");   // called as followups.x(): tests can swap one
 const { HAND_KEPT, readMarks, writeMarks } = require("../lib/intake/handEdits");
 const targets = require("../lib/targets");
+const upgradeAlerts = require("../lib/upgradeAlerts");
 
 // An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
 const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
@@ -56,9 +57,10 @@ const creditKnown = (raw) => (parseInt(raw) ? 1 : 0);
 // Clients the way the screens get them, from `rows` (raw clients rows, in their order). The check runs first (one FRED
 // observation, once; a check that fails is logged and the stored target state is shown), then only the rows it wrote are read
 // again (usually none), so a hit it records shows at once (one of them deleted in between is skipped). Each answer carries
-// `target` (a View, or null).
+// `target` (a View, or null) and `upgrades` (the upgrade View of lib/upgradeAlerts.js).
 function presentClients(db, user, rows, nowMs = Date.now()) {
   const check = targets.safeCheck(db, user.org_id, nowMs);
+  const upCheck = upgradeAlerts.safeCheckUpgrades(db, user.org_id, nowMs);
   if (!rows.length) return [];
   const given = new Set(rows.map((r) => r.id));
   const stale = new Set((check ? check.patchedIds : []).filter((id) => given.has(id)));
@@ -69,7 +71,8 @@ function presentClients(db, user, rows, nowMs = Date.now()) {
   }
   const fresh = rows.map((r) => (stale.has(r.id) ? reread.get(r.id) : r)).filter(Boolean);
   const views = targets.viewsFor(db, fresh, user.id);
-  return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null }));
+  const upgrades = upgradeAlerts.upgradeViewsFor(db, fresh, upCheck, nowMs);
+  return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null, upgrades: upgrades.get(row.id) || null }));
 }
 
 function validateClient(body) {

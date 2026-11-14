@@ -293,6 +293,20 @@ db.exec(`
   );
 `);
 
+// client_upgrades: one row per (client, upgrade lens) that qualified on a FRED observation (lib/upgradeAlerts.js). first_seen_on is
+// that observation's day, first_seen_at the SQLite UTC instant it was recorded; announced_on is the local day Charlie announced it.
+// A lens that stops qualifying loses its row, so it is new again when it comes back.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS client_upgrades (
+    client_id     INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    lens          TEXT    NOT NULL,
+    first_seen_on TEXT    NOT NULL,
+    first_seen_at TEXT    NOT NULL,
+    announced_on  TEXT,
+    PRIMARY KEY (client_id, lens)
+  );
+`);
+
 // charlie_recommendations: a client Charlie put in front of the broker (a briefing or sweep call list, a calendar event that
 // has ended, or a name carried to tomorrow's list), and what became of it. One row per (user, client, day, source);
 // ask_count is how many times Charlie has asked "did you get to ...?" about it.

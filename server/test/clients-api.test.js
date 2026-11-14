@@ -19,6 +19,7 @@ const { signToken } = require("../middleware/auth");
 const fu = require("../lib/assistant/followups");
 const clientRoutes = require("../routes/clients");
 const { buildBriefing } = require("../lib/assistant/briefing");
+const { recordSnapshot } = require("../lib/rateHistory");
 
 const RATES = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_5_1_arm: 5.81, rate_30yr_top_tier: 6.461, date: "2026-10-21", source: "Optimal Blue lock data (2026-10-21)" };
 
@@ -57,7 +58,7 @@ after(() => {
   try { fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch { /* */ }
 });
 beforeEach(() => {
-  for (const table of ["charlie_recommendations", "contact_log", "user_briefing_state", "clients"]) db.prepare(`DELETE FROM ${table}`).run();
+  for (const table of ["charlie_recommendations", "contact_log", "user_briefing_state", "rate_snapshots", "client_upgrades", "clients"]) db.prepare(`DELETE FROM ${table}`).run();
 });
 
 // `as(userId)` -> a request function signed in as that user; `as(null)` is anonymous.
@@ -262,4 +263,43 @@ test("editing a client sets or clears do-not-email, and a save that doesn't ment
   const set = await as(ann)("PUT", `/api/clients/${id}`, { ...NEW_CLIENT, doNotEmail: true });
   assert.equal(set.data.client.doNotEmail, true);
   assert.equal(clientRow(id).do_not_email, 1);
+});
+
+// ── upgrade views on the client list (spec 4.7) ─────────────────────────────
+
+// A VA client whose IRRRL qualifies on the FRED set below (7.5% loan closed mid-2025, VA rate 5.8).
+const addVaClient = (orgId, userId, name) => Number(db.prepare(`
+  INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, credit_score_known,
+    loan_program, close_date, balance_as_of, original_amount, original_value, property_zip, occupancy)
+  VALUES (?, ?, ?, '30yr_fixed', 7.5, 300000, 400000, 720, 1, 'va', '2025-06-15', '2025-06-15', 300000, 400000, '85016', 'primary')
+`).run(orgId, userId, name).lastInsertRowid);
+const fredSet = (obs) => recordSnapshot({ ...RATES, rate_30yr_fha: 6.1, rate_30yr_va: 5.8, date: obs, source: `Optimal Blue lock data (${obs})` }, obs, "fred");
+
+test("GET /api/clients items carry the upgrade view; a loan officer's list has views only for their own clients", async () => {
+  const annVa = addVaClient(orgA, ann, "Ann's VA");
+  const louVa = addVaClient(orgA, lou, "Lou's VA");
+  const plain = addClient(orgA, ann, "Plain Sample");
+  fredSet(utcDay(-1));
+
+  const brokerList = (await as(ann)("GET", "/api/clients")).data.clients;
+  assert.equal(brokerList.length, 3);
+  const byId = new Map(brokerList.map((c) => [c.id, c]));
+  for (const id of [annVa, louVa]) {
+    const up = byId.get(id).upgrades;
+    assert.deepStrictEqual(up.lenses.map((l) => [l.lens, l.isNew]), [["va_irrrl", true]]);
+    assert.deepStrictEqual(up.newLenses, ["va_irrrl"]);
+    assert.equal(up.today.balance > 0, true);
+  }
+  assert.deepStrictEqual(byId.get(plain).upgrades.lenses, []);
+  assert.deepStrictEqual(byId.get(plain).upgrades.gaps, ["Add the loan program to check upgrades."]);
+
+  const louList = (await as(lou)("GET", "/api/clients")).data.clients;
+  assert.deepStrictEqual(louList.map((c) => c.id), [louVa]);
+  assert.deepStrictEqual(louList[0].upgrades.newLenses, ["va_irrrl"]);
+
+  // Logging a call clears "new" on the next read.
+  assert.equal((await as(ann)("POST", `/api/clients/${annVa}/contact`)).status, 200);
+  const after = (await as(ann)("GET", "/api/clients")).data.clients.find((c) => c.id === annVa);
+  assert.deepStrictEqual(after.upgrades.newLenses, []);
+  assert.equal(after.upgrades.lenses[0].isNew, false);
 });

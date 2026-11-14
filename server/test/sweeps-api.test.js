@@ -82,3 +82,41 @@ test("sweeps endpoint + log-contact", async () => {
     try { fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch { /* */ }
   }
 });
+
+test("sweep upgrade rows carry isNew from the alert table, and a reached call clears it", async () => {
+  const { recordSnapshot } = require("../lib/rateHistory");
+  const server = app().listen(0);
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://localhost:${server.address().port}`;
+  try {
+    const s = session(base);
+    addBroker(db, { email: "bo@test.co", firstName: "Bo", lastName: "B", orgName: "Bravo" });
+    assert.equal((await s("POST", "/api/auth/login", { email: "bo@test.co", password: "password123" })).status, 200);
+    const rates = { ...RATES, rate_30yr_fha: 6.1, rate_30yr_va: 5.8 };
+    const obs = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+    recordSnapshot({ ...rates, date: obs, source: `Optimal Blue lock data (${obs})` }, obs, "fred");
+    const made = await s("POST", "/api/clients", {
+      name: "Vee Sample", loanType: "30yr_fixed", currentRate: 7.5, loanBalance: 300000, propertyValue: 400000, creditScore: 720,
+      loanProgram: "va", closeDate: "2025-06-15", originalAmount: 300000, originalValue: 400000, propertyZip: "85016", occupancy: "primary",
+    });
+    assert.equal(made.status, 201, JSON.stringify(made.data));
+    const id = made.data.client.id;
+    db.prepare("UPDATE clients SET balance_as_of = '2025-06-15' WHERE id = ?").run(id);
+
+    let r = await s("POST", "/api/sweeps", { rates });
+    assert.equal(r.status, 200);
+    const row = r.data.upgrades.find((u) => u.clientId === id);
+    assert.ok(row, JSON.stringify(r.data.upgrades));
+    assert.deepStrictEqual(row.upgrades.map((l) => [l.lens, l.isNew]), [["va_irrrl", true]]);
+    assert.equal(row.bestUpgrade.isNew, true);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM client_upgrades WHERE client_id = ?").get(id).n, 1);
+
+    assert.equal((await s("POST", `/api/clients/${id}/contact`)).status, 200);
+    r = await s("POST", "/api/sweeps", { rates });
+    const after = r.data.upgrades.find((u) => u.clientId === id);
+    assert.equal(after.bestUpgrade.isNew, false);
+    assert.equal(after.upgrades[0].isNew, false);
+  } finally {
+    server.close();
+  }
+});
