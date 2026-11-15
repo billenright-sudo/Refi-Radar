@@ -197,7 +197,7 @@ test("upgradeRates / safeUpgradeRates: the latest FRED snapshot's rates on the c
   assert.deepStrictEqual(seen, ["upgrade rates skipped: TypeError"]);
 });
 
-test("a snapshot 11 days old: no refi upgrade is checked (its alert re-arms), Drop PMI still qualifies", () => {
+test("a snapshot 11 days old: no refi upgrade is checked (its alert row is kept, not re-armed), Drop PMI still qualifies", () => {
   const va = addVa();
   const pmi = addPmi();
   snapshot("2026-11-03");   // 10 days: the IRRRL qualifies
@@ -208,8 +208,92 @@ test("a snapshot 11 days old: no refi upgrade is checked (its alert re-arms), Dr
   assert.equal(check.rates, null);
   assert.deepStrictEqual(check.results.get(va).lenses, []);
   assert.deepStrictEqual(check.results.get(pmi).lenses.map((l) => l.lens), ["drop_pmi"]);
-  assert.deepStrictEqual(alerts().map((a) => a.lens), ["drop_pmi"]);
+  assert.deepStrictEqual(alerts().map((a) => a.lens).sort(), ["drop_pmi", "va_irrrl"], "the IRRRL couldn't be checked: its row stays");
   const views = A.upgradeViewsFor(db, rowsOf(va, pmi), check, NOW + 86400_000);
-  assert.deepStrictEqual(views.get(va).lenses, []);
+  assert.deepStrictEqual(views.get(va).lenses, [], "still not shown while it can't be priced");
   assert.deepStrictEqual(views.get(pmi).lenses.map((l) => l.lens), ["drop_pmi"]);
+});
+
+// ── A rate gap keeps alert rows: a lens its rate set can't price wasn't checked, so it isn't re-armed (new again) ───────────
+const DAY = 86400_000;
+const without = (...keys) => Object.fromEntries(keys.map((k) => [k, undefined]));   // JSON drops undefined: the key is absent
+const rowOf = (id, lens) => db.prepare("SELECT * FROM client_upgrades WHERE client_id = ? AND lens = ?").get(id, lens);
+
+test("a day without the VA rate keeps the IRRRL alert: not new again, not announced again", () => {
+  const id = addVa("Vee Sample");
+  snapshot("2026-11-12");
+  let check = A.checkUpgrades(db, orgId, NOW);
+  let views = A.upgradeViewsFor(db, rowsOf(id), check, NOW);
+  A.announceUpgrades(db, A.newlyQualified(db, rowsOf(id), views, "2026-11-13"), "2026-11-13");
+  const first = rowOf(id, "va_irrrl");
+  assert.equal(first.announced_on, "2026-11-13");
+
+  snapshot("2026-11-13", without("rate_30yr_va"));
+  check = A.checkUpgrades(db, orgId, NOW + DAY);
+  assert.deepStrictEqual(check.results.get(id).lenses, [], "no VA rate: the IRRRL isn't shown");
+  assert.deepStrictEqual(rowOf(id, "va_irrrl"), first, "but its row is untouched");
+
+  snapshot("2026-11-14");
+  check = A.checkUpgrades(db, orgId, NOW + 2 * DAY);
+  assert.deepStrictEqual(rowOf(id, "va_irrrl"), first, "the VA rate is back: the same row, first seen 11/12");
+  views = A.upgradeViewsFor(db, rowsOf(id), check, NOW + 2 * DAY);
+  assert.deepStrictEqual(views.get(id).lenses.map((l) => l.lens), ["va_irrrl"]);
+  assert.deepStrictEqual(A.newlyQualified(db, rowsOf(id), views, "2026-11-15"), [], "Charlie doesn't announce it again");
+});
+
+test("a VA rate of 0 or null counts as missing too", () => {
+  const id = addVa();
+  snapshot("2026-11-12");
+  A.checkUpgrades(db, orgId, NOW);
+  const first = rowOf(id, "va_irrrl");
+  snapshot("2026-11-13", { rate_30yr_va: 0 });
+  A.checkUpgrades(db, orgId, NOW + DAY);
+  snapshot("2026-11-14", { rate_30yr_va: null });
+  A.checkUpgrades(db, orgId, NOW + 2 * DAY);
+  assert.deepStrictEqual(rowOf(id, "va_irrrl"), first);
+});
+
+test("with the rate there, a lens that no longer qualifies is still re-armed", () => {
+  const id = addVa();
+  snapshot("2026-11-12");
+  A.checkUpgrades(db, orgId, NOW);
+  snapshot("2026-11-13", { rate_30yr_va: 7.3 });   // priced, and a 0.2-point drop is no IRRRL
+  A.checkUpgrades(db, orgId, NOW + DAY);
+  assert.equal(rowOf(id, "va_irrrl"), undefined);
+});
+
+test("FHA rows: a day without the FHA rate keeps FHA Streamline; one without the 30-year rate keeps FHA → Conventional", () => {
+  const id = addVa("Fay Sample", { program: "fha" });
+  const ins = db.prepare("INSERT INTO client_upgrades (client_id, lens, first_seen_on, first_seen_at, announced_on) VALUES (?, ?, '2026-11-01', '2026-11-01 15:00:00', '2026-11-01')");
+  ins.run(id, "fha_streamline");
+  ins.run(id, "fha_to_conv");
+  snapshot("2026-11-12", without("rate_30yr_fha", "rate_30yr_fixed"));
+  A.checkUpgrades(db, orgId, NOW);
+  assert.deepStrictEqual(alerts().map((a) => [a.lens, a.first_seen_on, a.announced_on]),
+    [["fha_streamline", "2026-11-01", "2026-11-01"], ["fha_to_conv", "2026-11-01", "2026-11-01"]], "neither could be checked");
+  // The 30-year rate is back but at 9%: FHA → Conventional is checked and doesn't qualify, so it re-arms; no FHA rate still.
+  snapshot("2026-11-13", { ...without("rate_30yr_fha"), rate_30yr_fixed: 9, rate_30yr_top_tier: 9 });
+  A.checkUpgrades(db, orgId, NOW + DAY);
+  assert.deepStrictEqual(alerts().map((a) => a.lens), ["fha_streamline"]);
+});
+
+test("a client whose program changed loses the old program's rows, even on a day without rates", () => {
+  const id = addVa();
+  snapshot("2026-11-02");   // 10 days old on 11/12
+  A.checkUpgrades(db, orgId, NOW - DAY);
+  assert.ok(rowOf(id, "va_irrrl"));
+  db.prepare("UPDATE clients SET loan_program = 'conventional' WHERE id = ?").run(id);
+  const check = A.checkUpgrades(db, orgId, NOW);   // 11 days old: no rates
+  assert.equal(check.rates, null);
+  assert.equal(rowOf(id, "va_irrrl"), undefined);
+});
+
+test("an investment property loses its rows, even on a day without rates", () => {
+  const id = addVa();
+  snapshot("2026-11-02");
+  A.checkUpgrades(db, orgId, NOW - DAY);
+  assert.ok(rowOf(id, "va_irrrl"));
+  db.prepare("UPDATE clients SET occupancy = 'investment' WHERE id = ?").run(id);
+  A.checkUpgrades(db, orgId, NOW);
+  assert.equal(rowOf(id, "va_irrrl"), undefined);
 });

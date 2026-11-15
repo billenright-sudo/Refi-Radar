@@ -298,7 +298,7 @@ db.exec(`
 
 // client_upgrades: one row per (client, upgrade lens) that qualified on a FRED observation (lib/upgradeAlerts.js). first_seen_on is
 // that observation's day, first_seen_at the SQLite UTC instant it was recorded; announced_on is the local day Charlie announced it.
-// A lens that stops qualifying loses its row, so it is new again when it comes back.
+// A lens that stops qualifying loses its row, so it is new again when it comes back; one its rates can't price keeps its row.
 db.exec(`
   CREATE TABLE IF NOT EXISTS client_upgrades (
     client_id     INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,

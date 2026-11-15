@@ -538,3 +538,48 @@ describe("ordering", () => {
     assert.ok(a.monthlySavings > b.monthlySavings);
   });
 });
+
+// ── unpricedLenses: the refi checks a rate set can't price, so lib/upgradeAlerts keeps their alert rows (not re-armed) ────────
+describe("unpricedLenses", () => {
+  const { unpricedLenses } = U;
+  const c = (loanProgram, over = {}) => ({ loanProgram, occupancy: "primary", loanType: "30yr_fixed", ...over });
+  const without = (...keys) => Object.fromEntries(Object.entries(RATES).filter(([k]) => !keys.includes(k)));
+
+  test("every rate there: nothing unpriced", () => {
+    for (const p of ["fha", "usda", "va", "conventional", "jumbo"]) assert.deepStrictEqual(unpricedLenses(c(p), RATES), [], p);
+  });
+  test("no rates at all (a stale snapshot): every refi check for the program", () => {
+    assert.deepStrictEqual(unpricedLenses(c("fha"), null), ["fha_to_conv", "fha_streamline"]);
+    assert.deepStrictEqual(unpricedLenses(c("usda"), null), ["usda_to_conv"]);
+    assert.deepStrictEqual(unpricedLenses(c("va"), null), ["va_irrrl"]);
+  });
+  test("one rate missing: only the check that needs it", () => {
+    assert.deepStrictEqual(unpricedLenses(c("va"), without("rate_30yr_va")), ["va_irrrl"]);
+    assert.deepStrictEqual(unpricedLenses(c("va"), { ...RATES, rate_30yr_va: 0 }), ["va_irrrl"]);
+    assert.deepStrictEqual(unpricedLenses(c("va"), { ...RATES, rate_30yr_va: null }), ["va_irrrl"]);
+    assert.deepStrictEqual(unpricedLenses(c("fha"), without("rate_30yr_fha")), ["fha_streamline"]);
+    assert.deepStrictEqual(unpricedLenses(c("fha"), without("rate_30yr_fixed")), ["fha_to_conv"]);
+    assert.deepStrictEqual(unpricedLenses(c("usda"), without("rate_30yr_fixed")), ["usda_to_conv"]);
+    assert.deepStrictEqual(unpricedLenses(c("va"), FALLBACK_SHAPE), ["va_irrrl"]);
+  });
+  test("the conventional rate follows the loan's term, as the check prices it", () => {
+    assert.deepStrictEqual(unpricedLenses(c("fha", { loanType: "15yr_fixed" }), without("rate_30yr_fixed")), []);
+    assert.deepStrictEqual(unpricedLenses(c("fha", { loanType: "15yr_fixed" }), without("rate_15yr_fixed")), ["fha_to_conv"]);
+    assert.deepStrictEqual(unpricedLenses(c("usda", { loanType: "5_1_arm" }), without("rate_5_1_arm")), []);
+  });
+  test("Drop PMI needs no rate; no program or an investment property: nothing to keep", () => {
+    assert.deepStrictEqual(unpricedLenses(c("conventional"), null), []);
+    assert.deepStrictEqual(unpricedLenses(c("jumbo"), null), []);
+    assert.deepStrictEqual(unpricedLenses(c(""), null), []);
+    assert.deepStrictEqual(unpricedLenses(c("heloc"), null), []);
+    assert.deepStrictEqual(unpricedLenses(c("fha", { occupancy: "investment" }), null), []);
+  });
+  test("agrees with upgradesFor: an FHA client flagged for both checks loses exactly the unpriced ones", () => {
+    const client = base({ currentRate: 7.5 });   // 7.5%: high enough for the streamline too
+    assert.deepStrictEqual(ids(run(client)).sort(), ["fha_streamline", "fha_to_conv"]);
+    for (const rates of [null, without("rate_30yr_fha"), without("rate_30yr_fixed"), without("rate_30yr_fha", "rate_30yr_fixed")]) {
+      const gone = unpricedLenses(client, rates);
+      assert.deepStrictEqual(ids(run(client, rates)).sort(), ["fha_streamline", "fha_to_conv"].filter((l) => !gone.includes(l)), JSON.stringify(gone));
+    }
+  });
+});

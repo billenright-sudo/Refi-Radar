@@ -6,6 +6,13 @@ cleanly after compaction / a new session. Newest notes at the top of each list.
 _Last updated: 2026-11-14_
 
 ## Done
+- **Upgrade alerts survive a rate gap — BUILT 2026-11-15 on `feature/alert-gap`.** `checkUpgrades` no longer
+  deletes a `client_upgrades` row whose lens the day's rates can't price (`upgrades.unpricedLenses`: every refi
+  lens on a snapshot over 10 days old; VA IRRRL without the VA rate; FHA Streamline without the FHA rate; FHA/USDA
+  → Conventional without the conventional rate for the loan's term). The row keeps its first-seen and announced
+  days, so the client isn't "New" again and Charlie doesn't re-announce it when the rate returns. Checked and no
+  longer qualifying still re-arms; a changed program or an investment property still drops the rows. Display
+  unchanged (an unpriced lens still isn't shown).
 - **Sweeps cash-out from today's figures — BUILT 2026-11-14 on `feature/cashout-today`** (server 1661
   node:tests, `check-scoring.js` ok). `sweepClient` runs the upgrade checks first and passes their `today`
   block to `cashOut(c, today)`: tappable = 80% of today's cautious value − today's balance (same as the
@@ -205,8 +212,7 @@ _Last updated: 2026-11-14_
   originals are now captured. Still open: no AVM — today's value is an HPI estimate only (FHFA ZIP3 data
   loaded 2026-11-14; refresh quarterly).
 - Loan upgrades follow-ups: MI band sources other than HUD ML 2023-05 (older FHA bands, USDA) are
-  unverified; a rate gap (snapshot > 10 days old, or a day without VA) deletes refi alert rows, so those
-  clients come back "New" and Charlie re-announces them once (keep rows when the lens's rate is missing);
+  unverified; (rate-gap alert re-announce: fixed 2026-11-15, see Done);
   I7: a re-import of "current"-basis values reports "updated" (import counts over-count);
   M9: pre-2013 FHA 78% date uses the stored, possibly premium-inclusive original amount (apply the
   /1.0175 base); the pre-existing amber "PMI removal" line on the Equity Projection card still shows for

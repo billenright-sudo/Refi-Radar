@@ -206,6 +206,25 @@ function dropPmi(x) {
   };
 }
 
+// The refi lenses of c's program that `rates` can't price, by the same test each check uses (a stale snapshot is no rates at all):
+// lib/upgradeAlerts keeps their alert rows instead of re-arming them. Drop PMI needs no rate; an investment property or an unknown
+// program has nothing to keep.
+function unpricedLenses(c, rates) {
+  if (c.occupancy === "investment") return [];
+  const conv = c.loanType === "15yr_fixed" ? "rate_15yr_fixed" : "rate_30yr_fixed";   // the rate govToConv's analyze prices from
+  const noConv = !rates || !rates[conv];
+  const out = [];
+  if (c.loanProgram === "fha") {
+    if (noConv) out.push("fha_to_conv");
+    if (!pos(rates && rates.rate_30yr_fha)) out.push("fha_streamline");
+  } else if (c.loanProgram === "usda") {
+    if (noConv) out.push("usda_to_conv");
+  } else if (c.loanProgram === "va") {
+    if (!pos(rates && rates.rate_30yr_va)) out.push("va_irrrl");
+  }
+  return out;
+}
+
 function upgradesFor(c, rates, today, { index } = {}) {
   const { t, rawLtv } = todayBlock(c, today, index || hpi.defaultIndex);
   const first = firstPaymentFromClosing(c.closeDate); // null for a missing or malformed close date
@@ -242,7 +261,7 @@ function upgradesFor(c, rates, today, { index } = {}) {
 }
 
 module.exports = {
-  upgradesFor, GAPS,
+  upgradesFor, unpricedLenses, GAPS,
   CONV_MIN_SCORE, STREAMLINE_MIN_SCORE, MAX_BREAK_EVEN, HIGH_SAVINGS, NTB_MIN_DROP, FHA_UFMIP, FHA_NEW_ANNUAL_MIP,
   FHA_NEW_ANNUAL_MIP_HIGH, FHA_HIGH_BALANCE, VA_FUNDING_FEE, MI_ENDING_SOON_MONTHS, CONV_MAX_LTV, WAITING_DAYS,
 };

@@ -132,7 +132,8 @@ Dockerfile, docker-compose.yml, .env.example, .gcloudignore, policy.json
   waiting period, or insurance ending within 12 months → no flag; Drop PMI needs a typed MI above $0.
 - **Alerts:** table `client_upgrades` (client, lens, first seen, announced). The first daily check after a client
   qualifies records it, Charlie's briefing names it once, the client shows "New" until a *reached* contact is logged;
-  a lens that stops qualifying loses its row and re-arms. Nothing is emailed.
+  a lens that stops qualifying loses its row and re-arms; one the day's rates can't price (`upgrades.unpricedLenses`:
+  stale snapshot, or no VA / FHA / conventional rate) keeps its row, so it isn't "New" again. Nothing is emailed.
 
 ## Branding
 Dark **navy** background (`#15294f`, brightened from near-black 2026-10-15),

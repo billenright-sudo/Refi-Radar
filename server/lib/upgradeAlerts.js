@@ -2,7 +2,7 @@
 // Upgrade alerts (spec 4.7): on each FRED observation, record which clients newly qualify for which upgrade lens, re-arm the ones
 // that stopped qualifying, and build the per-client upgrade views the screens show. Only FRED snapshots act (targets.latestRealSnapshot).
 const refi = require("./refi");
-const { upgradesFor } = require("./upgrades");
+const { upgradesFor, unpricedLenses } = require("./upgrades");
 const targets = require("./targets");
 
 // first_seen_at and contact_log.at are both SQLite UTC text, so "reached at or after" is a plain string compare.
@@ -26,7 +26,8 @@ function upgradeRates(db, nowMs = Date.now(), noSnapshot = null) {
 
 // Record and re-arm alert rows for every org client with a loan program, on the latest FRED snapshot (its rates per ratesForUpgrades).
 // -> { rates, obsDate, today, results: Map<clientId, UpgradesResult> }, or null without a FRED snapshot. `rates` is what the checks
-// priced from (null for a stale snapshot). Writes only differences.
+// priced from (null for a stale snapshot). Writes only differences. A lens the rates can't price (upgrades.unpricedLenses) wasn't
+// checked, so its row is kept: the client doesn't come back "new" (and announced again) when the rate returns.
 function checkUpgrades(db, orgId, nowMs = Date.now()) {
   const snap = targets.latestRealSnapshot(db);
   if (!snap) return null;
@@ -42,15 +43,18 @@ function checkUpgrades(db, orgId, nowMs = Date.now()) {
   const nowKeys = new Set();
   const add = [];
   for (const row of rows) {
-    const result = upgradesFor(refi.norm(row), rates, today);
+    const c = refi.norm(row);
+    const result = upgradesFor(c, rates, today);
     results.set(row.id, result);
+    for (const lens of unpricedLenses(c, rates)) nowKeys.add(`${row.id}:${lens}`);   // not checked: keep its row
     for (const l of result.lenses) {
       const key = `${row.id}:${l.lens}`;
       nowKeys.add(key);
       if (!storedKeys.has(key)) add.push([row.id, l.lens]);
     }
   }
-  const drop = stored.filter((r) => !nowKeys.has(`${r.client_id}:${r.lens}`));   // stopped qualifying (or lost the program): re-armed
+  // Checked and stopped qualifying (or lost the program): re-armed. An unpriced lens is in nowKeys but never added.
+  const drop = stored.filter((r) => !nowKeys.has(`${r.client_id}:${r.lens}`));
   if (add.length || drop.length) {
     const at = sqliteUtc(nowMs);
     db.transaction(() => {
