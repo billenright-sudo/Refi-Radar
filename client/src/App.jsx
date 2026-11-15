@@ -26,7 +26,7 @@ import * as privacyDoc from "./legal/privacy.mjs";
 import { analyze } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
-import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, isGovProgram, withGovGuard, govRefiNote } from "./upgrades.mjs";
+import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, showsPmiBox, withGovGuard, govRefiNote } from "./upgrades.mjs";
 import { equityAt, monthsToSubEightyLTV } from "./equity.mjs";
 
 // ---------------------------------------------------------------------------
@@ -1757,7 +1757,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
             </div>
 
             {/* PMI milestone */}
-            {pmiMonths !== null && !(pmiMonths === 0 && isGovProgram(client.loanProgram)) && (
+            {showsPmiBox(client.loanProgram, pmiMonths) && (
               <div style={{ padding: "0.75rem 1rem", borderRadius: 8, background: pmiMonths === 0 ? C.greenBg : C.amberBg, borderLeft: `3px solid ${pmiMonths === 0 ? C.green : C.amber}` }}>
                 {pmiMonths === 0
                   ? <span style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>✓ LTV already below 80% — no PMI exposure</span>

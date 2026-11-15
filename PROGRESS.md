@@ -6,6 +6,10 @@ cleanly after compaction / a new session. Newest notes at the top of each list.
 _Last updated: 2026-11-14_
 
 ## Done
+- **No PMI box on government loans — BUILT 2026-11-15 on `feature/gov-pmi-line`** (client only). The Equity
+  Projection card's PMI box (green "no PMI exposure" / amber "PMI removal: LTV drops below 80% in …") no longer
+  shows for FHA, VA or USDA clients (`upgrades.mjs` `showsPmiBox`); the green line was already hidden for them,
+  the amber one wasn't. Conventional, jumbo and no-program clients are unchanged.
 - **Upgrade alerts survive a rate gap — BUILT 2026-11-15 on `feature/alert-gap`.** `checkUpgrades` no longer
   deletes a `client_upgrades` row whose lens the day's rates can't price (`upgrades.unpricedLenses`: every refi
   lens on a snapshot over 10 days old; VA IRRRL without the VA rate; FHA Streamline without the FHA rate; FHA/USDA
@@ -215,8 +219,7 @@ _Last updated: 2026-11-14_
   unverified; (rate-gap alert re-announce: fixed 2026-11-15, see Done);
   I7: a re-import of "current"-basis values reports "updated" (import counts over-count);
   M9: pre-2013 FHA 78% date uses the stored, possibly premium-inclusive original amount (apply the
-  /1.0175 base); the pre-existing amber "PMI removal" line on the Equity Projection card still shows for
-  FHA/VA/USDA clients.
+  /1.0175 base).
 - `scripts/import` xlsx flow has no automated test yet (see Next steps).
 - gcloud auth tokens expire often → deploys intermittently need `gcloud auth login`.
 

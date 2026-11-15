@@ -51,6 +51,10 @@ export function creditScoreText(client) {
 const GOV_PROGRAMS = { fha: "an FHA", va: "a VA", usda: "a USDA" };
 export const isGovProgram = (loanProgram) => Object.prototype.hasOwnProperty.call(GOV_PROGRAMS, loanProgram);
 
+// The Equity Projection card's PMI box (green "no PMI exposure", or amber "PMI removal" in `pmiMonths` months): only when the
+// projection reaches 80% LTV (null = never), and never for a government loan, whose insurance doesn't drop at 80%.
+export const showsPmiBox = (loanProgram, pmiMonths) => pmiMonths != null && !isGovProgram(loanProgram);
+
 // The conventional analysis for a client of `loanProgram`: never "good" (refi-ready) for a government loan.
 export function withGovGuard(a, loanProgram) {
   return a && isGovProgram(loanProgram) ? { ...a, good: false } : a;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, UPGRADE_LENSES, badgeFor, balanceLine, valueLine, creditScoreForPost, isGovProgram, govRefiNote, withGovGuard, creditScoreText } from "./upgrades.mjs";
+import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, UPGRADE_LENSES, badgeFor, balanceLine, valueLine, creditScoreForPost, isGovProgram, govRefiNote, withGovGuard, creditScoreText, showsPmiBox } from "./upgrades.mjs";
 
 test("option lists and lens ids", () => {
   assert.deepEqual(PROGRAM_OPTIONS, [["", "Not set"], ["conventional", "Conventional"], ["fha", "FHA"], ["va", "VA"], ["usda", "USDA"], ["jumbo", "Jumbo"]]);
@@ -52,6 +52,13 @@ test("M5 valueLine: falling prices read 'down'; no growth drops the clause", () 
 test("I2 isGovProgram: FHA, VA and USDA only", () => {
   for (const p of ["fha", "va", "usda"]) assert.equal(isGovProgram(p), true, p);
   for (const p of ["conventional", "jumbo", "", null, undefined, "nonqm"]) assert.equal(isGovProgram(p), false, String(p));
+});
+
+test("showsPmiBox: the Equity Projection card's PMI box never shows for a government loan", () => {
+  const months = [0, 1, 27, 360];   // 0 = already under 80% (the green line); the rest = the amber "PMI removal" line
+  for (const p of ["fha", "va", "usda"]) for (const m of months) assert.equal(showsPmiBox(p, m), false, `${p} ${m}`);
+  for (const p of ["conventional", "jumbo", "", null, undefined]) for (const m of months) assert.equal(showsPmiBox(p, m), true, `${p} ${m}`);
+  for (const p of ["conventional", "fha", ""]) assert.equal(showsPmiBox(p, null), false, `${p}: never reaches 80%, no box`);
 });
 
 test("I2 govRefiNote: the program's line, or nothing for a conventional loan", () => {
