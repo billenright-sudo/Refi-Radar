@@ -103,6 +103,8 @@ test("I4: Log contact on the Sweeps page logs a reached call and closes the clie
 test("I4: after Log contact the client is neither on the next briefing's list nor asked about", async () => {
   const alpha = addClient(orgA, ann, "Alpha Sample");               // asked about: recommended yesterday, still open
   const bravo = addClient(orgA, ann, "Bravo Sample", { rate: 7.25 }); // listed this morning
+  // Bravo's value is one the broker typed this year, so it is priced as entered (LTV 80, top tier): a rate refi, "could save".
+  db.prepare("UPDATE clients SET edited_by_hand = 'property_value', value_as_of = date('now') WHERE id = ?").run(bravo);
   fu.recordRecommendations(db, ann, utcDay(-1), [{ clientId: alpha, source: "briefing", reasonCode: "rate_term" }]);
   const morning = await briefNow(ann);
   assert.ok(morning.reply.endsWith("Yesterday I suggested calling Alpha Sample. Were you able to reach them?"), morning.reply);

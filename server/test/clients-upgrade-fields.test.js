@@ -234,3 +234,15 @@ test("I2: the broker's LO view (GET /api/org/los/:id/clients) carries each clien
   assert.strictEqual(r.status, 200, JSON.stringify(r.data));
   assert.deepStrictEqual(r.data.clients.map((c) => [c.name, c.loanProgram]), [["Blank Sample", ""], ["Fha Sample", "fha"]]);
 });
+
+test("the broker's LO view carries each client's upgrade view, so its savings price today's figures as the client list's do", async () => {
+  const lo = addUser(orgA, "lo", `lo-today-${Date.now()}@upgrade.test`, "Lou");
+  db.prepare(`INSERT INTO clients (org_id, user_id, name, current_rate, loan_balance, property_value, loan_program)
+    VALUES (?, ?, 'Today Sample', 6.5, 300000, 400000, 'conventional')`).run(orgA, lo);
+  const r = await api("GET", `/api/org/los/${lo}/clients`);
+  assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+  const up = r.data.clients[0].upgrades;
+  // No ZIP or dates: the balance on file, and the $400,000 on file less 10%.
+  assert.deepStrictEqual([up.today.balance, up.today.cautiousValue, up.today.valueBasis], [300000, 360000, "flat"]);
+  assert.ok(Array.isArray(up.lenses) && Array.isArray(up.gaps));
+});

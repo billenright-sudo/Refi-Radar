@@ -96,6 +96,20 @@ test("estimateRate matches the client page", () => {
   assert.equal(T.estimateRate({ ...row, current_rate: 0 }, BASE), null);
 });
 
+test("estimateRate on a day prices today's figures, as the client page does", () => {
+  // No ZIP or value date: the $400,000 on file less 10%. 320k / 360k = 88.9% LTV: past top tier, 6.461 + 0.125.
+  const row = { loan_type: "30yr_fixed", current_rate: 7.5, loan_balance: 320000, property_value: 400000, credit_score: 760 };
+  assert.equal(T.estimateRate(row, BASE), 6.461);
+  assert.equal(T.estimateRate(row, BASE, "2026-11-09"), 6.586);
+  // A value the broker typed within the year is used as it is.
+  const typed = { ...row, edited_by_hand: "property_value", value_as_of: "2026-06-01" };
+  assert.equal(T.estimateRate(typed, BASE, "2026-11-09"), 6.461);
+  // The balance is rolled forward from its day: a 15-year loan past its last payment is paid off, so there is nothing to price.
+  const paid = { ...row, loan_type: "15yr_fixed", close_date: "2005-01-15", balance_as_of: "2015-01-15" };
+  assert.notEqual(T.estimateRate(paid, BASE), null);
+  assert.equal(T.estimateRate(paid, BASE, "2026-11-09"), null);
+});
+
 test("latestRealSnapshot: the greatest observation date wins over capture order", () => {
   assert.equal(T.latestRealSnapshot(db), null);
   recordSnapshot(live("2026-11-05"), "2026-11-09", "fred");   // captured late, an older observation
@@ -162,7 +176,8 @@ test("checkTargets", () => {
   const a2 = addClient(orgA, lou, "Checked already", { rate: 7.5, balance: 320000, value: 400000 });
   const a3 = addClient(orgA, ann, "No target", { rate: 7.5 });
   const b1 = addClient(orgB, zed, "Other org", { rate: 7.5, balance: 320000, value: 400000 });
-  const est = T.estimateRate(get(a1), live("2026-11-06"));
+  const est = T.estimateRate(get(a1), live("2026-11-06"), "2026-11-09");   // the check prices the figures of its own day
+  assert.equal(est, 6.586);                                                // 320k on $400,000 less 10%; on file it would be 6.461
   const stamp = "2026-01-01 00:00:00";
   for (const id of [a1, a2, b1]) setCols(id, { target_rate: est + 0.05, updated_at: stamp });
   setCols(a2, { target_checked_on: "2026-11-06" });

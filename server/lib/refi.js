@@ -116,8 +116,17 @@ function analyze(client, rates) {
 }
 
 // ── Lenses — each returns a normalized opportunity or null ───────────────────
-function rateTerm(c, rates) {
-  if (c.loanType === "5_1_arm") return null; // ARMs are routed to the ARM→fixed lens
+// `today` (optional, on every lens) is the upgrades' today block (lib/upgrades): today's balance and cautious value, the figures the
+// client page's Upgrades and Equity Projection cards show. A lens reads them when the block has both, and the figures on file otherwise.
+const usableToday = (today) => !!today && Number.isFinite(today.cautiousValue) && today.cautiousValue > 0 &&
+  Number.isFinite(today.balance) && today.balance >= 0;
+// The loan as the rate lenses and the target check (lib/targets) price it; client/src/equity.mjs pricedToday is its mirror.
+const pricedToday = (c, today) => (usableToday(today) ? { ...c, loanBalance: today.balance, propertyValue: today.cautiousValue } : c);
+
+function rateTerm(c0, rates, today) {
+  if (c0.loanType === "5_1_arm") return null; // ARMs are routed to the ARM→fixed lens
+  const c = pricedToday(c0, today);
+  if (!(c.loanBalance > 0)) return null;      // paid off by today: no refi to offer
   const a = analyze(c, rates);
   if (!a || !a.good) return null;
   return {
@@ -135,11 +144,8 @@ const CASH_OUT_NOTE = {
   flat: "on the value on file less 10% — verify",
 };
 
-// `today` (optional) is the upgrades' today block: when it has a cautious value and a balance, the check uses those (the same figures
-// as the client page's Upgrades and Equity Projection cards); otherwise the figures on file.
 function cashOut(c, today) {
-  const useToday = !!today && Number.isFinite(today.cautiousValue) && today.cautiousValue > 0 &&
-    Number.isFinite(today.balance) && today.balance >= 0;
+  const useToday = usableToday(today);
   const value = useToday ? today.cautiousValue : c.propertyValue, balance = useToday ? today.balance : c.loanBalance;
   if (!(value > 0) || !(balance > 0)) return null;
   const maxLoan = 0.80 * value;
@@ -155,8 +161,10 @@ function cashOut(c, today) {
   };
 }
 
-function armToFixed(c, rates) {
-  if (c.loanType !== "5_1_arm") return null;
+function armToFixed(c0, rates, today) {
+  if (c0.loanType !== "5_1_arm") return null;
+  const c = pricedToday(c0, today);
+  if (!(c.loanBalance > 0)) return null;
   const a = analyze({ ...c, loanType: "30yr_fixed" }, rates);
   if (!a) return null;
   const save = a.monthlySavings;
@@ -171,7 +179,9 @@ function armToFixed(c, rates) {
   };
 }
 
-function termSwap(c, rates) {
+function termSwap(c0, rates, today) {
+  const c = pricedToday(c0, today);
+  if (!(c.loanBalance > 0)) return null;
   const score = c.creditScore || 700;
   const ltv = (c.loanBalance / c.propertyValue) * 100;
   if (c.loanType === "30yr_fixed") {
@@ -230,7 +240,7 @@ function sweepClient(raw, rates, now = new Date(), opts = {}) {
   // Lazy: upgrades.js destructures from this module at load time.
   const { upgradesFor } = require("./upgrades");
   const upgradeRates = opts.upgradeRates !== undefined ? opts.upgradeRates : rates;
-  let up = { lenses: [], gaps: [] };   // checks that throw: no upgrades and no gaps (cash-out from the figures on file), the rest as usual
+  let up = { lenses: [], gaps: [] };   // checks that throw: no upgrades and no gaps (the lenses read the figures on file), the rest as usual
   try {
     up = upgradesFor(c, upgradeRates, now.toISOString().slice(0, 10), { index: opts.index });
   } catch (err) {
@@ -239,7 +249,7 @@ function sweepClient(raw, rates, now = new Date(), opts = {}) {
   // Government loans skip the conventional rate lenses (their own upgrade checks cover them); equity still counts.
   const lenses = (GOV_PROGRAMS.has(c.loanProgram)
     ? [cashOut(c, up.today)]
-    : [rateTerm(c, rates), cashOut(c, up.today), armToFixed(c, rates), termSwap(c, rates)]).filter(Boolean);
+    : [rateTerm(c, rates, up.today), cashOut(c, up.today), armToFixed(c, rates, up.today), termSwap(c, rates, up.today)]).filter(Boolean);
   lenses.sort((x, y) => (PRIORITY_RANK[y.priority] - PRIORITY_RANK[x.priority]) || (impact(y) - impact(x)));
   const doNotEmail = raw.do_not_email === 1 || raw.doNotEmail === true;
   return {
@@ -267,7 +277,7 @@ function runSweep(clients, rates, now = new Date(), opts = {}) {
 
 module.exports = {
   CASH_OUT_FLOOR, CHECK_IN_MONTHS,
-  norm, calcPayment, llpaPrice, estClosingCosts, analyze,
+  norm, calcPayment, llpaPrice, estClosingCosts, analyze, pricedToday,
   rateTerm, cashOut, armToFixed, termSwap, checkInStatus,
   sweepClient, runSweep,
   PRIORITY_RANK, impact,

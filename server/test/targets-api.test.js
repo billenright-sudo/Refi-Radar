@@ -38,9 +38,11 @@ const addUser = (orgId, role, email, first) => Number(db.prepare(
   "INSERT INTO users (org_id, role, first_name, last_name, email) VALUES (?, ?, ?, 'User', ?)"
 ).run(orgId, role, first, email).lastInsertRowid);
 const userRow = (id) => db.prepare("SELECT id, org_id, role, first_name, last_name, email FROM users WHERE id = ?").get(id);
+// The value is one the broker typed (and not a year ago), so today's figures are the ones on file: LTV 75.
 const addClient = (orgId, userId, name, rate = 6.75) => Number(db.prepare(`
-  INSERT INTO clients (org_id, user_id, name, loan_number, loan_type, current_rate, loan_balance, property_value, credit_score, close_date)
-  VALUES (?, ?, ?, 'L' || ?, '30yr_fixed', ?, 300000, 400000, 760, '2024-03-14')
+  INSERT INTO clients (org_id, user_id, name, loan_number, loan_type, current_rate, loan_balance, property_value, credit_score, close_date,
+    edited_by_hand, value_as_of)
+  VALUES (?, ?, ?, 'L' || ?, '30yr_fixed', ?, 300000, 400000, 760, '2024-03-14', 'property_value', date('now'))
 `).run(orgId, userId, name, name, rate).lastInsertRowid);
 const row = (id) => db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 
@@ -93,6 +95,16 @@ test("GET /api/clients carries target: null without one, and the watching view w
   assert.strictEqual(byId[watched].target.rate, 6);
   assert.strictEqual(byId[watched].target.state, "watching");
   assert.strictEqual(byId[watched].target.estRate, T.estimateRate(row(watched), live("2026-11-02")));
+});
+
+test("the watching view's estimate prices today's figures: a value nobody typed is taken less 10%", async () => {
+  snap("2026-11-02");
+  const id = addClient(orgA, ann, "Untyped");
+  db.prepare("UPDATE clients SET target_rate = 6, edited_by_hand = '', value_as_of = NULL WHERE id = ?").run(id);
+  const c = await getClient(ann, id);
+  // 300k / 360k = 83.3% LTV: past top tier, 6.461 + 0.125. On file, at 75%, it is the top-tier 6.461 itself.
+  assert.deepStrictEqual([c.target.state, c.target.estRate], ["watching", 6.586]);
+  assert.strictEqual(T.estimateRate(row(id), live("2026-11-02")), 6.461);
 });
 
 test("GET shows the stored hit after a newer observation", async () => {

@@ -2,6 +2,7 @@
 // Target-rate alerts: the broker records a target rate per client; once a day's FRED observation arrives, checkTargets decides
 // whether the client's estimated rate has reached it. Only a FRED snapshot acts. Pure helpers plus a few small DB reads.
 const refi = require("./refi");
+const { todayFigures } = require("./upgrades");
 const { observationDate, providerOf } = require("./rateHistory");
 
 const TARGET_MIN = 1;
@@ -25,11 +26,14 @@ function parseTarget(raw) {
 
 const notBelowError = (name, currentRate) => `A target has to be below ${name}'s current rate of ${Number(currentRate).toFixed(3)}%.`;
 
-// The "Est. Client Rate" the client page shows: an ARM is priced there as a 30-year fixed.
-function estimateRate(row, rates) {
+// The "Est. Client Rate" the client page shows: an ARM is priced there as a 30-year fixed. With `today` ("YYYY-MM-DD") it prices that
+// day's balance and cautious value, as the page and Sweeps do (refi.pricedToday); without it, the figures on file.
+function estimateRate(row, rates, today, opts = {}) {
   const client = refi.norm(row);
   if (!(client.currentRate > 0) || !(client.loanBalance > 0) || !(client.propertyValue > 0)) return null;
-  const priced = client.loanType === "5_1_arm" ? { ...client, loanType: "30yr_fixed" } : client;
+  const loan = today ? refi.pricedToday(client, todayFigures(client, today, opts)) : client;
+  if (!(loan.loanBalance > 0)) return null;   // paid off by that day: nothing to price
+  const priced = loan.loanType === "5_1_arm" ? { ...loan, loanType: "30yr_fixed" } : loan;
   const a = refi.analyze(priced, rates);
   return a && Number.isFinite(a.effRate) ? round3(a.effRate) : null;
 }
@@ -81,13 +85,14 @@ function checkTargets(db, orgId, nowMs = Date.now()) {
   const snap = latestRealSnapshot(db);
   if (!snap) return null;
   const nowUtc = new Date(nowMs).toISOString().slice(0, 19).replace("T", " ");
+  const today = nowUtc.slice(0, 10);   // the day whose balance and value the estimate prices (as the upgrade checks' day)
   const rows = db.prepare(
     "SELECT * FROM clients WHERE org_id = ? AND target_rate IS NOT NULL AND (target_checked_on IS NULL OR target_checked_on < ?)"
   ).all(orgId, snap.obsDate);
   const patchedIds = [];
   const apply = db.transaction(() => {
     for (const row of rows) {
-      const patch = nextTargetFields(row, estimateRate(row, snap.rates), snap.obsDate, nowUtc);
+      const patch = nextTargetFields(row, estimateRate(row, snap.rates, today), snap.obsDate, nowUtc);
       if (!patch) continue;
       const cols = Object.keys(patch);
       db.prepare(`UPDATE clients SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...cols.map((c) => patch[c]), row.id);

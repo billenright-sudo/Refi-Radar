@@ -474,6 +474,8 @@ const brokerH = addUser(orgH, "broker", "broker@targets.co");
 const helenId = addClientRow(orgH, brokerH, {
   name: "Helen Brandt", loanType: "30yr_fixed", currentRate: 6.75, loanBalance: 300000, propertyValue: 400000, creditScore: 760,
 });
+// Her value is one the broker typed (and not a year ago), so today's figures are the ones on file: LTV 75, top tier.
+db.prepare("UPDATE clients SET edited_by_hand = 'property_value', value_as_of = date('now') WHERE id = ?").run(helenId);
 const helenCtx = { user: user(brokerH, "broker", orgH), rates: LIVE, db };
 const targetOf = (id) => db.prepare("SELECT target_rate FROM clients WHERE id = ?").get(id).target_rate;
 const CLEAR_HIT = "UPDATE clients SET target_rate = NULL, target_reached_on = NULL, target_reached_rate = NULL, target_reached_at = NULL, target_checked_on = NULL WHERE id = ?";

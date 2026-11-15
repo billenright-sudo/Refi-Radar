@@ -64,6 +64,51 @@ test("cashOut without usable today's figures: the figures on file, as before", (
   }
 });
 
+// The three rate lenses price the same today's figures as the cash-out check, and the figures on file without them.
+const R650 = { loanType: "30yr_fixed", currentRate: 7.85, loanBalance: 485000, propertyValue: 650000, creditScore: 760 };
+const ARM720 = { loanType: "5_1_arm", currentRate: 8.25, loanBalance: 560000, propertyValue: 720000, creditScore: 720 };
+const T30 = { loanType: "30yr_fixed", currentRate: 7.0, loanBalance: 300000, propertyValue: 500000, creditScore: 760 };
+const T15 = { loanType: "15yr_fixed", currentRate: 6.9, loanBalance: 215000, propertyValue: 380000, creditScore: 800 };
+const UNUSABLE_TODAY = [undefined, null, {}, TODAY({ cautiousValue: null }), TODAY({ cautiousValue: 0 }), TODAY({ cautiousValue: Number.NaN }),
+  TODAY({ balance: null }), TODAY({ balance: Number.NaN }), TODAY({ balance: -5 })];
+
+test("pricedToday: today's balance and cautious value in place of the figures on file", () => {
+  assert.deepStrictEqual(refi.pricedToday(R650, TODAY({ balance: 470000 })), { ...R650, loanBalance: 470000, propertyValue: 585000 });
+  for (const t of UNUSABLE_TODAY) assert.strictEqual(refi.pricedToday(R650, t), R650, JSON.stringify(t));
+});
+
+test("rateTerm from today's figures: the rate, savings and break-even on today's balance and cautious value", () => {
+  // On file 485k / 650k = 74.6% LTV: the top-tier 6.461%. Today 470k / 585k = 80.3%: past top tier, +0.125 → 6.586%.
+  assert.deepStrictEqual(refi.rateTerm(R650, RATES).effRate, 6.46);
+  const hit = refi.rateTerm(R650, RATES, TODAY({ balance: 470000 }));
+  assert.deepStrictEqual([hit.effRate, hit.rateDelta, hit.monthlySavings, hit.headline, hit.breakEven, hit.priority], [6.59, 1.26, 402, 402, 18, "high"]);
+  assert.strictEqual(hit.detail, "Drop ~1.26% to 6.59% → save ~$402/mo, break-even 18 mo");
+  assert.strictEqual(refi.rateTerm(R650, RATES, TODAY({ balance: 0 })), null, "paid off by today: no refi to offer");
+  for (const t of UNUSABLE_TODAY) assert.deepStrictEqual(refi.rateTerm(R650, RATES, t), refi.rateTerm(R650, RATES), JSON.stringify(t));
+});
+
+test("armToFixed from today's figures", () => {
+  // On file 560k / 720k = 77.8% LTV at 720: 6.711%. Today 540k / 800k = 67.5%: no adjustment → 6.461%.
+  const hit = refi.armToFixed(ARM720, RATES, TODAY({ balance: 540000, cautiousValue: 800000 }));
+  assert.deepStrictEqual([hit.effRate, hit.monthlySavings, hit.priority], [6.46, 658, "high"]);
+  assert.strictEqual(hit.detail, "Lock a fixed rate (~6.46%) before the ARM adjusts — ~$658/mo");
+  assert.strictEqual(refi.armToFixed(ARM720, RATES, TODAY({ balance: 0 })), null, "paid off by today");
+  for (const t of UNUSABLE_TODAY) assert.deepStrictEqual(refi.armToFixed(ARM720, RATES, t), refi.armToFixed(ARM720, RATES), JSON.stringify(t));
+});
+
+test("termSwap from today's figures, both directions", () => {
+  // 30 → 15. On file 300k / 500k = 60% LTV: 5.91%. Today 290k / 380k = 76.3%: +0.125 → 6.035%, on today's balance.
+  const to15 = refi.termSwap(T30, RATES, TODAY({ balance: 290000, cautiousValue: 380000 }));
+  assert.deepStrictEqual([to15.newRate, to15.paymentChange], [6.04, 523]);
+  // 15 → 30: the payment drop on today's balance (200k at 6.9% over 15 years → the top-tier 6.461% over 30).
+  const to30 = refi.termSwap(T15, RATES, TODAY({ balance: 200000, cautiousValue: 342000 }));
+  assert.deepStrictEqual([to30.headline, to30.paymentChange], [527, -527]);
+  for (const c of [T30, T15]) {
+    assert.strictEqual(refi.termSwap(c, RATES, TODAY({ balance: 0 })), null, "paid off by today");
+    for (const t of UNUSABLE_TODAY) assert.deepStrictEqual(refi.termSwap(c, RATES, t), refi.termSwap(c, RATES), JSON.stringify(t));
+  }
+});
+
 test("armToFixed lens: ARMs only", () => {
   const hit = refi.armToFixed({ loanType: "5_1_arm", currentRate: 8.25, loanBalance: 560000, propertyValue: 720000, creditScore: 720 }, RATES);
   assert.equal(hit.lens, "arm_to_fixed");
@@ -134,15 +179,17 @@ const fhaClient = (over = {}) => ({
   creditScore: 720, creditScoreKnown: true, monthlyMi: null, editedByHand: "", ...over,
 });
 
-test("no-program client: no upgrades; the rate lenses as before, cash-out from today's figures", () => {
+test("no-program client: no upgrades; the rate lenses and cash-out from today's figures", () => {
   const now = new Date("2026-10-21T00:00:00Z");
   const cs = [
     { id: 1, name: "Rate", loan_type: "30yr_fixed", current_rate: 7.85, loan_balance: 485000, property_value: 650000, credit_score: 760, last_contact: "2026-01-01" },
     { id: 2, name: "Arm", loan_type: "5_1_arm", current_rate: 8.25, loan_balance: 560000, property_value: 720000, credit_score: 720, last_contact: "2026-10-01" },
     { id: 3, name: "Fifteen", loan_type: "15yr_fixed", current_rate: 7.2, loan_balance: 300000, property_value: 500000, credit_score: 740, last_contact: "2026-10-10" },
   ];
+  // No ZIP or value date on any of them, so each value is the one on file less 10%, and the balance the one on file.
   const want = [
-    {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":455,"unit":"$/mo","detail":"Drop ~1.39% to 6.46% → save ~$455/mo, break-even 17 mo","monthlySavings":455,"rateDelta":1.39,"breakEven":17,"effRate":6.46},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":455,"unit":"$/mo","detail":"Drop ~1.39% to 6.46% → save ~$455/mo, break-even 17 mo","monthlySavings":455,"rateDelta":1.39,"breakEven":17,"effRate":6.46},{"lens":"term_swap","label":"Term Swap","priority":"medium","headline":6.04,"unit":"%","detail":"15-yr refi at ~6.04% — pay off ~15 yrs sooner, +$594/mo","newRate":6.04,"paymentChange":594}],"checkIn":{"due":true,"monthsSince":9,"basis":"last_contact"}},
+    // 485k / 585k = 82.9% LTV: past top tier, 6.461 + 0.125 → 6.586% (on the $650,000 on file it was 74.6% → 6.46%, $455/mo).
+    {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":415,"unit":"$/mo","detail":"Drop ~1.26% to 6.59% → save ~$415/mo, break-even 18 mo","monthlySavings":415,"rateDelta":1.26,"breakEven":18,"effRate":6.59},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":415,"unit":"$/mo","detail":"Drop ~1.26% to 6.59% → save ~$415/mo, break-even 18 mo","monthlySavings":415,"rateDelta":1.26,"breakEven":18,"effRate":6.59},{"lens":"term_swap","label":"Term Swap","priority":"medium","headline":6.04,"unit":"%","detail":"15-yr refi at ~6.04% — pay off ~15 yrs sooner, +$594/mo","newRate":6.04,"paymentChange":594}],"checkIn":{"due":true,"monthsSince":9,"basis":"last_contact"}},
     {"best":{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":589,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$589/mo","effRate":6.71,"monthlySavings":589},"opportunities":[{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":589,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$589/mo","effRate":6.71,"monthlySavings":589}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
     // Cash-out from today's figures: no ZIP or value date, so the $500,000 on file less 10% → 0.80*450k - 300k = $60,000 (medium).
     {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},{"lens":"cash_out","label":"Cash-Out","priority":"medium","headline":60000,"unit":"$","detail":"~$60,000 tappable to 80% LTV (on the value on file less 10% — verify)","cashAvailable":60000,"currentLtv":66.7},{"lens":"term_swap","label":"Term Swap","priority":"low","headline":842,"unit":"$/mo","detail":"Cash-flow option: 30-yr refi cuts the payment ~$842/mo","paymentChange":-842}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
@@ -180,6 +227,24 @@ test("sweepClient: the cash-out check reads the same today's figures as the upgr
   // runSweep passes the same figures through
   const run = refi.runSweep([c], UP_RATES, UP_NOW, { index: UP_INDEX });
   assert.strictEqual(run.opportunities[0].best.cashAvailable, co.cashAvailable);
+});
+
+test("sweepClient: the rate lenses read the same today's figures as the upgrade checks", () => {
+  // The same loan as a conventional 30-year, a 15-year and an ARM: each rate lens prices the rolled-forward balance and $630,000.
+  const base = fhaClient({ loanProgram: "conventional", propertyValue: 500000, currentRate: 7.9 });
+  const lensOf = (c, lens) => refi.sweepClient(c, UP_RATES, UP_NOW, { index: UP_INDEX }).opportunities.find((o) => o.lens === lens);
+  const todayOf = (c) => require("../lib/upgrades").upgradesFor(refi.norm(c), UP_RATES, "2026-11-13", { index: UP_INDEX }).today;
+  const t = todayOf(base);
+  assert.deepStrictEqual([t.cautiousValue, t.balanceBasis], [630000, "rolled"]);
+  const rt = lensOf(base, "rate_term");
+  assert.deepStrictEqual(rt, refi.rateTerm(refi.norm(base), UP_RATES, t));
+  assert.ok(rt.monthlySavings < refi.rateTerm(refi.norm(base), UP_RATES).monthlySavings, "a smaller balance today saves less a month");
+  assert.deepStrictEqual(lensOf(base, "term_swap"), refi.termSwap(refi.norm(base), UP_RATES, t));
+  const arm = { ...base, loanType: "5_1_arm" };
+  assert.deepStrictEqual(lensOf(arm, "arm_to_fixed"), refi.armToFixed(refi.norm(arm), UP_RATES, todayOf(arm)));
+  assert.notDeepStrictEqual(lensOf(arm, "arm_to_fixed"), refi.armToFixed(refi.norm(arm), UP_RATES));
+  // runSweep passes the same figures through
+  assert.deepStrictEqual(refi.runSweep([base], UP_RATES, UP_NOW, { index: UP_INDEX }).opportunities[0].opportunities.find((o) => o.lens === "rate_term"), rt);
 });
 
 test("runSweep lists upgrades separately and counts them", () => {
@@ -224,7 +289,7 @@ test("I5: opts.upgradeRates prices the upgrades (null: none but Drop PMI); the f
   // a conventional client's rate lens prices from the given rates, not the upgrade rates
   const chen = { id: 1, name: "Chen", loan_type: "30yr_fixed", current_rate: 7.85, loan_balance: 485000, property_value: 650000, credit_score: 760 };
   const cheap = { ...UP_RATES, rate_30yr_top_tier: 4.0 };
-  assert.strictEqual(refi.sweepClient(chen, RATES, UP_NOW, { upgradeRates: cheap }).best.effRate, 6.46);
+  assert.strictEqual(refi.sweepClient(chen, RATES, UP_NOW, { upgradeRates: cheap }).best.effRate, 6.59);   // 6.461 + 0.125 at 82.9% LTV today
   // runSweep passes it through
   const run = refi.runSweep([c], noFha, UP_NOW, { index: UP_INDEX, upgradeRates: UP_RATES });
   assert.deepStrictEqual(run.upgrades.map((r) => r.bestUpgrade.lens), ["fha_streamline"]);

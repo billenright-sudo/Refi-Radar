@@ -1,5 +1,6 @@
 // Refi pricing for the client list, the client page and the Overview. It mirrors server/lib/refi.js (the engine behind Sweeps,
 // the morning briefing and Charlie) so every screen shows the same figures for the same loan; refiAnalysis.test.mjs checks the two agree.
+// The screens hand analyze() the loan on today's figures (equity.mjs pricedToday), as the server's lenses read them.
 
 export const calcPayment = (p, annualRate, years) => {
   const r = annualRate / 100 / 12, n = years * 12;

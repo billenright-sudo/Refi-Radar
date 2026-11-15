@@ -7,6 +7,7 @@ const { sendRefiAlert } = require("../email");
 const { CAREER_STAGES, stageById } = require("../lib/assistant/coaching");
 const { syncSeats } = require("../lib/billing/seats");
 const { pushBeforeAnswer } = require("../lib/billing/bounded");
+const upgradeAlerts = require("../lib/upgradeAlerts");
 
 const router = express.Router();
 router.use(requireAuth, requireAccess, requireBroker);
@@ -33,6 +34,8 @@ router.get("/los/:id/clients", (req, res) => {
   if (!lo) return res.status(404).json({ success: false, error: "LO not found in your org" });
 
   const clients = db.prepare("SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC").all(loId);
+  // Each client's upgrade view, as GET /api/clients sends it (routes/clients presentClients): the page prices its today's figures.
+  const upgrades = upgradeAlerts.safeUpgradeViewsFor(db, clients, upgradeAlerts.safeCheckUpgrades(db, req.user.org_id));
   res.json({ success: true, clients: clients.map(row => ({
     id: row.id, orgId: row.org_id, userId: row.user_id,
     name: row.name, email: row.email, phone: row.phone,
@@ -41,6 +44,7 @@ router.get("/los/:id/clients", (req, res) => {
     closeDate: row.close_date, creditScore: row.credit_score,
     notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at,
     loanProgram: row.loan_program,   // the page's conventional analysis leaves FHA, VA and USDA loans out
+    upgrades: upgrades.get(row.id) || null,
   })) });
 });
 

@@ -22,6 +22,13 @@ export function equityStart(client) {
   return { value: Number(client.propertyValue), balance: Number(client.loanBalance) };
 }
 
+// The loan as the refi analysis prices it (refiAnalysis.mjs analyze): the same starting balance and value as the projection, so the
+// client page, the client list and Home agree with this card. Mirrors server/lib/refi.js pricedToday.
+export function pricedToday(client) {
+  const start = equityStart(client);
+  return { ...client, loanBalance: start.balance, propertyValue: start.value };
+}
+
 // Equity snapshot N years from now
 export function equityAt(client, yearsFromNow) {
   const start    = equityStart(client);

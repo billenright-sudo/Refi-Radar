@@ -191,12 +191,13 @@ test("runSweepTool sweeps the whole org for a broker and hits the shared Chen kn
   assert.equal(r.data.counts.total, 2, "org A only — org B's client is out of scope");
   assert.ok(r.data.opportunities.length >= 1);
 
-  // Known answer: identical inputs/expectations to refi-math.test.js + sweeps.test.js (Chen, top-tier).
+  // Known answer: the Chen of refi-math.test.js + sweeps.test.js, priced on today's figures. No ZIP or value date, so the $650,000
+  // on file less 10%: 485k / 585k = 82.9% LTV, past top tier → 6.461 + 0.125 (on file it was 74.6% → 6.46%, delta 1.389).
   const chen = r.data.opportunities.find((o) => o.name === "Robert & Linda Chen");
   assert.equal(chen.best.lens, "rate_term");
   assert.equal(chen.best.priority, "high", "delta >= 1.0 is high priority");
-  assert.equal(chen.best.effRate, 6.46, "top-tier rate 6.461, no add-on");
-  assert.ok(Math.abs(chen.best.rateDelta - 1.389) <= 0.01, `rate delta ${chen.best.rateDelta}`);
+  assert.equal(chen.best.effRate, 6.59, "top-tier rate 6.461 + 0.125 at 82.9% LTV today");
+  assert.ok(Math.abs(chen.best.rateDelta - 1.264) <= 0.01, `rate delta ${chen.best.rateDelta}`);
   assert.ok(chen.best.monthlySavings > 400 && chen.best.monthlySavings < 520, "monthly savings sane");
   assert.ok(chen.best.breakEven <= 24, "strong break-even");
 });
@@ -908,8 +909,12 @@ const loH2 = addUser(orgH, "lo", "lo2@h.co");
 const brokerHCtx = { user: user(brokerH, "broker", orgH), rates: LIVE, db };
 const loHCtx = { user: user(loH, "lo", orgH), rates: LIVE, db };
 const loH2Ctx = { user: user(loH2, "lo", orgH), rates: LIVE, db };
-const addTop = (orgId, userId, name, currentRate = 6.75) =>
-  addClientRow(orgId, userId, { name, loanType: "30yr_fixed", currentRate, loanBalance: 300000, propertyValue: 400000, creditScore: 760 });
+// Top tier (760, LTV 75). The value is one the broker typed (and not a year ago), so today's figures are the ones on file.
+const addTop = (orgId, userId, name, currentRate = 6.75) => {
+  const id = addClientRow(orgId, userId, { name, loanType: "30yr_fixed", currentRate, loanBalance: 300000, propertyValue: 400000, creditScore: 760 });
+  db.prepare("UPDATE clients SET edited_by_hand = 'property_value', value_as_of = date('now') WHERE id = ?").run(id);
+  return id;
+};
 const setTarget = (id, rate) => db.prepare("UPDATE clients SET target_rate = ? WHERE id = ?").run(rate, id);
 // A FRED observation as the rates route stores it.
 const fredDay = (obs, topTier) => recordSnapshot({ ...RATES, rate_30yr_top_tier: topTier, date: obs, source: `Optimal Blue lock data (${obs})` }, obs, "fred");

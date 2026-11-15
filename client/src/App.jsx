@@ -27,7 +27,7 @@ import { analyze } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
 import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, showsPmiBox, withGovGuard, govRefiNote } from "./upgrades.mjs";
-import { equityAt, monthsToSubEightyLTV } from "./equity.mjs";
+import { equityAt, monthsToSubEightyLTV, pricedToday } from "./equity.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1444,7 +1444,8 @@ const Clients = ({ scored, setSelected, setView }) => {
 // ---------------------------------------------------------------------------
 const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
   const isPhone = useIsPhone();
-  const a = withGovGuard(analyze(client, rates), client.loanProgram);   // FHA, VA, USDA: never refi-ready here (Upgrades below)
+  // Priced on today's balance and cautious value (the Upgrades and Equity Projection cards' figures). FHA, VA, USDA: never refi-ready here.
+  const a = withGovGuard(analyze(pricedToday(client), rates), client.loanProgram);
   const govNote = govRefiNote(client.loanProgram);
   const [targetInput, setTargetInput] = useState(client.target ? client.target.rate.toFixed(3) : "");
   const [targetSaving, setTargetSaving] = useState(false);
@@ -1593,7 +1594,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
             ["Current Rate", $r(client.currentRate)],
             ["Remaining Balance", $c(client.loanBalance)],
             ["Property Value", $c(client.propertyValue)],
-            ["LTV", a ? `${a.ltv.toFixed(1)}%` : "—"],
+            ["LTV today", a ? `${a.ltv.toFixed(1)}%` : "—"],
             ["Est. Monthly Pmt", a ? $c(a.curPmt) : "—"],
           ].map(([label, val]) => (
             <div key={label}>
@@ -2300,7 +2301,7 @@ const LOPortal = ({ lo, rates, setView }) => {
       .finally(() => setLoading(false));
   }, [lo.id]);
 
-  const scored = clients.map(c => ({ ...c, a: withGovGuard(analyze(c, rates), c.loanProgram) }));
+  const scored = clients.map(c => ({ ...c, a: withGovGuard(analyze(pricedToday(c), rates), c.loanProgram) }));
 
   const sendAlert = async (client) => {
     const a = client.a;
@@ -3082,7 +3083,7 @@ export default function App() {
   }, []);
 
   const scored = clients
-    .map(c => ({ ...c, a: withGovGuard(analyze(c, rates), c.loanProgram) }))   // FHA, VA, USDA: never refi-ready (their Upgrades cover them)
+    .map(c => ({ ...c, a: withGovGuard(analyze(pricedToday(c), rates), c.loanProgram) }))   // FHA, VA, USDA: never refi-ready (their Upgrades cover them)
     .sort((a, b) => (b.a?.good ? 1 : 0) - (a.a?.good ? 1 : 0) || (b.a?.rateDelta || 0) - (a.a?.rateDelta || 0));
 
   const refiReady = scored.filter(c => c.a?.good);

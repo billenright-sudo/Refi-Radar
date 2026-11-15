@@ -55,11 +55,13 @@ const orgId = addOrg("Targets Org");
 const annId = addUser(orgId, "broker", "ann@briefing-targets.test", "Ann");
 const louId = addUser(orgId, "lo", "lou@briefing-targets.test", "Lou");
 
+// Each value is one the broker typed (and not a year ago), so today's figures are the ones on file and the LTV is the one seeded.
 function addClient(userId, name, fields = {}) {
   const f = { rate: 6.75, balance: 300000, value: 400000, lastContact: "2026-10-01", target: null, ...fields };
   return Number(db.prepare(`
-    INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, last_contact, target_rate)
-    VALUES (?, ?, ?, '30yr_fixed', ?, ?, ?, 760, ?, ?)
+    INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, last_contact, target_rate,
+      edited_by_hand, value_as_of)
+    VALUES (?, ?, ?, '30yr_fixed', ?, ?, ?, 760, ?, ?, 'property_value', date('now'))
   `).run(orgId, userId, name, f.rate, f.balance, f.value, f.lastContact, f.target).lastInsertRowid);
 }
 const client = (id) => db.prepare("SELECT * FROM clients WHERE id = ?").get(id);

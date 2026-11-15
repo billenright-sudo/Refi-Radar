@@ -3,9 +3,21 @@
 Living status file. **Update at the end of every major task** so work resumes
 cleanly after compaction / a new session. Newest notes at the top of each list.
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-15_
 
 ## Done
+- **Refi numbers from today's figures — BUILT 2026-11-15 on `feature/refi-from-today`** (server 1681 node:tests,
+  client 381, build ok, `check-scoring.js` ok). Every rate figure now prices today's balance and cautious value,
+  the Upgrades `today` block the Upgrades, Equity Projection and cash-out figures already use: the Sweeps rate
+  lenses (`rateTerm`, `armToFixed`, `termSwap` take the block; `refi.pricedToday`), so Charlie, the briefing and
+  the call list follow; the target-rate check (`targets.estimateRate(row, rates, today)`, on the check's UTC day);
+  and the browser's analysis on the client page, the client list, Home and the broker's LO view
+  (`equity.mjs` `pricedToday`; `GET /api/org/los/:id/clients` now carries each client's upgrade view). A loan paid
+  off by today gets no rate lens and no estimate. Falls back to the figures on file when the block is missing or
+  unusable (same rule as cash-out). The client page's "LTV" tile is now "LTV today". Known gap, not in this change:
+  above 80% LTV a new conventional loan carries PMI, and the rate-refi savings don't count it. Also to know: a
+  value typed on Add Client is not "typed" for the 10% caution cut (only an edit marks it), so a brand-new client
+  prices at the value less 10%. A stored target estimate from before this change stays until the next FRED day.
 - **No PMI box on government loans — BUILT 2026-11-15 on `feature/gov-pmi-line`** (client only). The Equity
   Projection card's PMI box (green "no PMI exposure" / amber "PMI removal: LTV drops below 80% in …") no longer
   shows for FHA, VA or USDA clients (`upgrades.mjs` `showsPmiBox`); the green line was already hidden for them,
@@ -23,8 +35,8 @@ _Last updated: 2026-11-14_
   Equity Projection card's Today row); the $40k floor / $100k high bar unchanged. Falls back to the stored
   figures when the block has no cautious value or balance (or the upgrade checks throw). The row note says
   where the value came from (typed / grown less 10% / on file less 10% / origination). Charlie's call list
-  and briefing follow. Not changed: the rate lenses (Rate & Term, ARM → Fixed, Term Swap) still price from
-  the stored balance and value.
+  and briefing follow. The rate lenses (Rate & Term, ARM → Fixed, Term Swap) followed on
+  `feature/refi-from-today` (above).
 - **Equity from today's figures — BUILT 2026-11-14 on `feature/equity-today`** (client 378 node:tests, build
   ok). The Equity Projection card, the PMI-removal timing, the dashboard's Portfolio Equity tiles and the
   client-list equity now start from the server's Upgrades `today` block (rolled-forward balance + cautious

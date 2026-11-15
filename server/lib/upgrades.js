@@ -97,6 +97,9 @@ function todayBlock(c, today, index) {
   };
 }
 
+// Today's figures alone (the `today` of upgradesFor's answer), for a caller with no use for the checks: lib/targets' estimate.
+const todayFigures = (c, today, { index } = {}) => todayBlock(c, today, index || hpi.defaultIndex).t;
+
 const refiPriority = (savings) => (savings >= HIGH_SAVINGS ? "high" : "medium");
 // Months to recover `costs`, or null when there's no saving or it takes longer than the bar.
 function breakEvenWithin(costs, savings) {
@@ -261,7 +264,7 @@ function upgradesFor(c, rates, today, { index } = {}) {
 }
 
 module.exports = {
-  upgradesFor, unpricedLenses, GAPS,
+  upgradesFor, todayFigures, unpricedLenses, GAPS,
   CONV_MIN_SCORE, STREAMLINE_MIN_SCORE, MAX_BREAK_EVEN, HIGH_SAVINGS, NTB_MIN_DROP, FHA_UFMIP, FHA_NEW_ANNUAL_MIP,
   FHA_NEW_ANNUAL_MIP_HIGH, FHA_HIGH_BALANCE, VA_FUNDING_FEE, MI_ENDING_SOON_MONTHS, CONV_MAX_LTV, WAITING_DAYS,
 };
