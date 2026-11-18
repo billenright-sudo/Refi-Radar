@@ -23,6 +23,10 @@
 //   4. a broker's one count-only team line: their loan officers' open opportunities, and how many of their clients are at
 //      target (said alone when there are no opportunities or no rates);
 //   5. today's calendar: the count and the first one or two events still ahead;
+//   5b. dates coming up (lib/occasions.js) for the user's OWN clients, today and the six days after it: "Dates coming up:
+//      <name>, loan anniversary Thursday, 3 years; and <name>, Maya's birthday tomorrow, turns 10." At most two are named, the
+//      soonest first, then "Plus N more in the next week." Reminders only, from the client record: nothing is priced and nothing
+//      is sent. Left out when there are none;
 //   6. open follow-ups (followups.js), at most two clients and none that today's list carries (unless a call booked with them
 //      today has ended), after the calendar's calls have been matched (calendarFollowUps.js);
 //   7. exactly one question: the first follow-up's, else the close (CLOSE_QUESTION offers to book the list's calls; with no
@@ -54,6 +58,7 @@ const { isCitation } = require("./orchestrator");
 const { openerFor } = require("./openers");
 const { localToday, addDays } = require("../google/time");
 const { MONTHS, ordinal } = require("../dateLabels");
+const occasions = require("../occasions");
 
 // Phase 1: a 30-year fall of this much or more between two observations leads the market line. Phase 2 makes it per user.
 const DROP_THRESHOLD = 0.125;
@@ -72,6 +77,8 @@ const CLOSE_QUESTION = "Want a full sweep, an update on a client, or should I ge
 const CLOSE_NO_CALLS = "Want a full sweep, or an update on a client?";
 const COUPLE_OF_CALLS = "I've also got a couple of calls to check on with you.";
 const AN_EVENT = "an event";
+const DATES_AHEAD = 6;                      // the dates line looks at today and the six days after it
+const MAX_DATES = 2;                        // and names this many
 const NO_TITLE = "(no title)";   // what lib/google/calendar.js calls an untitled event
 
 // The other products whose moves are worth a clause, as the market line names them.
@@ -230,6 +237,22 @@ function calendarSection({ date, events, nowMs }) {
   else if (shown.length < n) line = `${count}, starting with ${said}.`;
   else line = `${count}: ${said}.`;
   return { line, source, nextEvent: shown[0] || null };
+}
+
+// The dates coming up for `rows` (the user's own clients whose names may be read): { line, source }, or null when there are none
+// in the window. A child's or a spouse's name is read only when speakable() passes it; one that fails leaves that date out.
+function datesSection({ rows, localDate }) {
+  const all = [];
+  for (const o of occasions.upcomingDates(rows.map(occasions.fromRow), localDate, DATES_AHEAD)) {
+    const who = o.who == null ? null : speakable(o.who);
+    if (o.who != null && !who) continue;
+    all.push({ ...o, who, clientName: speakable(o.clientName) });
+  }
+  if (!all.length) return null;
+  const said = all.slice(0, MAX_DATES).map((o) => `${o.clientName}, ${occasions.spokenOccasion(o, localDate)}`);
+  const list = said.length === 1 ? said[0] : `${said.slice(0, -1).join("; ")}; and ${said[said.length - 1]}`;
+  const more = all.length - said.length;
+  return { line: `Dates coming up: ${list}.${more > 0 ? ` Plus ${more} more in the next week.` : ""}`, source: TARGET_SOURCE };
 }
 
 // Today's carried clients: `carried`, still carried from an earlier day, and `carriedToday`, the ones an earlier open today
@@ -474,6 +497,10 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   }
   if (calendar) strip.nextEvent = calendar.nextEvent;
 
+  // 5b. dates coming up, over the user's own clients whose names may be read
+  let dates = null;
+  try { dates = datesSection({ rows: ownRows.filter((r) => speakable(r.name)), localDate: today }); } catch (err) { skip("dates", err); }
+
   // 6. open follow-ups, read before today's list is recorded (a list made now is not yet something to ask about)
   let followUps = { shown: [], rowIds: [] };
   try {
@@ -519,6 +546,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
   if ((calls && calls.targetSaid) || (team && team.atTarget > 0)) cite(TARGET_SOURCE);
   if (team) cite(team.source);
   if (calendar) cite(calendar.source);
+  if (dates) cite(dates.source);
 
   // 7. the one question
   const first = shown[0] || null;
@@ -534,6 +562,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
     calls && calls.moreLine,
     team && team.line,
     calendar && calendar.line,
+    dates && dates.line,
     shown.length >= 2 ? COUPLE_OF_CALLS : null,
   ].filter(Boolean).join(" ");
 

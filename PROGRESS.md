@@ -6,6 +6,23 @@ cleanly after compaction / a new session. Newest notes at the top of each list.
 _Last updated: 2026-11-15_
 
 ## Done
+- **Personal details and dates coming up — BUILT 2026-11-17 on `feature/personal-dates`** (server 1723 node:tests,
+  client 388, build ok, `check-scoring.js` ok). Optional, hand-typed personal details on a client
+  (`clients.personal`, one JSON text; `lib/personal.js` cleans and reads it): birthday and spouse's birthday as
+  month and day only (never a year), spouse / co-borrower name, wedding anniversary (+ optional year), children
+  (name, birthday, optional birth year; no gender, twelve at most), pets, home purchase date, referred by, preferred
+  contact, retirement year. `lib/occasions.js` turns them and the close date into dates coming up (birthdays;
+  wedding, loan and home anniversaries; a loan or home anniversary needs a full year; a purchase on the closing day
+  is one anniversary). Surfaces: a collapsible Personal section on the Add/Edit form, a Personal card on the client
+  page (with the next date), "Dates Coming Up" on Home (14 days, the clients the page already has),
+  one line in Charlie's briefing (the user's OWN clients, the next 7 days, two named, the rest counted) and
+  `upcomingDatesTool` ("any birthdays this week?", 1 to 60 days, a broker's whole org / an LO's own).
+  Guardrails: nothing priced reads the column (a test holds a client's sweep and upgrade view equal with and
+  without it); the import never reads or changes it (the date-of-birth guard in `lib/intake` is untouched);
+  `findClient` does not carry it and the dates tool shows the model only the occasion, the day and the client;
+  a PUT that omits `personal` keeps it. Privacy Policy: one sentence added under "What we collect"; VERSION not
+  bumped (nobody is asked to re-accept), pending Bill's call. Not in this change: importing these fields, any
+  email or card to a client, a reminder email to the broker.
 - **Refi numbers from today's figures — BUILT 2026-11-15 on `feature/refi-from-today`** (server 1681 node:tests,
   client 381, build ok, `check-scoring.js` ok). Every rate figure now prices today's balance and cautious value,
   the Upgrades `today` block the Upgrades, Equity Projection and cash-out figures already use: the Sweeps rate

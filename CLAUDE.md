@@ -43,6 +43,8 @@ server/    index.js (entry, wires routes), db.js (SQLite schema + idempotent mig
            routes/voice.js      /api/voice/{tts,stt}  (ElevenLabs proxy; key never leaves the server)
            lib/refi.js (deterministic sweep engine; every lens reads the upgrades' `today` block), lib/upgrades.js (the five upgrade checks),
            lib/mortgageInsurance.js (current MI estimate + when it ends), lib/equity.js (today's balance and value),
+           lib/personal.js (a client's optional personal details: one JSON column, hand-typed, never priced, never imported),
+           lib/occasions.js (dates coming up from them and the close date; client/src/personal.mjs is its mirror),
            lib/hpi.js + hpiData.json (bundled FHFA home-price index), lib/upgradeAlerts.js (first-seen / announced / "New"),
            lib/rateHistory.js (daily rate snapshots, movement "since <day>"),
            lib/assistant/{orchestrator,tools,prompt,coaching,glossary,speech,metering}.js

@@ -28,6 +28,10 @@ import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMo
 import { FACE } from "./charli/face.mjs";
 import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, showsPmiBox, withGovGuard, govRefiNote } from "./upgrades.mjs";
 import { equityAt, monthsToSubEightyLTV, pricedToday } from "./equity.mjs";
+import {
+  WINDOW_DAYS, MAX_CHILDREN, CONTACT_OPTIONS, MONTH_NAMES, EMPTY_CHILD, occasionsFor, upcomingDates, occasionText, localToday, dayLabel, awayLabel,
+  personalRows, personalToForm, formToPersonal, daysInMonth,
+} from "./personal.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1186,6 +1190,7 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
 // value: "wide" keeps the 4-across tile rows; a narrower layout (and the phone, as before) puts them 2-across. `allOpps` is the
 // sweep's count (the number Charlie uses) or null; `allOppsLoading` while it is being asked for. `afterHeader` is drawn under the
 // greeting row (Charlie's card, when stacked).
+const DATES_SHOWN = 6;   // rows of Dates Coming Up before "Show all"
 const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn, layout = "wide", allOpps = null, allOppsLoading = false, afterHeader = null }) => {
   const isPhone = useIsPhone();
   const topOpps = scored.filter(c => c.a?.good).slice(0, 5);
@@ -1197,6 +1202,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
     ? { display: "grid", gridTemplateColumns: gridCols(4, true), gap: "1rem", marginBottom }
     : { display: "flex", gap: "1rem", marginBottom });
   const opps = ratesLoading || allOppsLoading ? null : allOpps;
+  const [datesOpen, setDatesOpen] = useState(false);
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
@@ -1272,6 +1278,49 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
           topOpps.map(c => <OpportunityRow key={c.id} client={c} a={c.a} onClick={() => { setSelected(c); setView("client-detail"); }} />)
         )}
       </div>
+
+      {/* Dates coming up: birthdays and anniversaries from the clients' personal details and close dates. Reminders only. */}
+      {!clientsLoading && (() => {
+        const dates = upcomingDates(scored, localToday());
+        const shown = datesOpen ? dates : dates.slice(0, DATES_SHOWN);
+        return (
+          <div data-testid="dates-coming-up" style={{ marginTop: "2rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: C.text }}>Dates Coming Up</h2>
+              {dates.length > DATES_SHOWN && (
+                <button onClick={() => setDatesOpen(o => !o)} style={{ color: C.amber, fontSize: 13, background: "none", border: "none", cursor: "pointer" }}>
+                  {datesOpen ? "Show fewer" : `Show all ${dates.length}`}
+                </button>
+              )}
+            </div>
+            {dates.length === 0 ? (
+              <div style={{ ...card, textAlign: "center", padding: "2rem", color: C.muted }}>
+                No birthdays or anniversaries in the next {WINDOW_DAYS} days. Add them on a client's Edit page.
+              </div>
+            ) : (
+              <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+                {shown.map((o, i) => (
+                  <button
+                    key={`${o.clientId}-${o.kind}-${o.who || ""}-${o.date}`}
+                    onClick={() => { const c = scored.find(x => x.id === o.clientId); if (c) { setSelected(c); setView("client-detail"); } }}
+                    style={{ display: "flex", width: "100%", textAlign: "left", gap: 14, alignItems: "center", padding: "12px 18px", background: "none", border: "none", borderTop: i ? `1px solid ${C.border}` : "none", cursor: "pointer", fontFamily: "inherit", color: C.text }}
+                  >
+                    <div style={{ width: 104, flex: "none" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: o.daysAway <= 1 ? C.amber : C.text }}>{awayLabel(o.daysAway)}</div>
+                      <div style={{ fontSize: 12, color: C.muted }}>{dayLabel(o.date)}</div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{o.clientName}</div>
+                      <div style={{ fontSize: 13, color: C.mutedHi }}>{occasionText(o)}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 8 }}>Reminders only. Nothing is sent to clients.</div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
@@ -1772,6 +1821,36 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
         );
       })()}
 
+      {/* ── Personal ──────────────────────────────────────────────────── */}
+      {(() => {
+        const rows = personalRows(client.personal);
+        const next = occasionsFor(client, localToday(), 366)[0] || null;
+        return (
+          <div data-testid="personal-card" style={{ ...card, marginTop: "1.5rem" }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Personal</h3>
+            {next && (
+              <div style={{ marginBottom: "1rem", fontSize: 14, color: C.mutedHi }}>
+                <span style={{ color: C.muted }}>Next date: </span>
+                <strong style={{ color: C.text }}>{occasionText(next)}</strong> · {dayLabel(next.date)} ({awayLabel(next.daysAway).toLowerCase()})
+              </div>
+            )}
+            {rows.length > 0 ? (
+              <div style={{ display: "grid", gridTemplateColumns: gridCols(3, isPhone), gap: "1.25rem" }}>
+                {rows.map(([label, val]) => (
+                  <div key={label}>
+                    <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>{label}</div>
+                    <div style={{ color: C.text, fontSize: 14 }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: C.muted, fontSize: 13 }}>No personal details yet. Add a birthday, an anniversary or family with Edit.</div>
+            )}
+            <div style={{ color: C.muted, fontSize: 12, marginTop: "1rem" }}>For reminders only. Never used in the numbers.</div>
+          </div>
+        );
+      })()}
+
       {client.notes && (
         <div style={{ ...card, marginTop: "1rem", borderLeft: `3px solid ${C.amber}` }}>
           <div style={{ fontSize: 11, color: C.amber, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Notes</div>
@@ -1886,7 +1965,8 @@ const RateWatch = ({ rates, ratesLoading, fetchRates, lastFetched, ratesError, t
 // Shared client form (Add + Edit)
 // ---------------------------------------------------------------------------
 const EMPTY_FORM = { name: "", email: "", phone: "", loanType: "30yr_fixed", currentRate: "", loanBalance: "", propertyValue: "", closeDate: "", creditScore: "", notes: "", doNotEmail: false,
-  loanProgram: "", monthlyMi: "", originalAmount: "", originalValue: "", propertyZip: "", occupancy: "" };
+  loanProgram: "", monthlyMi: "", originalAmount: "", originalValue: "", propertyZip: "", occupancy: "",
+  personal: personalToForm(null) };
 
 // The six upgrade keys are always sent: a key left out of a PUT keeps the stored value, "" or null clears it.
 const numOrNull = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
@@ -1898,6 +1978,10 @@ const upgradeFields = (form) => ({
   propertyZip:    (form.propertyZip || "").trim(),
   occupancy:      form.occupancy || "",
 });
+// The personal details as the server takes them (personal.mjs); the form has already checked them.
+const personalField = (form) => ({ personal: formToPersonal(form.personal).value });
+// What a refused save says about the personal details, for the form to show: { personal: "why" }, or null.
+const personalRefusal = (data) => (data && data.errors && typeof data.errors.personal === "string" ? { personal: data.errors.personal } : null);
 
 function clientToForm(c) {
   return {
@@ -1919,6 +2003,7 @@ function clientToForm(c) {
     originalValue:  c.originalValue != null ? String(c.originalValue) : "",
     propertyZip:    c.propertyZip || "",
     occupancy:      c.occupancy || "",
+    personal:       personalToForm(c.personal),
   };
 }
 
@@ -1927,6 +2012,11 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
   const [form, setForm] = useState(initial || EMPTY_FORM);
   const [errors, setErrors] = useState({});
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  // Personal: open when the client already has some, closed (one line) when not.
+  const P = form.personal || personalToForm(null);
+  const [showPersonal, setShowPersonal] = useState(() => personalRows(formToPersonal(P).value).length > 0);
+  const setP = (k, v) => setForm(p => ({ ...p, personal: { ...(p.personal || personalToForm(null)), [k]: v } }));
+  const setChild = (i, patch) => setP("children", P.children.map((c, j) => (j === i ? { ...c, ...patch } : c)));
 
   const validate = () => {
     const e = {};
@@ -1934,14 +2024,53 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
     if (!form.currentRate || isNaN(+form.currentRate)) e.currentRate = "Valid rate required";
     if (!form.loanBalance || isNaN(+form.loanBalance)) e.loanBalance = "Valid balance required";
     if (!form.propertyValue || isNaN(+form.propertyValue)) e.propertyValue = "Required";
+    const personal = formToPersonal(P);
+    if (personal.error) e.personal = personal.error;
     return e;
   };
 
-  const submit = () => {
+  const submit = async () => {
     const e = validate();
-    if (Object.keys(e).length) { setErrors(e); return; }
-    onSave(form);
+    if (Object.keys(e).length) { setErrors(e); if (e.personal) setShowPersonal(true); return; }
+    setErrors({});
+    // a save the server refused over the personal details comes back as { personal: "why" }
+    const refused = await onSave(form);
+    if (refused && refused.personal) { setErrors({ personal: refused.personal }); setShowPersonal(true); }
   };
+
+  const lbl = { display: "block", fontSize: 12, color: C.muted, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" };
+  // A month and a day, as two picks; a day the new month does not have is cleared.
+  const picks = (value, onChange, name) => (
+    <>
+      <select aria-label={`${name} month`} value={value.m}
+        onChange={e => onChange({ m: e.target.value, d: Number(value.d) > daysInMonth(e.target.value) ? "" : value.d })} style={{ ...inputStyle, flex: 3, minWidth: 0 }}>
+        <option value="">Month</option>
+        {MONTH_NAMES.map((n, i) => <option key={n} value={String(i + 1)}>{n}</option>)}
+      </select>
+      <select aria-label={`${name} day`} value={value.d} onChange={e => onChange({ ...value, d: e.target.value })} style={{ ...inputStyle, flex: 2, minWidth: 0 }}>
+        <option value="">Day</option>
+        {Array.from({ length: daysInMonth(value.m) }, (_, i) => <option key={i + 1} value={String(i + 1)}>{i + 1}</option>)}
+      </select>
+    </>
+  );
+  const yearInput = (value, onChange, name) => (
+    <input aria-label={name} placeholder="Year (optional)" inputMode="numeric" maxLength={4} value={value} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, flex: 3, minWidth: 0 }} />
+  );
+  const pDate = (key, label, yearKey) => (
+    <div>
+      <label style={lbl}>{label}</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        {picks(P[key], v => setP(key, v), label)}
+        {yearKey && yearInput(P[yearKey], v => setP(yearKey, v), `${label} year`)}
+      </div>
+    </div>
+  );
+  const pField = (key, label, placeholder, maxLength, type = "text") => (
+    <div>
+      <label style={lbl}>{label}</label>
+      <input type={type} aria-label={label} placeholder={placeholder} maxLength={maxLength} value={P[key]} onChange={e => setP(key, e.target.value)} style={{ ...inputStyle }} />
+    </div>
+  );
 
   const select = (key, label, options) => (
     <div>
@@ -1992,6 +2121,49 @@ const ClientForm = ({ initial, onSave, onCancel, title, saving }) => {
           <label style={{ display: "block", fontSize: 12, color: C.muted, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Notes</label>
           <textarea placeholder="Notes about this client…" value={form.notes} onChange={e => set("notes", e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
         </div>
+        {/* Personal: optional, typed by hand, for reminders only (never priced, never imported). */}
+        <div data-testid="personal-section" style={{ borderTop: `1px solid ${C.border}`, paddingTop: "1.25rem", marginBottom: "1.5rem" }}>
+          <button type="button" onClick={() => setShowPersonal(s => !s)} aria-expanded={showPersonal}
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", color: C.text, fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            {showPersonal ? "▾" : "▸"} Personal <span style={{ color: C.muted, fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
+          </button>
+          <div style={{ color: C.muted, fontSize: 13, marginTop: 6 }}>Birthdays, anniversaries and family, for reminders only. Never used in the numbers.</div>
+          {errors.personal && <div role="alert" style={{ color: C.red, fontSize: 13, marginTop: 8 }}>{errors.personal}</div>}
+          {showPersonal && (
+            <div style={{ marginTop: "1.25rem" }}>
+              <div style={{ display: "grid", gridTemplateColumns: gridCols(2, isPhone), gap: "1.25rem", marginBottom: "1.25rem" }}>
+                {pDate("birthday", "Birthday")}
+                <div>
+                  <label style={lbl}>Preferred contact</label>
+                  <select aria-label="Preferred contact" value={P.preferredContact} onChange={e => setP("preferredContact", e.target.value)} style={{ ...inputStyle }}>
+                    {CONTACT_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
+                {pField("spouseName", "Spouse / co-borrower", "Their name", 120)}
+                {pDate("spouseBirthday", "Spouse's birthday")}
+                {pDate("anniversary", "Wedding anniversary", "anniversaryYear")}
+                {pField("purchaseDate", "Home purchase date", "", undefined, "date")}
+                {pField("referredBy", "Referred by", "Who sent them to you", 120)}
+                {pField("pets", "Pets", "Names", 200)}
+                {pField("retirementYear", "Planned retirement year", "2041", 4)}
+              </div>
+              <label style={lbl}>Children</label>
+              {P.children.map((child, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: isPhone ? "wrap" : "nowrap" }}>
+                  <input aria-label={`Child ${i + 1} name`} placeholder="Name" maxLength={60} value={child.name} onChange={e => setChild(i, { name: e.target.value })}
+                    style={{ ...inputStyle, flex: 4, minWidth: isPhone ? "100%" : 0 }} />
+                  {picks(child.birthday, b => setChild(i, { birthday: b }), `Child ${i + 1} birthday`)}
+                  {yearInput(child.birthYear, v => setChild(i, { birthYear: v }), `Child ${i + 1} birth year`)}
+                  <button type="button" aria-label={`Remove child ${i + 1}`} onClick={() => setP("children", P.children.filter((_, j) => j !== i))}
+                    style={{ ...btnGhost, padding: "9px 12px", flex: isPhone ? "1 0 100%" : "none" }}>Remove</button>
+                </div>
+              ))}
+              {P.children.length < MAX_CHILDREN && (
+                <button type="button" onClick={() => setP("children", [...P.children, { ...EMPTY_CHILD, birthday: { m: "", d: "" } }])} style={{ ...btnGhost, padding: "9px 14px" }}>+ Add child</button>
+              )}
+            </div>
+          )}
+        </div>
         <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: "1.5rem", color: C.mutedHi, fontSize: 14, cursor: "pointer" }}>
           <input type="checkbox" checked={!!form.doNotEmail} onChange={e => set("doNotEmail", e.target.checked)} style={{ width: 18, height: 18, accentColor: C.amber }} />
           Do not email this client
@@ -2031,9 +2203,11 @@ const AddClient = ({ setClients, setView }) => {
           notes:         form.notes,
           doNotEmail:    form.doNotEmail === true,
           ...upgradeFields(form),
+          ...personalField(form),
         }),
       });
       const data = await res.json();
+      if (!data.success && personalRefusal(data)) return personalRefusal(data);
       if (!data.success) throw new Error(JSON.stringify(data.errors));
       setClients(prev => [...prev, data.client]);
       setSaved(true);
@@ -2087,9 +2261,11 @@ const EditClient = ({ client, setClients, setSelected, setView }) => {
           notes:         form.notes,
           doNotEmail:    form.doNotEmail === true,
           ...upgradeFields(form),
+          ...personalField(form),
         }),
       });
       const data = await res.json();
+      if (!data.success && personalRefusal(data)) return personalRefusal(data);
       if (!data.success) throw new Error(JSON.stringify(data.errors));
       setClients(prev => prev.map(c => c.id === client.id ? data.client : c));
       setSelected(data.client);

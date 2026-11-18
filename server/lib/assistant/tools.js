@@ -15,6 +15,7 @@
 const refi = require("../refi");
 const targets = require("../targets");
 const upgradeAlerts = require("../upgradeAlerts");
+const occasions = require("../occasions");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
@@ -176,6 +177,37 @@ function upgradesTool(args, ctx) {
     .slice(0, MAX_UPGRADES_SHOWN)
     .map((f) => f.client);
   return { data: { clients }, source: "client record" };
+}
+
+// "Any birthdays this week?": the dates coming up (lib/occasions.js: birthdays, wedding, loan and home anniversaries) for the
+// caller's clients (a broker's whole org, a loan officer's own), soonest first; a teammate's client also names its owner. Each is
+// given in the words it is said in: the occasion ("Maya's birthday, turns 10") and the day ("Thursday"), with the date. The model
+// is shown nothing else of a client's personal details (lib/personal.js): no birth year, pets, referral or retirement year, and
+// findClient carries none of them. The day is the user's own (ctx.localDate), else the clock's UTC day. At most MAX_DATES_SHOWN;
+// `more` counts the rest. Reminders only: nothing here is priced.
+const MAX_DATES_SHOWN = 20;
+const MAX_DATES_DAYS = 60;
+function upcomingDatesTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const days = a.days == null ? occasions.WINDOW_DAYS : a.days;
+  if (!Number.isInteger(days) || days < 1 || days > MAX_DATES_DAYS) return fail("(invalid input)", `days must be a whole number from 1 to ${MAX_DATES_DAYS}`);
+  const rows = scopedClients(ctx);
+  const today = typeof ctx.localDate === "string" && DAY_RE.test(ctx.localDate) ? ctx.localDate : new Date(clockOf(ctx)).toISOString().slice(0, 10);
+  const ownerOf = new Map();
+  const owners = new Map();
+  for (const row of rows.filter((r) => r.user_id !== ctx.user.id)) {
+    if (!owners.has(row.user_id)) {
+      const u = ctx.db.prepare("SELECT first_name, last_name FROM users WHERE id = ?").get(row.user_id);
+      owners.set(row.user_id, u ? `${u.first_name} ${u.last_name}`.trim() : "");
+    }
+    if (owners.get(row.user_id)) ownerOf.set(row.id, owners.get(row.user_id));
+  }
+  const all = occasions.upcomingDates(rows.map(occasions.fromRow), today, days);
+  const dates = all.slice(0, MAX_DATES_SHOWN).map((o) => ({
+    clientId: o.clientId, name: o.clientName, ...(ownerOf.has(o.clientId) ? { ownerName: ownerOf.get(o.clientId) } : {}),
+    occasion: occasions.occasionText(o), when: occasions.whenText(o.date, today), date: o.date,
+  }));
+  return { data: { days, dates, more: all.length - dates.length }, source: "client record" };
 }
 
 // "Who's at their target?": the caller's clients with a target (a broker's whole org, a loan officer's own), each with its target
@@ -872,6 +904,7 @@ const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
     getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
+    upcomingDatesTool,
   })
 );
 
@@ -1023,6 +1056,21 @@ const TOOL_SCHEMA = [
     },
   },
   {
+    name: "upcomingDatesTool",
+    description:
+      "The dates coming up for the user's clients: a client's, a spouse's or a child's birthday, a wedding anniversary, a loan " +
+      "anniversary and a home anniversary, soonest first, at most twenty (`more` counts the rest). Use it for 'any birthdays this " +
+      "week?', 'any anniversaries coming up?' or 'what dates are coming up?'. Each one comes with the client's name, the occasion in " +
+      "words (with an age or a count of years when there is one) and the day in words (`when`): say them as given and never work " +
+      "out a date, a weekday or an age yourself. `days` is how far ahead to look, 1 to 60 (14 when left out; 'this week' is 7, " +
+      "'this month' is 30). Reminders only: they say nothing about a client's loan. Read-only.",
+    input_schema: {
+      type: "object",
+      properties: { days: { type: "integer", description: "How many days ahead to look, 1 to 60. Defaults to 14." } },
+      required: [],
+    },
+  },
+  {
     name: "setCareerStageTool",
     description:
       "Prepare to record the user's career stage, which only tailors how you coach them. This does NOT save " +
@@ -1133,4 +1181,5 @@ module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
   getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
   withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
+  upcomingDatesTool,
 };

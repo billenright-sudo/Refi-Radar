@@ -7,6 +7,7 @@ const followups = require("../lib/assistant/followups");   // called as followup
 const { HAND_KEPT, readMarks, writeMarks } = require("../lib/intake/handEdits");
 const targets = require("../lib/targets");
 const upgradeAlerts = require("../lib/upgradeAlerts");
+const { cleanPersonal, parsePersonal, storePersonal } = require("../lib/personal");
 
 // An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
 const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
@@ -26,6 +27,7 @@ function toClient(row) {
     loanProgram: row.loan_program, monthlyMi: row.monthly_mi, originalAmount: row.original_amount,
     originalValue: row.original_value, propertyZip: row.property_zip, occupancy: row.occupancy,
     balanceAsOf: row.balance_as_of, valueAsOf: row.value_as_of, creditScoreKnown: row.credit_score_known === 1,
+    personal: parsePersonal(row.personal),   // greetings and reminders only (lib/personal.js): never priced
   };
 }
 
@@ -100,6 +102,8 @@ function validateClient(body) {
   if (ov != null && (isNaN(ov) || ov <= 0)) errors.originalValue = "Valid original home value required";
   if (!blank(body.propertyZip) && !/^\d{5}$/.test(String(body.propertyZip).trim())) errors.propertyZip = "ZIP is 5 digits";
   if (!blank(body.occupancy) && !OCCUPANCIES.includes(body.occupancy)) errors.occupancy = "Invalid occupancy";
+  const personal = cleanPersonal(body.personal);
+  if (personal.error) errors.personal = personal.error;
   return errors;
 }
 
@@ -115,10 +119,11 @@ function createClientForUser(db, user, body) {
   if (Object.keys(errors).length) return { errors };
   const info = db.prepare(`
     INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes, do_not_email,
-      loan_program, monthly_mi, original_amount, original_value, property_zip, occupancy, balance_as_of, value_as_of, credit_score_known)
+      loan_program, monthly_mi, original_amount, original_value, property_zip, occupancy, balance_as_of, value_as_of, credit_score_known, personal)
     VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes, @do_not_email,
-      @loan_program, @monthly_mi, @original_amount, @original_value, @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known)
+      @loan_program, @monthly_mi, @original_amount, @original_value, @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known, @personal)
   `).run({
+    personal: storePersonal(cleanPersonal(input.personal).value),
     ...upgradeValues(input), balance_as_of: utcToday(), value_as_of: utcToday(), credit_score_known: creditKnownFrom(input),
     org_id: user.org_id, user_id: user.id,
     name: input.name.trim(), email: (input.email||"").trim(),
@@ -236,6 +241,8 @@ router.put("/:id", (req, res) => {
       // The as-of dates move to today only when their figure changed.
       balance_as_of: balanceChanged ? utcToday() : existing.balance_as_of,
       value_as_of: valueChanged ? utcToday() : existing.value_as_of,
+      // A save that does not send the personal details (an older page) keeps them; one that does replaces them, {} clearing them.
+      personal: req.body.personal === undefined ? existing.personal : storePersonal(cleanPersonal(req.body.personal).value),
     };
     // A rate, property value or credit score this save changes is marked as edited by hand, so the import keeps it.
     const marks = readMarks(existing.edited_by_hand);
@@ -249,7 +256,7 @@ router.put("/:id", (req, res) => {
         current_rate=@current_rate, loan_balance=@loan_balance, property_value=@property_value,
         close_date=@close_date, credit_score=@credit_score, credit_score_known=@credit_score_known, notes=@notes,
         loan_program=@loan_program, monthly_mi=@monthly_mi, original_amount=@original_amount, original_value=@original_value,
-        property_zip=@property_zip, occupancy=@occupancy, balance_as_of=@balance_as_of, value_as_of=@value_as_of, do_not_email=@do_not_email, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
+        property_zip=@property_zip, occupancy=@occupancy, balance_as_of=@balance_as_of, value_as_of=@value_as_of, do_not_email=@do_not_email, personal=@personal, edited_by_hand=@edited_by_hand, updated_at=datetime('now')
         ${repriced ? ", target_checked_on=NULL, target_checked_rate=NULL" : ""}
       WHERE id=@id
     `).run({ ...values, edited_by_hand: writeMarks(marks) });

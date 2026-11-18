@@ -8,6 +8,7 @@ const { CAREER_STAGES, stageById } = require("../lib/assistant/coaching");
 const { syncSeats } = require("../lib/billing/seats");
 const { pushBeforeAnswer } = require("../lib/billing/bounded");
 const upgradeAlerts = require("../lib/upgradeAlerts");
+const { parsePersonal } = require("../lib/personal");
 
 const router = express.Router();
 router.use(requireAuth, requireAccess, requireBroker);
@@ -44,6 +45,7 @@ router.get("/los/:id/clients", (req, res) => {
     closeDate: row.close_date, creditScore: row.credit_score,
     notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at,
     loanProgram: row.loan_program,   // the page's conventional analysis leaves FHA, VA and USDA loans out
+    personal: parsePersonal(row.personal),
     upgrades: upgrades.get(row.id) || null,
   })) });
 });

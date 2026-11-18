@@ -96,6 +96,13 @@ if (!clientCols.some((c) => c.name === "edited_by_hand")) {
 if (!clientCols.some((c) => c.name === "do_not_email")) {
   db.exec("ALTER TABLE clients ADD COLUMN do_not_email INTEGER NOT NULL DEFAULT 0");
 }
+// personal: the optional personal details (lib/personal.js: birthdays as month and day, an anniversary, children, pets, the
+// purchase date, who referred them, preferred contact, a retirement year) as one JSON text, for greetings and reminders only.
+// Typed by hand on the client form: an import never reads or changes it, and nothing priced reads it. Clients already stored
+// get the empty text (none).
+if (!clientCols.some((c) => c.name === "personal")) {
+  db.exec("ALTER TABLE clients ADD COLUMN personal TEXT NOT NULL DEFAULT ''");
+}
 // Target rate (target-rate alerts): the rate the broker wants a client to reach, who set it and when, the first FRED
 // observation that reached it (day, estimated rate, instant), the day a briefing announced it, and the last observation day
 // checked with the estimate that check used (NULL when it could not price the client). All nullable; set only by hand, never by
