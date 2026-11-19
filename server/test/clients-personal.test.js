@@ -136,8 +136,10 @@ test("PUT changes the details, clears them with an empty set, and a save that do
 test("personal details are not hand marks: editing them marks nothing for the import", async () => {
   const made = await api("POST", "/api/clients", BASE);
   const id = made.data.client.id;
+  // a new client starts with only the value typed on Add Client marked; the personal details add nothing to that
+  assert.strictEqual(clientRow(id).edited_by_hand, "property_value");
   await api("PUT", `/api/clients/${id}`, { ...BASE, personal: PERSONAL });
-  assert.strictEqual(clientRow(id).edited_by_hand, "");
+  assert.strictEqual(clientRow(id).edited_by_hand, "property_value");
 });
 
 test("an import of the same loan keeps the personal details", async () => {

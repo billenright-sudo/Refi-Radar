@@ -119,10 +119,13 @@ function createClientForUser(db, user, body) {
   if (Object.keys(errors).length) return { errors };
   const info = db.prepare(`
     INSERT INTO clients (org_id, user_id, name, email, phone, loan_type, current_rate, loan_balance, property_value, close_date, credit_score, notes, do_not_email,
-      loan_program, monthly_mi, original_amount, original_value, property_zip, occupancy, balance_as_of, value_as_of, credit_score_known, personal)
+      loan_program, monthly_mi, original_amount, original_value, property_zip, occupancy, balance_as_of, value_as_of, credit_score_known, personal, edited_by_hand)
     VALUES (@org_id, @user_id, @name, @email, @phone, @loan_type, @current_rate, @loan_balance, @property_value, @close_date, @credit_score, @notes, @do_not_email,
-      @loan_program, @monthly_mi, @original_amount, @original_value, @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known, @personal)
+      @loan_program, @monthly_mi, @original_amount, @original_value, @property_zip, @occupancy, @balance_as_of, @value_as_of, @credit_score_known, @personal, @edited_by_hand)
   `).run({
+    // The value a person types here is today's value in their own words, the same as one they change on Edit: marked as typed by
+    // hand, so today's figures take it as is for a year (lib/equity.js valueToday) and an import of the same loan keeps it.
+    edited_by_hand: writeMarks(new Set(["property_value"])),
     personal: storePersonal(cleanPersonal(input.personal).value),
     ...upgradeValues(input), balance_as_of: utcToday(), value_as_of: utcToday(), credit_score_known: creditKnownFrom(input),
     org_id: user.org_id, user_id: user.id,

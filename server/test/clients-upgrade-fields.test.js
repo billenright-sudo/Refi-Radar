@@ -152,11 +152,58 @@ test("PUT moves as-of dates only when the figure changes", async () => {
 
 test("PUT marks hand edits on the new columns", async () => {
   const c = (await create({ loanProgram: "conventional" })).data.client;
-  assert.strictEqual(clientRow(c.id).edited_by_hand, "");
+  // a new client starts with the value they typed marked (the Add Client test below), and nothing else
+  assert.strictEqual(clientRow(c.id).edited_by_hand, "property_value");
   await api("PUT", `/api/clients/${c.id}`, putBody(c, { loanProgram: "fha" }));
-  assert.deepStrictEqual(clientRow(c.id).edited_by_hand.split(","), ["loan_program"]);
+  assert.deepStrictEqual(clientRow(c.id).edited_by_hand.split(","), ["property_value", "loan_program"]);
   await api("PUT", `/api/clients/${c.id}`, putBody(c, { loanProgram: "fha", monthlyMi: "150", propertyZip: "85016", occupancy: "second_home", originalAmount: "250000", originalValue: "300000" }));
-  assert.strictEqual(clientRow(c.id).edited_by_hand, "loan_program,monthly_mi,original_amount,original_value,property_zip,occupancy");
+  assert.strictEqual(clientRow(c.id).edited_by_hand, "property_value,loan_program,monthly_mi,original_amount,original_value,property_zip,occupancy");
+});
+
+test("a value typed on Add Client is a typed value: marked by hand, and today's figures take it as is, with no 10% cut", async () => {
+  const r = await create({ loanProgram: "conventional" });
+  assert.strictEqual(r.status, 201);
+  const c = r.data.client;
+  // the person typed it today, the same as an edit that changes it
+  assert.strictEqual(clientRow(c.id).edited_by_hand, "property_value");
+  assert.deepStrictEqual([c.upgrades.today.valueFrom, c.upgrades.today.cautiousValue, c.upgrades.today.valueBasis], [400000, 400000, "typed"]);
+  assert.strictEqual(c.upgrades.today.ltv, 75);
+  // the list and the row itself say the same
+  const listed = (await api("GET", "/api/clients")).data.clients.find((x) => x.id === c.id);
+  assert.deepStrictEqual([listed.upgrades.today.cautiousValue, listed.upgrades.today.valueBasis], [400000, "typed"]);
+  // the shared write the assistant's confirmed add uses marks it too
+  const viaHelper = clientRoutes.createClientForUser(db, db.prepare("SELECT * FROM users WHERE id = ?").get(ann), { ...BASE, name: "Said Aloud" });
+  assert.strictEqual(clientRow(viaHelper.client.id).edited_by_hand, "property_value");
+  // a refused add writes nothing
+  const before = db.prepare("SELECT COUNT(*) AS n FROM clients").get().n;
+  assert.strictEqual((await create({ propertyValue: "0" })).status, 400);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM clients").get().n, before);
+});
+
+test("an import of the same loan keeps the value typed on Add Client and says so; what was not typed over is the file's", async () => {
+  const { ingest } = require("../lib/intake/ingest");
+  const made = await create({ loanProgram: "conventional", closeDate: "2023-11-19" });
+  const id = made.data.client.id;
+  db.prepare("UPDATE clients SET loan_number = 'LAdd1' WHERE id = ?").run(id);
+  const fields = {
+    firstName: "Pat", lastName: "Upgrade", email: "", phone: "", loanNumber: "LAdd1", noteRate: "6.250%", loanAmount: "$300,000",
+    term: "360", amortization: "Fixed", appraisedValue: "380000", closingDate: "11/19/2023", purpose: "Refinance", creditScore: "760",
+    loanOfficer: "ann@upgrade.test", notes: "",
+  };
+  const run = (extra = {}) => ingest(db, {
+    actor: db.prepare("SELECT * FROM users WHERE id = ?").get(ann), source: "import", items: [{ row: { ...fields, ...extra }, fields: { ...fields, ...extra } }],
+    today: today(), nowUtc: `${today()} 15:00:00`, requireClosingDate: true, dryRun: false,
+  });
+  const r = run();
+  assert.deepStrictEqual(r.results.map((x) => [x.outcome, x.flags.filter((f) => f.startsWith("kept"))]), [["updated", ["kept hand-edited property value"]]]);
+  let c = clientRow(id);
+  // the typed $400,000 and its day stay; the rate, which nobody typed over, is the file's
+  assert.deepStrictEqual([c.property_value, c.value_as_of, c.edited_by_hand, c.current_rate], [400000, today(), "property_value", 6.25]);
+  // a later loan for the same client (a refinance) is a new loan: the file's value is written and the mark goes
+  const refi = run({ loanNumber: "LAdd2", closingDate: "10/01/2026", noteRate: "5.875%", appraisedValue: "430000" });
+  assert.deepStrictEqual(refi.results.map((x) => x.outcome), ["updated"]);
+  c = clientRow(id);
+  assert.deepStrictEqual([c.property_value, c.edited_by_hand], [430000, ""]);
 });
 
 test("PUT with a new credit score sets creditScoreKnown true; PUT with a blank one sets it false", async () => {

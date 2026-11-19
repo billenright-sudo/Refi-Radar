@@ -3,9 +3,18 @@
 Living status file. **Update at the end of every major task** so work resumes
 cleanly after compaction / a new session. Newest notes at the top of each list.
 
-_Last updated: 2026-11-15_
+_Last updated: 2026-11-18_
 
 ## Done
+- **A value typed on Add Client is a typed value — BUILT 2026-11-18 on `feature/add-client-typed-value`** (server
+  1725 node:tests, client 388, build ok, `check-scoring.js` ok). `createClientForUser` (the Add Client form and
+  Charlie's confirmed add) now marks `property_value` in `clients.edited_by_hand`, the same mark an edit that
+  changes the value sets. So a client added by hand prices at the value typed, with no 10% caution cut, for
+  `TYPED_FRESH_MONTHS` (12); after that it is grown and cut like any other. Consequence for the import: the same
+  loan keeps the typed value and the row says "kept hand-edited property value"; a refinance still writes the
+  file's value and clears the mark. Clients added by hand before this are not changed (no backfill): they get the
+  mark the next time their value is changed on Edit. No client code changed (`valueLine` already says
+  "you entered it").
 - **Personal details and dates coming up — BUILT 2026-11-17 on `feature/personal-dates`** (server 1723 node:tests,
   client 388, build ok, `check-scoring.js` ok). Optional, hand-typed personal details on a client
   (`clients.personal`, one JSON text; `lib/personal.js` cleans and reads it): birthday and spouse's birthday as
@@ -32,9 +41,8 @@ _Last updated: 2026-11-15_
   (`equity.mjs` `pricedToday`; `GET /api/org/los/:id/clients` now carries each client's upgrade view). A loan paid
   off by today gets no rate lens and no estimate. Falls back to the figures on file when the block is missing or
   unusable (same rule as cash-out). The client page's "LTV" tile is now "LTV today". Known gap, not in this change:
-  above 80% LTV a new conventional loan carries PMI, and the rate-refi savings don't count it. Also to know: a
-  value typed on Add Client is not "typed" for the 10% caution cut (only an edit marks it), so a brand-new client
-  prices at the value less 10%. A stored target estimate from before this change stays until the next FRED day.
+  above 80% LTV a new conventional loan carries PMI, and the rate-refi savings don't count it. (A value typed on Add Client took
+  the 10% cut until 2026-11-18; see the entry above.) A stored target estimate from before this change stays until the next FRED day.
 - **No PMI box on government loans — BUILT 2026-11-15 on `feature/gov-pmi-line`** (client only). The Equity
   Projection card's PMI box (green "no PMI exposure" / amber "PMI removal: LTV drops below 80% in …") no longer
   shows for FHA, VA or USDA clients (`upgrades.mjs` `showsPmiBox`); the green line was already hidden for them,

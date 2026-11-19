@@ -191,9 +191,9 @@ test("I5: a sweep whose body rates lack FHA still shows the streamline, priced o
     // a body FHA rate of its own changes nothing
     const other = await s("POST", "/api/sweeps", { rates: { ...RATES, rate_30yr_fha: 4.5 } });
     assert.equal(other.data.upgrades.find((u) => u.clientId === made.data.client.id).bestUpgrade.effRate, 5.9);
-    // the conventional rate lens prices from the body's top tier, not the snapshot's 4.0: 6.461 + 0.125 at today's 82.9% LTV
-    // (a client added today: the $650,000 entered less 10%)
-    assert.equal(r.data.opportunities.find((o) => o.name === "Chen Conv").best.effRate, 6.59);
+    // the conventional rate lens prices from the body's top tier, not the snapshot's 4.0: 6.461 at today's 74.6% LTV
+    // (a client added today: the $650,000 typed is taken as is, with no 10% cut, so no adjustment for a loan above 80%)
+    assert.equal(r.data.opportunities.find((o) => o.name === "Chen Conv").best.effRate, 6.46);
   } finally {
     server.close();
   }
