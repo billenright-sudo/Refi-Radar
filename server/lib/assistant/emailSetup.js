@@ -87,4 +87,4 @@ function matchingOccasion(clientRow, purpose, member, today, days) {
   return found ? { kind: found.kind, who: found.who || "", date: found.date } : null;
 }
 
-module.exports = { EMAIL_PATTERN, setUpEmail, matchingOccasion };
+module.exports = { EMAIL_PATTERN, setUpEmail, matchingOccasion, familyMember };

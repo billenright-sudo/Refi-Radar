@@ -8,6 +8,10 @@ const { HAND_KEPT, readMarks, writeMarks } = require("../lib/intake/handEdits");
 const targets = require("../lib/targets");
 const upgradeAlerts = require("../lib/upgradeAlerts");
 const { cleanPersonal, parsePersonal, storePersonal } = require("../lib/personal");
+const { PURPOSES, OCCASION_PURPOSES } = require("../lib/assistant/outreach");
+const { setUpEmail, familyMember } = require("../lib/assistant/emailSetup");
+const occasions = require("../lib/occasions");
+const occasionEmails = require("../lib/occasionEmails");
 
 // An instant as followups.js keeps them: SQLite UTC text, "YYYY-MM-DD HH:MM:SS".
 const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
@@ -65,7 +69,8 @@ function creditKnownFrom(body, kept = 0) {
 // Clients the way the screens get them, from `rows` (raw clients rows, in their order). The check runs first (one FRED
 // observation, once; a check that fails is logged and the stored target state is shown), then only the rows it wrote are read
 // again (usually none), so a hit it records shows at once (one of them deleted in between is skipped). Each answer carries
-// `target` (a View, or null) and `upgrades` (the upgrade View of lib/upgradeAlerts.js).
+// `target` (a View, or null), `upgrades` (the upgrade View of lib/upgradeAlerts.js) and `occasionEmails`, the occasions marked
+// emailed (lib/occasionEmails.js) dated EMAILED_SHOWN_DAYS days ago or later: [{ kind, who, date }].
 function presentClients(db, user, rows, nowMs = Date.now()) {
   const check = targets.safeCheck(db, user.org_id, nowMs);
   const upCheck = upgradeAlerts.safeCheckUpgrades(db, user.org_id, nowMs);
@@ -80,8 +85,12 @@ function presentClients(db, user, rows, nowMs = Date.now()) {
   const fresh = rows.map((r) => (stale.has(r.id) ? reread.get(r.id) : r)).filter(Boolean);
   const views = targets.viewsFor(db, fresh, user.id);
   const upgrades = upgradeAlerts.safeUpgradeViewsFor(db, fresh, upCheck, nowMs);
-  return fresh.map((row) => ({ ...toClient(row), target: views.get(row.id) || null, upgrades: upgrades.get(row.id) || null }));
+  const emailed = occasionEmails.forClients(db, fresh.map((r) => r.id), new Date(nowMs - EMAILED_SHOWN_DAYS * 86_400_000).toISOString().slice(0, 10));
+  return fresh.map((row) => ({
+    ...toClient(row), target: views.get(row.id) || null, upgrades: upgrades.get(row.id) || null, occasionEmails: emailed.get(row.id) || [],
+  }));
 }
+const EMAILED_SHOWN_DAYS = 30;
 
 function validateClient(body) {
   const errors = {};
@@ -343,5 +352,75 @@ router.post("/:id/contact", (req, res) => {
     res.status(500).json({ success: false, error: "Database error" });
   }
 });
+
+// ── Client emails (the Dates Coming Up button; design 2026-11-21) ──
+// A refusal's HTTP status: the request itself is wrong (400), or the client or the user's profile isn't ready for an email (409).
+const EMAIL_STATUS = { invalid: 400, who_needed: 400, do_not_email: 409, nmls_missing: 409, no_email: 409, unavailable: 409 };
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const realDay = (d) => typeof d === "string" && DAY_RE.test(d) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+const bodyOf = (req) => (req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {});
+
+// POST /api/clients/:id/email { purpose, who? } — set up a client email for the broker to open in their own mail app:
+// { success: true, email: { to, subject, body, links } } | { success: false, code } (a 4xx). The rules are setUpEmail's
+// (lib/assistant/emailSetup.js), shared with Charlie. Broker: any org client; LO: own clients only. It sends nothing and saves nothing.
+router.post("/:id/email", (req, res) => {
+  try {
+    const reach = clientInReach(db, req.user, parseInt(req.params.id));
+    if (reach.status !== 200) return res.status(reach.status).json({ success: false, error: reach.error });
+    const { purpose, who } = bodyOf(req);
+    const set = setUpEmail(db, req.user, reach.row, { purpose, who });
+    if (!set.ok) return res.status(EMAIL_STATUS[set.code] || 400).json({ success: false, code: set.code });
+    res.json({ success: true, email: set.email });
+  } catch (err) {
+    console.error("POST /api/clients/:id/email:", err.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+
+// The occasions an occasion email marked sent stands for: the client's occasions of that purpose's kinds that fall on `date`
+// (for a family birthday, the family member `who` names, by setUpEmail's rule). -> { list } | { code }.
+function occasionsSent(row, purpose, who, date) {
+  if (!realDay(date)) return { code: "invalid" };
+  let member = null;
+  if (purpose === "family_birthday") {
+    member = familyMember(parsePersonal(row.personal), who);
+    if (member.code) return { code: member.code };
+  }
+  const list = occasions.occasionsFor(occasions.fromRow(row), date, 0).filter((o) =>
+    OCCASION_PURPOSES[purpose].includes(o.kind) && (!member || (o.kind === member.kind && (o.who || null) === (member.who || null))));
+  return list.length ? { list } : { code: "invalid" };
+}
+
+// POST /api/clients/:id/email-sent { purpose, who?, date? } — the broker's "Mark sent": "I sent it". Sets last_contact to now (the
+// Log contact route's logContactForUser), and for an occasion purpose with a `date` (the occasion's day, YYYY-MM-DD) records that
+// occasion in occasion_emails (a second tap adds nothing). It logs no call (contact_log is calls only), closes no follow-up and does
+// not count as reached. A client marked do not email is refused (409 do_not_email), as is a purpose, date or family member that is not
+// one (400 invalid / who_needed); a refusal writes nothing. -> { success: true, client } | { success: false, code }.
+router.post("/:id/email-sent", (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const reach = clientInReach(db, req.user, id);
+    if (reach.status !== 200) return res.status(reach.status).json({ success: false, error: reach.error });
+    const { purpose, who, date } = bodyOf(req);
+    const refuse = (code) => res.status(EMAIL_STATUS[code] || 400).json({ success: false, code });
+    if (typeof purpose !== "string" || !PURPOSES.includes(purpose)) return refuse("invalid");
+    if (reach.row.do_not_email === 1) return refuse("do_not_email");
+    let sent = [];
+    if (OCCASION_PURPOSES[purpose] && date !== undefined && date !== null) {
+      const found = occasionsSent(reach.row, purpose, who, date);
+      if (found.code) return refuse(found.code);
+      sent = found.list;
+    }
+    db.transaction(() => {
+      logContactForUser(db, req.user, id);
+      for (const o of sent) occasionEmails.record(db, { clientId: id, userId: req.user.id, kind: o.kind, who: o.who || "", date: o.date });
+    })();
+    res.json({ success: true, client: presentClients(db, req.user, [clientRow(id)])[0] });
+  } catch (err) {
+    console.error("POST /api/clients/:id/email-sent:", err.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+const clientRow = (id) => db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 
 module.exports = Object.assign(router, { PROGRAMS, OCCUPANCIES, validateClient, toClient, createClientForUser, logContactForUser, clientInReach, presentClients, setTargetForUser });
