@@ -1,6 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { HANDS_FREE_KEY, NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel, stopAfterUtterance, noSpeechClockRuns } from "./talkMode.mjs";
+import { HANDS_FREE_KEY, NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel, stopAfterUtterance, noSpeechClockRuns, talkTap, speakingStatus } from "./talkMode.mjs";
+
+test("talkTap: a tap on Talk while she speaks interrupts her; otherwise it opens or closes the mic, or resumes", () => {
+  assert.equal(talkTap({ speaking: true, micLive: false }), "interrupt");
+  assert.equal(talkTap({ speaking: true, micLive: true }), "interrupt");   // hands-free: the tap stops her, not the mic
+  assert.equal(talkTap({ speaking: false, micLive: true }), "stop");
+  assert.equal(talkTap({ speaking: false, micLive: false }), "start");
+  assert.equal(talkTap(), "start");
+  // paused comes first: Pause already stopped her, and the tap resumes
+  assert.equal(talkTap({ paused: true }), "resume");
+  assert.equal(talkTap({ paused: true, speaking: true, micLive: true }), "resume");
+});
+
+test("talkLabel: while she speaks the button invites the interruption, in both modes", () => {
+  assert.equal(talkLabel({ handsFree: true, micLive: true, speaking: true }), "Talk");   // not "Stop listening": the tap stops her and keeps the mic
+  assert.equal(talkLabel({ handsFree: true, micLive: false, speaking: true }), "Talk");
+  assert.equal(talkLabel({ handsFree: false, micLive: true, speaking: true }), "Tap to talk");
+  assert.equal(talkLabel({ handsFree: false, micLive: false, speaking: true }), "Tap to talk");
+  assert.equal(talkLabel({ handsFree: true, micLive: false, starting: true, speaking: true }), "Starting…");
+  // not speaking: as before
+  assert.equal(talkLabel({ handsFree: true, micLive: true, speaking: false }), "Stop listening");
+  assert.equal(talkLabel({ handsFree: false, micLive: true, speaking: false }), "Listening…");
+});
+
+test("speakingStatus: the status line says a tap on Talk interrupts her, when Talk can open the mic", () => {
+  assert.equal(speakingStatus({ canTalk: true }), "Speaking… tap Talk to interrupt");
+  assert.equal(speakingStatus(), "Speaking… tap Talk to interrupt");
+  assert.equal(speakingStatus({ canTalk: false }), "Speaking…");
+});
 
 const fakeStorage = (initial = {}) => {
   const data = { ...initial };

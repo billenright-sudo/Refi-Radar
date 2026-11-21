@@ -8,7 +8,7 @@ import CharliePortrait from "./CharliePortrait.jsx";
 import { faceState } from "./face.mjs";
 import { briefingFolded } from "./briefingFold.mjs";
 import { dockParts, portraitSlot, BRIEFING_SHRINK } from "./dockLayout.mjs";
-import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns } from "./talkMode.mjs";
+import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns, talkTap, speakingStatus } from "./talkMode.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
@@ -312,11 +312,20 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
     }
   };
   // Talk: starts the microphone (for one question, or hands-free from there); tapped again while it is on, stops it with nothing
-  // sent; tapped while paused, resumes.
+  // sent; tapped while paused, resumes. Tapped while she is speaking (the briefing or any answer), it interrupts her: she stops
+  // at once, the line she was on is dropped (Resume never says it again), and the mic opens, or stays open in hands-free
+  // (talkMode.mjs talkTap).
   const talk = () => {
-    if (paused) { resume({ listen: true }); return; }
+    const tap = talkTap({ paused, speaking: speakingRef.current, micLive: mic === "live" });
+    if (tap === "resume") { resume({ listen: true }); return; }
     audio.unlock();
-    if (mic === "live") audio.stopMic(); else startListening();
+    if (tap === "interrupt") {
+      replay.clear();
+      audio.stopSpeaking();
+      if (mic !== "live" && mic !== "starting") startListening();
+      return;
+    }
+    if (tap === "stop") audio.stopMic(); else startListening();
   };
   // The Hands-free switch takes effect at once: off while the mic is live closes it; on never opens it (the next tap does).
   const changeHandsFree = (on) => {
@@ -355,7 +364,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   let dot = C.muted;
   if (!snap.hasRates) status = "Fetching rates…";
   else if (paused) status = "Paused";
-  else if (speaking) { status = "Speaking…"; dot = C.blue; }
+  else if (speaking) { status = speakingStatus({ canTalk: !voiceDown && !MIC_NOTES[mic] }); dot = C.blue; }
   else if (working) { status = "Thinking…"; dot = C.amber; }
   else if (voiceDown) status = "Type below. Voice input isn't set up here";
   else if (mic === "live") { status = hearing ? "Listening… hearing you" : "Listening"; dot = C.green; }
@@ -379,7 +388,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const foldToggle = { background: "transparent", border: "none", color: C.mutedHi, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0, flex: "none" };
 
   const listening = mic === "live" && !paused;
-  const talkLabel = labelForTalk({ handsFree, micLive: listening, starting: mic === "starting", paused });
+  const talkLabel = labelForTalk({ handsFree, micLive: listening, starting: mic === "starting", paused, speaking });
   const talkSize = panel ? {} : { fontSize: 16, padding: "13px 18px", borderRadius: 12, gap: 10, flex: 1, justifyContent: "center" };
   const talkStyle = listening
     ? { ...ghost, ...talkSize, background: C.greenBg, color: C.green, border: `1px solid ${C.green}` }

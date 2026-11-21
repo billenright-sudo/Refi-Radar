@@ -24,10 +24,31 @@ export function writeHandsFree(storage, on) {
   }
 }
 
-export function talkLabel({ handsFree = false, micLive = false, starting = false, paused = false } = {}) {
+// While she speaks (and is not paused) the button invites the interruption in both modes: a tap then stops her and listens
+// (talkTap), so it never reads "Stop listening" or "Listening…" over her voice.
+export function talkLabel({ handsFree = false, micLive = false, starting = false, paused = false, speaking = false } = {}) {
   if (starting && !paused) return "Starting…";
+  if (speaking && !paused) return handsFree ? "Talk" : "Tap to talk";
   if (handsFree) return micLive ? "Stop listening" : "Talk";
   return micLive ? "Listening…" : "Tap to talk";
+}
+
+// What a tap on Talk does:
+//   "resume"     paused: resume and listen
+//   "interrupt"  she is speaking: she stops at once, the line she was on is dropped (it is not kept for a Resume), and the mic
+//                opens for the question, or stays open in hands-free
+//   "stop"       the mic is live and she is not speaking: it closes, with nothing sent
+//   "start"      otherwise: the mic opens
+export function talkTap({ paused = false, speaking = false, micLive = false } = {}) {
+  if (paused) return "resume";
+  if (speaking) return "interrupt";
+  return micLive ? "stop" : "start";
+}
+
+// The status line while she speaks. It says how to interrupt her whenever Talk can open the mic (`canTalk`: voice input is
+// set up here and the microphone is available).
+export function speakingStatus({ canTalk = true } = {}) {
+  return canTalk ? "Speaking… tap Talk to interrupt" : "Speaking…";
 }
 
 // Whether the mic closes as soon as one utterance has been captured (tap to talk), before it is sent.
