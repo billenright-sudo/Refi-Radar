@@ -86,8 +86,10 @@ org's clients; a loan officer: their own). It answers `{ success: true, email: {
 A tap that says "I sent it". New route: `POST /api/clients/:id/email-sent` with `{ purpose, who?, date? }`.
 
 - It sets the client's `last_contact` to now (that is what resets the check-in clock), through the same code the
-  existing contact route uses for that, and adds a `contact_log` row saying it was an email (outcome `email`, the purpose
-  in the notes). It does **not** close open call follow-ups and does **not** count as "reached" for the call list.
+  existing contact route uses for that. It writes **nothing** to `contact_log` (that table is calls only: its `outcome`
+  allows `reached` and `not_reached`, and widening it would mean rebuilding a table on the live database), so the client's
+  call history is unchanged. It does **not** close open call follow-ups and does **not** count as "reached" for the call
+  list. (Decided 2026-11-21 when the builder found the constraint.)
 - For an occasion purpose with a `date` (the occasion's date, `YYYY-MM-DD`), it also records the occasion as emailed in a
   new table, `occasion_emails (id, client_id, user_id, kind, who, occasion_date, created_at)`, unique on
   `(client_id, kind, who, occasion_date)`; a second tap changes nothing. `kind` is the occasion kind
