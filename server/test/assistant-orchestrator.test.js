@@ -4141,15 +4141,21 @@ test("Task 5: draftEmailTool ends the turn at once with the code-authored reply 
 });
 
 test("Task 5: every purpose is said in the reply; a draft satisfies the action backstop and needs no question", async () => {
-  for (const purpose of PURPOSES) {
-    const client = fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose })]);
-    const r = await runTurn({ messages: userSays("send the Chens a note"), ctx: mikeCtx, client });
-    assert.equal(
-      r.reply,
-      `Here's a ${PURPOSE_WORDS[purpose]} email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.`
-    );
-    assert.equal(r.compose.to, MIKE_CHEN_EMAIL);
-    assert.equal(client.calls.length, 1);
+  // one child with a birthday on file, so a family birthday is set up without a `who`
+  db.prepare("UPDATE clients SET personal = ? WHERE id = ?").run(JSON.stringify({ children: [{ name: "Maya", birthday: "11-20", birthYear: null }] }), mikeChen);
+  try {
+    for (const purpose of PURPOSES) {
+      const client = fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose })]);
+      const r = await runTurn({ messages: userSays("send the Chens a note"), ctx: mikeCtx, client });
+      assert.equal(
+        r.reply,
+        `Here's a ${PURPOSE_WORDS[purpose]} email for Robert & Linda Chen, ready on your screen. Open it in your email to review it and send it yourself — I don't send anything.`
+      );
+      assert.equal(r.compose.to, MIKE_CHEN_EMAIL);
+      assert.equal(client.calls.length, 1);
+    }
+  } finally {
+    db.prepare("UPDATE clients SET personal = '' WHERE id = ?").run(mikeChen);
   }
 });
 

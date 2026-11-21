@@ -773,6 +773,7 @@ test("draftEmailTool: Chen + check_in is the approved template, to the record's 
   assert.deepStrictEqual(r.compose, {
     to: "linda.chen@example.com", subject: "How's everything with your home?", body: CHECK_IN_TEXT,
     links: composeLinks({ to: "linda.chen@example.com", subject: "How's everything with your home?", body: CHECK_IN_TEXT }),
+    clientId: chenCId, purpose: "check_in",
   });
   assert.ok(r.compose.links.gmail.startsWith("https://mail.google.com/mail/?view=cm"));
   assert.equal(queryOfUrl(r.compose.links.gmail).get("to"), "linda.chen@example.com");
@@ -780,15 +781,94 @@ test("draftEmailTool: Chen + check_in is the approved template, to the record's 
 });
 
 test("draftEmailTool: refi_review, with a figure-free body, for every purpose; the sender's name and IDs come from the DB, not ctx.user", () => {
-  for (const purpose of PURPOSES) {
-    const r = draftEmailTool({ clientId: chenCId, purpose }, billCtx);
-    assert.equal(r.source, "client record", purpose);
-    assert.equal(r.data.purpose, purpose);
-    assert.equal(billCtx.user.first_name, undefined, "ctx.user carries no name or NMLS ID");
-    const text = r.data.body.split("\n").filter((line) => !line.startsWith("NMLS #")).join("\n");
-    assert.doesNotMatch(text, /[\d$%]/, `${purpose} carries no figure`);
+  // one child with a birthday on file, so a family birthday needs no `who`
+  db.prepare("UPDATE clients SET personal = ? WHERE id = ?").run(JSON.stringify({ children: [{ name: "Maya", birthday: "11-20", birthYear: 2016 }] }), chenCId);
+  try {
+    for (const purpose of PURPOSES) {
+      const r = draftEmailTool({ clientId: chenCId, purpose }, billCtx);
+      assert.equal(r.source, "client record", purpose);
+      assert.equal(r.data.purpose, purpose);
+      assert.equal(billCtx.user.first_name, undefined, "ctx.user carries no name or NMLS ID");
+      const text = r.data.body.split("\n").filter((line) => !line.startsWith("NMLS #")).join("\n");
+      assert.doesNotMatch(text, /[\d$%]/, `${purpose} carries no figure`);
+    }
+  } finally {
+    db.prepare("UPDATE clients SET personal = '' WHERE id = ?").run(chenCId);
   }
   assert.equal(draftEmailTool({ clientId: chenCId, purpose: "refi_review" }, billCtx).data.subject, "A fresh look at your mortgage");
+});
+
+// ── the occasion emails (design 2026-11-21) ──
+const setPersonal = (id, personal) => db.prepare("UPDATE clients SET personal = ? WHERE id = ?").run(personal ? JSON.stringify(personal) : "", id);
+const FAMILY = { spouseName: "Jordan", spouseBirthday: "12-10", birthday: "11-25", anniversary: "03-05",
+  children: [{ name: "Maya", birthday: "11-22", birthYear: 2016 }] };
+const dayCtx = { ...billCtx, localDate: "2026-11-21" };
+
+test("draftEmailTool: the four occasion emails, the family member named from the record, with the occasion coming up on the compose", () => {
+  setPersonal(chenCId, FAMILY);
+  try {
+    const birthday = draftEmailTool({ clientId: chenCId, purpose: "birthday" }, dayCtx);
+    assert.equal(birthday.source, "client record");
+    assert.deepStrictEqual(birthday.data, {
+      client: "Robert & Linda Chen", email: "linda.chen@example.com", purpose: "birthday", subject: "Happy birthday!", body: birthday.compose.body,
+    });
+    assert.ok(birthday.compose.body.startsWith("Hi Robert & Linda Chen,\n\nHappy birthday! I hope you have a great day and a wonderful year ahead.\n\nBest,\nBill Enright"));
+    assert.deepStrictEqual(birthday.compose.occasion, { kind: "birthday", who: "", date: "2026-11-25" });
+    assert.equal(birthday.compose.clientId, chenCId);
+    assert.equal(birthday.compose.purpose, "birthday");
+
+    const maya = draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who: "MAYA" }, dayCtx);
+    assert.equal(maya.data.subject, "Happy birthday to Maya!");
+    assert.deepStrictEqual(maya.compose.occasion, { kind: "child_birthday", who: "Maya", date: "2026-11-22" });
+    const jordan = draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who: "Jordan" }, dayCtx);
+    assert.deepStrictEqual(jordan.compose.occasion, { kind: "spouse_birthday", who: "Jordan", date: "2026-12-10" });
+
+    const wedding = draftEmailTool({ clientId: chenCId, purpose: "wedding_anniversary" }, dayCtx);
+    assert.equal(wedding.data.subject, "Happy anniversary!");
+    assert.equal(wedding.compose.occasion, undefined, "March 5th is more than 60 days out");
+
+    const home = draftEmailTool({ clientId: chenCId, purpose: "home_anniversary" }, dayCtx);
+    assert.equal(home.data.subject, "Happy home anniversary!");
+    assert.equal(home.compose.occasion, undefined, "no close or purchase date on file");
+    assert.equal(draftEmailTool({ clientId: chenCId, purpose: "check_in" }, dayCtx).compose.occasion, undefined);
+  } finally {
+    setPersonal(chenCId, null);
+  }
+});
+
+test("draftEmailTool: a family birthday with two family members and no `who` asks which, naming them; one not on the record is invalid", () => {
+  setPersonal(chenCId, FAMILY);
+  try {
+    const r = draftEmailTool({ clientId: chenCId, purpose: "family_birthday" }, dayCtx);
+    assert.equal(r.compose, undefined);
+    assert.deepStrictEqual([r.source, r.data.code, r.data.client, r.data.family], ["(which family member?)", "who_needed", "Robert & Linda Chen", ["Jordan", "Maya"]]);
+    assert.equal(typeof r.data.error, "string");
+    for (const who of ["Mallory", 7, { name: "Maya" }]) {
+      const bad = draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who }, dayCtx);
+      assert.deepStrictEqual([bad.source, typeof bad.data.error, bad.compose], ["(invalid input)", "string", undefined], String(who));
+      assert.ok(!JSON.stringify(bad).includes("Mallory"));
+    }
+  } finally {
+    setPersonal(chenCId, null);
+  }
+  const none = draftEmailTool({ clientId: chenCId, purpose: "family_birthday" }, dayCtx);
+  assert.deepStrictEqual([none.data.code, none.data.family], ["who_needed", []]);
+});
+
+test("draftEmailTool: the occasion emails keep the refusals: do not email first, then NMLS, then no address", () => {
+  db.prepare("UPDATE clients SET do_not_email = 1 WHERE id = ?").run(chenCId);
+  try {
+    assert.equal(draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who: "Mallory" }, dayCtx).data.code, "do_not_email");
+  } finally {
+    db.prepare("UPDATE clients SET do_not_email = 0 WHERE id = ?").run(chenCId);
+  }
+  assert.equal(draftEmailTool({ clientId: chenCId, purpose: "birthday" }, loCCtx).data.code, "nmls_missing");
+  setClientEmail(chenCId, "");
+  try {
+    assert.equal(draftEmailTool({ clientId: chenCId, purpose: "home_anniversary" }, billCtx).data.code, "no_email");
+  } finally {
+    setClientEmail(chenCId, "linda.chen@example.com");
+  }
 });
 
 test("draftEmailTool: a numeric-string id from the model works", () => {
@@ -1097,7 +1177,11 @@ test("Task 4: TOOL_SCHEMA: setTargetRateTool takes a clientId and a targetRate (
 test("TOOL_SCHEMA: draftEmailTool takes a clientId and a purpose, and says Charlie never writes or sends the email", () => {
   const t = TOOL_SCHEMA.find((x) => x.name === "draftEmailTool");
   assert.deepStrictEqual(t.input_schema.required, ["clientId", "purpose"]);
-  assert.deepStrictEqual(Object.keys(t.input_schema.properties).sort(), ["clientId", "purpose"]);
+  assert.deepStrictEqual(Object.keys(t.input_schema.properties).sort(), ["clientId", "purpose", "who"]);
+  assert.equal(t.input_schema.properties.who.type, "string");
+  assert.match(t.input_schema.properties.who.description, /record/);
+  for (const purpose of PURPOSES) assert.ok(t.description.includes(purpose), purpose);
+  assert.match(t.description, /Nothing is sent/);
   assert.equal(t.input_schema.properties.clientId.type, "integer");
   assert.match(t.input_schema.properties.clientId.description, /findClient/);
   assert.deepStrictEqual(t.input_schema.properties.purpose.enum, PURPOSES);

@@ -21,7 +21,9 @@ const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
 const { validateClient } = require("../../routes/clients");   // the one POST /api/clients runs
 const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../google/time");
-const { PURPOSES, NMLS_PATTERN, renderEmail, composeLinks } = require("./outreach");
+const { PURPOSES } = require("./outreach");
+const { setUpEmail, matchingOccasion } = require("./emailSetup");
+const { parsePersonal } = require("../personal");
 const { isGuidelineQuestion } = require("./guidelines");
 const { SCREEN_PAGES, BROKER_PAGES } = require("./navigation");
 
@@ -508,16 +510,20 @@ async function createEventTool(args, ctx) {
 
 // ── Client email: code-authored templates as compose links ───────────────────
 
-// One address, nothing else: no space, no angle brackets, no comma, semicolon or quote (so no second recipient, no display
-// name, no header line smuggled in behind a newline).
-const EMAIL_PATTERN = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
-const isNmls = (v) => typeof v === "string" && NMLS_PATTERN.test(v);
+// The family members named on a client's record (the spouse, then the children), for the "which one?" a family birthday asks.
+function familyNames(row) {
+  const p = parsePersonal(row.personal);
+  return [...(p.spouseName ? [p.spouseName] : []), ...p.children.filter((c) => c && c.name).map((c) => c.name)];
+}
 
 // Set up a client email for the broker to send themselves. Charli never writes the email and never sends it: the wording is the
 // fixed template for `purpose` (lib/assistant/outreach.js; no rate, no dollar figure), signed with the sender's NMLS ID and the
 // company's when it has one, and the recipient is the address on the client's record. Nothing the model passes besides
-// clientId and purpose is read. The sender's name and NMLS IDs are read fresh from the DB (ctx.user is the auth row, which
-// has none of them), so an ID the user just saved works on the very next turn. No user NMLS ID, no email.
+// clientId, purpose and (for a family birthday) who is read, and `who` must be a family member named on the record. The rules
+// are setUpEmail's (lib/assistant/emailSetup.js), shared with the Dates Coming Up button. The sender's name and NMLS IDs are read
+// fresh from the DB (ctx.user is the auth row, which has none of them), so an ID the user just saved works on the very next turn.
+// No user NMLS ID, no email. The compose carries the clientId and the purpose (for the card's Mark sent) and, for an occasion
+// email, the matching occasion coming up within MAX_DATES_DAYS days (`occasion: { kind, who, date }`), when there is one.
 function draftEmailTool(args, ctx) {
   const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
   const id = idOf(a.clientId);
@@ -526,43 +532,48 @@ function draftEmailTool(args, ctx) {
   if (!client) return fail("(not found)", "no such client in your book");
   const purpose = a.purpose;
   if (typeof purpose !== "string" || !PURPOSES.includes(purpose)) return fail("(invalid input)", `purpose must be one of: ${PURPOSES.join(", ")}`);
-  // The broker ticked "Do not email this client": refused before anything else (no NMLS or address prompt for an email that
-  // must not exist), with the client named for the code-authored line.
-  if (client.do_not_email === 1) {
-    return {
-      data: { error: "this client is marked do not email: never set up or offer an email for them; suggest a call instead", code: "do_not_email", client: client.name },
-      source: "(do not email)",
-    };
+  const set = setUpEmail(ctx.db, ctx.user, client, { purpose, ...(purpose === "family_birthday" ? { who: a.who } : {}) });
+  if (!set.ok) {
+    switch (set.code) {
+      // The broker ticked "Do not email this client": refused before anything else (no NMLS or address prompt for an email that
+      // must not exist), with the client named for the code-authored line.
+      case "do_not_email":
+        return {
+          data: { error: "this client is marked do not email: never set up or offer an email for them; suggest a call instead", code: "do_not_email", client: client.name },
+          source: "(do not email)",
+        };
+      case "nmls_missing":
+        return {
+          data: { error: "the user's NMLS ID is not saved yet: every client email carries it, so they save it first and then the email can be set up", code: "nmls_missing" },
+          source: "(not ready)",
+        };
+      case "no_email":
+        return {
+          data: { error: "this client has no usable email address on file: say so and suggest adding it to the client record; never make one up or use one that is not on the record", code: "no_email", client: client.name },
+          source: "(no email on file)",
+        };
+      case "who_needed":
+        return {
+          data: {
+            error: "say which family member the birthday email is for: ask the user which one of `family` (the names on the client's record), or say there is no family member on file; never guess one",
+            code: "who_needed", client: client.name, family: familyNames(client),
+          },
+          source: "(which family member?)",
+        };
+      case "invalid":
+        return fail("(invalid input)", "who must be the spouse's or a child's name as it is on the client's record");
+      default:
+        return fail("(unavailable)", "your profile could not be read right now");
+    }
   }
 
-  const sender = ctx.db.prepare("SELECT first_name, last_name, nmls_id FROM users WHERE id = ?").get(ctx.user.id);
-  const org = ctx.db.prepare("SELECT name, nmls_id FROM organizations WHERE id = ?").get(ctx.user.org_id);
-  if (!sender || !org) return fail("(unavailable)", "your profile could not be read right now");
-  if (!isNmls(sender.nmls_id)) {
-    return {
-      data: { error: "the user's NMLS ID is not saved yet: every client email carries it, so they save it first and then the email can be set up", code: "nmls_missing" },
-      source: "(not ready)",
-    };
-  }
-  if (typeof client.email !== "string" || !EMAIL_PATTERN.test(client.email)) {
-    return {
-      data: { error: "this client has no usable email address on file: say so and suggest adding it to the client record; never make one up or use one that is not on the record", code: "no_email", client: client.name },
-      source: "(no email on file)",
-    };
-  }
-
-  const { subject, body } = renderEmail({
-    clientName: client.name,
-    senderName: `${sender.first_name} ${sender.last_name}`.trim(),
-    nmlsId: sender.nmls_id,
-    orgName: org.name,
-    orgNmlsId: isNmls(org.nmls_id) ? org.nmls_id : null,
-    purpose,
-  });
+  const { to, subject, body, links } = set.email;
+  const today = typeof ctx.localDate === "string" && DAY_RE.test(ctx.localDate) ? ctx.localDate : new Date(clockOf(ctx)).toISOString().slice(0, 10);
+  const occasion = matchingOccasion(client, purpose, set, today, MAX_DATES_DAYS);
   return {
     data: { client: client.name, email: client.email, purpose, subject, body },
     source: "client record",
-    compose: { to: client.email, subject, body, links: composeLinks({ to: client.email, subject, body }) },
+    compose: { to, subject, body, links, clientId: client.id, purpose, ...(occasion ? { occasion } : {}) },
   };
 }
 
@@ -1130,15 +1141,26 @@ const TOOL_SCHEMA = [
       "Set up a short email to one client for the user to send. Charlie never writes or sends the email herself: the wording is fixed " +
       "by the app (never by you), carries no rate and no dollar figure, and is signed with the user's NMLS ID; the user gets links " +
       "that open it ready to go in their own Gmail, Outlook or mail app and sends it from their own email, or doesn't. Nothing is " +
-      "sent and nothing is saved. Purposes: check_in (a friendly check-in) and refi_review (offer a no-obligation review of their " +
-      "options). The recipient is the email on the client's record; you cannot choose or change it, the subject or the text. Get the " +
-      "clientId from findClient; never guess it. If it comes back not ready (the user's NMLS ID is not saved yet) or with no email on " +
-      "file, say so plainly and never make one up.",
+      "sent and nothing is saved. Purposes: check_in (a friendly check-in), refi_review (offer a no-obligation review of their " +
+      "options), birthday (the client's own birthday), family_birthday (the birthday of the client's spouse or a child), " +
+      "wedding_anniversary (the client's wedding anniversary) and home_anniversary (the anniversary of their loan or their home; a " +
+      "greeting, not an offer). For family_birthday, `who` is the family member: it must be the spouse's or a child's name as it is on " +
+      "the client's record (from upcomingDatesTool), never one you make up; leave it out when the client has only one family member " +
+      "with a birthday on file. If it comes back asking which family member, ask the user which one. The recipient is the email on " +
+      "the client's record; you cannot choose or change it, the subject or the text. Get the clientId from findClient; never guess it. " +
+      "If it comes back not ready (the user's NMLS ID is not saved yet) or with no email on file, say so plainly and never make one up.",
     input_schema: {
       type: "object",
       properties: {
         clientId: { type: "integer", description: "The id of the client, from findClient." },
-        purpose: { type: "string", enum: PURPOSES, description: "check_in or refi_review." },
+        purpose: {
+          type: "string", enum: PURPOSES,
+          description: "check_in, refi_review, birthday, family_birthday, wedding_anniversary or home_anniversary.",
+        },
+        who: {
+          type: "string",
+          description: "family_birthday only: the spouse's or child's name as it is on the client's record. Leave it out otherwise.",
+        },
       },
       required: ["clientId", "purpose"],
     },
