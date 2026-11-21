@@ -14,6 +14,23 @@ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // The three ways an email opens, in the broker's own mail app: the compose links the server sets up.
 export const COMPOSE_LINKS = Object.freeze([["gmail", "Open in Gmail"], ["outlook", "Open in Outlook"], ["mailto", "Other email app"]]);
 
+// The links a server email opens with, as the browser may follow them: each of the three must start with its provider's compose
+// address. -> a fresh { gmail, outlook, mailto }, or null when any one is missing or is anything else (then nothing opens).
+const COMPOSE_LINK_PREFIXES = Object.freeze({ gmail: "https://mail.google.com/", outlook: "https://outlook.office.com/", mailto: "mailto:" });
+export function safeComposeLinks(links) {
+  if (!links || typeof links !== "object" || Array.isArray(links)) return null;
+  const kept = {};
+  for (const [key, prefix] of Object.entries(COMPOSE_LINK_PREFIXES)) {
+    if (typeof links[key] !== "string" || !links[key].startsWith(prefix)) return null;
+    kept[key] = links[key];
+  }
+  return kept;
+}
+
+// The `who` a family birthday is asked for: the family member's stored name, or "your spouse" for a spouse with no name on file
+// (the server takes it only then).
+const whoFor = (kind, who) => (who ? who : kind === "spouse_birthday" ? "your spouse" : null);
+
 // The email purpose for an occasion kind (lib/occasions.js), or null.
 export const purposeForKind = (kind) => (typeof kind === "string" && Object.hasOwn(KIND_PURPOSE, kind) ? KIND_PURPOSE[kind] : null);
 
@@ -34,12 +51,13 @@ export function isEmailed(client, occasion) {
   return list.some((e) => e && e.kind === occasion.kind && (e.who || "") === who && e.date === occasion.date);
 }
 
-// What POST /api/clients/:id/email takes for a date's row: { purpose, who? } (who only for a family member's birthday), or null for
-// an occasion kind with no email.
+// What POST /api/clients/:id/email takes for a date's row: { purpose, who? } (who only for a family member's birthday: the name, or
+// "your spouse" for a spouse with no name on file), or null for an occasion kind with no email.
 export function emailRequest(occasion) {
   const purpose = purposeForKind(occasion && occasion.kind);
   if (!purpose) return null;
-  return purpose === "family_birthday" && occasion.who ? { purpose, who: occasion.who } : { purpose };
+  const who = purpose === "family_birthday" ? whoFor(occasion.kind, occasion.who) : null;
+  return who ? { purpose, who } : { purpose };
 }
 
 // What POST /api/clients/:id/email-sent takes for a date's row: the email's request and the occasion's date.
@@ -54,7 +72,8 @@ export function composeSentRequest(compose) {
   if (!compose || !Number.isInteger(compose.clientId) || compose.clientId <= 0 || !PURPOSES.has(compose.purpose)) return null;
   const o = compose.occasion;
   if (!o || purposeForKind(o.kind) !== compose.purpose || typeof o.date !== "string" || !DAY_RE.test(o.date)) return { purpose: compose.purpose };
-  return { purpose: compose.purpose, ...(compose.purpose === "family_birthday" && o.who ? { who: o.who } : {}), date: o.date };
+  const who = compose.purpose === "family_birthday" ? whoFor(o.kind, o.who) : null;
+  return { purpose: compose.purpose, ...(who ? { who } : {}), date: o.date };
 }
 
 // Charlie's compose's Mark sent fields, kept only as the server documents them: { clientId, purpose, occasion? }, each field dropped

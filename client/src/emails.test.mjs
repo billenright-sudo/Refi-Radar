@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { purposeForKind, refusalLine, isEmailed, emailRequest, sentRequest, composeSentRequest, composeMarkFields } from "./emails.mjs";
+import { purposeForKind, refusalLine, isEmailed, emailRequest, sentRequest, composeSentRequest, composeMarkFields, safeComposeLinks } from "./emails.mjs";
 
 const require = createRequire(import.meta.url);
 const serverOutreach = require("../../server/lib/assistant/outreach.js");
@@ -38,7 +38,10 @@ test("isEmailed: kind, family member ('' for none) and date all match", () => {
 test("emailRequest and sentRequest: the purpose for the row, the family member only for a family birthday, and the date", () => {
   assert.deepEqual(emailRequest({ kind: "birthday", who: null, date: "2026-11-20" }), { purpose: "birthday" });
   assert.deepEqual(emailRequest({ kind: "child_birthday", who: "Maya", date: "2026-11-20" }), { purpose: "family_birthday", who: "Maya" });
-  assert.deepEqual(emailRequest({ kind: "spouse_birthday", who: null, date: "2026-11-20" }), { purpose: "family_birthday" });
+  assert.deepEqual(emailRequest({ kind: "spouse_birthday", who: null, date: "2026-11-20" }), { purpose: "family_birthday", who: "your spouse" },
+    "a spouse with no name on file is picked as \"your spouse\"");
+  assert.deepEqual(emailRequest({ kind: "spouse_birthday", who: "Jordan", date: "2026-11-20" }), { purpose: "family_birthday", who: "Jordan" });
+  assert.deepEqual(sentRequest({ kind: "spouse_birthday", who: null, date: "2026-11-20" }), { purpose: "family_birthday", who: "your spouse", date: "2026-11-20" });
   assert.deepEqual(emailRequest({ kind: "loan", who: null, date: "2026-11-20" }), { purpose: "home_anniversary" });
   assert.equal(emailRequest({ kind: "nonsense" }), null);
   assert.equal(emailRequest(null), null);
@@ -53,10 +56,23 @@ test("composeSentRequest: the purpose, and the occasion's family member and date
     { purpose: "birthday", date: "2026-11-25" });
   assert.deepEqual(composeSentRequest({ clientId: 7, purpose: "family_birthday", occasion: { kind: "child_birthday", who: "Maya", date: "2026-11-22" } }),
     { purpose: "family_birthday", who: "Maya", date: "2026-11-22" });
+  assert.deepEqual(composeSentRequest({ clientId: 7, purpose: "family_birthday", occasion: { kind: "spouse_birthday", who: "", date: "2026-12-10" } }),
+    { purpose: "family_birthday", who: "your spouse", date: "2026-12-10" });
   assert.deepEqual(composeSentRequest({ clientId: 7, purpose: "birthday", occasion: { kind: "wedding", who: "", date: "2026-11-25" } }),
     { purpose: "birthday" }, "an occasion of another purpose is not this one");
   for (const bad of [null, {}, { purpose: "check_in" }, { clientId: 0, purpose: "check_in" }, { clientId: 7, purpose: "nonsense" }, { clientId: "7", purpose: "check_in" }]) {
     assert.equal(composeSentRequest(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("safeComposeLinks: the three links, each starting with its provider's compose address, as a copy; anything else is null", () => {
+  const links = { gmail: "https://mail.google.com/mail/?view=cm", outlook: "https://outlook.office.com/mail/deeplink/compose", mailto: "mailto:a%40example.com" };
+  const kept = safeComposeLinks({ ...links, evil: "https://evil.test/" });
+  assert.deepEqual(kept, links);
+  assert.deepEqual(Object.keys(kept), ["gmail", "outlook", "mailto"]);
+  for (const bad of [null, undefined, "x", [], { ...links, gmail: "javascript:alert(1)" }, { ...links, outlook: "https://outlook.live.com/" },
+    { ...links, mailto: undefined }, { gmail: links.gmail, outlook: links.outlook }]) {
+    assert.equal(safeComposeLinks(bad), null, JSON.stringify(bad));
   }
 });
 

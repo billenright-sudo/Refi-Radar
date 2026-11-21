@@ -32,7 +32,7 @@ import {
   WINDOW_DAYS, MAX_CHILDREN, CONTACT_OPTIONS, MONTH_NAMES, EMPTY_CHILD, occasionsFor, upcomingDates, occasionText, localToday, dayLabel, awayLabel,
   personalRows, personalToForm, formToPersonal, daysInMonth,
 } from "./personal.mjs";
-import { COMPOSE_LINKS, isEmailed, emailRequest, sentRequest, refusalLine } from "./emails.mjs";
+import { COMPOSE_LINKS, isEmailed, emailRequest, sentRequest, refusalLine, safeComposeLinks } from "./emails.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1204,8 +1204,9 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
     : { display: "flex", gap: "1rem", marginBottom });
   const opps = ratesLoading || allOppsLoading ? null : allOpps;
   const [datesOpen, setDatesOpen] = useState(false);
-  // A date's email, by row key: { loading } while the server sets it up, then { email } or { code }; `sent` is "saving", "done"
-  // or "failed" once Mark sent is pressed. The server sets the email up (POST /api/clients/:id/email) and sends nothing.
+  // A date's email, by row key: { loading } while the server sets it up, then { email } or { code }; `sent` is "saving" or
+  // "failed" once Mark sent is pressed (a Mark sent that worked folds the row's email away: the row then reads Emailed). The server
+  // sets the email up (POST /api/clients/:id/email) and sends nothing; its links are checked as Charlie's card checks them.
   const [mails, setMails] = useState({});
   const putMail = (key, next) => setMails(m => ({ ...m, [key]: next === null ? undefined : { ...(m[key] || {}), ...next } }));
   const openEmail = async (key, o) => {
@@ -1216,7 +1217,8 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
     try {
       const res = await fetch(`/api/clients/${o.clientId}/email`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ask) });
       const data = await res.json().catch(() => ({}));
-      putMail(key, res.ok && data.success && data.email ? { loading: false, email: data.email } : { loading: false, code: data.code || "error" });
+      const links = res.ok && data.success && data.email ? safeComposeLinks(data.email.links) : null;
+      putMail(key, links ? { loading: false, email: { ...data.email, links } } : { loading: false, code: data.code || "error" });
     } catch {
       putMail(key, { loading: false, code: "error" });
     }
@@ -1229,7 +1231,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
       const res = await fetch(`/api/clients/${o.clientId}/email-sent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ask) });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        putMail(key, { sent: "done" });
+        putMail(key, null);
         if (data.client && onClientUpdated) onClientUpdated(data.client);   // its occasionEmails turn the row's button into Emailed
       } else {
         putMail(key, { sent: "failed" });
@@ -1360,7 +1362,7 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
                           {isEmailed(client, o) ? (
                             <span data-testid="date-emailed" style={{ color: C.green, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Icon name="check" size={14} color={C.green} />Emailed</span>
                           ) : (
-                            <button data-testid="date-email" aria-expanded={Boolean(mail)} onClick={() => openEmail(key, o)} disabled={Boolean(mail && mail.loading)} style={{ ...smallBtn, opacity: mail && mail.loading ? 0.6 : 1 }}>Email</button>
+                            <button data-testid="date-email" aria-label={`Email ${o.clientName}`} aria-expanded={Boolean(mail)} onClick={() => openEmail(key, o)} disabled={Boolean(mail && mail.loading)} style={{ ...smallBtn, opacity: mail && mail.loading ? 0.6 : 1 }}>Email</button>
                           )}
                         </div>
                       </div>
@@ -1380,8 +1382,8 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
                                 {COMPOSE_LINKS.map(([k, label]) => (
                                   <a key={k} href={mail.email.links[k]} target="_blank" rel="noopener noreferrer" style={{ ...smallBtn, display: "inline-flex", alignItems: "center", textDecoration: "none" }}>{label}</a>
                                 ))}
-                                <button data-testid="date-mark-sent" onClick={() => markSent(key, o)} disabled={mail.sent === "saving" || mail.sent === "done"} style={{ ...smallBtn, color: mail.sent === "done" ? C.green : C.mutedHi, opacity: mail.sent === "saving" ? 0.6 : 1, cursor: mail.sent === "done" ? "default" : "pointer" }}>
-                                  {mail.sent === "done" ? "Marked sent" : "Mark sent"}
+                                <button data-testid="date-mark-sent" onClick={() => markSent(key, o)} disabled={mail.sent === "saving"} style={{ ...smallBtn, opacity: mail.sent === "saving" ? 0.6 : 1 }}>
+                                  Mark sent
                                 </button>
                               </div>
                               {mail.sent === "failed" && <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>Couldn't mark it sent. Try again.</div>}

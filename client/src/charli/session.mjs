@@ -11,7 +11,7 @@
 //   POST /api/assistant/confirm  { sideEffect } as /turn returned it (confirmId included) -> { success, result, reply, duplicate? }
 //   GET  /api/auth/me            -> { success, user: { careerStage } }
 
-import { composeMarkFields } from "../emails.mjs";
+import { composeMarkFields, safeComposeLinks } from "../emails.mjs";
 
 // Keep in sync with CAREER_STAGES in server/lib/assistant/coaching.js (ids are what is stored and sent).
 export const CAREER_STAGES = Object.freeze([
@@ -171,17 +171,12 @@ const cleanDetails = (details) =>
 // are followed by the browser, so each must start with its provider's compose address; anything else drops the whole compose (the
 // reply is still shown). The card's Mark sent fields (clientId, purpose and the occasion coming up, emails.mjs composeMarkFields)
 // are kept when they are well formed. -> a fresh object with only these fields, or null.
-const COMPOSE_LINK_PREFIXES = Object.freeze({ gmail: "https://mail.google.com/", outlook: "https://outlook.office.com/", mailto: "mailto:" });
 function cleanCompose(compose) {
   if (!compose || typeof compose !== "object" || Array.isArray(compose)) return null;
-  const { to, subject, body, links } = compose;
+  const { to, subject, body } = compose;
   if (typeof to !== "string" || typeof subject !== "string" || typeof body !== "string") return null;
-  if (!links || typeof links !== "object" || Array.isArray(links)) return null;
-  const kept = {};
-  for (const [key, prefix] of Object.entries(COMPOSE_LINK_PREFIXES)) {
-    if (typeof links[key] !== "string" || !links[key].startsWith(prefix)) return null;
-    kept[key] = links[key];
-  }
+  const kept = safeComposeLinks(compose.links);   // shared with Home's Dates Coming Up (emails.mjs)
+  if (!kept) return null;
   return { to, subject, body, links: kept, ...composeMarkFields(compose) };
 }
 
