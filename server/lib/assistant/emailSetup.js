@@ -16,17 +16,19 @@ const occasions = require("../occasions");
 const EMAIL_PATTERN = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
 const isNmls = (v) => typeof v === "string" && NMLS_PATTERN.test(v);
 const SPOUSE_WORDS = "your spouse";
-const fold = (s) => s.trim().toLowerCase();
+const fold = (s) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
 // The family member a family birthday is for, from the stored details: { who, kind } (who: the stored name, or null for a spouse
 // with no name on file) | { code: "invalid" | "who_needed" }. A named `who` must be the stored spouse name or a stored child's name
-// (trimmed, case-insensitive); left out (or blank), the one family member with a birthday on file is taken.
+// (trimmed, inner spaces collapsed, case-insensitive), or "your spouse" for a spouse whose birthday is on file with no name; left
+// out (or blank), the one family member with a birthday on file is taken.
 function familyMember(personal, who) {
   const p = personal || {};
   const children = Array.isArray(p.children) ? p.children.filter((c) => c && c.name) : [];
   if (who != null && typeof who !== "string") return { code: "invalid" };
   if (typeof who === "string" && who.trim()) {
     const wanted = fold(who);
+    if (wanted === SPOUSE_WORDS && p.spouseBirthday && !p.spouseName) return { who: null, kind: "spouse_birthday" };
     if (p.spouseName && fold(p.spouseName) === wanted) return { who: p.spouseName, kind: "spouse_birthday" };
     const child = children.find((c) => fold(c.name) === wanted);
     return child ? { who: child.name, kind: "child_birthday" } : { code: "invalid" };

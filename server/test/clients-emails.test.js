@@ -204,6 +204,21 @@ test("email-sent: scoped like the other client routes, and a refused one writes 
   assert.equal(clientRow(beaClient).last_contact, "2025-01-01");
 });
 
+test("an unnamed spouse beside a child's birthday: both routes take who \"your spouse\", and the occasion row has no name", async () => {
+  const id = addClient(ann, "Pat Example", { personal: { spouseBirthday: "12-31", children: [{ name: "Maya", birthday: "11-20", birthYear: null }] } });
+  const set = await api("POST", `/api/clients/${id}/email`, { purpose: "family_birthday", who: "your spouse" });
+  assert.equal(set.status, 200);
+  assert.equal(set.data.email.subject, "Happy birthday to your spouse!");
+  assert.equal((await api("POST", `/api/clients/${id}/email`, { purpose: "family_birthday" })).data.code, "who_needed");
+  const sent = await api("POST", `/api/clients/${id}/email-sent`, { purpose: "family_birthday", who: "your spouse", date: "2026-12-31" });
+  assert.equal(sent.status, 200);
+  assert.deepStrictEqual(sentRows(id), [{ user_id: ann, kind: "spouse_birthday", who: "", occasion_date: "2026-12-31" }]);
+  const named = addClient(ann, "Robin Example", { personal: { spouseName: "Jordan", spouseBirthday: "12-31" } });
+  assert.deepStrictEqual((await api("POST", `/api/clients/${named}/email`, { purpose: "family_birthday", who: "your spouse" })).data, { success: false, code: "invalid" });
+  assert.equal((await api("POST", `/api/clients/${named}/email-sent`, { purpose: "family_birthday", who: "your spouse", date: "2026-12-31" })).status, 400);
+  assert.deepStrictEqual(sentRows(named), []);
+});
+
 // ── occasionEmails on the client payload ────────────────────────────────────
 
 test("occasionEmails: each client carries the occasions emailed from 30 days ago onward, and only its own", async () => {

@@ -24,7 +24,7 @@ const { validateClient } = require("../../routes/clients");   // the one POST /a
 const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../google/time");
 const { PURPOSES } = require("./outreach");
 const { setUpEmail, matchingOccasion } = require("./emailSetup");
-const { parsePersonal } = require("../personal");
+
 const { isGuidelineQuestion } = require("./guidelines");
 const { SCREEN_PAGES, BROKER_PAGES } = require("./navigation");
 
@@ -196,6 +196,7 @@ function upcomingDatesTool(args, ctx) {
   if (!Number.isInteger(days) || days < 1 || days > MAX_DATES_DAYS) return fail("(invalid input)", `days must be a whole number from 1 to ${MAX_DATES_DAYS}`);
   const rows = scopedClients(ctx);
   const today = typeof ctx.localDate === "string" && DAY_RE.test(ctx.localDate) ? ctx.localDate : new Date(clockOf(ctx)).toISOString().slice(0, 10);
+  const doNotEmail = new Set(rows.filter((r) => r.do_not_email === 1).map((r) => r.id));
   const ownerOf = new Map();
   const owners = new Map();
   for (const row of rows.filter((r) => r.user_id !== ctx.user.id)) {
@@ -213,6 +214,7 @@ function upcomingDatesTool(args, ctx) {
     clientId: o.clientId, name: o.clientName, ...(ownerOf.has(o.clientId) ? { ownerName: ownerOf.get(o.clientId) } : {}),
     occasion: occasions.occasionText(o), when: occasions.whenText(o.date, today), date: o.date,
     ...(occasionEmails.isEmailed(emailed.get(o.clientId), o) ? { emailed: true } : {}),
+    ...(doNotEmail.has(o.clientId) ? { doNotEmail: true } : {}),
   }));
   return { data: { days, dates, more: all.length - dates.length }, source: "client record" };
 }
@@ -515,11 +517,6 @@ async function createEventTool(args, ctx) {
 
 // ── Client email: code-authored templates as compose links ───────────────────
 
-// The family members named on a client's record (the spouse, then the children), for the "which one?" a family birthday asks.
-function familyNames(row) {
-  const p = parsePersonal(row.personal);
-  return [...(p.spouseName ? [p.spouseName] : []), ...p.children.filter((c) => c && c.name).map((c) => c.name)];
-}
 
 // Set up a client email for the broker to send themselves. Charli never writes the email and never sends it: the wording is the
 // fixed template for `purpose` (lib/assistant/outreach.js; no rate, no dollar figure), signed with the sender's NMLS ID and the
@@ -557,12 +554,10 @@ function draftEmailTool(args, ctx) {
           data: { error: "this client has no usable email address on file: say so and suggest adding it to the client record; never make one up or use one that is not on the record", code: "no_email", client: client.name },
           source: "(no email on file)",
         };
+      // which family member is not said: code asks the user (orchestrator, WHO_NEEDED), naming nobody the model has not seen
       case "who_needed":
         return {
-          data: {
-            error: "say which family member the birthday email is for: ask the user which one of `family` (the names on the client's record), or say there is no family member on file; never guess one",
-            code: "who_needed", client: client.name, family: familyNames(client),
-          },
+          data: { error: "the family member the birthday email is for is needed: ask the user which one; never guess one", code: "who_needed", client: client.name },
           source: "(which family member?)",
         };
       case "invalid":
@@ -1080,7 +1075,8 @@ const TOOL_SCHEMA = [
       "words (with an age or a count of years when there is one) and the day in words (`when`): say them as given and never work " +
       "out a date, a weekday or an age yourself. `days` is how far ahead to look, 1 to 60 (14 when left out; 'this week' is 7, " +
       "'this month' is 30). A date whose email the user already marked sent comes with `emailed: true`: never offer that email " +
-      "again. Reminders only: they say nothing about a client's loan. Read-only.",
+      "again. A client marked do not email comes with `doNotEmail: true`: never offer them an email. Reminders only: they say " +
+      "nothing about a client's loan. Read-only.",
     input_schema: {
       type: "object",
       properties: { days: { type: "integer", description: "How many days ahead to look, 1 to 60. Defaults to 14." } },
@@ -1152,7 +1148,7 @@ const TOOL_SCHEMA = [
       "wedding_anniversary (the client's wedding anniversary) and home_anniversary (the anniversary of their loan or their home; a " +
       "greeting, not an offer). For family_birthday, `who` is the family member: it must be the spouse's or a child's name as it is on " +
       "the client's record (from upcomingDatesTool), never one you make up; leave it out when the client has only one family member " +
-      "with a birthday on file. If it comes back asking which family member, ask the user which one. The recipient is the email on " +
+      "with a birthday on file. A spouse with no name on file is picked with who \"your spouse\". The recipient is the email on " +
       "the client's record; you cannot choose or change it, the subject or the text. Get the clientId from findClient; never guess it. " +
       "If it comes back not ready (the user's NMLS ID is not saved yet) or with no email on file, say so plainly and never make one up.",
     input_schema: {

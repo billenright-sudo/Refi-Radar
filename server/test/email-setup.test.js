@@ -91,6 +91,25 @@ test("family_birthday with `who` left out: the one family member with a birthday
   assert.deepStrictEqual(setUpEmail(db, sam, none, { purpose: "family_birthday" }), { ok: false, code: "who_needed", client: "Pat Example" });
 });
 
+test("family_birthday: an unnamed spouse is picked with who \"your spouse\" only when no spouse name is on file", () => {
+  const row = addClient("Pat Example", { personal: { spouseBirthday: "05-01", children: [{ name: "Maya", birthday: "11-20", birthYear: null }] } });
+  assert.deepStrictEqual(setUpEmail(db, sam, row, { purpose: "family_birthday" }), { ok: false, code: "who_needed", client: "Pat Example" });
+  for (const who of ["your spouse", "  YOUR   Spouse "]) {
+    assert.deepStrictEqual(setUpEmail(db, sam, row, { purpose: "family_birthday", who }),
+      { ok: true, email: expected("Pat Example", "family_birthday", "your spouse"), who: null, kind: "spouse_birthday" }, who);
+  }
+  const noBirthday = addClient("Pat Example", { personal: { children: [{ name: "Maya", birthday: "11-20", birthYear: null }] } });
+  assert.deepStrictEqual(setUpEmail(db, sam, noBirthday, { purpose: "family_birthday", who: "your spouse" }), { ok: false, code: "invalid" },
+    "no spouse birthday on file");
+  const named = addClient("Pat Example", { personal: { spouseName: "Jordan", spouseBirthday: "05-01" } });
+  assert.deepStrictEqual(setUpEmail(db, sam, named, { purpose: "family_birthday", who: "your spouse" }), { ok: false, code: "invalid" });
+});
+
+test("family_birthday: a name said with extra spaces inside still matches the stored one", () => {
+  const row = addClient("Pat Example", { personal: { children: [{ name: "Mary Ann", birthday: "11-20", birthYear: null }, { name: "Leo", birthday: "11-21", birthYear: null }] } });
+  assert.equal(setUpEmail(db, sam, row, { purpose: "family_birthday", who: " mary   ann " }).who, "Mary Ann");
+});
+
 test("refusals, in order: invalid purpose, do not email, unavailable, NMLS missing, no email, then the family member", () => {
   const row = addClient("Pat Example");
   for (const purpose of ["nonsense", "", undefined, null, 5, "constructor", "__proto__"]) {

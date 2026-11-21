@@ -836,13 +836,15 @@ test("draftEmailTool: the four occasion emails, the family member named from the
   }
 });
 
-test("draftEmailTool: a family birthday with two family members and no `who` asks which, naming them; one not on the record is invalid", () => {
+test("draftEmailTool: a family birthday with two family members and no `who` asks which, naming nobody; one not on the record is invalid", () => {
   setPersonal(chenCId, FAMILY);
   try {
     const r = draftEmailTool({ clientId: chenCId, purpose: "family_birthday" }, dayCtx);
     assert.equal(r.compose, undefined);
-    assert.deepStrictEqual([r.source, r.data.code, r.data.client, r.data.family], ["(which family member?)", "who_needed", "Robert & Linda Chen", ["Jordan", "Maya"]]);
+    assert.deepStrictEqual([r.source, r.data.code, r.data.client], ["(which family member?)", "who_needed", "Robert & Linda Chen"]);
     assert.equal(typeof r.data.error, "string");
+    assert.ok(!JSON.stringify(r).includes("Jordan") && !JSON.stringify(r).includes("Maya"), "no family names the model hasn't seen");
+    assert.ok(!Object.hasOwn(r.data, "family"));
     for (const who of ["Mallory", 7, { name: "Maya" }]) {
       const bad = draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who }, dayCtx);
       assert.deepStrictEqual([bad.source, typeof bad.data.error, bad.compose], ["(invalid input)", "string", undefined], String(who));
@@ -852,7 +854,27 @@ test("draftEmailTool: a family birthday with two family members and no `who` ask
     setPersonal(chenCId, null);
   }
   const none = draftEmailTool({ clientId: chenCId, purpose: "family_birthday" }, dayCtx);
-  assert.deepStrictEqual([none.data.code, none.data.family], ["who_needed", []]);
+  assert.deepStrictEqual([none.data.code, none.data.family], ["who_needed", undefined]);
+});
+
+test("draftEmailTool: an unnamed spouse beside a child's birthday is picked with who \"your spouse\"; a named spouse is not", () => {
+  setPersonal(chenCId, { spouseBirthday: "12-10", children: [{ name: "Maya", birthday: "11-22", birthYear: 2016 }] });
+  try {
+    const r = draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who: " Your  Spouse " }, dayCtx);
+    assert.equal(r.source, "client record");
+    assert.equal(r.data.subject, "Happy birthday to your spouse!");
+    assert.deepStrictEqual(r.compose.occasion, { kind: "spouse_birthday", who: "", date: "2026-12-10" });
+  } finally {
+    setPersonal(chenCId, null);
+  }
+  setPersonal(chenCId, FAMILY);
+  try {
+    assert.equal(draftEmailTool({ clientId: chenCId, purpose: "family_birthday", who: "your spouse" }, dayCtx).source, "(invalid input)");
+  } finally {
+    setPersonal(chenCId, null);
+  }
+  const t = TOOL_SCHEMA.find((x) => x.name === "draftEmailTool");
+  assert.match(t.description, /no name on file is picked with who "your spouse"/);
 });
 
 test("draftEmailTool: the occasion emails keep the refusals: do not email first, then NMLS, then no address", () => {

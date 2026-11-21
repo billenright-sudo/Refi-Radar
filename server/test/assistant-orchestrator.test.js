@@ -4419,7 +4419,7 @@ test("Task 5: CHARLI_SYSTEM carries the Calendar and Email paragraphs, and creat
     "never work out a date yourself. Bookings go on the user's own calendar and nobody is invited."
   ));
   assert.ok(CHARLI_SYSTEM.includes(
-    "Email: to write to a client, find the client, then call draftEmailTool with a purpose, check_in or refi_review. You never write the " +
+    "Email: to write to a client, find the client, then call draftEmailTool with one of its purposes. You never write the " +
     "email yourself and you never send email: it opens in the user's own email for them to review and send. After a sweep or a calendar " +
     "read you may offer to book a follow-up or write a check-in; offering is fine, doing needs their request."
   ));
@@ -8721,6 +8721,24 @@ test("do not email: the turn ends with its own line, nothing composed, and the m
     assert.deepStrictEqual(swept.opportunities.map((o) => [o.name, o.doNotEmail]), [["A", true], ["B", undefined]]);
   } finally {
     db.prepare("UPDATE clients SET do_not_email = 0 WHERE id = ?").run(mikeChen);
+  }
+});
+
+test("who needed: a family birthday with two family birthdays and no `who` ends with its own line, nothing set up", async () => {
+  const { WHO_NEEDED } = require("../lib/assistant/prompt");
+  assert.equal(WHO_NEEDED, "Which family member is the email for?");
+  db.prepare("UPDATE clients SET personal = ? WHERE id = ?").run(JSON.stringify({
+    spouseName: "Jordan", spouseBirthday: "12-10", children: [{ name: "Maya", birthday: "11-22", birthYear: null }],
+  }), mikeChen);
+  try {
+    const client = fakeClient([useTool("draftEmailTool", { clientId: mikeChen, purpose: "family_birthday" }), say("Jordan or Maya?")]);
+    const r = await runTurn({ messages: userSays("Set up a birthday email for the Chens' family"), ctx: mikeCtx, client });
+    assert.equal(r.reply, WHO_NEEDED);
+    assert.equal("compose" in r, false);
+    assert.equal(r.sideEffect, undefined);
+    assert.equal(client.calls.length, 1, "code answers: the model is not asked again");
+  } finally {
+    db.prepare("UPDATE clients SET personal = '' WHERE id = ?").run(mikeChen);
   }
 });
 

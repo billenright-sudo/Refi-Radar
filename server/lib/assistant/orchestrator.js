@@ -32,7 +32,7 @@ const {
 const { isGuidelineQuestion } = require("./guidelines");
 const {
   buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, TOOK_TOO_LONG,
-  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, doNotEmailLine, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
+  ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, doNotEmailLine, WHO_NEEDED, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
@@ -2650,7 +2650,8 @@ const googleCodeOf = (ctx) => {
 };
 
 // The line code speaks when a tool this turn came back with a `data.code` that has one (null otherwise): Google not connected,
-// expired or unreachable (the calendar tools), no NMLS ID saved or no email on the client's record (draftEmailTool), and a target
+// expired or unreachable (the calendar tools), no NMLS ID saved, no email on the client's record or no family member named for a
+// family birthday (who_needed: WHO_NEEDED, which names nobody) (draftEmailTool), and a target
 // setTargetRateTool refused (target_refused: out of range, or not below the client's current rate), said in the tool's own copy
 // (lib/targets): told by the model, a statement on a change request would be held by the action backstop, and the range's figures
 // are in no cited result; and a page showScreenTool refused (broker_only: a loan officer asked for a broker's page; billing_off:
@@ -2677,6 +2678,7 @@ function codeAuthoredLine(outs, blocks, aboutCalendar) {
     if (code === "nmls_missing") return NMLS_NEEDED;
     if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
     if (code === "do_not_email") return doNotEmailLine(cleanName(o.data.client) || "That client");
+    if (code === "who_needed" && blocks[i].name === "draftEmailTool") return WHO_NEEDED;
     if (code === "target_refused" && blocks[i].name === "setTargetRateTool" && typeof o.data.error === "string") return o.data.error;
     if (code === "broker_only" && blocks[i].name === "showScreenTool") return BROKER_ONLY;
     if (code === "billing_off" && blocks[i].name === "showScreenTool") return BILLING_OFF;

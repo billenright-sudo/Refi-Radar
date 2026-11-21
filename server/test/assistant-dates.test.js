@@ -123,6 +123,17 @@ test("upcomingDatesTool: an occasion whose email was marked sent comes with emai
   }
 });
 
+test("upcomingDatesTool: a client marked do not email comes with doNotEmail: true; the others carry no such key", () => {
+  db.prepare("UPDATE clients SET do_not_email = 1 WHERE id = ?").run(bhatt);
+  try {
+    const dates = upcomingDatesTool({}, ctxOf(broker, "broker")).data.dates;
+    assert.deepStrictEqual(dates.map((d) => [d.clientId, d.doNotEmail]), [[bhatt, true], [okafor, undefined], [okafor, undefined], [okafor, undefined]]);
+    assert.ok(!Object.hasOwn(dates[1], "doNotEmail"));
+  } finally {
+    db.prepare("UPDATE clients SET do_not_email = 0 WHERE id = ?").run(bhatt);
+  }
+});
+
 test("upcomingDatesTool is one of Charlie's tools, described, with an optional days", () => {
   assert.equal(tools.upcomingDatesTool, upcomingDatesTool);
   const t = TOOL_SCHEMA.find((x) => x.name === "upcomingDatesTool");
@@ -130,13 +141,14 @@ test("upcomingDatesTool is one of Charlie's tools, described, with an optional d
   assert.deepStrictEqual(t.input_schema.required, []);
   assert.deepStrictEqual(Object.keys(t.input_schema.properties), ["days"]);
   assert.match(t.description, /`emailed: true`/);
+  assert.match(t.description, /`doNotEmail: true`: never offer them an email/);
 });
 
 test("CHARLI_SYSTEM carries the occasion-email offer exactly, once, as a paragraph of its own", () => {
   const RULE =
     "Occasion emails: after reading the dates you may offer to set up the matching email with draftEmailTool (birthday, " +
     "family_birthday, wedding_anniversary or home_anniversary), one client at a time, and never for a date that upcomingDatesTool " +
-    "marks emailed. Offering is fine; setting one up needs their request.";
+    "marks emailed or for a client marked doNotEmail. Offering is fine; setting one up needs their request.";
   assert.equal(CHARLI_SYSTEM.split(RULE).length, 2);
   assert.ok(CHARLI_SYSTEM.split("\n\n").includes(RULE));
 });
