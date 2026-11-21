@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createSession, pendingRows, voiceNoteFor } from "./session.mjs";
+import { COMPOSE_LINKS, composeSentRequest } from "../emails.mjs";
 import { keptSession } from "./keep.mjs";
 import { createReplay, shouldClear } from "./replay.mjs";
 import { createAudio, transcribe } from "./audio.js";
@@ -65,7 +66,7 @@ const Sources = ({ turn, ui: { C, mono }, style }) => (
 );
 
 // `breakAnywhere`: a long word or email address wraps inside the bubble (the dock, and the drawer on a phone).
-const Turn = ({ turn, ui, breakAnywhere }) => {
+const Turn = ({ turn, ui, breakAnywhere, onMarkedSent }) => {
   const { C } = ui;
   if (turn.kind === "notice") {
     return <div style={{ color: C.muted, fontSize: 12.5, fontStyle: "italic", padding: "2px 6px" }}>{turn.content}</div>;
@@ -87,15 +88,34 @@ const Turn = ({ turn, ui, breakAnywhere }) => {
         {!mine && <Sources turn={turn} ui={ui} style={{ marginTop: 8 }} />}
       </div>
       {/* an email Charlie set up: shown for the broker to open in their own mail app (session.mjs has checked its links) */}
-      {!mine && turn.compose && <ComposeCard compose={turn.compose} ui={ui} />}
+      {!mine && turn.compose && <ComposeCard compose={turn.compose} ui={ui} onMarkedSent={onMarkedSent} />}
     </div>
   );
 };
 
 // The email Charlie set up (spec §4 anti-goal 2: nothing is sent from here). The text is code-authored on the server and shown
-// exactly as it will open; the three links open it ready to go in the broker's own Gmail, Outlook or mail app.
-const COMPOSE_LINKS = [["gmail", "Open in Gmail"], ["outlook", "Open in Outlook"], ["mailto", "Other email app"]];
-const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
+// exactly as it will open; the three links open it ready to go in the broker's own Gmail, Outlook or mail app. Mark sent is the
+// broker's own "I sent it" (POST /api/clients/:id/email-sent: the client's last contact, and the occasion when the compose names one).
+const ComposeCard = ({ compose, ui: { C, card, Icon }, onMarkedSent }) => {
+  const [sent, setSent] = useState("");   // "saving" | "done" | "failed"
+  const ask = composeSentRequest(compose);
+  const markSent = async () => {
+    setSent("saving");
+    try {
+      const res = await fetch(`/api/clients/${compose.clientId}/email-sent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ask) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setSent("done");
+        if (onMarkedSent) onMarkedSent();
+      } else {
+        setSent("failed");
+      }
+    } catch {
+      setSent("failed");
+    }
+  };
+  const linkStyle = { display: "inline-flex", alignItems: "center", border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", fontSize: 13, fontWeight: 600, color: C.mutedHi, background: C.surfaceHi, textDecoration: "none" };
+  return (
   <div data-testid="charli-compose" style={{ ...card, marginTop: 8, padding: "0.9rem 1.1rem", width: "88%", boxSizing: "border-box" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 7, color: C.muted, fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>
       <Icon name="mail" size={13} color={C.muted} />Email draft — not sent
@@ -116,14 +136,26 @@ const ComposeCard = ({ compose, ui: { C, card, Icon } }) => (
           href={compose.links[key]}
           target="_blank"
           rel="noopener noreferrer"
-          style={{ display: "inline-flex", alignItems: "center", border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", fontSize: 13, fontWeight: 600, color: C.mutedHi, background: C.surfaceHi, textDecoration: "none" }}
+          style={linkStyle}
         >
           {label}
         </a>
       ))}
+      {ask && (
+        <button
+          data-testid="charli-compose-mark-sent"
+          onClick={markSent}
+          disabled={sent === "saving" || sent === "done"}
+          style={{ ...linkStyle, color: sent === "done" ? C.green : C.mutedHi, cursor: sent === "done" ? "default" : "pointer", opacity: sent === "saving" ? 0.6 : 1, fontFamily: "inherit" }}
+        >
+          {sent === "done" ? "Marked sent" : "Mark sent"}
+        </button>
+      )}
     </div>
+    {sent === "failed" && <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>Couldn't mark it sent. Try again.</div>}
   </div>
-);
+  );
+};
 
 // ── the view ─────────────────────────────────────────────────────────────────
 
@@ -453,7 +485,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       {snap.turns.length === 0 && (
         <div style={{ color: C.muted, fontSize: 13.5 }}>{snap.hasRates ? "Charlie is getting ready…" : "Waiting for today’s rates…"}</div>
       )}
-      {turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} breakAnywhere={isPhone || !panel} />)}
+      {turns.map((turn) => <Turn key={turn.id} turn={turn} ui={ui} breakAnywhere={isPhone || !panel} onMarkedSent={onClientsChanged} />)}
     </div>
   );
 

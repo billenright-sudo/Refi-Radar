@@ -32,6 +32,7 @@ import {
   WINDOW_DAYS, MAX_CHILDREN, CONTACT_OPTIONS, MONTH_NAMES, EMPTY_CHILD, occasionsFor, upcomingDates, occasionText, localToday, dayLabel, awayLabel,
   personalRows, personalToForm, formToPersonal, daysInMonth,
 } from "./personal.mjs";
+import { COMPOSE_LINKS, isEmailed, emailRequest, sentRequest, refusalLine } from "./emails.mjs";
 
 // ---------------------------------------------------------------------------
 // Loan helpers
@@ -1191,7 +1192,7 @@ const PortfolioEquityCard = ({ clients, clientsLoading }) => {
 // sweep's count (the number Charlie uses) or null; `allOppsLoading` while it is being asked for. `afterHeader` is drawn under the
 // greeting row (Charlie's card, when stacked).
 const DATES_SHOWN = 6;   // rows of Dates Coming Up before "Show all"
-const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn, layout = "wide", allOpps = null, allOppsLoading = false, afterHeader = null }) => {
+const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetchRates, setView, setSelected, treasury, clientsLoading, user, billingOn, layout = "wide", allOpps = null, allOppsLoading = false, afterHeader = null, onClientUpdated }) => {
   const isPhone = useIsPhone();
   const topOpps = scored.filter(c => c.a?.good).slice(0, 5);
   const hour = new Date().getHours();
@@ -1203,6 +1204,41 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
     : { display: "flex", gap: "1rem", marginBottom });
   const opps = ratesLoading || allOppsLoading ? null : allOpps;
   const [datesOpen, setDatesOpen] = useState(false);
+  // A date's email, by row key: { loading } while the server sets it up, then { email } or { code }; `sent` is "saving", "done"
+  // or "failed" once Mark sent is pressed. The server sets the email up (POST /api/clients/:id/email) and sends nothing.
+  const [mails, setMails] = useState({});
+  const putMail = (key, next) => setMails(m => ({ ...m, [key]: next === null ? undefined : { ...(m[key] || {}), ...next } }));
+  const openEmail = async (key, o) => {
+    if (mails[key] && !mails[key].loading) { putMail(key, null); return; }   // a second press folds it away
+    const ask = emailRequest(o);
+    if (!ask) return;
+    putMail(key, { loading: true });
+    try {
+      const res = await fetch(`/api/clients/${o.clientId}/email`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ask) });
+      const data = await res.json().catch(() => ({}));
+      putMail(key, res.ok && data.success && data.email ? { loading: false, email: data.email } : { loading: false, code: data.code || "error" });
+    } catch {
+      putMail(key, { loading: false, code: "error" });
+    }
+  };
+  const markSent = async (key, o) => {
+    const ask = sentRequest(o);
+    if (!ask) return;
+    putMail(key, { sent: "saving" });
+    try {
+      const res = await fetch(`/api/clients/${o.clientId}/email-sent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ask) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        putMail(key, { sent: "done" });
+        if (data.client && onClientUpdated) onClientUpdated(data.client);   // its occasionEmails turn the row's button into Emailed
+      } else {
+        putMail(key, { sent: "failed" });
+      }
+    } catch {
+      putMail(key, { sent: "failed" });
+    }
+  };
+  const smallBtn = { background: C.surfaceHi, color: C.mutedHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" };
 
   return (
     <div style={{ animation: "fadeIn 0.35s ease" }}>
@@ -1299,22 +1335,65 @@ const Dashboard = ({ scored, refiReady, rates, ratesLoading, totalSavings, fetch
               </div>
             ) : (
               <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-                {shown.map((o, i) => (
-                  <button
-                    key={`${o.clientId}-${o.kind}-${o.who || ""}-${o.date}`}
-                    onClick={() => { const c = scored.find(x => x.id === o.clientId); if (c) { setSelected(c); setView("client-detail"); } }}
-                    style={{ display: "flex", width: "100%", textAlign: "left", gap: 14, alignItems: "center", padding: "12px 18px", background: "none", border: "none", borderTop: i ? `1px solid ${C.border}` : "none", cursor: "pointer", fontFamily: "inherit", color: C.text }}
-                  >
-                    <div style={{ width: 104, flex: "none" }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: o.daysAway <= 1 ? C.amber : C.text }}>{awayLabel(o.daysAway)}</div>
-                      <div style={{ fontSize: 12, color: C.muted }}>{dayLabel(o.date)}</div>
+                {shown.map((o, i) => {
+                  const key = `${o.clientId}-${o.kind}-${o.who || ""}-${o.date}`;
+                  const client = scored.find(x => x.id === o.clientId);
+                  const mail = mails[key];
+                  return (
+                    <div key={key} data-testid="date-row" style={{ borderTop: i ? `1px solid ${C.border}` : "none" }}>
+                      {/* the row opens the client page; the Email button beside it (not inside it) sets up the date's email */}
+                      <div style={{ display: "flex", alignItems: "center" }}>
+                        <button
+                          onClick={() => { if (client) { setSelected(client); setView("client-detail"); } }}
+                          style={{ display: "flex", flex: 1, minWidth: 0, textAlign: "left", gap: 14, alignItems: "center", padding: "12px 12px 12px 18px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", color: C.text }}
+                        >
+                          <div style={{ width: 104, flex: "none" }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: o.daysAway <= 1 ? C.amber : C.text }}>{awayLabel(o.daysAway)}</div>
+                            <div style={{ fontSize: 12, color: C.muted }}>{dayLabel(o.date)}</div>
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{o.clientName}</div>
+                            <div style={{ fontSize: 13, color: C.mutedHi }}>{occasionText(o)}</div>
+                          </div>
+                        </button>
+                        <div style={{ flex: "none", paddingRight: 18 }}>
+                          {isEmailed(client, o) ? (
+                            <span data-testid="date-emailed" style={{ color: C.green, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Icon name="check" size={14} color={C.green} />Emailed</span>
+                          ) : (
+                            <button data-testid="date-email" aria-expanded={Boolean(mail)} onClick={() => openEmail(key, o)} disabled={Boolean(mail && mail.loading)} style={{ ...smallBtn, opacity: mail && mail.loading ? 0.6 : 1 }}>Email</button>
+                          )}
+                        </div>
+                      </div>
+                      {mail && !mail.loading && (
+                        <div data-testid="date-email-panel" style={{ padding: "0 18px 14px" }}>
+                          {mail.email ? (
+                            <>
+                              <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "4px 14px", margin: "0 0 12px", fontSize: 13 }}>
+                                <dt style={{ color: C.muted }}>To</dt>
+                                <dd style={{ margin: 0, color: C.text, overflowWrap: "anywhere" }}>{mail.email.to}</dd>
+                                <dt style={{ color: C.muted }}>Subject</dt>
+                                <dd style={{ margin: 0, color: C.text, overflowWrap: "anywhere" }}>{mail.email.subject}</dd>
+                                <dt style={{ color: C.muted }}>Message</dt>
+                                <dd style={{ margin: 0, color: C.text, overflowWrap: "anywhere", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{mail.email.body}</dd>
+                              </dl>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                {COMPOSE_LINKS.map(([k, label]) => (
+                                  <a key={k} href={mail.email.links[k]} target="_blank" rel="noopener noreferrer" style={{ ...smallBtn, display: "inline-flex", alignItems: "center", textDecoration: "none" }}>{label}</a>
+                                ))}
+                                <button data-testid="date-mark-sent" onClick={() => markSent(key, o)} disabled={mail.sent === "saving" || mail.sent === "done"} style={{ ...smallBtn, color: mail.sent === "done" ? C.green : C.mutedHi, opacity: mail.sent === "saving" ? 0.6 : 1, cursor: mail.sent === "done" ? "default" : "pointer" }}>
+                                  {mail.sent === "done" ? "Marked sent" : "Mark sent"}
+                                </button>
+                              </div>
+                              {mail.sent === "failed" && <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>Couldn't mark it sent. Try again.</div>}
+                            </>
+                          ) : (
+                            <div style={{ color: C.mutedHi, fontSize: 13 }}>{refusalLine(mail.code)}</div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{o.clientName}</div>
-                      <div style={{ fontSize: 13, color: C.mutedHi }}>{occasionText(o)}</div>
-                    </div>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             )}
             <div style={{ color: C.muted, fontSize: 12, marginTop: 8 }}>Reminders only. Nothing is sent to clients.</div>
@@ -3373,6 +3452,7 @@ export default function App() {
                 layout={homeLayout}
                 charlie={<CharliView key={today} mode="dock" stacked={homeLayout === "stacked"} rates={charlieRates} user={user} ui={{ C, card, mono, Icon, $c }} onStale={renderAgain} onClientsChanged={reloadClients} onShowScreen={prepareScreen} screenNow={screenNow} />}
                 scored={scored} refiReady={refiReady} rates={rates} ratesLoading={ratesLoading} totalSavings={totalSavings} fetchRates={fetchRates} setView={setView} setSelected={setSelected} treasury={treasury} clientsLoading={clientsLoading} user={user} billingOn={billingOn}
+                onClientUpdated={applyClient}
               />
             )}
             {view === "sweeps"        && <SweepsView rates={rates} clients={clients} setSelected={setSelected} setView={setView} onClientUpdated={applyClient} />}

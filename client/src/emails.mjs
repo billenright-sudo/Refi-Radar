@@ -11,6 +11,9 @@ const KIND_PURPOSE = Object.freeze({
 const PURPOSES = new Set(["check_in", "refi_review", ...Object.values(KIND_PURPOSE)]);
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// The three ways an email opens, in the broker's own mail app: the compose links the server sets up.
+export const COMPOSE_LINKS = Object.freeze([["gmail", "Open in Gmail"], ["outlook", "Open in Outlook"], ["mailto", "Other email app"]]);
+
 // The email purpose for an occasion kind (lib/occasions.js), or null.
 export const purposeForKind = (kind) => (typeof kind === "string" && Object.hasOwn(KIND_PURPOSE, kind) ? KIND_PURPOSE[kind] : null);
 
