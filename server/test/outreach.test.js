@@ -40,8 +40,11 @@ const REFI_REVIEW_BODY = [
 ].join("\n");
 
 test("the purposes and their spoken words", () => {
-  assert.deepStrictEqual(PURPOSES, ["check_in", "refi_review"]);
-  assert.deepStrictEqual(PURPOSE_WORDS, { check_in: "check-in", refi_review: "refinance review" });
+  assert.deepStrictEqual(PURPOSES, ["check_in", "refi_review", "birthday", "family_birthday", "wedding_anniversary", "home_anniversary"]);
+  assert.deepStrictEqual(PURPOSE_WORDS, {
+    check_in: "check-in", refi_review: "refinance review", birthday: "birthday", family_birthday: "family birthday",
+    wedding_anniversary: "wedding anniversary", home_anniversary: "home anniversary",
+  });
 });
 
 test("check_in renders the approved subject and body, signature last, no trailing newline", () => {
@@ -64,9 +67,9 @@ test("a company with no NMLS ID has a three-line signature, whether the ID is mi
   }
 });
 
-test("apart from the two NMLS lines neither template has a digit, a dollar sign or a percent sign", () => {
+test("apart from the two NMLS lines no template has a digit, a dollar sign or a percent sign", () => {
   for (const purpose of PURPOSES) {
-    const { subject, body } = renderEmail({ ...SENDER, purpose });
+    const { subject, body } = renderEmail({ ...SENDER, who: "Maya", purpose });
     const rest = body.split("\n").filter((line) => !line.startsWith("NMLS #")).join("\n");
     assert.doesNotMatch(subject, /[\d$%]/, `${purpose} subject`);
     assert.doesNotMatch(rest, /[\d$%]/, `${purpose} body`);
@@ -140,7 +143,7 @@ test("composeLinks: a body with & # ? = + % and non-ASCII survives the round tri
 
 test("composeLinks over a real rendered email round-trips the whole body", () => {
   for (const purpose of PURPOSES) {
-    const { subject, body } = renderEmail({ ...SENDER, purpose });
+    const { subject, body } = renderEmail({ ...SENDER, who: "Maya", purpose });
     const links = composeLinks({ to: TO, subject, body });
     assert.equal(queryOf(links.gmail).get("body"), body);
     assert.equal(queryOf(links.outlook).get("body"), body);
