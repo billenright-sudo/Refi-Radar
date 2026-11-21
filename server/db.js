@@ -303,6 +303,21 @@ db.exec(`
   );
 `);
 
+// occasion_emails: an occasion (lib/occasions.js kind; who is the family member's stored name, '' when there is none; occasion_date
+// YYYY-MM-DD) whose email the broker marked sent (lib/occasionEmails.js). One row per (client, kind, who, date): a second tap adds none.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS occasion_emails (
+    id            INTEGER PRIMARY KEY,
+    client_id     INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind          TEXT    NOT NULL CHECK(kind IN ('birthday','spouse_birthday','child_birthday','wedding','loan','home')),
+    who           TEXT    NOT NULL DEFAULT '',
+    occasion_date TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (client_id, kind, who, occasion_date)
+  );
+`);
+
 // client_upgrades: one row per (client, upgrade lens) that qualified on a FRED observation (lib/upgradeAlerts.js). first_seen_on is
 // that observation's day, first_seen_at the SQLite UTC instant it was recorded; announced_on is the local day Charlie announced it.
 // A lens that stops qualifying loses its row, so it is new again when it comes back; one its rates can't price keeps its row.
