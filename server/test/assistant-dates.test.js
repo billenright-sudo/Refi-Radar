@@ -108,12 +108,37 @@ test("upcomingDatesTool: the model is shown no more than it says: no children's 
   assert.ok(!JSON.stringify(found.data).includes("Maya"));
 });
 
+test("upcomingDatesTool: an occasion whose email was marked sent comes with emailed: true; the others carry no such key", () => {
+  const ins = db.prepare("INSERT INTO occasion_emails (client_id, user_id, kind, who, occasion_date) VALUES (?, ?, ?, ?, ?)");
+  ins.run(okafor, broker, "child_birthday", "Maya", "2026-11-20");
+  ins.run(okafor, broker, "wedding", "", "2025-11-28");            // last year's: not this one
+  ins.run(okafor, broker, "child_birthday", "Leo", "2026-11-19");  // no such occasion
+  try {
+    const dates = upcomingDatesTool({}, ctxOf(broker, "broker")).data.dates;
+    assert.deepStrictEqual(dates.map((d) => d.emailed), [undefined, undefined, true, undefined]);
+    assert.equal(dates[2].occasion, "Maya's birthday, turns 16");
+    assert.ok(!Object.hasOwn(dates[0], "emailed"));
+  } finally {
+    db.prepare("DELETE FROM occasion_emails").run();
+  }
+});
+
 test("upcomingDatesTool is one of Charlie's tools, described, with an optional days", () => {
   assert.equal(tools.upcomingDatesTool, upcomingDatesTool);
   const t = TOOL_SCHEMA.find((x) => x.name === "upcomingDatesTool");
   assert.ok(t && /birthday/i.test(t.description) && /anniversar/i.test(t.description));
   assert.deepStrictEqual(t.input_schema.required, []);
   assert.deepStrictEqual(Object.keys(t.input_schema.properties), ["days"]);
+  assert.match(t.description, /`emailed: true`/);
+});
+
+test("CHARLI_SYSTEM carries the occasion-email offer exactly, once, as a paragraph of its own", () => {
+  const RULE =
+    "Occasion emails: after reading the dates you may offer to set up the matching email with draftEmailTool (birthday, " +
+    "family_birthday, wedding_anniversary or home_anniversary), one client at a time, and never for a date that upcomingDatesTool " +
+    "marks emailed. Offering is fine; setting one up needs their request.";
+  assert.equal(CHARLI_SYSTEM.split(RULE).length, 2);
+  assert.ok(CHARLI_SYSTEM.split("\n\n").includes(RULE));
 });
 
 test("CHARLI_SYSTEM carries the dates rule exactly, once, as a paragraph of its own", () => {

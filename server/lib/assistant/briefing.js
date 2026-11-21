@@ -59,6 +59,7 @@ const { openerFor } = require("./openers");
 const { localToday, addDays } = require("../google/time");
 const { MONTHS, ordinal } = require("../dateLabels");
 const occasions = require("../occasions");
+const occasionEmails = require("../occasionEmails");
 
 // Phase 1: a 30-year fall of this much or more between two observations leads the market line. Phase 2 makes it per user.
 const DROP_THRESHOLD = 0.125;
@@ -240,10 +241,13 @@ function calendarSection({ date, events, nowMs }) {
 }
 
 // The dates coming up for `rows` (the user's own clients whose names may be read): { line, source }, or null when there are none
-// in the window. A child's or a spouse's name is read only when speakable() passes it; one that fails leaves that date out.
-function datesSection({ rows, localDate }) {
+// in the window. A child's or a spouse's name is read only when speakable() passes it; one that fails leaves that date out. An
+// occasion whose email was marked sent (lib/occasionEmails.js, `db`) is left out too.
+function datesSection({ rows, localDate, db }) {
   const all = [];
+  const emailed = db ? occasionEmails.forClients(db, rows.map((r) => r.id), localDate) : new Map();
   for (const o of occasions.upcomingDates(rows.map(occasions.fromRow), localDate, DATES_AHEAD)) {
+    if (occasionEmails.isEmailed(emailed.get(o.clientId), o)) continue;
     const who = o.who == null ? null : speakable(o.who);
     if (o.who != null && !who) continue;
     all.push({ ...o, who, clientName: speakable(o.clientName) });
@@ -499,7 +503,7 @@ async function buildBriefing({ user, ctx, db, localHour, localDate, nowMs = Date
 
   // 5b. dates coming up, over the user's own clients whose names may be read
   let dates = null;
-  try { dates = datesSection({ rows: ownRows.filter((r) => speakable(r.name)), localDate: today }); } catch (err) { skip("dates", err); }
+  try { dates = datesSection({ rows: ownRows.filter((r) => speakable(r.name)), localDate: today, db }); } catch (err) { skip("dates", err); }
 
   // 6. open follow-ups, read before today's list is recorded (a list made now is not yet something to ask about)
   let followUps = { shown: [], rowIds: [] };

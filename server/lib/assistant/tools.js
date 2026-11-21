@@ -16,6 +16,7 @@ const refi = require("../refi");
 const targets = require("../targets");
 const upgradeAlerts = require("../upgradeAlerts");
 const occasions = require("../occasions");
+const occasionEmails = require("../occasionEmails");
 const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
@@ -205,9 +206,13 @@ function upcomingDatesTool(args, ctx) {
     if (owners.get(row.user_id)) ownerOf.set(row.id, owners.get(row.user_id));
   }
   const all = occasions.upcomingDates(rows.map(occasions.fromRow), today, days);
-  const dates = all.slice(0, MAX_DATES_SHOWN).map((o) => ({
+  const shown = all.slice(0, MAX_DATES_SHOWN);
+  // an occasion whose email the broker marked sent (lib/occasionEmails.js) says so, so Charlie never offers it again
+  const emailed = occasionEmails.forClients(ctx.db, [...new Set(shown.map((o) => o.clientId))], today);
+  const dates = shown.map((o) => ({
     clientId: o.clientId, name: o.clientName, ...(ownerOf.has(o.clientId) ? { ownerName: ownerOf.get(o.clientId) } : {}),
     occasion: occasions.occasionText(o), when: occasions.whenText(o.date, today), date: o.date,
+    ...(occasionEmails.isEmailed(emailed.get(o.clientId), o) ? { emailed: true } : {}),
   }));
   return { data: { days, dates, more: all.length - dates.length }, source: "client record" };
 }
@@ -1074,7 +1079,8 @@ const TOOL_SCHEMA = [
       "week?', 'any anniversaries coming up?' or 'what dates are coming up?'. Each one comes with the client's name, the occasion in " +
       "words (with an age or a count of years when there is one) and the day in words (`when`): say them as given and never work " +
       "out a date, a weekday or an age yourself. `days` is how far ahead to look, 1 to 60 (14 when left out; 'this week' is 7, " +
-      "'this month' is 30). Reminders only: they say nothing about a client's loan. Read-only.",
+      "'this month' is 30). A date whose email the user already marked sent comes with `emailed: true`: never offer that email " +
+      "again. Reminders only: they say nothing about a client's loan. Read-only.",
     input_schema: {
       type: "object",
       properties: { days: { type: "integer", description: "How many days ahead to look, 1 to 60. Defaults to 14." } },

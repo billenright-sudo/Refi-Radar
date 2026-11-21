@@ -100,6 +100,15 @@ test("a name that may not be read aloud is never said: the client's, or a child'
   assert.equal(datesOf(b.reply), "Dates coming up: Okafor, Maya's birthday Thursday.", b.reply);
 });
 
+test("an occasion whose email was marked sent is left out of the dates the briefing reads", async () => {
+  const okafor = addClient("Okafor", { personal: { birthday: "11-18", children: [{ name: "Maya", birthday: "11-19", birthYear: null }] } });
+  db.prepare("INSERT INTO occasion_emails (client_id, user_id, kind, who, occasion_date) VALUES (?, ?, 'child_birthday', 'Maya', '2026-11-19')").run(okafor, annId);
+  assert.equal(datesOf((await brief()).reply), "Dates coming up: Okafor, birthday tomorrow.");
+  db.prepare("INSERT INTO occasion_emails (client_id, user_id, kind, who, occasion_date) VALUES (?, ?, 'birthday', '', '2026-11-18')").run(okafor, louId);
+  assert.equal(datesOf((await brief()).reply), "", "marked by a teammate counts too: the email went to the client");
+  db.prepare("DELETE FROM occasion_emails").run();
+});
+
 test("the day is the user's own: the same book read a day later moves on", async () => {
   addClient("Priya Bhatt", { personal: { birthday: "11-18" } });
   assert.equal(datesOf((await brief(annId, "2026-11-17")).reply), "Dates coming up: Priya Bhatt, birthday tomorrow.");
