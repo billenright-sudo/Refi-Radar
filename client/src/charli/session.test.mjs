@@ -1056,6 +1056,18 @@ test("Task 7: the compose keeps only the four fields and the three links, as cop
   assert.notEqual(kept.links, sent.links);
 });
 
+test("occasion emails: the compose keeps its clientId, purpose and occasion for Mark sent, and drops a malformed occasion", async () => {
+  const occasion = { kind: "child_birthday", who: "Maya", date: "2026-11-22" };
+  const sent = { ...COMPOSE, clientId: 7, purpose: "family_birthday", occasion: { ...occasion, extra: "x" } };
+  const { session } = setup({ routes: { "POST /api/assistant/turn": queue(turnReply(COMPOSE_REPLY, { compose: sent })) } });
+  await session.submit("draft Maya a birthday note");
+  assert.deepEqual(lastTurn(session).compose, { ...COMPOSE, clientId: 7, purpose: "family_birthday", occasion });
+  const odd = { ...COMPOSE, clientId: "7", purpose: "family_birthday", occasion };
+  const second = setup({ routes: { "POST /api/assistant/turn": queue(turnReply(COMPOSE_REPLY, { compose: odd })) } });
+  await second.session.submit("draft Maya a birthday note");
+  assert.deepEqual(lastTurn(second.session).compose, COMPOSE, "a clientId that is not a number keeps no Mark sent fields");
+});
+
 test("Task 7: a compose with a link that is not an email-compose link is dropped whole; the reply is still shown and spoken", async () => {
   const bad = [
     withLink("gmail", "javascript:alert(1)"),
