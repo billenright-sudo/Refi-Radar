@@ -73,16 +73,18 @@ const UNUSABLE_TODAY = [undefined, null, {}, TODAY({ cautiousValue: null }), TOD
   TODAY({ balance: null }), TODAY({ balance: Number.NaN }), TODAY({ balance: -5 })];
 
 test("pricedToday: today's balance and cautious value in place of the figures on file", () => {
-  assert.deepStrictEqual(refi.pricedToday(R650, TODAY({ balance: 470000 })), { ...R650, loanBalance: 470000, propertyValue: 585000 });
+  assert.deepStrictEqual(refi.pricedToday(R650, TODAY({ balance: 470000 })), { ...R650, loanBalance: 470000, propertyValue: 585000, miToday: 0 });
   for (const t of UNUSABLE_TODAY) assert.strictEqual(refi.pricedToday(R650, t), R650, JSON.stringify(t));
 });
 
 test("rateTerm from today's figures: the rate, savings and break-even on today's balance and cautious value", () => {
-  // On file 485k / 650k = 74.6% LTV: the top-tier 6.461%. Today 470k / 585k = 80.3%: past top tier, +0.125 → 6.586%.
+  // On file 485k / 650k = 74.6% LTV: the top-tier 6.461%. Today 470k / 585k = 80.3%: past top tier, +0.125 → 6.586%, and over 80%,
+  // so the new loan's PMI (0.19% a year of 470k = $74/mo) comes off the $402/mo of principal and interest.
   assert.deepStrictEqual(refi.rateTerm(R650, RATES).effRate, 6.46);
   const hit = refi.rateTerm(R650, RATES, TODAY({ balance: 470000 }));
-  assert.deepStrictEqual([hit.effRate, hit.rateDelta, hit.monthlySavings, hit.headline, hit.breakEven, hit.priority], [6.59, 1.26, 402, 402, 18, "high"]);
-  assert.strictEqual(hit.detail, "Drop ~1.26% to 6.59% → save ~$402/mo, break-even 18 mo");
+  assert.deepStrictEqual([hit.effRate, hit.rateDelta, hit.monthlySavings, hit.headline, hit.breakEven, hit.priority], [6.59, 1.26, 328, 328, 22, "high"]);
+  assert.strictEqual(hit.newMiMonthly, 74);
+  assert.strictEqual(hit.detail, "Drop ~1.26% to 6.59% → save ~$328/mo, break-even 22 mo — new-loan PMI ~$74/mo counted");
   assert.strictEqual(refi.rateTerm(R650, RATES, TODAY({ balance: 0 })), null, "paid off by today: no refi to offer");
   for (const t of UNUSABLE_TODAY) assert.deepStrictEqual(refi.rateTerm(R650, RATES, t), refi.rateTerm(R650, RATES), JSON.stringify(t));
 });
@@ -189,8 +191,10 @@ test("no-program client: no upgrades; the rate lenses and cash-out from today's 
   // No ZIP or value date on any of them, so each value is the one on file less 10%, and the balance the one on file.
   const want = [
     // 485k / 585k = 82.9% LTV: past top tier, 6.461 + 0.125 → 6.586% (on the $650,000 on file it was 74.6% → 6.46%, $455/mo).
-    {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":415,"unit":"$/mo","detail":"Drop ~1.26% to 6.59% → save ~$415/mo, break-even 18 mo","monthlySavings":415,"rateDelta":1.26,"breakEven":18,"effRate":6.59},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":415,"unit":"$/mo","detail":"Drop ~1.26% to 6.59% → save ~$415/mo, break-even 18 mo","monthlySavings":415,"rateDelta":1.26,"breakEven":18,"effRate":6.59},{"lens":"term_swap","label":"Term Swap","priority":"medium","headline":6.04,"unit":"%","detail":"15-yr refi at ~6.04% — pay off ~15 yrs sooner, +$594/mo","newRate":6.04,"paymentChange":594}],"checkIn":{"due":true,"monthsSince":9,"basis":"last_contact"}},
-    {"best":{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":589,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$589/mo","effRate":6.71,"monthlySavings":589},"opportunities":[{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":589,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$589/mo","effRate":6.71,"monthlySavings":589}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
+    // Over 80%, so the new loan's PMI is counted: $415/mo of principal and interest less $77/mo. The ARM too: 560k / 648k = 86.4%,
+    // $589/mo less $215/mo of PMI (0.46% a year at a 720 score).
+    {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":338,"unit":"$/mo","detail":"Drop ~1.26% to 6.59% → save ~$338/mo, break-even 22 mo — new-loan PMI ~$77/mo counted","monthlySavings":338,"rateDelta":1.26,"breakEven":22,"effRate":6.59,"newMiMonthly":77},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":338,"unit":"$/mo","detail":"Drop ~1.26% to 6.59% → save ~$338/mo, break-even 22 mo — new-loan PMI ~$77/mo counted","monthlySavings":338,"rateDelta":1.26,"breakEven":22,"effRate":6.59,"newMiMonthly":77},{"lens":"term_swap","label":"Term Swap","priority":"medium","headline":6.04,"unit":"%","detail":"15-yr refi at ~6.04% — pay off ~15 yrs sooner, +$594/mo","newRate":6.04,"paymentChange":594}],"checkIn":{"due":true,"monthsSince":9,"basis":"last_contact"}},
+    {"best":{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":375,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$375/mo","effRate":6.71,"monthlySavings":375},"opportunities":[{"lens":"arm_to_fixed","label":"ARM → Fixed","priority":"high","headline":375,"unit":"$/mo","detail":"Lock a fixed rate (~6.71%) before the ARM adjusts — ~$375/mo","effRate":6.71,"monthlySavings":375}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
     // Cash-out from today's figures: no ZIP or value date, so the $500,000 on file less 10% → 0.80*450k - 300k = $60,000 (medium).
     {"best":{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},"opportunities":[{"lens":"rate_term","label":"Rate & Term","priority":"high","headline":213,"unit":"$/mo","detail":"Drop ~1.29% to 5.91% → save ~$213/mo, break-even 26 mo","monthlySavings":213,"rateDelta":1.29,"breakEven":26,"effRate":5.91},{"lens":"cash_out","label":"Cash-Out","priority":"medium","headline":60000,"unit":"$","detail":"~$60,000 tappable to 80% LTV (on the value on file less 10% — verify)","cashAvailable":60000,"currentLtv":66.7},{"lens":"term_swap","label":"Term Swap","priority":"low","headline":842,"unit":"$/mo","detail":"Cash-flow option: 30-yr refi cuts the payment ~$842/mo","paymentChange":-842}],"checkIn":{"due":false,"monthsSince":0,"basis":"last_contact"}},
   ];

@@ -23,7 +23,7 @@ import {
 } from "./billing/billing.mjs";
 import * as termsDoc from "./legal/terms.mjs";
 import * as privacyDoc from "./legal/privacy.mjs";
-import { analyze } from "./refiAnalysis.mjs";
+import { analyze, pmiNote } from "./refiAnalysis.mjs";
 import { targetStatusLine, closestToTarget, isAtTarget, targetToSave, ratesMayMoveTargets, replaceClient } from "./targets.mjs";
 import { FACE } from "./charli/face.mjs";
 import { PROGRAM_OPTIONS, OCCUPANCY_OPTIONS, badgeFor, balanceLine, valueLine, creditScoreForPost, creditScoreText, showsPmiBox, withGovGuard, govRefiNote } from "./upgrades.mjs";
@@ -1695,6 +1695,7 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
               </div>
             ))}
           </div>
+          {pmiNote(a) && <div style={{ marginTop: "1.25rem", fontSize: 13, color: C.muted }}>{pmiNote(a)}</div>}
           {govNote && <div style={{ marginTop: "1.25rem", fontSize: 13, color: C.muted }}>{govNote}</div>}
           {a.good && (
             <div style={{ marginTop: "1.25rem", padding: "1rem", background: `${C.greenBg}88`, borderRadius: 8, borderLeft: `3px solid ${C.green}` }}>

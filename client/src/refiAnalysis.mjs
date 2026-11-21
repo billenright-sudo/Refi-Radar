@@ -45,6 +45,43 @@ const LLPA_TOP_TIER_EMBEDDED = 0.25;
 // (origination) — tracks typical refi costs better than a flat percentage.
 export const estClosingCosts = (balance) => 2500 + balance * 0.01;
 
+// PMI on a new conventional loan over 80% LTV: an estimate that leans high, from Arch MI's borrower-paid monthly rate card
+// (effective Feb. 9, 2026). server/lib/pmi.js is the reference and says how the table is read; refiAnalysis.test.mjs checks
+// the two agree. Percent of the loan balance a year, by LTV band (upper edge) and credit-score column.
+const PMI_OVER_LTV = 80;
+const PMI_SCORE_FLOORS = [760, 740, 720, 700, 680, 660, 640, 620, 0];
+const PMI_OVER_20_YEARS = [
+  [85, [0.19, 0.20, 0.23, 0.25, 0.28, 0.38, 0.40, 0.44, 0.62]],
+  [90, [0.28, 0.38, 0.46, 0.55, 0.65, 0.90, 0.91, 0.94, 1.32]],
+  [95, [0.38, 0.53, 0.66, 0.78, 0.96, 1.28, 1.33, 1.42, 1.99]],
+  [Infinity, [0.58, 0.70, 0.87, 0.99, 1.21, 1.54, 1.65, 1.86, 2.60]],
+];
+const PMI_UP_TO_20_YEARS = [
+  [85, [0.17, 0.19, 0.23, 0.23, 0.26, 0.32, 0.34, 0.41, 0.57]],
+  [90, [0.25, 0.31, 0.37, 0.44, 0.51, 0.66, 0.74, 0.89, 1.25]],
+  [95, [0.32, 0.43, 0.52, 0.62, 0.77, 0.95, 1.08, 1.27, 1.78]],
+  [Infinity, [0.40, 0.53, 0.68, 0.80, 1.01, 1.34, 1.51, 1.72, 2.41]],
+];
+
+export const pmiAnnualRate = (creditScore, ltv, years) => {
+  if (!(ltv > PMI_OVER_LTV)) return 0;
+  const score = Number(creditScore) || 700;
+  const col = PMI_SCORE_FLOORS.findIndex((floor) => score >= floor);
+  const table = years <= 20 ? PMI_UP_TO_20_YEARS : PMI_OVER_20_YEARS;
+  return table.find(([edge]) => ltv <= edge)[1][col];
+};
+
+export const pmiMonthly = (creditScore, ltv, years, balance) =>
+  (balance > 0 ? Math.round((pmiAnnualRate(creditScore, ltv, years) / 100 / 12) * balance * 100) / 100 : 0);
+
+// The client page's line under the refi figures when PMI was counted ("" when it wasn't): the savings are after it.
+const dollars = (n) => "$" + Math.round(n).toLocaleString("en-US");
+export const pmiNote = (a) => {
+  if (!a || !(a.newMi > 0)) return "";
+  const base = `Monthly savings are after an estimated ${dollars(a.newMi)}/mo of PMI on the new loan (LTV over 80%)`;
+  return a.curMi > 0 ? `${base}, and count the ${dollars(a.curMi)}/mo of mortgage insurance on the current loan.` : `${base}.`;
+};
+
 // A 5/1 ARM is priced as a move to a 30-year fixed, as the server's ARM-to-fixed lens does (the borrower locks a rate before
 // the ARM adjusts), so its savings match Sweeps, the briefing and Charlie. `armToFixed` tells the page to say so.
 export const analyze = (loan, rates) => {
@@ -79,10 +116,15 @@ export const analyze = (loan, rates) => {
   const rateDelta = client.currentRate - effRate;
   const curPmt = calcPayment(client.loanBalance, client.currentRate, years);
   const newPmt = calcPayment(client.loanBalance, effRate, years);
-  const monthlySavings = curPmt - newPmt;
+  // Over 80% LTV the new loan's PMI is counted, with the insurance on file for the current loan (`miToday`, from equity.mjs
+  // pricedToday) beside it; at or under 80% neither is. As server/lib/refi.js analyze does.
+  const newMiRate = pmiAnnualRate(score, ltv, years);
+  const newMi = pmiMonthly(score, ltv, years, client.loanBalance);
+  const curMi = newMiRate > 0 && Number(client.miToday) > 0 ? Number(client.miToday) : 0;
+  const monthlySavings = curPmt + curMi - (newPmt + newMi);
   const annualSavings = monthlySavings * 12;
   const closingCosts = estClosingCosts(client.loanBalance);
   const breakEven = monthlySavings > 0 ? Math.ceil(closingCosts / monthlySavings) : 9999;
   const good = rateDelta >= 0.5 && breakEven <= 36 && monthlySavings > 0 && ltv <= 95;
-  return { mktRate, base, baseLabel, effRate, rateAdj, rateDelta, curPmt, newPmt, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low", armToFixed };
+  return { mktRate, base, baseLabel, effRate, rateAdj, rateDelta, curPmt, newPmt, newMi, newMiRate, curMi, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low", armToFixed };
 };

@@ -11,6 +11,8 @@
  *   propertyValue, creditScore, close_date, last_contact, created_at }.
  */
 
+const { pmiAnnualRate, pmiMonthly } = require("./pmi");
+
 // ── Config / thresholds ──────────────────────────────────────────────────────
 const CASH_OUT_FLOOR = 40000;   // min tappable equity to flag a cash-out opportunity
 const CHECK_IN_MONTHS = 6;      // relationship check-in cadence
@@ -107,12 +109,18 @@ function analyze(client, rates) {
   const rateDelta = client.currentRate - effRate;
   const curPmt = calcPayment(client.loanBalance, client.currentRate, years);
   const newPmt = calcPayment(client.loanBalance, effRate, years);
-  const monthlySavings = curPmt - newPmt;
+  // Over 80% LTV the new conventional loan carries PMI (lib/pmi: an estimate, leaning high), and the insurance on file for the
+  // current loan (`miToday`, from pricedToday) is counted beside it, so the two payments compare like for like. At or under 80%
+  // neither is counted: the figures are principal and interest, as before.
+  const newMiRate = pmiAnnualRate(score, ltv, years);
+  const newMi = pmiMonthly(score, ltv, years, client.loanBalance);
+  const curMi = newMiRate > 0 && Number(client.miToday) > 0 ? Number(client.miToday) : 0;
+  const monthlySavings = curPmt + curMi - (newPmt + newMi);
   const annualSavings = monthlySavings * 12;
   const closingCosts = estClosingCosts(client.loanBalance);
   const breakEven = monthlySavings > 0 ? Math.ceil(closingCosts / monthlySavings) : 9999;
   const good = rateDelta >= 0.5 && breakEven <= 36 && monthlySavings > 0 && ltv <= 95;
-  return { mktRate, base, baseLabel, effRate, rateAdj, rateDelta, curPmt, newPmt, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low" };
+  return { mktRate, base, baseLabel, effRate, rateAdj, rateDelta, curPmt, newPmt, newMi, newMiRate, curMi, monthlySavings, annualSavings, closingCosts, breakEven, ltv, good, priority: good ? (rateDelta >= 1.0 ? "high" : "medium") : "low" };
 }
 
 // ── Lenses — each returns a normalized opportunity or null ───────────────────
@@ -121,7 +129,10 @@ function analyze(client, rates) {
 const usableToday = (today) => !!today && Number.isFinite(today.cautiousValue) && today.cautiousValue > 0 &&
   Number.isFinite(today.balance) && today.balance >= 0;
 // The loan as the rate lenses and the target check (lib/targets) price it; client/src/equity.mjs pricedToday is its mirror.
-const pricedToday = (c, today) => (usableToday(today) ? { ...c, loanBalance: today.balance, propertyValue: today.cautiousValue } : c);
+// `miToday` is the typed insurance still in force on the current loan (the today block's miOnFile), which analyze counts over 80% LTV.
+const miOnFile = (today) => (Number.isFinite(today.miOnFile) && today.miOnFile > 0 ? today.miOnFile : 0);
+const pricedToday = (c, today) => (usableToday(today)
+  ? { ...c, loanBalance: today.balance, propertyValue: today.cautiousValue, miToday: miOnFile(today) } : c);
 
 function rateTerm(c0, rates, today) {
   if (c0.loanType === "5_1_arm") return null; // ARMs are routed to the ARM→fixed lens
@@ -129,11 +140,16 @@ function rateTerm(c0, rates, today) {
   if (!(c.loanBalance > 0)) return null;      // paid off by today: no refi to offer
   const a = analyze(c, rates);
   if (!a || !a.good) return null;
+  // Over 80% LTV the savings already have the new loan's PMI taken off: the line says so, and the figure is a number on the lens.
+  const pmi = !(a.newMi > 0) ? ""
+    : a.curMi > 0 ? ` — PMI counted: ~$${money(a.newMi)}/mo new, $${money(a.curMi)}/mo now`
+    : ` — new-loan PMI ~$${money(a.newMi)}/mo counted`;
   return {
     lens: "rate_term", label: "Rate & Term", priority: a.priority,
     headline: Math.round(a.monthlySavings), unit: "$/mo",
-    detail: `Drop ~${a.rateDelta.toFixed(2)}% to ${a.effRate.toFixed(2)}% → save ~$${money(a.monthlySavings)}/mo, break-even ${a.breakEven} mo`,
+    detail: `Drop ~${a.rateDelta.toFixed(2)}% to ${a.effRate.toFixed(2)}% → save ~$${money(a.monthlySavings)}/mo, break-even ${a.breakEven} mo${pmi}`,
     monthlySavings: Math.round(a.monthlySavings), rateDelta: r2(a.rateDelta), breakEven: a.breakEven, effRate: r2(a.effRate),
+    ...(a.newMi > 0 ? { newMiMonthly: Math.round(a.newMi) } : {}),
   };
 }
 

@@ -228,10 +228,19 @@ function unpricedLenses(c, rates) {
   return out;
 }
 
+// The typed monthly insurance still in force today (0: none typed, or it has ended on its own): what the rate lenses count on the
+// current loan (lib/refi pricedToday). With no close date nothing says it ended, so the amount on file stands.
+function miOnFile(c, mi) {
+  if (mi) return mi.basis === "typed" && pos(mi.monthly) ? mi.monthly : 0;
+  const typed = numOrNull(c.monthlyMi);
+  return pos(typed) ? Math.round(typed * 100) / 100 : 0;
+}
+
 function upgradesFor(c, rates, today, { index } = {}) {
   const { t, rawLtv } = todayBlock(c, today, index || hpi.defaultIndex);
   const first = firstPaymentFromClosing(c.closeDate); // null for a missing or malformed close date
   const mi = first ? currentMi(c, t.balance, today) : null;
+  t.miOnFile = miOnFile(c, mi);
   const done = (gaps, lenses = []) => ({ lenses, gaps, today: t, mi });
 
   if (c.occupancy === "investment") return done([GAPS.investment]);

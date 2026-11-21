@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { analyze } from "./refiAnalysis.mjs";
+import { analyze, pmiAnnualRate, pmiMonthly, pmiNote } from "./refiAnalysis.mjs";
 import { pricedToday } from "./equity.mjs";
 
 // The server engine (sweeps, the morning briefing, Charlie) is the reference: the client list and client page must show the
@@ -48,7 +48,11 @@ const UNUSABLE_TODAY = [undefined, null, {}, { balance: 470000, cautiousValue: n
 
 test("pricedToday: today's balance and cautious value in place of the figures on file", () => {
   const c = withToday(LOAN, { balance: 470000, cautiousValue: 585000 });
-  assert.deepEqual(pricedToday(c), { ...c, loanBalance: 470000, propertyValue: 585000 });
+  assert.deepEqual(pricedToday(c), { ...c, loanBalance: 470000, propertyValue: 585000, miToday: 0 });
+  assert.equal(pricedToday(withToday(LOAN, { balance: 470000, cautiousValue: 585000, miOnFile: 120 })).miToday, 120);
+  for (const mi of [null, -1, Number.NaN, "120"]) {
+    assert.equal(pricedToday(withToday(LOAN, { balance: 470000, cautiousValue: 585000, miOnFile: mi })).miToday, 0, String(mi));
+  }
   for (const today of UNUSABLE_TODAY) {
     const p = pricedToday(withToday(LOAN, today));
     assert.deepEqual([p.loanBalance, p.propertyValue], [485000, 650000], JSON.stringify(today));
@@ -57,10 +61,10 @@ test("pricedToday: today's balance and cautious value in place of the figures on
 });
 
 test("the page prices today's figures as the server's rate lenses do", () => {
-  const today = { balance: 470000, cautiousValue: 585000 };
+  const today = { balance: 460000, cautiousValue: 585000 };
   const mine = analyze(pricedToday(withToday(LOAN, today)), RATES);
   const theirs = serverRefi.rateTerm(LOAN, RATES, today);
-  assert.equal(mine.ltv.toFixed(1), "80.3");   // 470k / 585k, not the 74.6% on file
+  assert.equal(mine.ltv.toFixed(1), "78.6");   // 460k / 585k, not the 74.6% on file
   assert.equal(mine.effRate.toFixed(2), theirs.effRate.toFixed(2));
   assert.equal(Math.round(mine.monthlySavings), theirs.monthlySavings);
   assert.equal(mine.breakEven, theirs.breakEven);
@@ -77,6 +81,51 @@ test("the page prices today's figures as the server's rate lenses do", () => {
     const m = analyze(pricedToday(withToday(LOAN, t)), RATES);
     assert.equal(Math.round(m.monthlySavings), serverRefi.rateTerm(LOAN, RATES, t).monthlySavings, JSON.stringify(t));
   }
+});
+
+test("the PMI table matches the server's for every score band, LTV band and term", () => {
+  const serverPmi = createRequire(import.meta.url)("../../server/lib/pmi.js");
+  for (const score of [null, 0, 600, 619, 620, 640, 660, 680, 700, 720, 740, 760, 800]) {
+    for (const ltv of [60, 80, 80.01, 82.4, 85, 85.01, 90, 90.01, 95, 95.01, 97, 99, Number.NaN]) {
+      for (const years of [15, 30]) {
+        assert.equal(pmiAnnualRate(score, ltv, years), serverPmi.pmiAnnualRate(score, ltv, years), `${score} / ${ltv} / ${years}`);
+        assert.equal(pmiMonthly(score, ltv, years, 412345), serverPmi.pmiMonthly(score, ltv, years, 412345), `${score} / ${ltv} / ${years} monthly`);
+      }
+    }
+  }
+});
+
+test("over 80% LTV the client counts PMI as the server does, with and without insurance on file", () => {
+  const loan = { loanType: "30yr_fixed", currentRate: 8.75, loanBalance: 420000, propertyValue: 500000, creditScore: 700 };
+  for (const miOnFile of [0, 120]) {
+    const today = { balance: 412000, cautiousValue: 500000, miOnFile };
+    const mine = analyze(pricedToday(withToday(loan, today)), RATES);
+    const theirs = serverRefi.rateTerm(loan, RATES, today);
+    assert.equal(mine.newMi, 85.83);   // 0.25% of 412,000 / 12
+    assert.equal(mine.curMi, miOnFile);
+    assert.equal(Math.round(mine.monthlySavings), theirs.monthlySavings, `savings, ${miOnFile} on file`);
+    assert.equal(mine.breakEven, theirs.breakEven);
+    assert.equal(Math.round(mine.newMi), theirs.newMiMonthly);
+    assert.equal(mine.good, true);
+  }
+  const under = analyze(pricedToday(withToday(loan, { balance: 400000, cautiousValue: 500000, miOnFile: 120 })), RATES);
+  assert.deepEqual([under.newMi, under.curMi], [0, 0], "at 80% nothing is counted");
+  assert.equal(under.monthlySavings, under.curPmt - under.newPmt);
+
+  // Just over 80%: refi-ready on principal and interest alone, not once the PMI is counted. Both sides agree.
+  const edge = { loanType: "30yr_fixed", currentRate: 7.85, loanBalance: 485000, propertyValue: 650000, creditScore: 760 };
+  const edgeToday = { balance: 470000, cautiousValue: 585000, miOnFile: 0 };   // 80.3% LTV
+  const e = analyze(pricedToday(withToday(edge, edgeToday)), RATES);
+  assert.ok(Math.ceil(e.closingCosts / (e.curPmt - e.newPmt)) <= 36, "principal and interest alone would pass");
+  assert.equal(e.good, false);
+  assert.equal(serverRefi.rateTerm(edge, RATES, edgeToday), null);
+});
+
+test("pmiNote: the client page's line when PMI was counted, and nothing when it wasn't", () => {
+  assert.equal(pmiNote({ newMi: 85.83, curMi: 0 }), "Monthly savings are after an estimated $86/mo of PMI on the new loan (LTV over 80%).");
+  assert.equal(pmiNote({ newMi: 1085.4, curMi: 120 }),
+    "Monthly savings are after an estimated $1,085/mo of PMI on the new loan (LTV over 80%), and count the $120/mo of mortgage insurance on the current loan.");
+  for (const a of [null, undefined, {}, { newMi: 0, curMi: 120 }]) assert.equal(pmiNote(a), "", JSON.stringify(a));
 });
 
 test("no rates, or an unknown loan type, gives no analysis", () => {

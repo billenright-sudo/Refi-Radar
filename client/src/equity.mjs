@@ -26,7 +26,12 @@ export function equityStart(client) {
 // client page, the client list and Home agree with this card. Mirrors server/lib/refi.js pricedToday.
 export function pricedToday(client) {
   const start = equityStart(client);
-  return { ...client, loanBalance: start.balance, propertyValue: start.value };
+  const priced = { ...client, loanBalance: start.balance, propertyValue: start.value };
+  // With today's figures comes the typed insurance still in force on the current loan (today.miOnFile), which analyze counts
+  // over 80% LTV; without them the loan is priced as it is on file, as the server does.
+  const t = client && client.upgrades && client.upgrades.today;
+  const fromToday = !!t && Number.isFinite(t.cautiousValue) && t.cautiousValue > 0 && Number.isFinite(t.balance) && t.balance >= 0;
+  return fromToday ? { ...priced, miToday: Number.isFinite(t.miOnFile) && t.miOnFile > 0 ? t.miOnFile : 0 } : priced;
 }
 
 // Equity snapshot N years from now

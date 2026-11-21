@@ -71,7 +71,7 @@ function addClient(userId, name, fields = {}) {
 // Ann's book: Lucy (a rate-and-term saving), Owen (cash-out), Grace (a check-in only, nothing to refinance). Lou's: Larry.
 function seedBook() {
   return {
-    lucy: addClient(annId, "Lucy Tran", { rate: 7.5, balance: 400000, value: 500000 }),
+    lucy: addClient(annId, "Lucy Tran", { rate: 7.5, balance: 400000, value: 560000 }),   // 79.4% LTV on the value less 10%: no PMI
     owen: addClient(annId, "Owen Prescott", { rate: 6.0, balance: 300000, value: 800000 }),
     grace: addClient(annId, "Grace Okafor", { lastContact: "2025-10-01" }),
     larry: addClient(louId, "Larry Stone", { rate: 7.5, balance: 400000, value: 500000 }),
@@ -732,15 +732,15 @@ test("Review Focus 1, every separator: a phone-shaped title is read as \"an even
 
 test("a client whose name holds an email or a phone number is never spoken: off the call list, and its follow-up is never asked", async () => {
   seedBook();
-  const byEmail = addClient(annId, "lucy@mail.example", { rate: 7.5, balance: 400000, value: 500000 });
-  const byPhone = addClient(annId, "Lucy 555-201-0103", { rate: 7.5, balance: 400000, value: 500000 });
+  const byEmail = addClient(annId, "lucy@mail.example", { rate: 7.5, balance: 400000, value: 560000 });
+  const byPhone = addClient(annId, "Lucy 555-201-0103", { rate: 7.5, balance: 400000, value: 560000 });
   fu.recordRecommendations(db, annId, YESTERDAY, [
     { clientId: byEmail, source: "briefing", reasonCode: "rate_term" },
     { clientId: byPhone, source: "calendar", reasonCode: "calendar", dueAt: "2026-10-29 18:00:00" },
   ]);
   // two more with the best savings in the book and nothing recorded: they would top the list if their names could be read
-  const topEmail = addClient(annId, "zed@mail.example", { rate: 8.5, balance: 400000, value: 500000 });
-  const topPhone = addClient(annId, "Zed 555.201.0104", { rate: 8.5, balance: 400000, value: 500000 });
+  const topEmail = addClient(annId, "zed@mail.example", { rate: 8.5, balance: 400000, value: 560000 });
+  const topPhone = addClient(annId, "Zed 555.201.0104", { rate: 8.5, balance: 400000, value: 560000 });
   const r = await brief(annId);
   for (const bad of ["lucy@mail.example", "zed@mail.example", "@", "555-201-0103", "555.201.0104", "0103", "0104", "Zed"]) {
     assert.ok(!r.reply.includes(bad), `${bad}: ${r.reply}`);

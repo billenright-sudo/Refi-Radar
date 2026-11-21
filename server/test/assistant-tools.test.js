@@ -193,12 +193,14 @@ test("runSweepTool sweeps the whole org for a broker and hits the shared Chen kn
 
   // Known answer: the Chen of refi-math.test.js + sweeps.test.js, priced on today's figures. No ZIP or value date, so the $650,000
   // on file less 10%: 485k / 585k = 82.9% LTV, past top tier → 6.461 + 0.125 (on file it was 74.6% → 6.46%, delta 1.389).
+  // Over 80%, so the new loan's PMI ($77/mo) is counted: $415/mo of principal and interest → $338/mo.
   const chen = r.data.opportunities.find((o) => o.name === "Robert & Linda Chen");
   assert.equal(chen.best.lens, "rate_term");
   assert.equal(chen.best.priority, "high", "delta >= 1.0 is high priority");
   assert.equal(chen.best.effRate, 6.59, "top-tier rate 6.461 + 0.125 at 82.9% LTV today");
   assert.ok(Math.abs(chen.best.rateDelta - 1.264) <= 0.01, `rate delta ${chen.best.rateDelta}`);
-  assert.ok(chen.best.monthlySavings > 400 && chen.best.monthlySavings < 520, "monthly savings sane");
+  assert.equal(chen.best.newMiMonthly, 77);
+  assert.ok(chen.best.monthlySavings > 320 && chen.best.monthlySavings < 360, "monthly savings sane, after the PMI");
   assert.ok(chen.best.breakEven <= 24, "strong break-even");
 });
 

@@ -96,7 +96,7 @@ test("a newly qualified client leads the sweep's ranking", async () => {
   const set = fred();
   Number(db.prepare(`
     INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score, last_contact)
-    VALUES (?, ?, 'Lucy Tran', '30yr_fixed', 7.5, 400000, 500000, 760, '2026-11-01')`).run(orgId, annId).lastInsertRowid);
+    VALUES (?, ?, 'Lucy Tran', '30yr_fixed', 7.5, 400000, 560000, 760, '2026-11-01')`).run(orgId, annId).lastInsertRowid);   // under 80% on the value less 10%
   addVa("Vee Sample");
   const r = await brief(annId, { set, localDate: DAY1 });
   assert.match(callListOf(r.reply), /^Today's calls: Vee Sample now looks like .*; and Lucy Tran could save about \$[\d,]+ a month\.$/, r.reply);
