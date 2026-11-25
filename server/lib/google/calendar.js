@@ -21,6 +21,8 @@ const EVENT_ID_RE = /^[a-v0-9]{5,1024}$/;   // what events.insert takes as a cal
 const NO_TITLE = "(no title)";
 const MSG_NOT_READ = "Google Calendar could not be read";
 const MSG_NOT_BOOKED = "Google Calendar could not create the event";
+const MSG_NOT_CHANGED = "Google Calendar couldn't make that change";
+const CHANGE_ID_RE = /^[A-Za-z0-9_-]{5,1024}$/;   // an existing event's id as it goes into a URL: nothing that could change the path
 
 // The reasons a 403 can give that mean "this token is no good" (as opposed to a quota, a rate limit or a calendar the user may not
 // write to): Google's error-detail `reason`, an OAuth `error` string, or the `status` of the error. Lower-cased to compare.
@@ -164,4 +166,160 @@ async function insertEvent(token, { id, title, date, time, durationMinutes, time
   return { eventId: made && typeof made.id === "string" && made.id ? made.id : id };
 }
 
-module.exports = { listDay, insertEvent };
+// ---- cancelling and moving ------------------------------------------------------------------------------------------------
+// For code only: nothing below reaches the model. listDayDetailed keeps what a cancel or a move must decide on (the event's id and
+// etag, its instants, whether it has guests, repeats, or is the broker's to change); deleteEvent and patchEvent make the one change,
+// guarded by the etag (If-Match) so an event that changed since it was read is left alone; getEvent reads one event's instants.
+// Every call sends sendUpdates=none: nobody is emailed. None of them throws; a failure is a fixed message, an auth refusal the
+// reconnect code, and Google's reply is never kept.
+
+// One event of events.list for a change: { id, etag, title, start, end, allDay, startAt, endAt, startDate, guests, repeats, mine },
+// or null for a cancelled one. `start` / `end` are spoken labels as toEvent's; `startAt` / `endAt` epoch ms (null for an all-day one,
+// whose day is `startDate`). `guests`: anyone besides the broker is on it (a list Google left out counts). `repeats`: any instance of
+// a series, or the series itself. `mine`: the broker organized it, it is an ordinary event and Google has not locked it.
+function toChangeable(item, timeZone) {
+  const base = toEvent(item, timeZone);
+  if (!base) return null;
+  if (typeof item.id !== "string" || !CHANGE_ID_RE.test(item.id)) throw new Error("event has no usable id");
+  const attendees = Array.isArray(item.attendees) ? item.attendees : [];
+  const organizer = item.organizer && typeof item.organizer === "object" ? item.organizer : {};
+  return {
+    id: item.id,
+    etag: typeof item.etag === "string" ? item.etag : "",
+    title: base.title, start: base.start, end: base.end, allDay: base.allDay,
+    startAt: base.allDay ? null : Date.parse(item.start.dateTime), endAt: base.endAt,
+    startDate: base.allDay ? item.start.date : null,
+    guests: item.attendeesOmitted === true || attendees.some((a) => !(a && a.self === true)),
+    repeats: typeof item.recurringEventId === "string" || (Array.isArray(item.recurrence) && item.recurrence.length > 0),
+    mine: organizer.self === true && item.locked !== true && (item.eventType === undefined || item.eventType === "default"),
+  };
+}
+
+// The events on `date` as toChangeable gives them, in start order: { events } | { error } | { code: "reconnect" }. Asks Google for no
+// guest address, name, description, location or link.
+async function listDayDetailed(token, { date, timeZone } = {}, fetchFn = globalThis.fetch) {
+  let params;
+  try {
+    const { timeMin, timeMax } = dayBounds(date, timeZone);
+    params = new URLSearchParams({
+      timeMin, timeMax, singleEvents: "true", orderBy: "startTime", maxResults: String(MAX_EVENTS),
+      fields: "items(id,etag,summary,status,start,end,attendees(self),attendeesOmitted,recurringEventId,recurrence,organizer(self),locked,eventType)",
+    });
+  } catch {
+    console.error("google calendar listDayDetailed: unusable date or time zone");
+    return { error: MSG_NOT_READ };
+  }
+  let res;
+  try {
+    res = await fetchFn(`${EVENTS_URL}?${params}`, { method: "GET", headers: authorize(token), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch (err) {
+    console.error("google calendar listDayDetailed failed:", errName(err));
+    return { error: MSG_NOT_READ };
+  }
+  if (!res.ok) {
+    console.error("google calendar listDayDetailed failed: HTTP", res.status);
+    if (await refusedAsUnauthorised(res)) return { code: "reconnect" };
+    return { error: MSG_NOT_READ };
+  }
+  try {
+    const body = await res.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("reply is not an object");
+    if (body.items !== undefined && !Array.isArray(body.items)) throw new Error("items is not a list");
+    return { events: (body.items || []).map((item) => toChangeable(item, timeZone)).filter(Boolean) };
+  } catch (err) {
+    console.error("google calendar listDayDetailed unreadable:", errName(err));
+    return { error: MSG_NOT_READ };
+  }
+}
+
+// What a delete or a patch answered, as one of: { done: true } | { changed: true } (412: the etag no longer matches) |
+// { gone: true } (404 or 410: no such event any more) | { code: "reconnect" } | { error }.
+async function changeOutcome(res, what) {
+  if (res.ok) return { done: true };
+  console.error(`google calendar ${what} failed: HTTP`, res.status);
+  if (res.status === 412) return { changed: true };
+  if (res.status === 404 || res.status === 410) return { gone: true };
+  if (await refusedAsUnauthorised(res)) return { code: "reconnect" };
+  return { error: MSG_NOT_CHANGED };
+}
+
+// Cancels (deletes) the event `id` if it still has `etag`. Nobody is notified.
+async function deleteEvent(token, { id, etag } = {}, fetchFn = globalThis.fetch) {
+  if (typeof id !== "string" || !CHANGE_ID_RE.test(id) || typeof etag !== "string" || !etag) {
+    console.error("google calendar deleteEvent: malformed change");
+    return { error: MSG_NOT_CHANGED };
+  }
+  let res;
+  try {
+    res = await fetchFn(`${EVENTS_URL}/${encodeURIComponent(id)}?sendUpdates=none`, {
+      method: "DELETE", headers: authorize(token, { "If-Match": etag }), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.error("google calendar deleteEvent failed:", errName(err));
+    return { error: MSG_NOT_CHANGED };
+  }
+  return changeOutcome(res, "deleteEvent");
+}
+
+// Moves the event `id` (if it still has `etag`) to start at `startAt` and end at `endAt` (epoch ms; the start and the end only are
+// sent). Nobody is notified.
+async function patchEvent(token, { id, etag, startAt, endAt, timeZone } = {}, fetchFn = globalThis.fetch) {
+  let body;
+  try {
+    if (typeof id !== "string" || !CHANGE_ID_RE.test(id) || typeof etag !== "string" || !etag) throw new Error("bad id or etag");
+    if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt <= startAt) throw new Error("bad instants");
+    if (typeof timeZone !== "string" || !timeZone) throw new Error("bad zone");
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    body = { start: { dateTime: utcIso(startAt), timeZone }, end: { dateTime: utcIso(endAt), timeZone } };
+  } catch {
+    console.error("google calendar patchEvent: malformed change");
+    return { error: MSG_NOT_CHANGED };
+  }
+  let res;
+  try {
+    res = await fetchFn(`${EVENTS_URL}/${encodeURIComponent(id)}?sendUpdates=none`, {
+      method: "PATCH",
+      headers: authorize(token, { "Content-Type": "application/json", "If-Match": etag }),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.error("google calendar patchEvent failed:", errName(err));
+    return { error: MSG_NOT_CHANGED };
+  }
+  return changeOutcome(res, "patchEvent");
+}
+
+// One event's instants: { startAt, endAt } | { gone: true } (not found, or cancelled) | { code: "reconnect" } | { error }.
+// A timed event only: an all-day one is { error }.
+async function getEvent(token, { id } = {}, fetchFn = globalThis.fetch) {
+  if (typeof id !== "string" || !CHANGE_ID_RE.test(id)) return { error: MSG_NOT_READ };
+  let res;
+  try {
+    res = await fetchFn(`${EVENTS_URL}/${encodeURIComponent(id)}?fields=${encodeURIComponent("status,start,end")}`, {
+      method: "GET", headers: authorize(token), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.error("google calendar getEvent failed:", errName(err));
+    return { error: MSG_NOT_READ };
+  }
+  if (res.status === 404 || res.status === 410) return { gone: true };
+  if (!res.ok) {
+    console.error("google calendar getEvent failed: HTTP", res.status);
+    if (await refusedAsUnauthorised(res)) return { code: "reconnect" };
+    return { error: MSG_NOT_READ };
+  }
+  try {
+    const body = await res.json();
+    if (body && body.status === "cancelled") return { gone: true };
+    const startAt = Date.parse(body && body.start && body.start.dateTime);
+    const endAt = Date.parse(body && body.end && body.end.dateTime);
+    if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) throw new Error("event has no readable start and end");
+    return { startAt, endAt };
+  } catch (err) {
+    console.error("google calendar getEvent unreadable:", errName(err));
+    return { error: MSG_NOT_READ };
+  }
+}
+
+module.exports = { listDay, insertEvent, listDayDetailed, deleteEvent, patchEvent, getEvent };

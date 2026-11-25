@@ -56,6 +56,35 @@ function googleFor({ db, userId, fetchFn = globalThis.fetch, now } = {}) {
       return settle(await calendar.listDay(auth.token, { date, timeZone: auth.timeZone }, fetchFn), refreshEnc);
     },
 
+    // For a cancel or a move (code only: none of this reaches the model). listDayDetailed({ date }) adds each event's id, etag,
+    // instants and whether it has guests, repeats or is the broker's own; deleteEvent({ id, etag }) and patchEvent({ id, etag,
+    // startAt, endAt, timeZone? }) change one event if it still has that etag (sendUpdates=none, nobody is emailed): { done } |
+    // { changed } | { gone } | { error } | { code }; getEvent({ id }) is { startAt, endAt } | { gone } | { error } | { code }.
+    async listDayDetailed({ date } = {}) {
+      const { auth, refreshEnc, failure } = await authorize();
+      if (failure) return failure;
+      return settle(await calendar.listDayDetailed(auth.token, { date, timeZone: auth.timeZone }, fetchFn), refreshEnc);
+    },
+
+    async deleteEvent({ id, etag } = {}) {
+      const { auth, refreshEnc, failure } = await authorize();
+      if (failure) return failure;
+      return settle(await calendar.deleteEvent(auth.token, { id, etag }, fetchFn), refreshEnc);
+    },
+
+    async patchEvent(change) {
+      const move = change && typeof change === "object" ? change : {};
+      const { auth, refreshEnc, failure } = await authorize();
+      if (failure) return failure;
+      return settle(await calendar.patchEvent(auth.token, { ...move, timeZone: move.timeZone || auth.timeZone }, fetchFn), refreshEnc);
+    },
+
+    async getEvent({ id } = {}) {
+      const { auth, refreshEnc, failure } = await authorize();
+      if (failure) return failure;
+      return settle(await calendar.getEvent(auth.token, { id }, fetchFn), refreshEnc);
+    },
+
     async insertEvent(event) {
       const booking = event && typeof event === "object" ? event : {};
       const { auth, refreshEnc, failure } = await authorize();
