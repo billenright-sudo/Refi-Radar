@@ -119,17 +119,15 @@ function createWebPush({ fetchImpl, now = Date.now, salt, ephemeralPrivateKey } 
     try {
       // redirect: "manual", so a push service cannot bounce the server to another address (a 3xx is a failure like any non-2xx)
       response = await (fetchImpl || fetch)(subscription.endpoint, { method: "POST", headers, body, signal: ac.signal, redirect: "manual" });
+      // the answer's body is never used, and an unread one keeps the connection held: cancel it (never read it, never wait for it) while
+      // the timer still runs, so a body that never ends cannot hold a send
+      try { if (response.body && typeof response.body.cancel === "function") Promise.resolve(response.body.cancel()).catch(() => {}); } catch (_err) { /* nothing to cancel */ }
     } catch (err) {
       // a timeout or a network failure: no status, and nothing of the endpoint in the error
       throw Object.assign(new Error(err && err.name === "AbortError" ? "push service timed out" : "push service unreachable"), { name: err && err.name === "AbortError" ? "AbortError" : "FetchError" });
     } finally {
       clearTimeout(timer);
     }
-    // the answer's body is never used, but an unread body keeps the connection held: drain it (or cancel it) before answering either way
-    try {
-      if (typeof response.arrayBuffer === "function") await response.arrayBuffer();
-      else if (response.body && typeof response.body.cancel === "function") await response.body.cancel();
-    } catch (_err) { /* nothing to do with a body that will not read */ }
     if (response.status >= 200 && response.status < 300) return { statusCode: response.status };
     throw Object.assign(new Error(`push service answered ${response.status}`), { statusCode: response.status });
   }

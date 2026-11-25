@@ -305,20 +305,31 @@ test("sendNotification: the headers, the encrypted body, no redirects", async ()
   assert.deepEqual(JSON.parse(decryptAsReceiver(init.body, dev.ecdh.getPrivateKey(), dev.uaPublic, dev.authSecret)), TEXT);
 });
 
-test("sendNotification: the response body is drained or cancelled, on success and on failure", async () => {
+test("sendNotification: the response body is cancelled, never read, on success and on failure", async () => {
   for (const status of [201, 410, 500]) {
-    let drained = 0;
-    const fetchImpl = async () => ({ status, ok: status < 300, arrayBuffer: async () => { drained += 1; return new ArrayBuffer(0); } });
+    let cancelled = 0;
+    let read = 0;
+    const fetchImpl = async () => ({ status, ok: status < 300, arrayBuffer: async () => { read += 1; return new ArrayBuffer(0); }, body: { cancel: async () => { cancelled += 1; } } });
     const wp = lite.createWebPush({ fetchImpl });
-    const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: newDevice().p256dh, auth: newDevice().auth } };
+    const dev = newDevice();
+    const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: dev.p256dh, auth: dev.auth } };
     await wp.sendNotification(sub, JSON.stringify(TEXT), { vapidDetails, TTL: 60 }).catch(() => {});
-    assert.equal(drained, 1, `status ${status}`);
+    assert.equal(cancelled, 1, `status ${status}`);
+    assert.equal(read, 0, "the body is not read to the end");
   }
-  let cancelled = 0;
-  const wp = lite.createWebPush({ fetchImpl: async () => ({ status: 201, ok: true, body: { cancel: async () => { cancelled += 1; } } }) });
+});
+
+test("sendNotification: a response whose body never ends cannot hold the send", async () => {
   const dev = newDevice();
-  await wp.sendNotification({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: dev.p256dh, auth: dev.auth } }, "{}", { vapidDetails, TTL: 60 });
-  assert.equal(cancelled, 1, "a body with no arrayBuffer is cancelled");
+  const never = () => new Promise(() => {});
+  const fetchImpl = async () => ({ status: 201, ok: true, arrayBuffer: never, body: { cancel: never } });
+  const wp = lite.createWebPush({ fetchImpl });
+  const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: dev.p256dh, auth: dev.auth } };
+  const out = await Promise.race([
+    wp.sendNotification(sub, "{}", { vapidDetails, TTL: 60, timeout: 300 }),
+    new Promise((resolve) => setTimeout(() => resolve("STILL PENDING"), 2000)),
+  ]);
+  assert.deepEqual(out, { statusCode: 201 });
 });
 
 test("sendNotification: an object payload is sent as JSON; an invalid urgency or topic is left off", async () => {
