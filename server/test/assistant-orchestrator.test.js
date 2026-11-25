@@ -4479,20 +4479,21 @@ test("a booking request whose reply is held for not being one question gets the 
 });
 
 // Live check 2026-10-28 (production): "Cancel my call with David Nave" got "I can't verify that from what I have, so I won't guess."
-// Charli cannot cancel, move or edit an event already on the calendar; asked to, code says so and where to do it.
-test("asked to cancel, move or change an event already on the calendar, the reply is the code-written EVENT_CHANGE_UNSUPPORTED line", async () => {
+// Charlie now cancels and moves an event (cancelEventTool, moveEventTool: test/assistant-calendar-change-*.test.js), so the request is
+// no longer answered by this line; what she still cannot do, any other edit of an event already on the calendar (rename it, change its
+// length, add guests), code says so and where to do it. The line keeps its name; its words changed (2026-11-25).
+test("asked to rename or otherwise edit an event already on the calendar, the reply is the code-written EVENT_CHANGE_UNSUPPORTED line", async () => {
   const DAVE = { title: "Call David Nave", start: "3:00 PM", end: "3:30 PM", allDay: false };
   const turn = (messages, script) => runTurn({ messages, ctx: googleCtx(fakeGoogle({ events: [DAVE] })), client: fakeClient(script) });
   for (const userText of [
-    "Cancel my call with David Nave", "cancel the Dave call tomorrow", "Can you move my 3 PM to 4?", "Reschedule the Dave call to Friday",
-    "Delete the Zoom meeting tomorrow", "please push my call with Dave back an hour", "I need to cancel my 3:00 appointment",
-    "change my meeting with the Chens to Friday", "remove the out of office block tomorrow",
+    "rename my 3 PM meeting to Closing prep", "change my meeting with the Chens", "edit the Dave call", "update my 10 AM appointment",
+    "make the zoom meeting longer", "extend my 3:00 call by an hour",
   ]) {
     for (const script of [
-      [say("I can't cancel events — you'll need to do that in Google Calendar.")],
-      [say("Done — I've cancelled your 3:00 PM call with David Nave.")],
+      [say("I can't change events — you'll need to do that in Google Calendar.")],
+      [say("Done — I've renamed your 3:00 PM call with David Nave.")],
       [say("Which call with David Nave did you mean?")],
-      [useTool("getCalendarTool", { date: "tomorrow" }), say("I see Call David Nave at 3:00 PM, but I can't cancel it.")],
+      [useTool("getCalendarTool", { date: "tomorrow" }), say("I see Call David Nave at 3:00 PM, but I can't rename it.")],
     ]) {
       const r = await turn(userSays(userText), script);
       assert.equal(r.reply, EVENT_CHANGE_UNSUPPORTED, `${userText} / ${JSON.stringify(script[script.length - 1])}`);
@@ -4517,7 +4518,7 @@ test("asked to cancel, move or change an event already on the calendar, the repl
   // a booking the model proposes is still handed up for confirmation
   const booked = await turn(userSays("Book a call with Dave tomorrow at 3"), [useTool("createEventTool", { date: "tomorrow", time: "15:00", title: "Call Dave" })]);
   assert.equal(booked.sideEffect.type, "createEvent");
-  assert.equal(EVENT_CHANGE_UNSUPPORTED, "I can't change events already on your calendar yet — open Google Calendar to cancel or move it.");
+  assert.equal(EVENT_CHANGE_UNSUPPORTED, "I can cancel or move an event. For any other change, open Google Calendar.");
 });
 
 // ── Task 5 fix round 1: the offer-then-yes flow, send-me reads, the deadline over tools, calendar facts, titles, unasked drafts ──────

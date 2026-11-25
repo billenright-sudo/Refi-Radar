@@ -35,6 +35,7 @@ const {
   ERROR_TURN, GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, doNotEmailLine, WHO_NEEDED, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 } = require("./prompt");
 const { PURPOSE_WORDS } = require("./outreach");
+const calendarChange = require("./calendarChange");
 const { parseTime, toInstant, localTimeOf, localToday, spokenDay, spokenTime, zoneName } = require("../google/time");
 const { CAREER_STAGES, stageById, spokenStageLabel } = require("./coaching");
 const { GLOSSARY_SOURCE, mentionsGlossaryTerm } = require("./glossary");
@@ -58,7 +59,9 @@ const SWEEP_TOP_UPGRADES = 5;
 const FIND_CLIENT_MAX_MATCHES = 5;
 
 // The tools that only PACKAGE a change (they never write; see tools.js).
-const SIDE_EFFECT_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool", "setTargetRateTool"]);
+const SIDE_EFFECT_TOOLS = new Set([
+  "addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool", "cancelEventTool", "moveEventTool", "setTargetRateTool",
+]);
 // On the last allowed model call these are the only tools run, because nothing else's result could be used: a change to
 // confirm, an email to set up and a screen to open (their results end the turn in code, so no later model call is needed to
 // narrate them).
@@ -289,14 +292,16 @@ const ACTION_VERBS_ING =
 const REQUEST_FILLER =
   "please|just|quickly|real|quick|also|maybe|kindly|be|able|to|help|me|go|make\\s+sure|make\\s+a(?=\\s+note\\b)|remember(?=\\s+to\\b)|try";
 const ACTION_LEAD_RE = new RegExp("^(?:" + ACTION_VERBS + ")(?![\\w'\\u2019-])", "i");
-const REQUEST_LEAD_RE = new RegExp(
+// A request lead ("can you", "please", "I need to" ...) then, after the filler, one of `verbs`.
+const requestLeadRe = (verbs) => new RegExp(
   "\\b(?:^mind|can\\s+you|could\\s+you|would\\s+you\\s+mind|would\\s+you|will\\s+you|please|do\\s+you\\s+mind|do\\s+you\\s+want\\s+to" +
     "|are\\s+you\\s+able\\s+to|is\\s+it\\s+possible\\s+to|go\\s+ahead\\s+and|I\\s+need\\s+you\\s+to|I\\s+want\\s+you\\s+to" +
     "|let['\\u2019]?s|let\\s+me|help\\s+me|can\\s+we|could\\s+we|I\\s+(?:need|want|have)\\s+to|I['\\u2019]d\\s+like\\s+to" +
     "|do\\s+me\\s+a\\s+favou?r\\s+and|you\\s+could)" +
-    "(?:\\s+(?:" + REQUEST_FILLER + ")\\b){0,4}?\\s+(?:" + ACTION_VERBS + "|" + ACTION_VERBS_ING + ")(?![\\w'\\u2019-])",
+    "(?:\\s+(?:" + REQUEST_FILLER + ")\\b){0,4}?\\s+(?:" + verbs + ")(?![\\w'\\u2019-])",
   "i"
 );
+const REQUEST_LEAD_RE = requestLeadRe(ACTION_VERBS + "|" + ACTION_VERBS_ING);
 const CONTACT_REPORT_RE = new RegExp(
   "^(?:I(?:['\\u2019]ve|\\s+have)?\\s+(?:(?:just|already)\\s+)?|just\\s+)?" +
     "(?:called|phoned|rang|talked\\s+(?:to|with)|spoke\\s+(?:with|to)|met\\s+with|texted|emailed" +
@@ -326,7 +331,7 @@ const isActionRequest = (text) => {
     const c = afterFiller(clause);
     return !STATE_QUESTION_LEAD_RE.test(c) &&
       (ACTION_LEAD_RE.test(c) || REQUEST_LEAD_RE.test(c) || (reports && (CONTACT_REPORT_RE.test(c) || WANTS_REFI_AT_RE.test(c))));
-  });
+  }) || isEventChangeRequest(t);
 };
 
 // R5-3's pass condition: after at most one opener strip, the reply's first clause (the text before
@@ -1881,8 +1886,19 @@ function trimDraft(data) {
   return rest;
 }
 
+// cancelEventTool and moveEventTool: a refusal is said by code (its `line`, which names the broker's own events, never goes back to
+// the model), and a packaged change is never shown to it either (the turn ends with the read-back): the model gets the error and the
+// code, nothing else.
+function trimChange(data) {
+  if (!data || typeof data !== "object" || !data.error) return data;
+  const out = { error: data.error };
+  if (data.code) out.code = data.code;
+  return out;
+}
+
 const forModel = (name, data) =>
-  name === "runSweepTool" ? trimSweep(data)
+  name === "cancelEventTool" || name === "moveEventTool" ? trimChange(data)
+    : name === "runSweepTool" ? trimSweep(data)
     : name === "findClient" ? trimFindClient(data)
       : name === "getCalendarTool" ? trimCalendar(data)
         : name === "draftEmailTool" ? trimDraft(data)
@@ -1997,6 +2013,17 @@ function readBack(out) {
         ? `${READ_BACK_PREFIX} put "${event.title}" on your calendar for ${said.day} at ${said.at}${said.zone}, ${event.durationMinutes} minutes? Nobody gets an invite.`
         : `${READ_BACK_PREFIX} go ahead with that?`;
     }
+    case "cancelEvent":
+    case "moveEvent": {
+      const event = se.event || {};
+      try {
+        return se.type === "cancelEvent"
+          ? calendarChange.cancelReadBack(READ_BACK_PREFIX, event)
+          : calendarChange.moveReadBack(READ_BACK_PREFIX, event, out.data && out.data.preview && out.data.preview.overlap);
+      } catch (_err) {
+        return `${READ_BACK_PREFIX} go ahead with that?`;
+      }
+    }
     case "logContact": {
       // The broker's notes are never read out (a phone number or an email in one must not be spoken, and nothing spoken here goes
       // back into the conversation the model is sent): only that there are some. The card shows them.
@@ -2033,6 +2060,36 @@ const CLIENT_FIELD_LABELS = [
   ["name", "Name"], ["loanType", "Loan type"], ["currentRate", "Rate"], ["loanBalance", "Balance"], ["propertyValue", "Property value"],
   ["closeDate", "Close date"], ["creditScore", "Credit score"], ["email", "Email"], ["phone", "Phone"], ["notes", "Notes"],
 ];
+// The rows under a cancel's or a move's read-back: what, which event, and when (both times, for a move), in the calendar's own clock,
+// and that nobody is emailed. Code-authored from the packaged event; display only.
+function changeEventDetails(out) {
+  const se = out.sideEffect;
+  const event = se.event || {};
+  const noGuests = { label: "Guests", value: "None — nobody is emailed" };
+  const title = calendarChange.cut(event.title);
+  try {
+    if (se.type === "cancelEvent") {
+      const said = event.allDay ? null : eventSpeech({ date: event.date, time: event.time, durationMinutes: event.durationMinutes, timeZone: event.timeZone });
+      const when = event.allDay ? `${spokenDay(event.date)}, all day` : said ? `${said.day}, ${said.at} – ${said.until}${said.zone}` : null;
+      return when ? [{ label: "Change", value: "Cancel this event" }, { label: "Event", value: title }, { label: "When", value: when }, noGuests] : [];
+    }
+    const now = eventSpeech({ date: event.date, time: event.time, durationMinutes: event.durationMinutes, timeZone: event.timeZone });
+    const next = eventSpeech({ date: event.newDate, time: event.newTime, durationMinutes: event.durationMinutes, timeZone: event.timeZone });
+    if (!now || !next) return [];
+    const overlap = out.data && out.data.preview && out.data.preview.overlap;
+    return [
+      { label: "Change", value: "Move this event" },
+      { label: "Event", value: title },
+      { label: "Now", value: `${now.day}, ${now.at} – ${now.until}${now.zone}` },
+      { label: "Moves to", value: `${next.day}, ${next.at} – ${next.until}${next.zone}` },
+      ...(overlap ? [{ label: "Overlaps", value: `"${calendarChange.cut(overlap.title)}" at ${overlap.time}` }] : []),
+      noGuests,
+    ];
+  } catch (_err) {
+    return [];
+  }
+}
+
 function changeDetails(out) {
   const se = out.sideEffect;
   if (se.type === "addClient") {
@@ -2064,6 +2121,7 @@ function changeDetails(out) {
     const stage = stageById(se.stage);
     return stage ? [{ label: "Career stage", value: stage.label }] : [];
   }
+  if (se.type === "cancelEvent" || se.type === "moveEvent") return changeEventDetails(out);
   if (se.type === "createEvent") {
     const event = se.event || {};
     const said = eventSpeech(event);
@@ -2665,7 +2723,8 @@ const googleCodeOf = (ctx) => {
 const GOOGLE_LINES = new Map([
   ["not_connected", GOOGLE_NOT_CONNECTED], ["reconnect", GOOGLE_RECONNECT], ["unavailable", GOOGLE_UNAVAILABLE],
 ]);
-const CALENDAR_TOOLS = new Set(["getCalendarTool", "createEventTool"]);
+const CALENDAR_TOOLS = new Set(["getCalendarTool", "createEventTool", "cancelEventTool", "moveEventTool"]);
+const CHANGE_EVENT_TOOLS = new Set(["cancelEventTool", "moveEventTool"]);
 function codeAuthoredLine(outs, blocks, aboutCalendar) {
   const onlyCalendar = blocks.every((b) => CALENDAR_TOOLS.has(b.name));
   for (const [i, o] of outs.entries()) {
@@ -2675,6 +2734,8 @@ function codeAuthoredLine(outs, blocks, aboutCalendar) {
       if (blocks[i].name === "getCalendarTool" && !onlyCalendar && !aboutCalendar) continue;
       return GOOGLE_LINES.get(code);
     }
+    // a cancel or a move she won't make, or can't find: the line was written by code from the event it read (calendarChange.js)
+    if (code === "calendar_change" && CHANGE_EVENT_TOOLS.has(blocks[i].name) && typeof o.data.line === "string" && o.data.line) return o.data.line;
     if (code === "nmls_missing") return NMLS_NEEDED;
     if (code === "no_email") return noEmailLine(cleanName(o.data.client) || "that client");
     if (code === "do_not_email") return doNotEmailLine(cleanName(o.data.client) || "That client");
@@ -2765,18 +2826,94 @@ const sendLine = (text, before) => {
 // to ("Cancel my call with David Nave", "move my 3 PM to 4"), code says so and where to do it, whatever the model said. A change
 // verb with an event (or "my 3 PM") at most four words after it, in the same sentence; not a question about the past ("Did Dave
 // cancel the meeting?"), and not while a booking read-back is in view ("move the call to Friday" then amends the booking not yet made).
+// Charli can cancel or move one event (cancelEventTool, moveEventTool): a request to is an ACTION request (isActionRequest above), so
+// a reply that is no tool call must be one question, and any claim of it is false. What she still cannot do, edit an event already on
+// the calendar in another way (rename it, change its length, add guests), is said by code, whatever the model said. The verb comes
+// with an event (or "my 3 PM") at most four words after it, in the same sentence. "change / edit / update ... to Friday" is a move.
+const CHANGE_NOUN =
+  "(?:(?:calls?|meetings?|appointments?|appts?|events?|zoom|showings?|closings?|lunch|block|calendar)\\b" +
+  "|\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\b\\.?|p\\.?m\\b\\.?)|\\d{1,2}:\\d{2}\\b)";
+const EVENT_GAP = "(?:\\s+[\\w'\\u2019&.-]+){0,4}?\\s+";
+const CANCEL_MOVE_CORE = "(?:cancel|delete|remove|clear|reschedule|move|push|bump|shift)" + EVENT_GAP + CHANGE_NOUN;
+const MOVE_LIKE_CORE =
+  "(?:change|edit|update)" + EVENT_GAP + CHANGE_NOUN +
+  "(?:\\s+[\\w'\\u2019&.:-]+){0,6}?\\s+(?:to|for)\\s+(?:\\d|noon|midnight|tonight|tomorrow|today|(?:mon|tues|wednes|thurs|fri|satur|sun)day|next\\b)";
+const EVENT_MOVE_LEAD_RE = new RegExp("^(?:" + CANCEL_MOVE_CORE + "|" + MOVE_LIKE_CORE + ")", "i");
+const EVENT_MOVE_REQUEST_RE = requestLeadRe(CANCEL_MOVE_CORE + "|" + MOVE_LIKE_CORE);
+const MOVE_LIKE_RE = new RegExp(MOVE_LIKE_CORE, "i");
+// the clause break without the colon: "3:00" is a time here, not a clause
+const EVENT_CLAUSE_BREAK_RE = /[.!?;,\u2014\u2013\u2026\n]|--|\s-\s/;
+function isEventChangeRequest(text) {
+  return String(text == null ? "" : text).split(EVENT_CLAUSE_BREAK_RE).some((clause) => {
+    const c = afterFiller(clause);
+    return !STATE_QUESTION_LEAD_RE.test(c) && (EVENT_MOVE_LEAD_RE.test(c) || EVENT_MOVE_REQUEST_RE.test(c));
+  });
+}
 const CHANGE_EVENT_RE = new RegExp(
-  "\\b(?:cancel|delete|remove|clear|reschedule|move|push|bump|shift|change|edit|update)(?:\\s+[\\w'\\u2019&.-]+){0,4}?\\s+" +
-    "(?:(?:calls?|meetings?|appointments?|appts?|events?|zoom|showings?|closings?|lunch|block|calendar)\\b" +
-    "|\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\b\\.?|p\\.?m\\b\\.?)|\\d{1,2}:\\d{2}\\b)",
+  "\\b(?:(?:change|edit|update|rename|retitle|extend|shorten|lengthen)" + EVENT_GAP + CHANGE_NOUN + "|make" + EVENT_GAP + CHANGE_NOUN + "\\s+(?:longer|shorter))",
   "i"
 );
 const PAST_QUESTION_RE = /^(?:did|has|had|was|were)\b/i;
 const changeEventLine = (text, before) => {
   if (before && before.role === "assistant" && messageText(before).includes("Nobody gets an invite.")) return null;
   const t = afterFiller(text);
-  return !PAST_QUESTION_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
+  return !PAST_QUESTION_RE.test(t) && !MOVE_LIKE_RE.test(t) && CHANGE_EVENT_RE.test(t) ? EVENT_CHANGE_UNSUPPORTED : null;
 };
+
+// The model never says an event was cancelled or moved: runTurn changes nothing (cancelEventTool and moveEventTool only package a
+// change, and the code-written Done line comes from /api/assistant/confirm), so any such claim in a reply of hers is false, on every
+// turn. A sentence that is no question is a claim when it says, in the first person ("I've cancelled it", "I moved your 3 PM"), or of
+// the event ("the call was moved", "your 3 PM is cancelled", "it's off your calendar", "consider it cancelled", or only "Cancelled."),
+// that it was cancelled, moved, rescheduled, pushed, removed or taken off the calendar. Cancelled and rescheduled are the calendar's
+// words; the rest need a calendar word (an event, a call, a time, "your calendar") in the sentence ("I moved on to the next
+// client" is none). A negation right before the verb is no claim ("I haven't cancelled it", "nothing has been moved"). The
+// user's own report that it happened ("Dave cancelled our meeting") may be repeated back in the passive, never in the first person.
+const SURE_VERB = "cancell?ed|rescheduled";
+const CAL_VERB = "moved|pushed|bumped|shifted|removed|deleted|cleared|dropped|taken\\s+off|took\\s+off|pulled";
+const NOT_BEFORE = "(?<!(?:\\bnot|\\bnever|n['\\u2019]t|\\bnothing|\\bnone)\\s+(?:(?:yet|been|actually|just|already|have|has|had|is|was|now|ever|really)\\s+)*)";
+const CAL_CONTEXT_RE = new RegExp(
+  "\\b(?:calendar|events?|meetings?|appointments?|appts?|calls?|showings?|closings?|zoom|lunch|block|invites?|walk-?through|it|that|them|those|these)\\b" +
+    "|\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m|p\\.?m)\\b|\\d{1,2}:\\d{2}\\b",
+  "i"
+);
+const FIRST_PERSON_CHANGE =
+  "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and|gone\\s+and))*\\s+";
+const PASSIVE_CHANGE = "\\b(?:is|are|was|were|been|got|get|gets|['\\u2019]s)\\s+(?:(?:now|just|already|been|successfully|all|officially)\\s+)*";
+const CLAIM_SURE_RE = new RegExp(
+  "(?:" + FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b" +
+    "|" + PASSIVE_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b" +
+    "|\\bconsider\\s+(?:it|that|them)\\s+(?:" + SURE_VERB + "|moved)\\b" +
+    "|^\\W*(?:cancell?ed|rescheduled)\\W*$)",
+  "i"
+);
+const CLAIM_CONTEXT_RE = new RegExp(
+  "(?:" + FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + CAL_VERB + ")\\b" +
+    "|" + PASSIVE_CHANGE + NOT_BEFORE + "(?:" + CAL_VERB + ")\\b" +
+    "|\\bconsider\\s+(?:it|that|them)\\s+(?:" + CAL_VERB + ")\\b)",
+  "i"
+);
+const OFF_CALENDAR_RE =
+  /\b(?:off|(?:removed|cleared|deleted|gone|dropped|taken)\s+(?:off|from)|no\s+longer\s+on)\s+(?:of\s+)?your\s+(?:google\s+)?calendar\b/i;
+const MOVED_ON_RE = /\bmov(?:ed|ing)\s+on\b/i;
+const REPORTED_RE = /\b(?:cancell?ed|rescheduled|postponed|moved|called\s+off|pushed)\b/i;
+function claimsEventChange(text, userText) {
+  const reported = REPORTED_RE.test(String(userText == null ? "" : userText));
+  return factSentencesOf(text).some((raw) => {
+    const sentence = raw.replace(AUDIO_TAG_RE, " ").trim();
+    if (!sentence || /\?\s*$/.test(sentence)) return false;
+    const firstPerson = new RegExp("^[^]*?" + FIRST_PERSON_CHANGE, "i").test(sentence);
+    // "Done — rescheduled.": a lone verb after a dash is the claim by itself
+    if (sentence.split(/\s*[—–]\s*/).some((piece) => /^\W*(?:cancell?ed|rescheduled)\W*$/i.test(piece))) return true;
+    if (CLAIM_SURE_RE.test(sentence)) {
+      // the user's own report, repeated back in the passive, is no claim of hers
+      const mine = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b", "i").test(sentence);
+      return mine || !reported;
+    }
+    if (MOVED_ON_RE.test(sentence)) return false;
+    if (CLAIM_CONTEXT_RE.test(sentence) && CAL_CONTEXT_RE.test(sentence)) return firstPerson || !reported;
+    return OFF_CALENDAR_RE.test(sentence);
+  });
+}
 
 // runTurn({ messages, ctx, client, judge?, adviceJudge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, screen?, error?, reason?, usage }
 //   (reason, with error:true: why the turn ended in an error, "deadline" or "refusal"; final review M-2)
@@ -2942,6 +3079,8 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       if (noSend) return finish(noSend);
       const noChange = changeEventLine(userText, messages[messages.length - 2]);
       if (noChange) return finish(noChange);
+      // Nothing was cancelled or moved here (the tools only package it, and the Done line is code's): any claim that it was is false
+      if (claimsEventChange(text, userText)) return finish(NOTHING_CHANGED);
       // Ruling 70 (d): a calendar read this turn came back with a Google code (not connected, expired, unreachable) and was handed back
       // to the model (Ruling 55: the user did not ask about the calendar). Whatever the question, a sentence of the reply that names a
       // day or a time is the Google line that says why: nothing read the calendar, and the failed read is why ("Call the Chens first."
@@ -3185,6 +3324,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel, claimsEventChange,
   classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip, isNavigationTurn,
 };

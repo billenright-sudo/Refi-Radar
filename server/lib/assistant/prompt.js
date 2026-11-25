@@ -34,8 +34,17 @@ const NOTHING_CHANGED =
 // or a statement before the ask): what a booking needs, in code's words. It claims nothing either.
 const BOOKING_ASK = "Tell me who it's with, the day and the time, and I'll read it back before anything goes on your calendar.";
 
-// Charli can read the calendar and book on it, but cannot cancel, move or edit an event already on it: what code says when asked to.
-const EVENT_CHANGE_UNSUPPORTED = "I can't change events already on your calendar yet — open Google Calendar to cancel or move it.";
+// Charli can read the calendar, book on it, and cancel or move one event after a read-back and a yes (cancelEventTool, moveEventTool);
+// any other edit of an event already on it (a new name, a new length, guests) is not hers: what code says when asked to. (The line
+// keeps the name it had when she could do none of it.)
+const EVENT_CHANGE_UNSUPPORTED = "I can cancel or move an event. For any other change, open Google Calendar.";
+
+// What code says when a confirmed cancel or move meets Google (routes/assistant.js): the event changed after the read-back (nothing
+// is changed), the event is already gone (true of a repeat of the same confirm, and of one the broker removed by hand), and any other
+// failure (nothing is claimed). The other words of a cancel or a move are built in calendarChange.js.
+const CHANGE_CHANGED = "That event changed after I read it to you, so I left it alone. Ask me again.";
+const ALREADY_OFF = "That event is already off your calendar.";
+const COULD_NOT_CHANGE = "Google Calendar couldn't make that change. Nothing was changed.";
 
 // One response asked for more than one change at once; confirmations happen one at a time.
 const ONE_AT_A_TIME = "Let's do those one at a time — which first?";
@@ -212,6 +221,15 @@ const CHARLI_SYSTEM = [
     "prospect), call createEventTool anyway with a short title that names them, for example 'Call Dave', and no clientId; never ask " +
     "whether to link a client. If the day or the time is missing, ask only for that, in one question.",
 
+  "Changing an event: to cancel or move an event that is already on the calendar, call cancelEventTool or moveEventTool with the " +
+    "day as the user said it, the event's start time as 24-hour HH:MM and/or a few words of its title (for a move also newTime as " +
+    "24-hour HH:MM, and newDate only when the day changes); do not read the day first, the app finds the event itself. Like " +
+    "createEventTool they only prepare the change: the app reads it back, nothing changes until the user confirms, and the app says " +
+    "in its own words when it cannot (an event with guests, a repeating one, one someone else set up). Never say an event was " +
+    "cancelled or moved or is off the calendar, and never say you can't cancel or move one. If the day, or both the time and the " +
+    "title, or a move's new time is missing, ask only for that, in one question. For any other change to an event (a new name, a " +
+    "new length, guests) say only that they can open Google Calendar for that.",
+
   "Email: to write to a client, find the client, then call draftEmailTool with one of its purposes. You never write " +
     "the email yourself and you never send email: it opens in the user's own email for them to review and send. After a sweep or a " +
     "calendar read you may offer to book a follow-up or write a check-in; offering is fine, doing needs their request. A client whose " +
@@ -260,6 +278,6 @@ const JOKE_TOPICS = Object.freeze([
 ]);
 
 module.exports = {
-  CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG,
+  CHARLI_SYSTEM, buildCharliSystem, JOKE_TOPICS, CANT_VERIFY, GUIDELINE_HANDOFF, ADVICE_HANDOFF, NO_LIVE_DATA, NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED, CHANGE_CHANGED, ALREADY_OFF, COULD_NOT_CHANGE, ONE_AT_A_TIME, DIDNT_CATCH, ERROR_TURN, TOOK_TOO_LONG,
   GOOGLE_NOT_CONNECTED, GOOGLE_RECONNECT, GOOGLE_UNAVAILABLE, NMLS_NEEDED, noEmailLine, doNotEmailLine, WHO_NEEDED, NO_SEND, NO_SENT_PAST, LIVE_UNCLEAR,
 };

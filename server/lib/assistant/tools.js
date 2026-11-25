@@ -610,7 +610,10 @@ async function cancelEventTool(args, ctx) {
     source: "(unsaved)",
     sideEffect: {
       type: "cancelEvent",
-      event: { id: event.id, etag: event.etag, title, date, time, allDay: event.allDay, startAt: event.startAt, timeZone: zone },
+      event: {
+        id: event.id, etag: event.etag, title, date, time, allDay: event.allDay, startAt: event.startAt, timeZone: zone,
+        durationMinutes: event.allDay ? null : Math.max(1, Math.round((event.endAt - event.startAt) / 60_000)),
+      },
     },
   };
 }

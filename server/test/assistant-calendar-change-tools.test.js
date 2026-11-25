@@ -88,7 +88,7 @@ test("cancelEventTool: the one event that starts at that time is the event, what
     source: "(unsaved)",
     sideEffect: {
       type: "cancelEvent",
-      event: { id: sam.id, etag: sam.etag, title: "Walkthrough with Sam", date: WED, time: "10:00", allDay: false, startAt: sam.startAt, timeZone: PHX },
+      event: { id: sam.id, etag: sam.etag, title: "Walkthrough with Sam", date: WED, time: "10:00", allDay: false, startAt: sam.startAt, timeZone: PHX, durationMinutes: 30 },
     },
   });
   assert.deepStrictEqual([google.asked.deleteEvent, google.asked.patchEvent, google.asked.insertEvent], [[], [], []], "packaging changes nothing");
@@ -128,7 +128,7 @@ test("cancelEventTool: an all-day event can be cancelled; the which-one line say
   const google = fakeGoogle({ days: { [WED]: [trip] } });
   const r = await cancelEventTool({ date: WED, title: "out of town" }, ctxOf(google));
   assert.deepStrictEqual(r.data.preview, { title: "Out of town", day: "Wednesday, October 28th", time: null, allDay: true });
-  assert.deepStrictEqual(r.sideEffect.event, { id: trip.id, etag: trip.etag, title: "Out of town", date: WED, time: null, allDay: true, startAt: null, timeZone: PHX });
+  assert.deepStrictEqual(r.sideEffect.event, { id: trip.id, etag: trip.etag, title: "Out of town", date: WED, time: null, allDay: true, startAt: null, timeZone: PHX, durationMinutes: null });
   const both = fakeGoogle({ days: { [WED]: [allDay("Trip", WED), allDay("Trip two", WED)] } });
   assert.match(refusal(await cancelEventTool({ date: WED, title: "trip" }, ctxOf(both))), /^I see more than one that fits on Wednesday, October 28th: "Trip", all day, "Trip two", all day\. Which one\?$/);
   // a time can never name an all-day event
