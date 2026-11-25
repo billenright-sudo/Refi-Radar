@@ -29,9 +29,20 @@ const clock = (hhmm) => spokenTime(parseTime(hhmm));
 const words = (text) => String(text == null ? "" : text)
   .toLowerCase().replace(/[’']s\b/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
 
+// The words of what the broker said that are matched against a title, in two passes (fix wave F4): first without these function
+// words; then, only when that fit nothing, also without these generic ones. Ignoring words never leaves none: then the words are
+// kept as given.
+const FUNCTION_WORDS = new Set(["the", "a", "an", "my", "our", "your", "with", "for", "to", "on", "at", "and", "of"]);
+const GENERIC_WORDS = new Set(["call", "meeting", "appointment", "appt", "event", "followup", "follow", "up"]);
+const without = (list, drop) => {
+  const kept = list.filter((w) => !drop.has(w));
+  return kept.length > 0 ? kept : list;
+};
+
 // The events of one day that fit what the broker said: { time?: { hour, minute }, title?: string }. A timed event starting at that
 // time and no other is the event, whatever title was said (the read-back shows its real title). Otherwise the events at that time
-// (or all of them, with no time) whose title has every word given. An all-day event fits a title, never a time.
+// (or all of them, with no time) whose title has every word of pass 1 (the words given, function words ignored), or, when none
+// does, every word of pass 2 (generic words ignored too). An all-day event fits a title, never a time.
 // -> the matching events, in the order given.
 function findMatches(events, { time, title } = {}) {
   const startsAt = (e) => !e.allDay && e.start === spokenTime(time);
@@ -40,12 +51,17 @@ function findMatches(events, { time, title } = {}) {
     pool = pool.filter(startsAt);
     if (pool.length === 1) return pool;
   }
-  const wanted = words(title);
-  if (wanted.length === 0) return pool;
-  return pool.filter((e) => {
+  const given = words(title);
+  if (given.length === 0) return pool;
+  const fit = (wanted) => pool.filter((e) => {
     const has = new Set(words(e.title));
     return wanted.every((w) => has.has(w));
   });
+  const first = without(given, FUNCTION_WORDS);
+  const found = fit(first);
+  if (found.length > 0) return found;
+  const second = without(first, GENERIC_WORDS);
+  return second.length === first.length ? found : fit(second);
 }
 
 // ── the words ────────────────────────────────────────────────────────────────

@@ -369,3 +369,28 @@ test("F1: an 11 PM to 1 AM event is an ordinary event on the day it starts: canc
   // asked for Thursday, the day it ends on, it is not there
   assert.equal(refusal(await cancelEventTool({ date: "2026-10-29", title: "late call" }, ctxOf(google))), "I don't see that on your calendar for Thursday, October 29th.");
 });
+
+// ── title matching in two passes (fix wave F4) ───────────────────────────────
+test("F4: function words are ignored, then (only if nothing fit) generic words; a name is enough against Charlie's own 'Call Dave'", async () => {
+  const { findMatches } = require("../lib/assistant/calendarChange");
+  const callDave = ev("Call Dave", WED, 15);
+  const titles = (said, day) => findMatches(day, { title: said }).map((e) => e.title);
+  for (const said of ["call with Dave", "the Dave call", "Dave's call", "my meeting with Dave", "Dave", "call Dave", "the call with Dave"]) {
+    assert.deepStrictEqual(titles(said, [callDave]), ["Call Dave"], said);
+  }
+  const lunch = ev("Lunch with Dave", WED, 12);
+  assert.deepStrictEqual(titles("the Dave call", [lunch, callDave]), ["Call Dave"], "pass 1 fits one");
+  assert.deepStrictEqual(titles("Dave", [lunch, callDave]), ["Lunch with Dave", "Call Dave"], "both fit: the which-one line");
+  assert.deepStrictEqual(titles("my meeting with Dave", [lunch, callDave]), ["Lunch with Dave", "Call Dave"], "pass 2 fits both");
+  assert.deepStrictEqual(titles("team meeting", [ev("Team meeting", WED, 9), ev("Team lunch", WED, 13)]), ["Team meeting"]);
+  assert.deepStrictEqual(titles("the follow-up with Pat", [ev("Pat review", WED, 9)]), ["Pat review"], "follow up is generic");
+  assert.deepStrictEqual(titles("the", [ev("Meet the Chens", WED, 9), ev("Lunch", WED, 13)]), ["Meet the Chens"], "nothing left: the words as given");
+  assert.deepStrictEqual(titles("the call", [ev("Call Dave", WED, 9), ev("Lunch", WED, 13)]), ["Call Dave"]);
+  assert.deepStrictEqual(titles("the meeting", [ev("Lunch", WED, 13)]), [], "generic words alone are kept: no event fits");
+  assert.deepStrictEqual(titles("Dave Ray", [callDave]), [], "every remaining word must appear");
+  // through the tool: the not-found line the reviewer met is gone; a time given must still match
+  const google = fakeGoogle({ days: { [WED]: [callDave, lunch] } });
+  assert.equal((await cancelEventTool({ date: WED, title: "call with Dave" }, ctxOf(google))).sideEffect.event.title, "Call Dave");
+  assert.match(refusal(await cancelEventTool({ date: WED, title: "Dave" }, ctxOf(google))), /^I see more than one that fits on Wednesday, October 28th: "Call Dave" at 3:00 PM, "Lunch with Dave" at 12:00 PM\. Which one\?$|^I see more than one that fits on Wednesday, October 28th: "Lunch with Dave" at 12:00 PM, "Call Dave" at 3:00 PM\. Which one\?$/);
+  assert.match(refusal(await cancelEventTool({ date: WED, title: "call with Dave", time: "16:00" }, ctxOf(google))), /^I don't see that/);
+});
