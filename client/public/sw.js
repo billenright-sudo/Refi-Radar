@@ -32,22 +32,31 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(text(payload.title, TITLE_MAX, FALLBACK_TITLE), {
       body: text(payload.body, BODY_MAX, FALLBACK_BODY),
       tag: text(payload.tag, TAG_MAX, FALLBACK_TAG),
+      renotify: true,   // a second drop under the same tag still sounds (a tag is always set)
       icon: "/icon.svg",
       data: { url: "/" },
     })
   );
 });
 
-// An open Broker Radar window is sent to "/" (a reload, so the briefing is rebuilt with fresh rates) and brought forward; with none open,
-// a new one opens at "/".
+// Where a window is, as a path ("" when it cannot be told): this script has no URL parser in every test scope, and needs only the path.
+const pathOf = (win) => {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*([^?#]*)/i.exec(String((win && win.url) || ""));
+  return match ? match[1] || "/" : "";
+};
+
+// An open Broker Radar window on the home path "/" is reloaded (so the briefing is rebuilt with fresh rates) and brought forward. A window
+// open on any other path is only brought forward, never navigated: whatever is typed there stays. With none open, a new one opens at "/".
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (windows) => {
-      const open = windows && windows[0];
+      const list = windows || [];
+      const home = list.find((win) => pathOf(win) === "/");
+      const open = home || list[0];
       if (open) {
         try {
-          if (open.navigate) await open.navigate("/");
+          if (home && open.navigate) await open.navigate("/");
           if (open.focus) await open.focus();
           return undefined;
         } catch (err) {

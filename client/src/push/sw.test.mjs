@@ -33,11 +33,11 @@ function load({ windows = [] } = {}) {
 test("push shows the ping and always opens /", async () => {
   const { fire, shown } = load();
   await fire("push", { data: { json: () => ({ title: "Rates dropped", body: "The national average 30-year is 6.4%…", url: "https://evil.example/", tag: "rate-drop" }) } });
-  assert.deepEqual(plain(shown[0]), ["Rates dropped", { body: "The national average 30-year is 6.4%…", tag: "rate-drop", icon: "/icon.svg", data: { url: "/" } }]);
+  assert.deepEqual(plain(shown[0]), ["Rates dropped", { body: "The national average 30-year is 6.4%…", tag: "rate-drop", renotify: true, icon: "/icon.svg", data: { url: "/" } }]);
 });
 
 test("an unreadable push still shows the generic notice", async () => {
-  const generic = ["Broker Radar", { body: "Open Charlie for today's market update.", tag: "rate-drop", icon: "/icon.svg", data: { url: "/" } }];
+  const generic = ["Broker Radar", { body: "Open Charlie for today's market update.", tag: "rate-drop", renotify: true, icon: "/icon.svg", data: { url: "/" } }];
   for (const data of [{ json: () => { throw new SyntaxError("bad"); } }, null, { json: () => "text" }, { json: () => ({ title: 5, body: {} }) }]) {
     const { fire, shown } = load();
     await fire("push", { data });
@@ -61,17 +61,33 @@ test("install and activate take over at once, and nothing is cached or fetched",
   assert.ok(!/caches|fetch\(/.test(SOURCE.replace(/\/\/.*$/gm, "")), "the worker never touches a cache or the network");
 });
 
-test("click reuses an open window, else opens one", async () => {
-  const log = [];
-  const win = { navigate: async (url) => { log.push(["navigate", url]); }, focus: async () => { log.push(["focus"]); } };
+test("click: a window on the home path is focused and reloaded; a window on another path is focused and left alone; none opens /", async () => {
   const closed = [];
   const notification = { close: () => closed.push(1) };
-  const one = load({ windows: [win] });
-  await one.fire("notificationclick", { notification });
-  assert.deepEqual(log, [["navigate", "/"], ["focus"]]);
-  assert.deepEqual(one.calls, []);
-  assert.equal(closed.length, 1);
+  const windowAt = (url, log) => ({ url, navigate: async (to) => { log.push(["navigate", url, to]); }, focus: async () => { log.push(["focus", url]); } });
+
+  const homeLog = [];
+  const home = load({ windows: [windowAt("https://app.example.test/", homeLog)] });
+  await home.fire("notificationclick", { notification });
+  assert.deepEqual(homeLog, [["navigate", "https://app.example.test/", "/"], ["focus", "https://app.example.test/"]]);
+  assert.deepEqual(home.calls, []);
+
+  const homeQueryLog = [];
+  await load({ windows: [windowAt("https://app.example.test/?x=1#top", homeQueryLog)] }).fire("notificationclick", { notification });
+  assert.equal(homeQueryLog[0][0], "navigate", "a query or fragment on / is still the home path");
+
+  const otherLog = [];
+  const other = load({ windows: [windowAt("https://app.example.test/profile", otherLog)] });
+  await other.fire("notificationclick", { notification });
+  assert.deepEqual(otherLog, [["focus", "https://app.example.test/profile"]], "typed work on another path is not thrown away");
+  assert.deepEqual(other.calls, []);
+
+  const mixedLog = [];
+  await load({ windows: [windowAt("https://app.example.test/profile", mixedLog), windowAt("https://app.example.test/", mixedLog)] }).fire("notificationclick", { notification });
+  assert.deepEqual(mixedLog, [["navigate", "https://app.example.test/", "/"], ["focus", "https://app.example.test/"]], "the home window wins when there is one");
+
   const none = load({ windows: [] });
   await none.fire("notificationclick", { notification });
   assert.deepEqual(none.calls, [["openWindow", "/"]]);
+  assert.equal(closed.length, 5);
 });
