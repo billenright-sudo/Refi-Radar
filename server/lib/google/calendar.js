@@ -173,9 +173,18 @@ async function insertEvent(token, { id, title, date, time, durationMinutes, time
 // Every call sends sendUpdates=none: nobody is emailed. None of them throws; a failure is a fixed message, an auth refusal the
 // reconnect code, and Google's reply is never kept.
 
-// One event of events.list for a change: { id, etag, title, start, end, allDay, startAt, endAt, startDate, guests, repeats, mine },
-// or null for a cancelled one. `start` / `end` are spoken labels as toEvent's; `startAt` / `endAt` epoch ms (null for an all-day one,
-// whose day is `startDate`). `guests`: anyone besides the broker is on it (a list Google left out counts). `repeats`: any instance of
+// Whether an all-day event covers exactly one day: Google's end.date is exclusive, so it is the day after the start. A missing or
+// unreadable end counts as more than one day (the event is then refused, never changed in part).
+const DAY_MS = 86_400_000;
+function allDayIsOneDay(startDate, endDate) {
+  if (typeof endDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return false;
+  return Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`) === DAY_MS;
+}
+
+// One event of events.list for a change: { id, etag, title, start, end, allDay, startAt, endAt, startDate, multiDay, guests, repeats,
+// mine }, or null for a cancelled one. `start` / `end` are spoken labels as toEvent's; `startAt` / `endAt` epoch ms (null for an
+// all-day one, whose day is `startDate`). `multiDay`: a timed event of 24 hours or more, or an all-day one over more than one day.
+// `guests`: anyone besides the broker is on it (a list Google left out counts). `repeats`: any instance of
 // a series, or the series itself. `mine`: the broker organized it, it is an ordinary event and Google has not locked it.
 function toChangeable(item, timeZone) {
   const base = toEvent(item, timeZone);
@@ -189,6 +198,7 @@ function toChangeable(item, timeZone) {
     title: base.title, start: base.start, end: base.end, allDay: base.allDay,
     startAt: base.allDay ? null : Date.parse(item.start.dateTime), endAt: base.endAt,
     startDate: base.allDay ? item.start.date : null,
+    multiDay: base.allDay ? !allDayIsOneDay(item.start.date, item.end && item.end.date) : base.endAt - Date.parse(item.start.dateTime) >= DAY_MS,
     guests: item.attendeesOmitted === true || attendees.some((a) => !(a && a.self === true)),
     repeats: typeof item.recurringEventId === "string" || (Array.isArray(item.recurrence) && item.recurrence.length > 0),
     mine: organizer.self === true && item.locked !== true && (item.eventType === undefined || item.eventType === "default"),

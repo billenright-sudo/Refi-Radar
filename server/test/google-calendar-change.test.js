@@ -104,7 +104,7 @@ test("listDayDetailed: id, etag and the instants for code; guests, repeating and
   assert.equal(out.events.length, 9, "a cancelled one is left out");
   assert.deepEqual(by.evtone12345, {
     id: "evtone12345", etag: '"3100000000000000"', title: "Walkthrough with Sam", start: "10:00 AM", end: "10:30 AM", allDay: false,
-    startAt: Date.UTC(2026, 9, 28, 17, 0), endAt: Date.UTC(2026, 9, 28, 17, 30), startDate: null,
+    startAt: Date.UTC(2026, 9, 28, 17, 0), endAt: Date.UTC(2026, 9, 28, 17, 30), startDate: null, multiDay: false,
     guests: false, repeats: false, mine: true,
   });
   assert.equal(by.evttwo12345.guests, false, "the broker alone is no guest");
@@ -117,6 +117,22 @@ test("listDayDetailed: id, etag and the instants for code; guests, repeating and
   assert.equal(by.evtnine12345.allDay, true);
   assert.equal(by.evtnine12345.startAt, null);
   assert.equal(by.evtnine12345.startDate, "2026-10-28");
+  assert.equal(by.evtnine12345.multiDay, false, "an all-day event whose end.date is the next day covers one day");
+});
+
+test("listDayDetailed: multiDay is a timed event of 24 hours or more, or an all-day one over more than one day (end.date exclusive)", async () => {
+  const out = await calendar.listDayDetailed(ACCESS, { date: "2026-10-28", timeZone: PHX }, fakeFetch(() => json({
+    items: [
+      item({ id: "overnight001", start: { dateTime: "2026-10-28T23:00:00-07:00" }, end: { dateTime: "2026-10-29T01:00:00-07:00" } }),
+      item({ id: "almostday001", start: { dateTime: "2026-10-28T09:00:00-07:00" }, end: { dateTime: "2026-10-29T08:59:00-07:00" } }),
+      item({ id: "fullday00001", start: { dateTime: "2026-10-28T09:00:00-07:00" }, end: { dateTime: "2026-10-29T09:00:00-07:00" } }),
+      item({ id: "threeday0001", start: { dateTime: "2026-10-27T09:00:00-07:00" }, end: { dateTime: "2026-10-29T17:00:00-07:00" } }),
+      { id: "vacation0001", etag: '"v"', summary: "Vacation", start: { date: "2026-10-27" }, end: { date: "2026-10-31" }, organizer: mine },
+      { id: "noenddate001", etag: '"n"', summary: "Odd", start: { date: "2026-10-28" }, end: {}, organizer: mine },
+    ],
+  })));
+  const by = Object.fromEntries(out.events.map((e) => [e.id, e.multiDay]));
+  assert.deepEqual(by, { overnight001: false, almostday001: false, fullday00001: true, threeday0001: true, vacation0001: true, noenddate001: true });
 });
 
 test("listDayDetailed: a series' own event (recurrence) repeats too; failures are fixed messages; a refusal is the reconnect code", async () => {

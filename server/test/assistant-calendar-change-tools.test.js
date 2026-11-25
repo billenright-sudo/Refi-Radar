@@ -287,3 +287,85 @@ test("nothing the model could be shown carries an event id, an etag, a guest or 
     assert.ok(!/secretEventId99|secret-etag|etag|"id"|attendee|organizer|guests\":/i.test(shown), shown);
   }
 });
+
+// ── events over more than one day (fix wave F1) ──────────────────────────────
+// Through the real adapter (lib/google/calendar listDayDetailed) with a stand-in fetch that answers like events.list: every event
+// that OVERLAPS the asked day, so one that began the day before, or runs on for days, is in Google's reply.
+const calendarAdapter = require("../lib/google/calendar");
+function realDay(items) {
+  const overlaps = (it, min, max) => {
+    if (it.start.date) {
+      const day = min.slice(0, 10);
+      return it.start.date <= day && it.end.date > day;
+    }
+    return Date.parse(it.start.dateTime) < Date.parse(max) && Date.parse(it.end.dateTime) > Date.parse(min);
+  };
+  const fetchFn = async (url) => {
+    const q = new URL(url).searchParams;
+    return { ok: true, status: 200, json: async () => ({ items: items.filter((it) => overlaps(it, q.get("timeMin"), q.get("timeMax"))) }) };
+  };
+  const google = fakeGoogle();
+  google.listDayDetailed = async ({ date }) => { google.asked.listDayDetailed.push(date); return calendarAdapter.listDayDetailed("tok", { date, timeZone: PHX }, fetchFn); };
+  return google;
+}
+const own = { self: true };
+const conference = { id: "conf00001", etag: '"e2"', summary: "Mortgage Conference", start: { dateTime: "2026-10-27T09:00:00-07:00" }, end: { dateTime: "2026-10-29T17:00:00-07:00" }, organizer: own };
+const vacation = { id: "vacation1", etag: '"e3"', summary: "Vacation", start: { date: "2026-10-27" }, end: { date: "2026-10-31" }, organizer: own };
+const fullDay = { id: "fullday01", etag: '"e6"', summary: "Open house", start: { dateTime: "2026-10-28T09:00:00-07:00" }, end: { dateTime: "2026-10-29T09:00:00-07:00" }, organizer: own };
+const lateCall = { id: "latecall1", etag: '"e7"', summary: "Late call with Kim", start: { dateTime: "2026-10-28T23:00:00-07:00" }, end: { dateTime: "2026-10-29T01:00:00-07:00" }, organizer: own };
+const oneDayOff = { id: "dayoff001", etag: '"e8"', summary: "Day off", start: { date: "2026-10-28" }, end: { date: "2026-10-29" }, organizer: own };
+const MULTI = (t) => `"${t}" runs over more than one day. I can't change those yet. Open Google Calendar.`;
+
+test("F1: a timed event from Tuesday to Thursday is not found on Wednesday, and is refused on Tuesday (cancel and move)", async () => {
+  const google = realDay([conference]);
+  for (const [tool, extra] of [[cancelEventTool, {}], [moveEventTool, { newTime: "10:00" }]]) {
+    assert.equal(refusal(await tool({ date: WED, title: "conference", ...extra }, ctxOf(google))), "I don't see that on your calendar for Wednesday, October 28th.");
+    assert.equal(refusal(await tool({ date: WED, time: "09:00", ...extra }, ctxOf(google))), "I don't see that on your calendar for Wednesday, October 28th.", "a time never matches an event that began on an earlier day");
+    assert.equal(refusal(await tool({ date: "2026-10-27", title: "conference", ...extra }, ctxOf(google))), MULTI("Mortgage Conference"));
+  }
+  assert.deepStrictEqual([google.asked.deleteEvent, google.asked.patchEvent], [[], []]);
+});
+
+test("F1: an all-day event from Tuesday to Friday is not found on Wednesday, and is refused on Tuesday (cancel and move)", async () => {
+  const google = realDay([vacation]);
+  for (const [tool, extra] of [[cancelEventTool, {}], [moveEventTool, { newTime: "10:00" }]]) {
+    assert.equal(refusal(await tool({ date: WED, title: "vacation", ...extra }, ctxOf(google))), "I don't see that on your calendar for Wednesday, October 28th.");
+    assert.equal(refusal(await tool({ date: "today", title: "vacation", ...extra }, ctxOf(google))), MULTI("Vacation"), "more than one day comes before the all-day move line");
+  }
+});
+
+test("F1: a timed event of exactly 24 hours is refused; a one-day all-day event can still be cancelled", async () => {
+  const google = realDay([fullDay, oneDayOff]);
+  assert.equal(refusal(await cancelEventTool({ date: WED, title: "open house" }, ctxOf(google))), MULTI("Open house"));
+  assert.equal(refusal(await moveEventTool({ date: WED, time: "09:00", newTime: "10:00" }, ctxOf(google))), MULTI("Open house"));
+  const r = await cancelEventTool({ date: WED, title: "day off" }, ctxOf(google));
+  assert.equal(r.sideEffect.event.id, "dayoff001");
+});
+
+test("F1: the more-than-one-day line comes after guests and repeating, and before already started", async () => {
+  const google = realDay([
+    { ...conference, id: "confguest1", summary: "Conference with guests", attendees: [{ self: true }, {}] },
+    { ...conference, id: "confrepeat", summary: "Conference repeating", recurringEventId: "series12345" },
+    { ...conference, id: "confstart1", summary: "Conference started", start: { dateTime: "2026-10-27T07:00:00-07:00" } },
+  ]);
+  assert.match(refusal(await cancelEventTool({ date: "today", title: "guests" }, ctxOf(google))), /has guests/);
+  assert.match(refusal(await cancelEventTool({ date: "today", title: "repeating" }, ctxOf(google))), /is a repeating event/);
+  assert.equal(refusal(await cancelEventTool({ date: "today", title: "started" }, ctxOf(google))), MULTI("Conference started"));
+});
+
+test("F1: an 11 PM to 1 AM event is an ordinary event on the day it starts: cancel and move are packaged, the read-back names that day", async () => {
+  const { cancelReadBack, moveReadBack } = require("../lib/assistant/calendarChange");
+  const google = realDay([lateCall]);
+  const c = await cancelEventTool({ date: WED, title: "late call" }, ctxOf(google));
+  assert.deepStrictEqual(c.sideEffect.event, {
+    id: "latecall1", etag: '"e7"', title: "Late call with Kim", date: WED, time: "23:00", allDay: false,
+    startAt: Date.parse("2026-10-28T23:00:00-07:00"), timeZone: PHX, durationMinutes: 120,
+  });
+  assert.equal(cancelReadBack("Just to confirm —", c.sideEffect.event), 'Just to confirm — cancel "Late call with Kim" on Wednesday, October 28th at 11:00 PM Mountain Standard Time?');
+  const m = await moveEventTool({ date: WED, time: "23:00", newTime: "22:00" }, ctxOf(google));
+  assert.equal(m.sideEffect.event.date, WED);
+  assert.equal(m.sideEffect.event.durationMinutes, 120);
+  assert.equal(moveReadBack("Just to confirm —", m.sideEffect.event), 'Just to confirm — move "Late call with Kim" from Wednesday, October 28th at 11:00 PM to Wednesday, October 28th at 10:00 PM Mountain Standard Time?');
+  // asked for Thursday, the day it ends on, it is not there
+  assert.equal(refusal(await cancelEventTool({ date: "2026-10-29", title: "late call" }, ctxOf(google))), "I don't see that on your calendar for Thursday, October 29th.");
+});

@@ -576,7 +576,15 @@ async function locateEvent(a, ctx, move) {
   if (listed.code) return { done: notConnected(listed.code) };
   if (!Array.isArray(listed.events)) return { done: fail("(unavailable)", "Google Calendar could not be read right now") };
 
-  const matches = calendarChange.findMatches(listed.events, { time, title });
+  // Google lists every event that overlaps the day; only the ones that START on it are its own (an event that began on an earlier
+  // day is never matched for this one, so it is never read back for the wrong day).
+  let ownDay;
+  try {
+    ownDay = listed.events.filter((e) => (e.allDay ? e.startDate : localTimeOf(new Date(e.startAt).toISOString(), zone).date) === date);
+  } catch (_err) {
+    return { done: fail("(unavailable)", "Google Calendar could not be read right now") };
+  }
+  const matches = calendarChange.findMatches(ownDay, { time, title });
   if (matches.length === 0) return { done: refuseChange(calendarChange.notFoundLine(date)) };
   if (matches.length > 1) return { done: refuseChange(calendarChange.whichOneLine(date, matches)) };
   const event = matches[0];
@@ -584,6 +592,7 @@ async function locateEvent(a, ctx, move) {
   if (!event.mine) return { done: refuseChange(calendarChange.notMineLine(event.title)) };
   if (event.guests) return { done: refuseChange(calendarChange.hasGuestsLine(event.title)) };
   if (event.repeats) return { done: refuseChange(calendarChange.repeatsLine(event.title)) };
+  if (event.multiDay) return { done: refuseChange(calendarChange.multiDayLine(event.title)) };
   // history stays as it is: a timed event is started from its start instant; an all-day one only when its day is past
   const started = event.allDay ? event.startDate < today : event.startAt <= now;
   if (started) return { done: refuseChange(calendarChange.alreadyStartedLine(event.title)) };
