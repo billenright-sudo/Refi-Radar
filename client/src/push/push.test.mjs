@@ -202,7 +202,7 @@ function browserWith(existing) {
 
 test("forgetDevice removes this browser's device from the server, then unsubscribes it", async () => {
   const b = browserWith({ endpoint: "https://fcm.googleapis.com/mine" });
-  const s = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0 } }) });
+  const s = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0, removed: true } }) });
   assert.deepEqual(await forgetDevice({ navigator: b.navigator, fetchFn: s.fetch }), { ok: true });
   assert.deepEqual(s.calls.map((c) => [c.method, c.url, c.body]), [["DELETE", "/api/profile/alerts/devices", { endpoint: "https://fcm.googleapis.com/mine" }]]);
   assert.equal(b.log.unsubscribed, 1);
@@ -216,13 +216,32 @@ test("forgetDevice with no subscription (or no worker support) does nothing, and
   assert.deepEqual(await forgetDevice({ navigator: {}, fetchFn: s.fetch }), { skipped: true });
   assert.deepEqual(await forgetDevice({ navigator: undefined, fetchFn: s.fetch }), { skipped: true });
   assert.equal(s.calls.length, 0);
-  // the server cannot be reached and unsubscribe throws: still no throw, and the unsubscribe was tried
+  // the server removed the device but unsubscribe throws: still no throw, and the unsubscribe was tried
   const b = browserWith({ endpoint: "https://fcm.googleapis.com/mine", unsubscribeFails: true });
-  const down = async () => { throw new Error("offline"); };
-  assert.deepEqual(await forgetDevice({ navigator: b.navigator, fetchFn: down }), { ok: true });
+  const removed = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0, removed: true } }) });
+  assert.deepEqual(await forgetDevice({ navigator: b.navigator, fetchFn: removed.fetch }), { ok: true });
   assert.equal(b.log.unsubscribed, 1);
   const broken = { serviceWorker: { getRegistration: async () => { throw new Error("boom"); } } };
   assert.deepEqual(await forgetDevice({ navigator: broken, fetchFn: s.fetch }), { skipped: true });
+});
+
+test("forgetDevice leaves a subscription alone that is not the caller's, or when the server cannot be asked", async () => {
+  // user B on a browser subscribed for user A: the server removes nothing of B's, so the browser keeps A's subscription
+  const shared = browserWith({ endpoint: "https://fcm.googleapis.com/as-device" });
+  const none = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0, removed: false } }) });
+  assert.deepEqual(await forgetDevice({ navigator: shared.navigator, fetchFn: none.fetch }), { skipped: true });
+  assert.equal(none.calls.length, 1, "the server was asked");
+  assert.equal(shared.log.unsubscribed, 0);
+  // an answer without `removed` (an older server), a refusal and an unreachable server all leave it too
+  for (const fetchFn of [
+    fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0 } }) }).fetch,
+    fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 500, body: {} }) }).fetch,
+    async () => { throw new Error("offline"); },
+  ]) {
+    const b = browserWith({ endpoint: "https://fcm.googleapis.com/as-device" });
+    await forgetDevice({ navigator: b.navigator, fetchFn });
+    assert.equal(b.log.unsubscribed, 0);
+  }
 });
 
 test("changed VAPID keys: the old subscription is unsubscribed and removed from the server, and a new one is made", async () => {

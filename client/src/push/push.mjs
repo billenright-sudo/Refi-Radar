@@ -133,7 +133,7 @@ async function currentSubscription(navigator, vapidPublicKey, fetchFn) {
   return manager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes });
 }
 
-// Takes this browser's device off the server and off the push service: for a save that leaves pings off or email only, and for signing out.
+// Takes this browser's device off the server and off the push service, when it is the caller's own: for a save that leaves pings off or email only, and for signing out.
 // It never registers the worker and never throws; every failure is swallowed (the server ignores the devices of users whose pings are off).
 // -> { ok: true } | { skipped: true }
 export async function forgetDevice({ navigator, fetchFn }) {
@@ -143,7 +143,10 @@ export async function forgetDevice({ navigator, fetchFn }) {
     const registration = await workers.getRegistration("/");
     const subscription = registration && registration.pushManager ? await registration.pushManager.getSubscription() : null;
     if (!subscription) return { skipped: true };
-    try { if (subscription.endpoint) await removeDevice(fetchFn, subscription.endpoint); } catch { /* swallowed */ }
+    // Only a device the server says was the caller's own is unsubscribed: on a shared browser the subscription may be someone else's.
+    let removed = false;
+    try { removed = !!subscription.endpoint && (await removeDevice(fetchFn, subscription.endpoint)).data?.removed === true; } catch { /* swallowed */ }
+    if (!removed) return { skipped: true };
     try { await subscription.unsubscribe(); } catch { /* swallowed */ }
     return { ok: true };
   } catch {
