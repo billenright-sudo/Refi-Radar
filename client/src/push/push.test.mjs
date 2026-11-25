@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  pushSupport, keyToBytes, deviceBody, loadAlerts, saveAlerts, addDevice, removeDevice, sendTest, enablePush, resyncPush,
+  pushSupport, keyToBytes, deviceBody, loadAlerts, saveAlerts, addDevice, removeDevice, sendTest, enablePush, resyncPush, forgetDevice,
   IOS_STEP, BLOCKED, UNSUPPORTED, WHAT_YOU_GET,
 } from "./push.mjs";
 
@@ -173,8 +173,95 @@ test("resyncPush does nothing when pings are off or the phone channel is not cho
   }
 });
 
+// A browser whose current subscription is `existing` ({ endpoint, key: [bytes] | null }), for forgetDevice and the changed-key check.
+function browserWith(existing) {
+  const log = { unsubscribed: 0, subscribed: [], registered: 0 };
+  const current = existing && {
+    endpoint: existing.endpoint,
+    options: existing.key ? { applicationServerKey: new Uint8Array(existing.key).buffer } : {},
+    toJSON: () => ({ endpoint: existing.endpoint, keys: { p256dh: "PP", auth: "AA" } }),
+    unsubscribe: async () => { log.unsubscribed += 1; if (existing.unsubscribeFails) throw new Error("no"); return true; },
+  };
+  const fresh = { endpoint: "https://fcm.googleapis.com/fresh", options: {}, toJSON: () => ({ endpoint: "https://fcm.googleapis.com/fresh", keys: { p256dh: "NN", auth: "BB" } }), unsubscribe: async () => true };
+  let held = current;
+  const registration = {
+    pushManager: {
+      getSubscription: async () => held,
+      subscribe: async (opts) => { log.subscribed.push(opts); held = fresh; return fresh; },
+    },
+  };
+  const navigator = {
+    serviceWorker: {
+      register: async () => { log.registered += 1; return registration; },
+      ready: Promise.resolve(registration),
+      getRegistration: async () => registration,
+    },
+  };
+  return { navigator, log, Notification: { permission: "granted", requestPermission: async () => "granted" } };
+}
+
+test("forgetDevice removes this browser's device from the server, then unsubscribes it", async () => {
+  const b = browserWith({ endpoint: "https://fcm.googleapis.com/mine" });
+  const s = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0 } }) });
+  assert.deepEqual(await forgetDevice({ navigator: b.navigator, fetchFn: s.fetch }), { ok: true });
+  assert.deepEqual(s.calls.map((c) => [c.method, c.url, c.body]), [["DELETE", "/api/profile/alerts/devices", { endpoint: "https://fcm.googleapis.com/mine" }]]);
+  assert.equal(b.log.unsubscribed, 1);
+  assert.equal(b.log.registered, 0, "forgetting never registers the worker");
+});
+
+test("forgetDevice with no subscription (or no worker support) does nothing, and failures are swallowed", async () => {
+  const s = fakeServer({});
+  const none = browserWith(null);
+  assert.deepEqual(await forgetDevice({ navigator: none.navigator, fetchFn: s.fetch }), { skipped: true });
+  assert.deepEqual(await forgetDevice({ navigator: {}, fetchFn: s.fetch }), { skipped: true });
+  assert.deepEqual(await forgetDevice({ navigator: undefined, fetchFn: s.fetch }), { skipped: true });
+  assert.equal(s.calls.length, 0);
+  // the server cannot be reached and unsubscribe throws: still no throw, and the unsubscribe was tried
+  const b = browserWith({ endpoint: "https://fcm.googleapis.com/mine", unsubscribeFails: true });
+  const down = async () => { throw new Error("offline"); };
+  assert.deepEqual(await forgetDevice({ navigator: b.navigator, fetchFn: down }), { ok: true });
+  assert.equal(b.log.unsubscribed, 1);
+  const broken = { serviceWorker: { getRegistration: async () => { throw new Error("boom"); } } };
+  assert.deepEqual(await forgetDevice({ navigator: broken, fetchFn: s.fetch }), { skipped: true });
+});
+
+test("changed VAPID keys: the old subscription is unsubscribed and removed from the server, and a new one is made", async () => {
+  const b = browserWith({ endpoint: "https://fcm.googleapis.com/old", key: [9, 9, 9] });
+  const s = fakeServer({
+    "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0 } }),
+    "POST /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 1 } }),
+  });
+  assert.deepEqual(await enablePush({ navigator: b.navigator, Notification: b.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch }), { ok: true });
+  assert.equal(b.log.unsubscribed, 1);
+  assert.deepEqual([...b.log.subscribed[0].applicationServerKey], [1, 2, 3]);
+  assert.deepEqual(s.calls.map((c) => [c.method, c.body.endpoint]), [["DELETE", "https://fcm.googleapis.com/old"], ["POST", "https://fcm.googleapis.com/fresh"]]);
+});
+
+test("the same VAPID key keeps the subscription as it is, and resyncPush also replaces a stale one", async () => {
+  const same = browserWith({ endpoint: "https://fcm.googleapis.com/mine", key: [1, 2, 3] });
+  const s = fakeServer({ "POST /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 1 } }) });
+  await enablePush({ navigator: same.navigator, Notification: same.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch });
+  assert.equal(same.log.unsubscribed, 0);
+  assert.equal(same.log.subscribed.length, 0);
+  assert.equal(s.calls[0].body.endpoint, "https://fcm.googleapis.com/mine");
+  // a browser that does not say which key it used cannot be compared: left alone
+  const unknown = browserWith({ endpoint: "https://fcm.googleapis.com/mine" });
+  await enablePush({ navigator: unknown.navigator, Notification: unknown.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch });
+  assert.equal(unknown.log.unsubscribed, 0);
+  const stale = browserWith({ endpoint: "https://fcm.googleapis.com/old", key: [7] });
+  const r = fakeServer({
+    "GET /api/profile/alerts": () => ({ status: 200, body: ALERTS }),
+    "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0 } }),
+    "POST /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 1 } }),
+  });
+  assert.deepEqual(await resyncPush({ navigator: stale.navigator, Notification: stale.Notification, fetchFn: r.fetch }), { ok: true });
+  assert.equal(stale.log.unsubscribed, 1);
+  assert.equal(stale.log.subscribed.length, 1);
+});
+
 test("the copy is the plan's wording", () => {
   assert.match(IOS_STEP, /Add to Home Screen/);
+  assert.ok(IOS_STEP.includes("Open Broker Radar from that icon, sign in, and turn notifications on here."), "the Home Screen app has its own sign-in");
   assert.match(WHAT_YOU_GET, /Never a client's name/);
   assert.ok(BLOCKED && UNSUPPORTED);
 });

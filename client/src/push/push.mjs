@@ -9,7 +9,7 @@
 // Each call answers { ok: true, data } or { ok: false, error } like profile.mjs, and never throws.
 
 export const WHAT_YOU_GET = "Market news only: a note when the national average 30-year falls by your drop size. Never a client's name. At most one per rate update, and never in your quiet hours.";
-export const IOS_STEP = "On iPhone or iPad, phone notifications work only after you add Broker Radar to your Home Screen: tap Share, then Add to Home Screen (iOS 16.4 or later). Open Broker Radar from that icon and turn notifications on here. Until then you can choose email.";
+export const IOS_STEP = "On iPhone or iPad, phone notifications work only after you add Broker Radar to your Home Screen: tap Share, then Add to Home Screen (iOS 16.4 or later). Open Broker Radar from that icon, sign in, and turn notifications on here. Until then you can choose email.";
 export const BLOCKED = "Notifications are blocked for Broker Radar in this browser's settings. Allow them there, or choose email.";
 export const UNSUPPORTED = "This browser can't show phone notifications. You can choose email instead.";
 const NOT_ALLOWED = "You didn't allow notifications, so none were turned on. You can try again, or choose email.";
@@ -109,12 +109,46 @@ export const sendTest = async (fetchFn) =>
 
 // ── turning phone notifications on ──
 
-// Registers the worker and gets (or makes) this browser's subscription. Never asks for permission.
-async function currentSubscription(navigator, vapidPublicKey) {
+// Whether a subscription was made for this public key. A browser that does not say which key it used cannot be compared: it counts as the same.
+function sameKey(subscription, bytes) {
+  const made = subscription && subscription.options && subscription.options.applicationServerKey;
+  if (!made) return true;
+  const have = new Uint8Array(made);
+  return have.length === bytes.length && have.every((byte, i) => byte === bytes[i]);
+}
+
+// Registers the worker and gets (or makes) this browser's subscription. Never asks for permission. A subscription made for another public
+// key than the server's current one (the keys were changed) is unsubscribed, removed from the server, and made again.
+async function currentSubscription(navigator, vapidPublicKey, fetchFn) {
   const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   const ready = navigator.serviceWorker.ready ? await navigator.serviceWorker.ready : registration;
   const manager = (ready || registration).pushManager;
-  return (await manager.getSubscription()) || manager.subscribe({ userVisibleOnly: true, applicationServerKey: keyToBytes(vapidPublicKey) });
+  const bytes = keyToBytes(vapidPublicKey);
+  const existing = await manager.getSubscription();
+  if (existing && sameKey(existing, bytes)) return existing;
+  if (existing) {
+    try { if (existing.endpoint) await removeDevice(fetchFn, existing.endpoint); } catch { /* the server ignores a device it cannot use */ }
+    try { await existing.unsubscribe(); } catch { /* subscribe below replaces it anyway */ }
+  }
+  return manager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes });
+}
+
+// Takes this browser's device off the server and off the push service: for a save that leaves pings off or email only, and for signing out.
+// It never registers the worker and never throws; every failure is swallowed (the server ignores the devices of users whose pings are off).
+// -> { ok: true } | { skipped: true }
+export async function forgetDevice({ navigator, fetchFn }) {
+  try {
+    const workers = navigator && navigator.serviceWorker;
+    if (!workers || typeof workers.getRegistration !== "function") return { skipped: true };
+    const registration = await workers.getRegistration("/");
+    const subscription = registration && registration.pushManager ? await registration.pushManager.getSubscription() : null;
+    if (!subscription) return { skipped: true };
+    try { if (subscription.endpoint) await removeDevice(fetchFn, subscription.endpoint); } catch { /* swallowed */ }
+    try { await subscription.unsubscribe(); } catch { /* swallowed */ }
+    return { ok: true };
+  } catch {
+    return { skipped: true };
+  }
 }
 
 // Asks for permission, so call it from a tap and from nowhere else. -> { ok: true } | { error } (a line to show as it is).
@@ -124,7 +158,7 @@ export async function enablePush({ navigator, Notification, vapidPublicKey, fetc
     const permission = await Notification.requestPermission();
     if (permission === "denied") return { error: BLOCKED };
     if (permission !== "granted") return { error: NOT_ALLOWED };
-    const body = deviceBody(await currentSubscription(navigator, vapidPublicKey));
+    const body = deviceBody(await currentSubscription(navigator, vapidPublicKey, fetchFn));
     if (!body) return { error: NO_DEVICE };
     const res = await addDevice(fetchFn, body);
     return res.ok ? { ok: true } : { error: res.error };
@@ -143,7 +177,7 @@ export async function resyncPush({ navigator, Notification, fetchFn }) {
     if (!loaded.ok) return { error: loaded.error };
     const { settings, vapidPublicKey } = loaded.data;
     if (!settings.enabled || settings.channels === "email" || !vapidPublicKey) return { skipped: true };
-    const body = deviceBody(await currentSubscription(navigator, vapidPublicKey));
+    const body = deviceBody(await currentSubscription(navigator, vapidPublicKey, fetchFn));
     if (!body) return { skipped: true };
     const res = await addDevice(fetchFn, body);
     return res.ok ? { ok: true } : { error: res.error };
