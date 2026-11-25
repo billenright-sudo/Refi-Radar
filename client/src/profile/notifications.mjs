@@ -56,25 +56,49 @@ export function formToSettings(form, browserZone) {
 // ── channel ──
 
 const CHANNEL_LABELS = { push: "Phone notification", email: "Email", both: "Both" };
+const ELSEWHERE_LABELS = { push: "Phone notification (set up on another device)", both: "Both (phone set up on another device)" };
 
-// The channel options to show for the choices available: one choice shows just that; both choices add "Both".
-export function channelOptions(choices) {
+const wantsPush = (channels) => channels === "push" || channels === "both";
+
+// The channel options to show for the choices available: one choice shows just that; both choices add "Both". A saved phone channel this
+// browser cannot do (`current`) is listed too, as set up on another device, so the card never shows a channel it will not save.
+export function channelOptions(choices, current) {
   const options = choices.map((value) => ({ value, label: CHANNEL_LABELS[value] }));
   if (choices.includes("push") && choices.includes("email")) options.push({ value: "both", label: CHANNEL_LABELS.both });
+  else if (wantsPush(current) && !choices.includes("push")) options.push({ value: current, label: ELSEWHERE_LABELS[current] });
   return options;
 }
 
 // The saved channel moved onto what is available here ("both" on an iPhone in Safari becomes "email"). With nothing available it is kept.
 export function fitChannel(channels, choices) {
   if (choices.length === 0) return channels;
-  const wantsPush = channels === "push" || channels === "both";
-  const wantsEmail = channels === "email" || channels === "both";
-  const push = wantsPush && choices.includes("push");
-  const email = wantsEmail && choices.includes("email");
+  const push = wantsPush(channels) && choices.includes("push");
+  const email = (channels === "email" || channels === "both") && choices.includes("email");
   if (push && email) return "both";
   if (push) return "push";
   if (email) return "email";
   return choices[0];
+}
+
+// What the channel menu shows: a phone channel this browser cannot do stays as it is (see channelOptions); anything else is fitted.
+export function shownChannel(channels, choices) {
+  return wantsPush(channels) && !choices.includes("push") ? channels : fitChannel(channels, choices);
+}
+
+// What a save sends and does. The stored channel goes unchanged unless, in this save, the user changed "How" or turned pings on (only
+// then is it fitted to this browser); the permission prompt is raised only in those saves too. `saved` is the server's settings, `form`
+// the card's values. -> { settings, askPush, forgetPush }
+//   askPush:    ask this browser for permission and register it (the save turns phone pings on, here)
+//   forgetPush: pings are off or email only after this save, so this browser's device is removed from the server
+export function savePlan({ saved, form, choices, browserZone }) {
+  const touched = form.channels !== saved.channels || (form.enabled === true && saved.enabled !== true);
+  const channels = touched ? fitChannel(form.channels, choices) : form.channels;
+  const settings = formToSettings({ ...form, channels }, browserZone);
+  return {
+    settings,
+    askPush: touched && settings.enabled && wantsPush(settings.channels),
+    forgetPush: !settings.enabled || settings.channels === "email",
+  };
 }
 
 // ── time zone ──

@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
-import { loadAlerts, saveAlerts, enablePush, sendTest, pushSupport, WHAT_YOU_GET } from "../push/push.mjs";
+import { loadAlerts, saveAlerts, enablePush, forgetDevice, sendTest, pushSupport, WHAT_YOU_GET } from "../push/push.mjs";
 import {
-  cardState, formToSettings, settingsToForm, zoneChoices, zoneLabel, channelOptions, fitChannel, DROP_SIZES, IOS_STEP,
+  cardState, settingsToForm, zoneChoices, zoneLabel, channelOptions, shownChannel, savePlan, DROP_SIZES, IOS_STEP,
 } from "./notifications.mjs";
 
 // The Notifications card on the Profile page: rate-drop notifications, off until the user turns them on. All the logic is in
@@ -69,13 +69,18 @@ export function NotificationsCard({ ui }) {
 
   const save = async () => {
     setBusy(true); setNote(null);
-    const settings = formToSettings({ ...form, channels: fitChannel(form.channels, choices) }, zone);
-    if (settings.enabled && (settings.channels === "push" || settings.channels === "both")) {
+    // the stored channel goes as it is unless this save changes "How" or turns pings on; only those saves may ask for permission
+    const plan = savePlan({ saved: alerts.settings, form, choices, browserZone: zone });
+    if (plan.askPush) {
       const asked = await enablePush({ navigator: window.navigator, Notification: window.Notification, vapidPublicKey: alerts.vapidPublicKey, fetchFn: fetch });
       if (asked.error) { setNote({ text: asked.error, bad: true }); setBusy(false); return; }
     }
-    const res = await saveAlerts(fetch, settings);
-    if (res.ok) { take(res.data); setNote({ text: "Saved." }); } else setNote({ text: res.error, bad: true });
+    const res = await saveAlerts(fetch, plan.settings);
+    if (res.ok) {
+      if (plan.forgetPush) await forgetDevice({ navigator: window.navigator, fetchFn: fetch });   // pings off or email only: this browser's device goes
+      take(res.data);
+      setNote({ text: "Saved." });
+    } else setNote({ text: res.error, bad: true });
     setBusy(false);
   };
 
@@ -88,8 +93,8 @@ export function NotificationsCard({ ui }) {
     setBusy(false);
   };
 
-  const options = channelOptions(choices);
-  const locked = choices.length === 0;
+  const options = channelOptions(choices, alerts && alerts.settings ? alerts.settings.channels : undefined);
+  const locked = options.length === 0;
 
   return (
     <div data-testid="notifications-card" style={{ ...card, padding: "1.1rem" }}>
@@ -132,7 +137,7 @@ export function NotificationsCard({ ui }) {
             </Labeled>
             <Labeled label="How" C={C}>
               {(id) => (
-                <select id={id} data-testid="notifications-channels" value={fitChannel(form.channels, choices)} disabled={locked} onChange={(e) => change({ channels: e.target.value })} style={inputStyle(C)}>
+                <select id={id} data-testid="notifications-channels" value={shownChannel(form.channels, choices)} disabled={locked} onChange={(e) => change({ channels: e.target.value })} style={inputStyle(C)}>
                   {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               )}

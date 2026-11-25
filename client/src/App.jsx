@@ -13,7 +13,7 @@ import { OVERVIEW_COPY, opportunityCount, ratesHeading, tileFigureSize } from ".
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
-import { resyncPush } from "./push/push.mjs";
+import { resyncPush, forgetDevice } from "./push/push.mjs";
 import { emailChangedNotice, loadProfile, profileCheckDue, profileLanding, nextProfilePrompt, stillNeededLine, PROFILE_WELCOME } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./auth/signup.mjs";
@@ -3187,6 +3187,8 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // this browser stops getting this user's pings: its device is removed while the session still counts (never throws, never waits long)
+    try { await Promise.race([forgetDevice({ navigator: window.navigator, fetchFn: fetch }), new Promise((resolve) => setTimeout(resolve, 3000))]); } catch { /* ignore */ }
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     endKeptSession();
     setUser(null);
