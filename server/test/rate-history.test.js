@@ -276,6 +276,7 @@ test("stored snapshots with no valid observation date are never a previous obser
 async function startRatesApp() {
   const express = require("express");
   delete require.cache[require.resolve("../routes/rates")];
+  require("../lib/ratesCache").clear();   // the cache used to live in the route module, so reloading it emptied it
   const app = express();
   app.use(express.json());
   app.use("/api", require("../routes/rates"));
