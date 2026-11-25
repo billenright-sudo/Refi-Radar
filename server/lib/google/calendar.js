@@ -215,7 +215,7 @@ async function listDayDetailed(token, { date, timeZone } = {}, fetchFn = globalT
     const { timeMin, timeMax } = dayBounds(date, timeZone);
     params = new URLSearchParams({
       timeMin, timeMax, singleEvents: "true", orderBy: "startTime", maxResults: String(MAX_EVENTS),
-      fields: "items(id,etag,summary,status,start,end,attendees(self),attendeesOmitted,recurringEventId,recurrence,organizer(self),locked,eventType)",
+      fields: "nextPageToken,items(id,etag,summary,status,start,end,attendees(self),attendeesOmitted,recurringEventId,recurrence,organizer(self),locked,eventType)",
     });
   } catch {
     console.error("google calendar listDayDetailed: unusable date or time zone");
@@ -237,6 +237,8 @@ async function listDayDetailed(token, { date, timeZone } = {}, fetchFn = globalT
     const body = await res.json();
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("reply is not an object");
     if (body.items !== undefined && !Array.isArray(body.items)) throw new Error("items is not a list");
+    // more than MAX_EVENTS on the day: a part of it is no ground to say an event is the only one at a time, so the day is unreadable
+    if (body.nextPageToken) throw new Error("the day has more events than one page");
     return { events: (body.items || []).map((item) => toChangeable(item, timeZone)).filter(Boolean) };
   } catch (err) {
     console.error("google calendar listDayDetailed unreadable:", errName(err));

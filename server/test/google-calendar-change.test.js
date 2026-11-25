@@ -138,6 +138,13 @@ test("listDayDetailed: multiDay is a timed event of 24 hours or more, or an all-
   assert.deepEqual(by, { overnight001: false, almostday001: false, fullday00001: true, threeday0001: true, vacation0001: true, noenddate001: true });
 });
 
+test("F8 listDayDetailed: a day Google pages (more than 50 events: a nextPageToken) is unreadable, never matched on a part", async () => {
+  const fetchFn = fakeFetch(() => json({ items: [item()], nextPageToken: "page2token" }));
+  assert.deepEqual(await calendar.listDayDetailed(ACCESS, { date: "2026-10-28", timeZone: PHX }, fetchFn), { error: "Google Calendar could not be read" });
+  assert.equal(fetchFn.calls.length, 1, "no second page is asked for");
+  assert.ok(new URL(fetchFn.calls[0].url).searchParams.get("fields").split(",").includes("nextPageToken"), "the token is asked for, so its absence means one page");
+});
+
 test("listDayDetailed: a series' own event (recurrence) repeats too; failures are fixed messages; a refusal is the reconnect code", async () => {
   const rec = await calendar.listDayDetailed(ACCESS, { date: "2026-10-28", timeZone: PHX }, fakeFetch(() => json({ items: [item({ recurrence: ["RRULE:FREQ=WEEKLY"] })] })));
   assert.equal(rec.events[0].repeats, true);
