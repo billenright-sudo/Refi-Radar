@@ -32,6 +32,7 @@ export function cardState({ alerts, support }) {
   if (!available.push && !available.email) note = NOT_AVAILABLE;
   else if (available.push && support === "blocked") note = BLOCKED;
   else if (available.push && support === "unsupported") note = UNSUPPORTED;
+  else if (!available.email && (settings.channels === "email" || settings.channels === "both")) note = EMAIL_OFF;
   return { channelChoices, showIosStep, note, canTest: !!settings.enabled && channelChoices.length > 0 };
 }
 
@@ -56,16 +57,37 @@ export function formToSettings(form, browserZone) {
 // ── channel ──
 
 const CHANNEL_LABELS = { push: "Phone notification", email: "Email", both: "Both" };
+const EMAIL_OFF_LABELS = { both: "Both (email isn't available right now)", email: "Email (isn't available right now)" };
 const ELSEWHERE_LABELS = { push: "Phone notification (set up on another device)", both: "Both (phone set up on another device)" };
 
 const wantsPush = (channels) => channels === "push" || channels === "both";
+const wantsEmail = (channels) => channels === "email" || channels === "both";
 
-// The channel options to show for the choices available: one choice shows just that; both choices add "Both". A saved phone channel this
-// browser cannot do (`current`) is listed too, as set up on another device, so the card never shows a channel it will not save.
-export function channelOptions(choices, current) {
+export const EMAIL_OFF = "Email isn't available right now. Your choice is kept, and email notifications will resume when it is.";
+
+// The stored channel, when it is none of the menu's own values and must still be listed (and kept when saving), else null:
+//   * a phone channel this browser cannot do is listed only when the user really has a device set up (`devices` > 0): it is then "set up
+//     on another device". With no device that claim would be false, so the menu shows only what this browser can do;
+//   * a channel that includes email while the server has email switched off is listed with that said, so the card never hides a saved choice.
+function keptOption(choices, channels, devices) {
+  const own = choices.map((value) => value);
+  if (choices.includes("push") && choices.includes("email")) own.push("both");
+  if (!channels || own.includes(channels)) return null;
+  const phoneMissing = wantsPush(channels) && !choices.includes("push");
+  if (phoneMissing) {
+    return devices > 0 ? { value: channels, label: ELSEWHERE_LABELS[channels] } : null;
+  }
+  if (wantsEmail(channels) && !choices.includes("email")) return { value: channels, label: EMAIL_OFF_LABELS[channels] };
+  return null;
+}
+
+// The channel options to show for the choices available: one choice shows just that; both choices add "Both"; the stored channel is added
+// when keptOption says so.
+export function channelOptions(choices, current, devices = 0) {
   const options = choices.map((value) => ({ value, label: CHANNEL_LABELS[value] }));
   if (choices.includes("push") && choices.includes("email")) options.push({ value: "both", label: CHANNEL_LABELS.both });
-  else if (wantsPush(current) && !choices.includes("push")) options.push({ value: current, label: ELSEWHERE_LABELS[current] });
+  const kept = keptOption(choices, current, devices);
+  if (kept) options.push(kept);
   return options;
 }
 
@@ -73,30 +95,32 @@ export function channelOptions(choices, current) {
 export function fitChannel(channels, choices) {
   if (choices.length === 0) return channels;
   const push = wantsPush(channels) && choices.includes("push");
-  const email = (channels === "email" || channels === "both") && choices.includes("email");
+  const email = wantsEmail(channels) && choices.includes("email");
   if (push && email) return "both";
   if (push) return "push";
   if (email) return "email";
   return choices[0];
 }
 
-// What the channel menu shows: a phone channel this browser cannot do stays as it is (see channelOptions); anything else is fitted.
-export function shownChannel(channels, choices) {
-  return wantsPush(channels) && !choices.includes("push") ? channels : fitChannel(channels, choices);
+// What the channel menu shows: the stored channel when keptOption lists it, else the channel fitted to this browser.
+export function shownChannel(channels, choices, devices = 0) {
+  return keptOption(choices, channels, devices) ? channels : fitChannel(channels, choices);
 }
 
-// What a save sends and does. The stored channel goes unchanged unless, in this save, the user changed "How" or turned pings on (only
-// then is it fitted to this browser); the permission prompt is raised only in those saves too. `saved` is the server's settings, `form`
-// the card's values. -> { settings, askPush, forgetPush }
+// What a save sends and does. A stored channel the menu keeps (keptOption) is sent unchanged, with no permission prompt, even when this
+// save turns pings on. Any other channel is fitted to this browser, and the permission prompt is raised only when this save changed "How"
+// or turned pings on. `saved` is the server's settings, `form` the card's values, `devices` the server's count of this user's devices.
+// -> { settings, askPush, forgetPush }
 //   askPush:    ask this browser for permission and register it (the save turns phone pings on, here)
 //   forgetPush: pings are off or email only after this save, so this browser's device is removed from the server
-export function savePlan({ saved, form, choices, browserZone }) {
+export function savePlan({ saved, form, choices, devices = 0, browserZone }) {
+  const kept = keptOption(choices, form.channels, devices) !== null;
   const touched = form.channels !== saved.channels || (form.enabled === true && saved.enabled !== true);
-  const channels = touched ? fitChannel(form.channels, choices) : form.channels;
+  const channels = kept ? form.channels : fitChannel(form.channels, choices);
   const settings = formToSettings({ ...form, channels }, browserZone);
   return {
     settings,
-    askPush: touched && settings.enabled && wantsPush(settings.channels),
+    askPush: !kept && touched && settings.enabled && wantsPush(settings.channels),
     forgetPush: !settings.enabled || settings.channels === "email",
   };
 }

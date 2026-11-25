@@ -70,7 +70,7 @@ export function NotificationsCard({ ui }) {
   const save = async () => {
     setBusy(true); setNote(null);
     // the stored channel goes as it is unless this save changes "How" or turns pings on; only those saves may ask for permission
-    const plan = savePlan({ saved: alerts.settings, form, choices, browserZone: zone });
+    const plan = savePlan({ saved: alerts.settings, form, choices, devices: alerts.devices || 0, browserZone: zone });
     if (plan.askPush) {
       const asked = await enablePush({ navigator: window.navigator, Notification: window.Notification, vapidPublicKey: alerts.vapidPublicKey, fetchFn: fetch });
       if (asked.error) { setNote({ text: asked.error, bad: true }); setBusy(false); return; }
@@ -93,7 +93,7 @@ export function NotificationsCard({ ui }) {
     setBusy(false);
   };
 
-  const options = channelOptions(choices, alerts && alerts.settings ? alerts.settings.channels : undefined);
+  const options = channelOptions(choices, alerts && alerts.settings ? alerts.settings.channels : undefined, alerts && alerts.devices ? alerts.devices : 0);
   const locked = options.length === 0;
 
   return (
@@ -137,7 +137,7 @@ export function NotificationsCard({ ui }) {
             </Labeled>
             <Labeled label="How" C={C}>
               {(id) => (
-                <select id={id} data-testid="notifications-channels" value={shownChannel(form.channels, choices)} disabled={locked} onChange={(e) => change({ channels: e.target.value })} style={inputStyle(C)}>
+                <select id={id} data-testid="notifications-channels" value={shownChannel(form.channels, choices, alerts.devices || 0)} disabled={locked} onChange={(e) => change({ channels: e.target.value })} style={inputStyle(C)}>
                   {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               )}
