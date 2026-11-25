@@ -141,13 +141,13 @@ export function savePlan({ saved, form, choices, devices = 0, pushOnServer = tru
   const kept = keptOption(choices, form.channels, devices, { enabled: saved.enabled === true, pushOnServer }) !== null;
   const touched = form.channels !== saved.channels || (form.enabled === true && saved.enabled !== true);
   // the one exception to "an untouched card never asks": pings on, phone saved, no device yet, on a browser that can push
-  const setUpHere = !kept && saved.enabled === true && wantsPush(saved.channels) && !(devices > 0) && choices.includes("push");
+  const setUpHere = saved.enabled === true && wantsPush(saved.channels) && !(devices > 0) && choices.includes("push");
   const channels = kept ? form.channels : fitChannel(form.channels, choices);
   const settings = formToSettings({ ...form, channels }, browserZone);
   return {
     settings,
-    askPush: !kept && (touched || setUpHere) && settings.enabled && wantsPush(settings.channels),
-    softAsk: !kept && !touched && setUpHere && settings.enabled && wantsPush(settings.channels),   // a refusal here does not stop the save
+    askPush: ((!kept && touched) || setUpHere) && settings.enabled && wantsPush(settings.channels),
+    softAsk: !touched && setUpHere && settings.enabled && wantsPush(settings.channels),   // a refusal here does not stop the save
     forgetPush: !settings.enabled || settings.channels === "email",
   };
 }

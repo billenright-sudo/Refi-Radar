@@ -217,7 +217,7 @@ test("a stored channel the server cannot send right now is shown and saved back,
     { value: "both", label: "Both (email isn't available right now)" },
   ]);
   assert.equal(shownChannel("both", state.channelChoices, 0), "both");
-  const p = plan({ saved: both.settings, patch: { quietStart: "21:00" }, choices: state.channelChoices });
+  const p = plan({ saved: both.settings, patch: { quietStart: "21:00" }, choices: state.channelChoices, devices: 1 });
   assert.equal(p.settings.channels, "both");
   assert.equal(p.askPush, false);
   const email = alerts({ push: true, email: false, channels: "email" });
@@ -344,4 +344,17 @@ test("T2: nothing the card says points to email when email is not available", ()
   assert.equal(nothingSent(true), "Nothing could be sent. Check that notifications are allowed on this device, or choose email.");
   assert.equal(nothingSent(false), "Nothing could be sent. Check that notifications are allowed on this device.");
   assert.ok(!/email/i.test(nothingSent(false)));
+});
+
+test("U1: pings on, Both saved, no device, email off on the server, a browser that can push: Save registers this browser", () => {
+  const a = alerts({ push: true, email: false, enabled: true, channels: "both", devices: 0 });
+  const state = cardState({ alerts: a, support: "ready" });
+  assert.equal(state.setUpHere, true);
+  assert.equal(state.deviceNote, SETUP_HERE);
+  const p = plan({ saved: a.settings, patch: {}, choices: state.channelChoices, devices: 0 });
+  assert.equal(p.askPush, true, "the line says Press Save to set up this one, so the save must");
+  assert.equal(p.softAsk, true);
+  assert.equal(p.settings.channels, "both", "the stored channel is kept");
+  // and the stored email-only choice (phone not saved) never asks
+  assert.equal(plan({ saved: alerts({ push: true, email: false, enabled: true, channels: "email", devices: 0 }).settings, patch: {}, choices: ["push"], devices: 0 }).askPush, false);
 });
