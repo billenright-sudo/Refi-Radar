@@ -47,7 +47,12 @@ app.use("/api/billing/webhook", billingWebhookRoutes);
 
 app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
-app.use(express.static(CLIENT_BUILD));
+// The service worker and the manifest are re-checked on every load, so a new version reaches phones at once (everything else keeps the
+// static defaults).
+const NO_CACHE = new Set(["sw.js", "manifest.webmanifest"]);
+app.use(express.static(CLIENT_BUILD, {
+  setHeaders: (res, filePath) => { if (NO_CACHE.has(path.basename(filePath))) res.setHeader("Cache-Control", "no-cache"); },
+}));
 
 // API routes
 app.use("/api/auth",          authRoutes);

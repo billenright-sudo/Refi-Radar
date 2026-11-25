@@ -1,0 +1,22 @@
+<svg width="320" height="320" viewBox="0 0 320 320" xmlns="http://www.w3.org/2000/svg">
+  <!-- The radar mark from the Broker Radar logo (RefiRadarLogo in src/App.jsx) on the logo's navy, without the words. -->
+  <rect x="0" y="0" width="320" height="320" fill="#15294f"/>
+  <g transform="translate(160, 160)">
+    <circle cx="0" cy="0" r="148" fill="none" stroke="#4a7a9b" stroke-width="1.2" opacity="0.35"/>
+    <circle cx="0" cy="0" r="120" fill="none" stroke="#4a7a9b" stroke-width="1.2" opacity="0.45"/>
+    <circle cx="0" cy="0" r="90"  fill="none" stroke="#5a8aab" stroke-width="1.5" opacity="0.55"/>
+    <circle cx="0" cy="0" r="62"  fill="none" stroke="#6a9abb" stroke-width="1.5" opacity="0.65"/>
+    <circle cx="0" cy="0" r="36"  fill="none" stroke="#7aaacb" stroke-width="2"   opacity="0.75"/>
+    <line x1="-148" y1="0" x2="148" y2="0" stroke="#4a7a9b" stroke-width="0.75" opacity="0.4"/>
+    <line x1="0" y1="-148" x2="0" y2="148" stroke="#4a7a9b" stroke-width="0.75" opacity="0.4"/>
+    <line x1="0" y1="0" x2="126" y2="-75" stroke="#8aafc9" stroke-width="1.5" opacity="0.7"/>
+    <path d="M0 0 L126 -75 A148 148 0 0 0 80 -124 Z" fill="#8aafc9" opacity="0.04"/>
+    <circle cx="100" cy="-58" r="6"  fill="#8aafc9" opacity="0.85"/>
+    <circle cx="100" cy="-58" r="11" fill="none" stroke="#8aafc9" stroke-width="1" opacity="0.3"/>
+    <circle cx="54"  cy="34"  r="4.5" fill="#8aafc9" opacity="0.55"/>
+    <circle cx="-70" cy="-44" r="3.5" fill="#8aafc9" opacity="0.4"/>
+    <circle cx="-30" cy="80"  r="3"   fill="#8aafc9" opacity="0.3"/>
+    <circle cx="0"   cy="0"   r="4"   fill="#8aafc9" opacity="0.8"/>
+    <circle cx="0"   cy="0"   r="8"   fill="none" stroke="#8aafc9" stroke-width="1" opacity="0.3"/>
+  </g>
+</svg>
