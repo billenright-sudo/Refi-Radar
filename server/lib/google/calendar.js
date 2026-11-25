@@ -243,12 +243,14 @@ async function listDayDetailed(token, { date, timeZone } = {}, fetchFn = globalT
 }
 
 // What a delete or a patch answered, as one of: { done: true } | { changed: true } (412: the etag no longer matches) |
-// { gone: true } (404 or 410: no such event any more) | { code: "reconnect" } | { error }.
+// { gone: true } (404 or 410: no such event any more) | { code: "reconnect" } | { error } (Google refused it: nothing was changed) |
+// { error, unknown: true } (a 5xx, or no answer at all: the change may or may not have been made; the caller reads the event).
 async function changeOutcome(res, what) {
   if (res.ok) return { done: true };
   console.error(`google calendar ${what} failed: HTTP`, res.status);
   if (res.status === 412) return { changed: true };
   if (res.status === 404 || res.status === 410) return { gone: true };
+  if (res.status >= 500) return { error: MSG_NOT_CHANGED, unknown: true };
   if (await refusedAsUnauthorised(res)) return { code: "reconnect" };
   return { error: MSG_NOT_CHANGED };
 }
@@ -266,7 +268,7 @@ async function deleteEvent(token, { id, etag } = {}, fetchFn = globalThis.fetch)
     });
   } catch (err) {
     console.error("google calendar deleteEvent failed:", errName(err));
-    return { error: MSG_NOT_CHANGED };
+    return { error: MSG_NOT_CHANGED, unknown: true };
   }
   return changeOutcome(res, "deleteEvent");
 }
@@ -295,13 +297,13 @@ async function patchEvent(token, { id, etag, startAt, endAt, timeZone } = {}, fe
     });
   } catch (err) {
     console.error("google calendar patchEvent failed:", errName(err));
-    return { error: MSG_NOT_CHANGED };
+    return { error: MSG_NOT_CHANGED, unknown: true };
   }
   return changeOutcome(res, "patchEvent");
 }
 
-// One event's instants: { startAt, endAt } | { gone: true } (not found, or cancelled) | { code: "reconnect" } | { error }.
-// A timed event only: an all-day one is { error }.
+// One event's instants: { startAt, endAt } | { allDay: true } (an all-day event, still there) | { gone: true } (not found, or
+// cancelled) | { code: "reconnect" } | { error }.
 async function getEvent(token, { id } = {}, fetchFn = globalThis.fetch) {
   if (typeof id !== "string" || !CHANGE_ID_RE.test(id)) return { error: MSG_NOT_READ };
   let res;
@@ -322,6 +324,7 @@ async function getEvent(token, { id } = {}, fetchFn = globalThis.fetch) {
   try {
     const body = await res.json();
     if (body && body.status === "cancelled") return { gone: true };
+    if (body && body.start && typeof body.start.date === "string") return { allDay: true };
     const startAt = Date.parse(body && body.start && body.start.dateTime);
     const endAt = Date.parse(body && body.end && body.end.dateTime);
     if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) throw new Error("event has no readable start and end");

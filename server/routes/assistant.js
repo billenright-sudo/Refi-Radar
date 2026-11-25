@@ -453,7 +453,9 @@ function changeProblem(type, event) {
 //      Done line. Anything else gives the claim back and says why in code's words (`say`, which the browser speaks as it is):
 //      the etag no longer matches (CHANGE_CHANGED; one exception on a move: a read shows it already at the new time, which is the
 //      Done line: that is a repeat whose first answer was lost), gone (ALREADY_OFF), a refused token (the reconnect path a booking
-//      has) or any other failure (COULD_NOT_CHANGE).
+//      has) or a refusal from Google (COULD_NOT_CHANGE). An unknown outcome (a 5xx, a timeout, a dropped connection) is read once
+//      (getEvent): a cancel that is gone, or a move that sits at the new start, is Done; an event still there as it was is
+//      COULD_NOT_CHANGE; a read that fails gives the claim back and is a retryable 502 (or the reconnect path), as a booking's is.
 // Never rejects: Express 4 would not catch it.
 async function confirmChangeEvent(req, res, sideEffect) {
   const type = sideEffect.type;
@@ -516,6 +518,17 @@ async function confirmChangeEvent(req, res, sideEffect) {
         there = !!seen && seen.startAt === newStart;
       }
       if (!there) { release(); return say(CHANGE_CHANGED); }
+    } else if (outcome && outcome.unknown) {
+      // (F3) a 5xx or no answer at all: the change may have been made. One read says which; until it does, nothing is claimed.
+      const seen = await google.getEvent({ id: event.id });
+      const made = move ? !!seen && seen.startAt === newStart : !!seen && seen.gone === true;
+      if (!made) {
+        release();
+        if (seen && seen.code) return refuse(409, GOOGLE_REASONS[seen.code] || GOOGLE_UNREACHABLE);
+        const unchanged = !!seen && !seen.gone && (seen.allDay === true || Number.isFinite(seen.startAt));
+        // the event is still there as it was: nothing was changed, and that is now known; a failed read is retryable, like a booking's
+        return unchanged ? say(COULD_NOT_CHANGE) : refuse(502, GOOGLE_UNREACHABLE);
+      }
     } else if (!outcome || outcome.done !== true) {
       release();
       return say(COULD_NOT_CHANGE);

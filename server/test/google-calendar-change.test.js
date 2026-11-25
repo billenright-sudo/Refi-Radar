@@ -164,8 +164,11 @@ test("deleteEvent: 412 is changed, 404 and 410 are gone, an auth refusal is reco
   assert.deepEqual(await run(() => json({}, 404)), { gone: true });
   assert.deepEqual(await run(() => json({}, 410)), { gone: true });
   assert.deepEqual(await run(() => json({}, 401)), { code: "reconnect" });
-  assert.deepEqual(await run(() => json({}, 500)), { error: "Google Calendar couldn't make that change" });
-  assert.deepEqual(await run(() => { throw new Error("socket ya29.SECRET"); }), { error: "Google Calendar couldn't make that change" });
+  // (F3) a 5xx or no answer at all is an unknown outcome; another 4xx is a refusal
+  assert.deepEqual(await run(() => json({}, 500)), { error: "Google Calendar couldn't make that change", unknown: true });
+  assert.deepEqual(await run(() => json({}, 503)), { error: "Google Calendar couldn't make that change", unknown: true });
+  assert.deepEqual(await run(() => json({}, 400)), { error: "Google Calendar couldn't make that change" });
+  assert.deepEqual(await run(() => { throw new Error("socket ya29.SECRET"); }), { error: "Google Calendar couldn't make that change", unknown: true });
   const none = fakeFetch(() => { throw new Error("no request expected"); });
   assert.deepEqual(await calendar.deleteEvent(ACCESS, { id: "../calendars", etag: '"1"' }, none), { error: "Google Calendar couldn't make that change" });
   assert.deepEqual(await calendar.deleteEvent(ACCESS, { id: "evtone12345", etag: "" }, none), { error: "Google Calendar couldn't make that change" });
@@ -220,6 +223,7 @@ test("getEvent: the start and end instants of one event, asked for nothing else"
   assert.deepEqual(await calendar.getEvent(ACCESS, { id: "evtone12345" }, fakeFetch(() => json({ status: "cancelled" }))), { gone: true });
   assert.deepEqual(await calendar.getEvent(ACCESS, { id: "evtone12345" }, fakeFetch(() => json({}, 500))), { error: "Google Calendar could not be read" });
   assert.deepEqual(await calendar.getEvent(ACCESS, { id: "evtone12345" }, fakeFetch(() => json({}, 401))), { code: "reconnect" });
+  assert.deepEqual(await calendar.getEvent(ACCESS, { id: "evtone12345" }, fakeFetch(() => json({ status: "confirmed", start: { date: "2026-10-29" }, end: { date: "2026-10-30" } }))), { allDay: true }, "(F3) an all-day event that is still there");
 });
 
 // ── the adapter ──────────────────────────────────────────────────────────────

@@ -201,7 +201,8 @@ test("cancelEvent: Google refusing the token is the reconnect path; any other fa
   assert.deepEqual([a.status, a.data.success, a.data.error], [409, false, RECONNECT]);
   assert.equal(statusOf(ann), "reconnect");
   seedConnection(ann);
-  useGoogle(fakeFetch(() => json({}, 500)));
+  // (F3) a definite refusal; a 5xx is an unknown outcome, read once first (the F3 tests below)
+  useGoogle(fakeFetch(() => json({}, 400)));
   const id = newId();
   const b = await post(ann, cancelBody(id));
   assert.deepEqual([b.status, b.data.success, b.data.say], [409, false, COULD_NOT_CHANGE]);
@@ -331,7 +332,7 @@ test("moveEvent: gone (404, 410) is already off; a refused token reconnects; oth
     useGoogle(fakeFetch(() => json({}, status)));
     assert.equal((await post(ann, moveBody(newId()))).data.say, ALREADY_OFF);
   }
-  useGoogle(fakeFetch(() => json({}, 500)));
+  useGoogle(fakeFetch(() => json({}, 400)));   // (F3) a definite refusal; a 5xx is read once first
   assert.equal((await post(ann, moveBody(newId()))).data.say, COULD_NOT_CHANGE);
   useGoogle(fakeFetch(() => json({}, 403)));
   assert.equal((await post(ann, moveBody(newId()))).data.say, COULD_NOT_CHANGE, "a 403 that is not an auth refusal");
@@ -510,4 +511,88 @@ test("a change on a far day asks Google for nothing more", async () => {
   const google = useGoogle(fakeFetch(() => empty(204)));
   assert.equal((await post(ann, cancelBody(newId()))).status, 200);   // 2099: no row was ever recorded for it
   assert.deepEqual(google.calls.map((c) => c.method), ["DELETE"]);
+});
+
+// ── fix wave F3: an unknown outcome is never "Nothing was changed" until a read says so ──
+const UNREACHABLE = "couldn't reach Google — try again";
+const at16 = { status: "confirmed", start: { dateTime: new Date(CANCEL.startAt).toISOString() }, end: { dateTime: new Date(CANCEL.startAt + 30 * 60_000).toISOString() } };
+const atNew = { status: "confirmed", start: { dateTime: new Date(NEW_START).toISOString() }, end: { dateTime: new Date(NEW_START + 45 * 60_000).toISOString() } };
+const lost = [() => json({}, 503), () => json({}, 500), () => { throw new Error("socket hang up"); }];
+
+test("F3 cancelEvent: the delete was applied but its reply was lost (5xx or a network error): one read finds it gone, the Done line, a done row", async () => {
+  for (const [i, fail] of lost.entries()) {
+    const google = useGoogle(fakeFetch((call) => (call.method === "DELETE" ? fail() : (i === 1 ? json({ status: "cancelled" }) : json({}, 404)))));
+    const id = newId();
+    const r = await post(ann, cancelBody(id));
+    assert.deepEqual([r.status, r.data.success, r.data.reply], [200, true, DONE_CANCEL], String(i));
+    assert.deepEqual(google.calls.map((c) => c.method), ["DELETE", "GET"], "one delete, one read");
+    assert.equal(rowOf(id).state, "done");
+  }
+});
+
+test("F3 moveEvent: the patch was applied but its reply was lost: one read finds it at the new start, the Done line, a done row", async () => {
+  for (const fail of lost) {
+    const google = useGoogle(fakeFetch((call) => (call.method === "PATCH" ? fail() : json(atNew))));
+    const id = newId();
+    const r = await post(ann, moveBody(id));
+    assert.deepEqual([r.status, r.data.reply], [200, DONE_MOVE]);
+    assert.deepEqual(google.calls.map((c) => c.method), ["PATCH", "GET"]);
+    assert.equal(rowOf(id).state, "done");
+  }
+});
+
+test("F3: the reply was lost and the read shows the event unchanged: the could-not-change line (now true), the claim given back", async () => {
+  useGoogle(fakeFetch((call) => (call.method === "DELETE" ? json({}, 503) : json(at16))));
+  const a = newId();
+  const r1 = await post(ann, cancelBody(a));
+  assert.deepEqual([r1.status, r1.data.say], [409, COULD_NOT_CHANGE]);
+  assert.equal(rowOf(a), undefined);
+  const google = useGoogle(fakeFetch((call) => (call.method === "PATCH" ? json({}, 504) : json(at16))));
+  const b = newId();
+  const r2 = await post(ann, moveBody(b));
+  assert.deepEqual([r2.status, r2.data.say], [409, COULD_NOT_CHANGE]);
+  assert.deepEqual(google.calls.map((c) => c.method), ["PATCH", "GET"]);
+  assert.equal(rowOf(b), undefined);
+});
+
+test("F3: a definite refusal (a 4xx that is not 404/410/412 or an auth refusal) stays the could-not-change line, with no read", async () => {
+  for (const status of [400, 403, 429]) {
+    const google = useGoogle(fakeFetch(() => json({}, status)));
+    assert.equal((await post(ann, cancelBody(newId()))).data.say, COULD_NOT_CHANGE, String(status));
+    assert.deepEqual(google.calls.map((c) => c.method), ["DELETE"]);
+  }
+});
+
+test("F3 cancelEvent: lost and unreadable: retryable like a failed booking (no say, nothing claimed about the calendar); the retry finds it gone", async () => {
+  let google = useGoogle(fakeFetch((call) => (call.method === "DELETE" ? json({}, 503) : json({}, 500))));
+  const id = newId();
+  const r = await post(ann, cancelBody(id));
+  assert.deepEqual([r.status, r.data.success, r.data.error, r.data.say], [502, false, UNREACHABLE, undefined]);
+  assert.ok(!/nothing was changed/i.test(JSON.stringify(r.data)));
+  assert.equal(rowOf(id), undefined, "the claim is given back: the same confirmId can be tried again");
+  // the first delete had gone through after all: the retry of the same confirmId meets Google's "gone"
+  google = useGoogle(fakeFetch(() => json({}, 410)));
+  const again = await post(ann, cancelBody(id));
+  assert.equal(again.data.say, ALREADY_OFF);
+  assert.equal(changes(google).length, 1);
+});
+
+test("F3 moveEvent: lost and unreadable, then a retry that finds it already in place is the Done line; the calendar is changed once", async () => {
+  useGoogle(fakeFetch((call) => (call.method === "PATCH" ? json({}, 503) : json({}, 500))));
+  const id = newId();
+  const r = await post(ann, moveBody(id));
+  assert.deepEqual([r.status, r.data.error, r.data.say], [502, UNREACHABLE, undefined]);
+  assert.equal(rowOf(id), undefined);
+  // the first patch was applied: its etag is spent, so the retry's patch is 412 and one read shows it at the new start
+  const google = useGoogle(fakeFetch((call) => (call.method === "PATCH" ? json({}, 412) : json(atNew))));
+  const again = await post(ann, moveBody(id));
+  assert.deepEqual([again.status, again.data.reply], [200, DONE_MOVE]);
+  assert.deepEqual(google.calls.map((c) => c.method), ["PATCH", "GET"]);
+  // a read that is refused as unauthorised is the reconnect path, also retryable
+  seedConnection(ann);
+  useGoogle(fakeFetch((call) => (call.method === "DELETE" ? json({}, 503) : json({}, 401))));
+  const c = newId();
+  const r3 = await post(ann, cancelBody(c));
+  assert.deepEqual([r3.status, r3.data.error], [409, RECONNECT]);
+  assert.equal(rowOf(c), undefined);
 });
