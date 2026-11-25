@@ -61,8 +61,12 @@ const { MONTHS, ordinal } = require("../dateLabels");
 const occasions = require("../occasions");
 const occasionEmails = require("../occasionEmails");
 
-// Phase 1: a 30-year fall of this much or more between two observations leads the market line. Phase 2 makes it per user.
-const DROP_THRESHOLD = 0.125;
+const rateDrop = require("../rateDrop");
+const pingSettings = require("../pings/settings");   // called as pingSettings.thresholdFor(): tests can swap it
+
+// A 30-year fall of this much or more between two observations leads the market line, unless the user chose a bigger drop size (their
+// Profile setting, lib/pings/settings.js): this is the default and the smallest. The rule itself is lib/rateDrop.js's, shared with the ping.
+const DROP_THRESHOLD = rateDrop.DEFAULT_THRESHOLD;
 // A 15-year, FHA or jumbo move smaller than this is left out, and a 30-year one is "little changed".
 const MOVE_WORTH_SAYING = 0.05;
 // The longest the briefing waits on Google in all (today's events, then the calendar follow-ups).
@@ -136,6 +140,11 @@ const attempt = (section, fn) => Promise.resolve().then(fn).catch((err) => { ski
 
 // ── the sections ─────────────────────────────────────────────────────────────
 
+// The user's own drop size; the default when their settings cannot be read (the market section never fails on it).
+function dropSizeFor(db, userId) {
+  try { return pingSettings.thresholdFor(db, userId); } catch (_err) { return rateDrop.DEFAULT_THRESHOLD; }
+}
+
 // -> { line, source, strip: { rate30, move30, asOf } } (an estimated set: strip also has estimated: true, so the screen can label the rate
 // as the briefing does) or null when there are no usable rates.
 function marketSection({ ctx, db, userId, localDate }) {
@@ -159,7 +168,7 @@ function marketSection({ ctx, db, userId, localDate }) {
   const moved = Math.abs(move30) >= MOVE_WORTH_SAYING ? moveText(move30) : "little changed";
   let line = `the 30-year is at ${rate30}%, ${moved} since ${spokenDate(data.sinceDate, localDate)}${asOfText}.`;
   // The drop leads once per observation: the first briefing after it arrives, never again as news.
-  if (move30 <= -DROP_THRESHOLD && asOf && !followups.dropAlreadyLed(db, userId, asOf)) {
+  if (rateDrop.isDrop(move30, dropSizeFor(db, userId)) && asOf && !followups.dropAlreadyLed(db, userId, asOf)) {
     line = `Rates dropped: ${line}`;
     followups.markDropLed(db, userId, asOf);
   } else {
