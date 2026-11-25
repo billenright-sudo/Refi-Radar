@@ -633,3 +633,8 @@ scheduler job's settings, visible to anyone with Cloud Scheduler view rights on 
    `gcloud scheduler jobs create http refi-radar-rate-check --location us-central1 --project refi-radar-496318 --schedule "*/30 6-20 * * *" --time-zone "America/New_York" --uri "https://refi-radar-194747178897.us-central1.run.app/internal/rate-check" --http-method POST --headers "X-Rate-Check-Secret=$(gcloud secrets versions access latest --secret RATE_CHECK_SECRET --project refi-radar-496318)" --attempt-deadline 60s --max-retry-attempts 0`
    Check: `gcloud scheduler jobs run refi-radar-rate-check --location us-central1 --project refi-radar-496318`, then the logs show one `[pings] obs ...` line.
 6. On your own phone: Profile → Notifications → turn on → "Send a test". On iPhone first add Broker Radar to the Home Screen and open it from there.
+
+Good to know (not steps):
+- A ping can very rarely arrive twice, if the push service accepted it but answered too late for us. The phone still shows one, because both carry the same tag.
+- "No ping older than 4 days" is counted in UTC days, not the user's local days.
+- After adding the site to an iPhone Home Screen, check "Connect Google Calendar" once from that icon: the Home Screen app signs in separately from Safari.
