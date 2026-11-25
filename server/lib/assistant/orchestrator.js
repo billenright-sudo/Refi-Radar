@@ -2869,7 +2869,7 @@ const changeEventLine = (text, before) => {
 // client" is none). A negation right before the verb is no claim ("I haven't cancelled it", "nothing has been moved"). The
 // user's own report that it happened ("Dave cancelled our meeting") may be repeated back in the passive, never in the first person.
 const SURE_VERB = "cancell?ed|rescheduled";
-const CAL_VERB = "moved|pushed|bumped|shifted|removed|deleted|cleared|dropped|taken\\s+off|took\\s+off|pulled";
+const CAL_VERB = "moved|pushed|bumped|shifted|removed|deleted|taken\\s+off|took\\s+off";
 const NOT_BEFORE = "(?<!(?:\\bnot|\\bnever|n['\\u2019]t|\\bnothing|\\bnone)\\s+(?:(?:yet|been|actually|just|already|have|has|had|is|was|now|ever|really)\\s+)*)";
 const CAL_CONTEXT_RE = new RegExp(
   "\\b(?:calendar|events?|meetings?|appointments?|appts?|calls?|showings?|closings?|zoom|lunch|block|invites?|walk-?through|it|that|them|those|these)\\b" +
