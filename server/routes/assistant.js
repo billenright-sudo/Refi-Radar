@@ -31,7 +31,8 @@ const { makeJudge, makeAdviceJudge } = require("../lib/assistant/judge");
 const { makeLive, userLocalDate } = require("../lib/assistant/live");
 const assistantTools = require("../lib/assistant/tools");   // called as assistantTools.x(): tests can swap a tool
 const assistantBriefing = require("../lib/assistant/briefing");   // called as assistantBriefing.buildBriefing(): tests can swap it
-const { ERROR_TURN } = require("../lib/assistant/prompt");
+const { ERROR_TURN, CHANGE_CHANGED, ALREADY_OFF, COULD_NOT_CHANGE } = require("../lib/assistant/prompt");
+const calendarChange = require("../lib/assistant/calendarChange");
 const { stageById, spokenStageLabel } = require("../lib/assistant/coaching");
 const { setCareerStageForUser } = require("../lib/careerStage");
 const { GREETING_OPENERS, openerFor, hourOf } = require("../lib/assistant/openers");   // the opening words (GREETING_OPENERS and openerFor re-exported below)
@@ -154,6 +155,8 @@ const fingerprintName = (name) => (typeof name === "string" ? name.trim().replac
 // follow-up in code's words (FOLLOW_UP_OFFER), the reply's one question; a missed call, a carry and every other change are as before.
 const FOLLOW_UP_OFFER = "Want a follow-up call on your calendar?";
 function confirmReply(type, receipt, { canBook = false } = {}) {
+  if (type === "cancelEvent") return calendarChange.doneCancelLine(receipt);
+  if (type === "moveEvent") return calendarChange.doneMoveLine(receipt);
   if (type === "createEvent") {
     // the zone as the read-back said it (a receipt kept before the zone was stored has none, and is read without it)
     const zone = zoneName(receipt.timeZone);
@@ -291,6 +294,41 @@ function eventProblem({ date, time, durationMinutes, title }) {
   return null;
 }
 
+// Claims a confirmId for one calendar change, in one transaction (createEvent, cancelEvent and moveEvent share it): a 'done' row for
+// the id is a duplicate ({ duplicate: receipt }); a 'pending' row younger than PENDING_SECONDS is { working: true }; a row of another
+// user or for another action is { conflict }; anything else is claimed by writing (or taking over) a 'pending' row ({ claimed }).
+// Throws on a database error.
+function claimConfirmation(userId, type, target, confirmId) {
+  return db.transaction(() => {
+    const prior = db.prepare(
+      "SELECT user_id, result_json, action_type, target, state, created_at > datetime('now', ?) AS fresh " +
+      "FROM assistant_confirmations WHERE confirm_id = ?"
+    ).get(`-${PENDING_SECONDS} seconds`, confirmId);
+    if (prior) {
+      if (prior.user_id !== userId) return { conflict: "confirmId already used" };
+      if (prior.action_type !== type || prior.target !== target) return { conflict: "confirmId was used for a different action" };
+      if (prior.state === "done") return { duplicate: JSON.parse(prior.result_json) };
+      if (prior.fresh) return { working: true };
+      // a pending row this old belongs to a request that died (the process went down mid-call): take it over and restart its clock
+      db.prepare("UPDATE assistant_confirmations SET created_at = datetime('now') WHERE confirm_id = ?").run(confirmId);
+      return { claimed: true };
+    }
+    db.prepare(
+      "INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target, state) VALUES (?, ?, '{}', ?, ?, 'pending')"
+    ).run(confirmId, userId, type, target);
+    return { claimed: true };
+  })();
+}
+
+// Gives a pending claim back, so the same confirmId can be tried again.
+function releaseClaim(userId, confirmId) {
+  try {
+    db.prepare("DELETE FROM assistant_confirmations WHERE confirm_id = ? AND user_id = ? AND state = 'pending'").run(confirmId, userId);
+  } catch (err) {
+    console.error("POST /api/assistant/confirm (release):", errText(err));
+  }
+}
+
 // POST /api/assistant/confirm for { type: "createEvent", event: { title, date, time, durationMinutes, timeZone }, confirmId }.
 //   1. The shape and the fields are checked (400, nothing recorded). The confirmId is required.
 //   2. One transaction: a 'done' row for this id is a duplicate (answered from the receipt, whatever has changed since: the start
@@ -319,25 +357,7 @@ async function confirmCreateEvent(req, res, sideEffect) {
 
   let claim;
   try {
-    claim = db.transaction(() => {
-      const prior = db.prepare(
-        "SELECT user_id, result_json, action_type, target, state, created_at > datetime('now', ?) AS fresh " +
-        "FROM assistant_confirmations WHERE confirm_id = ?"
-      ).get(`-${PENDING_SECONDS} seconds`, confirmId);
-      if (prior) {
-        if (prior.user_id !== req.user.id) return { conflict: "confirmId already used" };
-        if (prior.action_type !== type || prior.target !== target) return { conflict: "confirmId was used for a different action" };
-        if (prior.state === "done") return { duplicate: JSON.parse(prior.result_json) };
-        if (prior.fresh) return { working: true };
-        // a pending row this old belongs to a request that died (the process went down mid-call): take it over and restart its clock
-        db.prepare("UPDATE assistant_confirmations SET created_at = datetime('now') WHERE confirm_id = ?").run(confirmId);
-        return { claimed: true };
-      }
-      db.prepare(
-        "INSERT INTO assistant_confirmations (confirm_id, user_id, result_json, action_type, target, state) VALUES (?, ?, '{}', ?, ?, 'pending')"
-      ).run(confirmId, req.user.id, type, target);
-      return { claimed: true };
-    })();
+    claim = claimConfirmation(req.user.id, type, target, confirmId);
   } catch (err) {
     console.error("POST /api/assistant/confirm:", errText(err));
     return refuse(500, "Database error");
@@ -349,13 +369,7 @@ async function confirmCreateEvent(req, res, sideEffect) {
   if (claim.duplicate) return res.json({ success: true, result: claim.duplicate, reply: confirmReply(type, claim.duplicate), duplicate: true });
 
   // Ours from here: whatever stops the booking gives the claim back, so the same confirmId can be tried again.
-  const release = () => {
-    try {
-      db.prepare("DELETE FROM assistant_confirmations WHERE confirm_id = ? AND user_id = ? AND state = 'pending'").run(confirmId, req.user.id);
-    } catch (err) {
-      console.error("POST /api/assistant/confirm (release):", errText(err));
-    }
-  };
+  const release = () => releaseClaim(req.user.id, confirmId);
   const eventId = bookingEventId(confirmId);
   let booked;
   try {
@@ -383,6 +397,145 @@ async function confirmCreateEvent(req, res, sideEffect) {
       .run(JSON.stringify(receipt), confirmId, req.user.id);
   } catch (err) {
     console.error("POST /api/assistant/confirm (receipt):", errText(err));
+  }
+  return res.json({ success: true, result: receipt, reply: confirmReply(type, receipt) });
+}
+
+// ── Cancelling or moving a calendar event (cancelEvent, moveEvent) ──────────────────────────────────────────────────────────
+
+const CHANGE_ID_RE = /^[A-Za-z0-9_-]{5,1024}$/;   // an existing event's id, as it goes into a URL
+const CHANGE_ETAG_MAX = 200;
+const CHANGE_TITLE_MAX = 200;
+const CHANGE_MINUTES_MAX = 20160;                  // two weeks: an event's own length, which the move keeps
+const validDay = (date) => {
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  try { spokenDay(date); return true; } catch (_err) { return false; }
+};
+const validClock = (time) => typeof time === "string" && /^\d{2}:\d{2}$/.test(time) && !!parseTime(time);
+
+// What is wrong with a cancel's or a move's event, or null. The tool checked all of this when it packaged the change, but the body is
+// untrusted browser input: what is sent to Google is only an id and an etag that must look like one, and times that must be real.
+function changeProblem(type, event) {
+  const move = type === "moveEvent";
+  if (typeof event.id !== "string" || !CHANGE_ID_RE.test(event.id)) return "a valid event is required";
+  if (typeof event.etag !== "string" || !event.etag || event.etag.length > CHANGE_ETAG_MAX) return "a valid event is required";
+  if (typeof event.title !== "string" || !event.title.trim() || event.title.length > CHANGE_TITLE_MAX || /[\r\n\u2028\u2029]/.test(event.title)) {
+    return `the title must be one line of at most ${CHANGE_TITLE_MAX} characters`;
+  }
+  if (typeof event.timeZone !== "string" || !event.timeZone) return "a valid event is required";
+  if (!validDay(event.date)) return "a valid date is required";
+  if (typeof event.allDay !== "boolean" && !(move && event.allDay === undefined)) return "a valid event is required";
+  if (event.allDay === true) {
+    if (move) return "a valid event is required";
+    if (event.time != null || event.startAt != null || event.durationMinutes != null) return "a valid event is required";
+    return null;
+  }
+  if (!validClock(event.time)) return "a valid time is required (HH:MM)";
+  if (!Number.isFinite(event.startAt)) return "a valid event is required";
+  if (!Number.isInteger(event.durationMinutes) || event.durationMinutes < 1 || event.durationMinutes > CHANGE_MINUTES_MAX) return "a valid length is required";
+  if (move) {
+    if (!validDay(event.newDate)) return "a valid date is required";
+    if (!validClock(event.newTime)) return "a valid time is required (HH:MM)";
+  }
+  return null;
+}
+
+// POST /api/assistant/confirm for { type: "cancelEvent" | "moveEvent", event, confirmId } (the event as cancelEventTool / moveEventTool
+// packaged it: its id and etag, its title, day, time and zone; a move adds newDate, newTime and the length it keeps).
+//   1. The shape and the fields are checked (400, nothing recorded); the confirmId is required.
+//   2. The confirmId is claimed as a booking's is (claimConfirmation): a 'done' row is a duplicate and answers with the Done line
+//      without asking Google anything; a young 'pending' row is 409 still-working; otherwise this request owns the claim.
+//   3. Outside the transaction: the connection and the clock decide (an event that has started is left alone; a new start must be in
+//      the future and exist on the clock), then Google deletes (cancel) or patches the start and end (move), guarded by the etag,
+//      with sendUpdates=none: nobody is emailed.
+//   4. Done -> the row becomes 'done' (the receipt holds the title and the times, never the id or the etag) and the answer is the
+//      Done line. Anything else gives the claim back and says why in code's words (`say`, which the browser speaks as it is):
+//      the etag no longer matches (CHANGE_CHANGED; one exception on a move: a read shows it already at the new time, which is the
+//      Done line: that is a repeat whose first answer was lost), gone (ALREADY_OFF), a refused token (the reconnect path a booking
+//      has) or any other failure (COULD_NOT_CHANGE).
+// Never rejects: Express 4 would not catch it.
+async function confirmChangeEvent(req, res, sideEffect) {
+  const type = sideEffect.type;
+  const move = type === "moveEvent";
+  const refuse = (status, error) => res.status(status).json({ success: false, error });
+  const say = (line) => res.status(409).json({ success: false, error: line, say: line });
+
+  const event = sideEffect.event;
+  if (!event || typeof event !== "object" || Array.isArray(event)) return refuse(400, "a valid event is required");
+  if (sideEffect.confirmId == null) return refuse(400, "confirmId required");
+  if (typeof sideEffect.confirmId !== "string" || !UUID_RE.test(sideEffect.confirmId)) return refuse(400, "confirmId must be a UUID");
+  const confirmId = sideEffect.confirmId.toLowerCase();
+  const problem = changeProblem(type, event);
+  if (problem) return refuse(400, problem);
+  const target = JSON.stringify(move ? [event.id, event.etag, event.newDate, event.newTime] : [event.id, event.etag]);
+
+  let claim;
+  try {
+    claim = claimConfirmation(req.user.id, type, target, confirmId);
+  } catch (err) {
+    console.error("POST /api/assistant/confirm:", errText(err));
+    return refuse(500, "Database error");
+  }
+  if (claim.conflict) return refuse(409, claim.conflict);
+  if (claim.working) return res.status(409).json({ success: false, error: "still working on that one", pending: true });
+  if (claim.duplicate) return res.json({ success: true, result: claim.duplicate, reply: confirmReply(type, claim.duplicate), duplicate: true });
+
+  const release = () => releaseClaim(req.user.id, confirmId);
+  let done = false;
+  try {
+    const google = googleFor({ db, userId: req.user.id, fetchFn: req.app.get("googleFetch") || globalThis.fetch });
+    const connection = google.connection();
+    if (connection.code) { release(); return refuse(409, GOOGLE_REASONS[connection.code] || GOOGLE_UNREACHABLE); }
+    if (event.timeZone !== connection.timeZone) { release(); return refuse(400, "that event isn't for the calendar you connected"); }
+    const now = Date.now();
+    // history stays as it is: an event that has started since the read-back is left alone
+    if (event.allDay !== true && event.startAt <= now) { release(); return say(calendarChange.alreadyStartedLine(event.title)); }
+
+    let outcome;
+    let newStart = null;
+    if (move) {
+      const clock = parseTime(event.newTime);
+      if (!wallTimeExists(event.newDate, clock, event.timeZone)) { release(); return refuse(400, assistantTools.NO_SUCH_TIME); }
+      newStart = toInstant(event.newDate, clock, event.timeZone);
+      if (newStart < now) { release(); return refuse(400, assistantTools.PAST_TIME); }
+      outcome = await google.patchEvent({ id: event.id, etag: event.etag, startAt: newStart, endAt: newStart + event.durationMinutes * 60_000, timeZone: event.timeZone });
+    } else {
+      outcome = await google.deleteEvent({ id: event.id, etag: event.etag });
+    }
+
+    if (outcome && outcome.code) { release(); return refuse(409, GOOGLE_REASONS[outcome.code] || GOOGLE_UNREACHABLE); }
+    if (outcome && outcome.gone) { release(); return say(ALREADY_OFF); }
+    if (outcome && outcome.changed) {
+      // the etag no longer matches. A move that already sits at the new time is a repeat whose first answer was lost: one read says
+      let there = false;
+      if (move) {
+        const seen = await google.getEvent({ id: event.id });
+        if (seen && seen.gone) { release(); return say(ALREADY_OFF); }
+        there = !!seen && seen.startAt === newStart;
+      }
+      if (!there) { release(); return say(CHANGE_CHANGED); }
+    } else if (!outcome || outcome.done !== true) {
+      release();
+      return say(COULD_NOT_CHANGE);
+    }
+    done = true;
+  } catch (err) {
+    console.error("POST /api/assistant/confirm:", errText(err));
+    release();
+    return refuse(500, "Something went wrong — try again");
+  }
+
+  // The change is made. If keeping the receipt fails, the row stays pending and a retry meets Google's own "gone" or etag answer.
+  const receipt = move
+    ? { title: event.title, date: event.date, time: event.time, newDate: event.newDate, newTime: event.newTime, timeZone: event.timeZone }
+    : { title: event.title, date: event.date, time: event.time == null ? null : event.time, allDay: event.allDay === true, timeZone: event.timeZone };
+  if (done) {
+    try {
+      db.prepare("UPDATE assistant_confirmations SET result_json = ?, state = 'done' WHERE confirm_id = ? AND user_id = ?")
+        .run(JSON.stringify(receipt), confirmId, req.user.id);
+    } catch (err) {
+      console.error("POST /api/assistant/confirm (receipt):", errText(err));
+    }
   }
   return res.json({ success: true, result: receipt, reply: confirmReply(type, receipt) });
 }
@@ -575,6 +728,14 @@ function createAssistantRouter({ limiter = {} } = {}) {
     // A booking waits on Google, so it has its own (asynchronous) path; the rest are written synchronously, below.
     if (sideEffect.type === "createEvent") {
       return confirmCreateEvent(req, res, sideEffect).catch((err) => {
+        console.error("POST /api/assistant/confirm:", errText(err));
+        if (!res.headersSent) res.status(500).json({ success: false, error: "Something went wrong — try again" });
+      });
+    }
+
+    // A cancel or a move waits on Google too, and is claimed the same way.
+    if (sideEffect.type === "cancelEvent" || sideEffect.type === "moveEvent") {
+      return confirmChangeEvent(req, res, sideEffect).catch((err) => {
         console.error("POST /api/assistant/confirm:", errText(err));
         if (!res.headersSent) res.status(500).json({ success: false, error: "Something went wrong — try again" });
       });
