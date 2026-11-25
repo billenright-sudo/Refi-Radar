@@ -208,7 +208,7 @@ function feedbackMessage({ brokerage, name, role, page, message }) {
 // Sends one of the messages above. Resolves true once Gmail has taken the mail, false when EMAIL_USER/EMAIL_PASS are unset or
 // the send fails; the caller decides what to do (the routes never tell the page, which must not reveal whether an account exists).
 // A reset message carries the secret link, so only err.message is logged, never the message, the link or the token.
-async function deliverPasswordMail(to, buildMessage, what) {
+async function deliverPasswordMail(to, buildMessage, what, { quietLog = false } = {}) {
   if (!process.env.EMAIL_USER || !mailPass(process.env.EMAIL_PASS)) {
     console.warn(`[email] EMAIL_USER/EMAIL_PASS not set — skipping ${what} email`);
     return false;
@@ -218,7 +218,8 @@ async function deliverPasswordMail(to, buildMessage, what) {
     await createTransport().sendMail({ from: `"Broker Radar" <${FROM}>`, to, subject, html });
     return true;
   } catch (err) {
-    console.error(`[email] ${what} send failed:`, err.message);
+    // quietLog (the rate-drop pings): the error's name and mail-server code, never its text, which can name the recipient
+    console.error(`[email] ${what} send failed:`, quietLog ? `${err && err.name}${err && err.responseCode ? ` ${err.responseCode}` : ""}` : err.message);
     return false;
   }
 }
@@ -247,6 +248,41 @@ function sendFeedback({ to, brokerage, name, role, page, message }) {
   return deliverPasswordMail(to, () => feedbackMessage({ brokerage, name, role, page, message }), "feedback");
 }
 
+// The rate-drop email (a user's own opt-in, lib/pings/): the ping's words, which are market news only, code-written from FRED data, plus
+// where to turn them off. `drop` is rateDrop.marketMove's. The ping words are required here, not at the top: they reach the database
+// module, which the other messages above do not need.
+function rateDropMessage({ drop, localDate, appUrl }) {
+  const { pingText } = require("./lib/pings/text");
+  const text = pingText(drop, localDate);
+  return {
+    subject: `Rates dropped: the national average 30-year is ${drop.rate30}%`,
+    html: pingMailBody(text.body, appUrl),
+  };
+}
+
+function testPingMessage({ appUrl }) {
+  const { TEST_TEXT } = require("./lib/pings/text");
+  return { subject: "Broker Radar test notification", html: pingMailBody(TEST_TEXT.body, appUrl) };
+}
+
+function pingMailBody(body, appUrl) {
+  return `
+      <p>${escapeHtml(body)}</p>
+      <p><a href="${escapeHtml(appUrl)}" style="display:inline-block;background:#f59e0b;color:#000;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Open Broker Radar</a></p>
+      <p style="color:#666;font-size:12px">You get these because you turned on rate-drop notifications. Turn these off on your Profile page.</p>
+    `;
+}
+
+// Both go through deliverPasswordMail, with `quietLog`: a failure is logged by its name and mail-server code only, because a mail
+// server's error text can repeat the recipient's address, and no ping log line may carry a user's email.
+function sendRateDrop({ to, drop, localDate }) {
+  return deliverPasswordMail(to, () => rateDropMessage({ drop, localDate, appUrl: APP_URL }), "rate-drop", { quietLog: true });
+}
+
+function sendTestPing({ to }) {
+  return deliverPasswordMail(to, () => testPingMessage({ appUrl: APP_URL }), "test-notification", { quietLog: true });
+}
+
 module.exports = {
   sendInvite, inviteLink, sendRefiAlert, sendEmailChange, APP_URL,
   emailLinksWork, mailReady,
@@ -254,4 +290,5 @@ module.exports = {
   signupMessage, alreadyRegisteredMessage, sendSignup, sendAlreadyRegistered,
   billingConfirmationMessage, sendBillingConfirmation,
   feedbackMessage, sendFeedback,
+  rateDropMessage, testPingMessage, sendRateDrop, sendTestPing,
 };
