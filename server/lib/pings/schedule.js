@@ -2,7 +2,7 @@
 // When a rate-drop ping may go: the user's quiet hours and weekdays in THEIR time zone, and whether the drop is still news. Pure:
 // every decision reads only the wall clock at the instant it is given. "Allowed now" is never a stored "next allowed" instant, so a
 // clock change (DST) needs no special case.
-const { wallClock } = require("../google/time");
+const { wallClock, toInstant, addDays } = require("../google/time");
 const { isDrop } = require("../rateDrop");
 
 // A drop whose observation is older than this many days (UTC) is no longer news.
@@ -29,14 +29,21 @@ function allowedNow(settings, zone, nowMs) {
   return !inQuiet(settings, wall.minutes);
 }
 
-// -> the push message's time to live, in seconds: the time to the next quiet start in the user's zone, clamped to 60..43200, so a phone
-// that is offline cannot show the ping in the night. Twelve hours when there are no quiet hours.
+// -> the push message's time to live, in seconds: the time to the user's next not-allowed moment, clamped to 60..43200, so a phone that
+// is offline cannot show the ping in the night or on a weekend. That moment is the sooner of the next quiet-hours start and, with
+// weekdays only on, the local midnight that ends Friday; both are read off the user's wall clock (toInstant), so the night the clocks
+// change is right. Twelve hours when neither applies.
 function ttlSeconds(settings, zone, nowMs) {
-  const start = toMinutes(settings.quietStart);
-  if (start === toMinutes(settings.quietEnd)) return TTL_MAX;
   const wall = wallClock(zone, nowMs);
-  const intoMinute = Math.floor(nowMs / 1000) % 60;   // every zone's offset is a whole number of minutes
-  const seconds = ((start - wall.minutes + 1440) % 1440) * 60 - intoMinute;
+  const tomorrow = addDays(wall.date, 1);
+  let endMs = nowMs + TTL_MAX * 1000;
+  const start = toMinutes(settings.quietStart);
+  if (start !== toMinutes(settings.quietEnd)) {
+    const day = start > wall.minutes ? wall.date : tomorrow;
+    endMs = Math.min(endMs, toInstant(day, { hour: Math.floor(start / 60), minute: start % 60 }, zone));
+  }
+  if (settings.weekdaysOnly && wall.weekday === 5) endMs = Math.min(endMs, toInstant(tomorrow, { hour: 0, minute: 0 }, zone));
+  const seconds = Math.round((endMs - nowMs) / 1000);
   return Math.min(TTL_MAX, Math.max(TTL_MIN, seconds));
 }
 

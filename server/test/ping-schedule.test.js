@@ -75,6 +75,21 @@ test("ttlSeconds runs to the quiet start", () => {
   assert.equal(ttlSeconds({ ...D, quietStart: "12:00", quietEnd: "12:00" }, NY, at("2026-11-24T15:00:00Z")), 43200, "no quiet hours");
 });
 
+test("ttlSeconds ends at the end of Friday when weekdays only is on", () => {
+  const none = { ...D, quietStart: "12:00", quietEnd: "12:00", weekdaysOnly: true };
+  assert.equal(ttlSeconds(none, NY, at("2026-11-28T04:00:00Z")), 3600, "Friday 23:00 Eastern: one hour to the local midnight");
+  assert.equal(ttlSeconds(none, NY, at("2026-11-27T15:00:00Z")), 43200, "Friday 10:00: the midnight is 14 hours away, the 12-hour cap wins");
+  assert.equal(ttlSeconds({ ...none, weekdaysOnly: false }, NY, at("2026-11-28T04:00:00Z")), 43200, "weekdays only off: no end of Friday");
+  const quietFirst = { ...D, quietStart: "23:30", quietEnd: "07:00", weekdaysOnly: true };
+  assert.equal(ttlSeconds(quietFirst, NY, at("2026-11-28T04:00:00Z")), 1800, "quiet start at 23:30 comes before the midnight");
+});
+
+test("ttlSeconds on the night the clocks change reads the real wall clock", () => {
+  const s = { ...D, quietStart: "03:00", quietEnd: "07:00" };
+  assert.equal(ttlSeconds(s, NY, at("2027-03-14T06:30:00Z")), 1800, "01:30 EST, 03:00 is 03:00 EDT: thirty minutes");
+  assert.equal(ttlSeconds(s, NY, at("2027-03-13T06:30:00Z")), 5400, "the night before: ninety minutes");
+});
+
 test("pingDecision order", () => {
   const now = at("2026-11-24T15:00:00Z");
   assert.equal(STALE_DAYS, 4);
