@@ -43,7 +43,11 @@ export function cardState({ alerts, support }) {
   else if (emailOff) note = EMAIL_OFF;
   const state = { channelChoices, showIosStep, note, canTest: !!settings.enabled && channelChoices.length > 0 };
   if (showIosStep) state.iosStep = available.email ? IOS_STEP : IOS_STEP_NO_EMAIL;
-  if ((browserNote || showIosStep) && emailOff) state.emailNote = EMAIL_OFF;   // the browser note is shown too, and it must not point to email
+  if ((browserNote || showIosStep) && emailOff) state.emailNote = EMAIL_OFF;
+  // pings on, phone saved, no device yet: this browser can set itself up with a save; any other can only say what to do on the phone
+  if (settings.enabled === true && phoneSaved && !(alerts.devices > 0) && available.push) {
+    if (support === "ready") { state.setUpHere = true; state.deviceNote = SETUP_HERE; } else state.deviceNote = NO_PHONE_YET;
+  }   // the browser note is shown too, and it must not point to email
   return state;
 }
 
@@ -76,6 +80,9 @@ const ELSEWHERE_LABELS = { push: "Phone notification (set up on another device)"
 const wantsPush = (channels) => channels === "push" || channels === "both";
 const wantsEmail = (channels) => channels === "email" || channels === "both";
 
+export const SETUP_HERE = "No device is set up for phone notifications yet. Press Save to set up this one.";
+export const NO_PHONE_YET = "No phone is set up for these yet. On your phone, open Broker Radar, sign in, and press Save on this card.";
+export const nothingSent = (emailOk) => `Nothing could be sent. Check that notifications are allowed on this device${emailOk ? ", or choose email." : "."}`;
 export const PHONE_OFF = "Phone notifications aren't available right now. Your choice is kept, and phone notifications will resume when they are.";
 export const EMAIL_OFF = "Email isn't available right now. Your choice is kept, and email notifications will resume when it is.";
 
@@ -127,17 +134,20 @@ export function shownChannel(channels, choices, devices = 0, extra = {}) {
 // What a save sends and does. A stored channel the menu keeps (keptOption) is sent unchanged, with no permission prompt, even when this
 // save turns pings on. Any other channel is fitted to this browser, and the permission prompt is raised only when this save changed "How"
 // or turned pings on. `saved` is the server's settings, `form` the card's values, `devices` the server's count of this user's devices.
-// -> { settings, askPush, forgetPush }
+// -> { settings, askPush, softAsk, forgetPush }
 //   askPush:    ask this browser for permission and register it (the save turns phone pings on, here)
 //   forgetPush: pings are off or email only after this save, so this browser's device is removed from the server
 export function savePlan({ saved, form, choices, devices = 0, pushOnServer = true, browserZone }) {
   const kept = keptOption(choices, form.channels, devices, { enabled: saved.enabled === true, pushOnServer }) !== null;
   const touched = form.channels !== saved.channels || (form.enabled === true && saved.enabled !== true);
+  // the one exception to "an untouched card never asks": pings on, phone saved, no device yet, on a browser that can push
+  const setUpHere = !kept && saved.enabled === true && wantsPush(saved.channels) && !(devices > 0) && choices.includes("push");
   const channels = kept ? form.channels : fitChannel(form.channels, choices);
   const settings = formToSettings({ ...form, channels }, browserZone);
   return {
     settings,
-    askPush: !kept && touched && settings.enabled && wantsPush(settings.channels),
+    askPush: !kept && (touched || setUpHere) && settings.enabled && wantsPush(settings.channels),
+    softAsk: !kept && !touched && setUpHere && settings.enabled && wantsPush(settings.channels),   // a refusal here does not stop the save
     forgetPush: !settings.enabled || settings.channels === "email",
   };
 }

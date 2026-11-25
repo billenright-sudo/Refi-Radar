@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  cardState, formToSettings, settingsToForm, zoneChoices, zoneLabel, channelOptions, fitChannel, shownChannel, savePlan, DROP_SIZES, DEFAULT_FORM, NOT_AVAILABLE, EMAIL_OFF, PHONE_OFF, BLOCKED_NO_EMAIL, UNSUPPORTED_NO_EMAIL, IOS_STEP_NO_EMAIL,
+  cardState, formToSettings, settingsToForm, zoneChoices, zoneLabel, channelOptions, fitChannel, shownChannel, savePlan, DROP_SIZES, DEFAULT_FORM, NOT_AVAILABLE, EMAIL_OFF, PHONE_OFF, BLOCKED_NO_EMAIL, UNSUPPORTED_NO_EMAIL, IOS_STEP_NO_EMAIL, SETUP_HERE, NO_PHONE_YET, nothingSent,
 } from "./notifications.mjs";
 import { IOS_STEP, BLOCKED, UNSUPPORTED } from "../push/push.mjs";
 
@@ -133,7 +133,7 @@ test("saved phone channel with a device set up, a browser that cannot push, only
 test("a browser that can push: a save that does not touch How and does not turn pings on raises no permission prompt", () => {
   const { settings: saved } = alerts({ channels: "push" });
   for (const patch of [{ threshold: 0.25 }, { quietEnd: "06:00" }, { weekdaysOnly: false }, { timeZone: "America/Denver" }]) {
-    const p = plan({ saved, patch, choices: ["push", "email"] });
+    const p = plan({ saved, patch, choices: ["push", "email"], devices: 1 });   // with a device set up (no device is the T1 case)
     assert.equal(p.askPush, false);
     assert.equal(p.settings.channels, "push");
   }
@@ -287,4 +287,61 @@ test("S3: phone switched off on the server: a stored phone choice says so, with 
     assert.equal(p.askPush, false);
   }
   assert.equal(cardState({ alerts: alerts({ push: false, email: true, channels: "email" }), support: "ready" }).note, null, "no line when no phone is saved");
+});
+
+// ── fourth pass ──
+
+test("T1: pings on, phone saved, no device, a browser that can push: Save is open, and a save sets this browser up", () => {
+  const a = alerts({ enabled: true, channels: "push", devices: 0 });
+  const state = cardState({ alerts: a, support: "ready" });
+  assert.equal(state.setUpHere, true);
+  assert.equal(state.deviceNote, SETUP_HERE);
+  assert.equal(SETUP_HERE, "No device is set up for phone notifications yet. Press Save to set up this one.");
+  const p = plan({ saved: a.settings, patch: {}, choices: state.channelChoices, devices: 0 });
+  assert.equal(p.askPush, true, "an untouched card still registers this browser");
+  assert.equal(p.softAsk, true, "and a refusal does not stop the other fields from saving");
+  assert.equal(p.settings.channels, "push");
+  const both = alerts({ enabled: true, channels: "both", devices: 0 });
+  assert.equal(cardState({ alerts: both, support: "ready" }).setUpHere, true);
+  assert.equal(plan({ saved: both.settings, patch: {}, choices: ["push", "email"], devices: 0 }).askPush, true);
+  // a save that also changes How is an ordinary asking save: a refusal stops it
+  const changed = plan({ saved: a.settings, patch: { channels: "both" }, choices: state.channelChoices, devices: 0 });
+  assert.equal(changed.askPush, true);
+  assert.equal(changed.softAsk, false);
+});
+
+test("T1: the same state on a browser that cannot push keeps the channel and says what to do on the phone", () => {
+  for (const support of ["blocked", "unsupported", "ios_home_screen"]) {
+    const a = alerts({ enabled: true, channels: "push", devices: 0 });
+    const state = cardState({ alerts: a, support });
+    assert.equal(state.deviceNote, NO_PHONE_YET, support);
+    assert.equal(NO_PHONE_YET, "No phone is set up for these yet. On your phone, open Broker Radar, sign in, and press Save on this card.");
+    assert.equal(state.setUpHere, undefined, support);
+    const p = plan({ saved: a.settings, patch: { quietStart: "21:00" }, choices: state.channelChoices, devices: 0 });
+    assert.equal(p.settings.channels, "push");
+    assert.equal(p.askPush, false);
+  }
+});
+
+test("T1: outside that state P2 stands: a device exists, pings are off, email only, or phone is off on the server", () => {
+  const one = alerts({ enabled: true, channels: "push", devices: 1 });
+  for (const support of ["ready", "blocked"]) {
+    const state = cardState({ alerts: one, support });
+    assert.equal(state.deviceNote, undefined);
+    assert.equal(state.setUpHere, undefined);
+  }
+  const quiet = plan({ saved: one.settings, patch: { quietStart: "21:00" }, choices: ["push", "email"], devices: 1 });
+  assert.equal(quiet.askPush, false, "a quiet-hours save with a device elsewhere raises no prompt");
+  assert.equal(plan({ saved: one.settings, patch: { quietStart: "21:00" }, choices: ["email"], devices: 1 }).askPush, false);
+  assert.equal(cardState({ alerts: alerts({ enabled: false, channels: "push", devices: 0 }), support: "ready" }).deviceNote, undefined);
+  assert.equal(cardState({ alerts: alerts({ enabled: true, channels: "email", devices: 0 }), support: "ready" }).deviceNote, undefined);
+  assert.equal(cardState({ alerts: alerts({ push: false, email: true, enabled: true, channels: "push", devices: 0 }), support: "ready" }).deviceNote, undefined);
+  const off = alerts({ enabled: false, channels: "push", devices: 0 });
+  assert.equal(plan({ saved: off.settings, patch: { quietStart: "21:00" }, choices: ["push", "email"], devices: 0 }).askPush, false);
+});
+
+test("T2: nothing the card says points to email when email is not available", () => {
+  assert.equal(nothingSent(true), "Nothing could be sent. Check that notifications are allowed on this device, or choose email.");
+  assert.equal(nothingSent(false), "Nothing could be sent. Check that notifications are allowed on this device.");
+  assert.ok(!/email/i.test(nothingSent(false)));
 });

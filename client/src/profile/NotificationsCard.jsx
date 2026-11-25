@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { loadAlerts, saveAlerts, enablePush, settleSave, sendTest, pushSupport, WHAT_YOU_GET } from "../push/push.mjs";
 import {
-  cardState, settingsToForm, zoneChoices, zoneLabel, channelOptions, shownChannel, savePlan, DROP_SIZES,
+  cardState, settingsToForm, zoneChoices, zoneLabel, channelOptions, shownChannel, savePlan, nothingSent, DROP_SIZES,
 } from "./notifications.mjs";
 
 // The Notifications card on the Profile page: rate-drop notifications, off until the user turns them on. All the logic is in
@@ -71,14 +71,16 @@ export function NotificationsCard({ ui }) {
     setBusy(true); setNote(null);
     // the stored channel goes as it is unless this save changes "How" or turns pings on; only those saves may ask for permission
     const plan = savePlan({ saved: alerts.settings, form, choices, devices: alerts.devices || 0, pushOnServer: alerts.available.push, browserZone: zone });
+    let refused = null;
     if (plan.askPush) {
-      const asked = await enablePush({ navigator: window.navigator, Notification: window.Notification, vapidPublicKey: alerts.vapidPublicKey, fetchFn: fetch });
-      if (asked.error) { setNote({ text: asked.error, bad: true }); setBusy(false); return; }
+      const asked = await enablePush({ navigator: window.navigator, Notification: window.Notification, vapidPublicKey: alerts.vapidPublicKey, fetchFn: fetch, emailOk: alerts.available.email });
+      if (asked.error && !plan.softAsk) { setNote({ text: asked.error, bad: true }); setBusy(false); return; }
+      refused = asked.error || null;   // a first set-up that was refused: the rest of the card still saves, the channel stays
     }
     const res = await saveAlerts(fetch, plan.settings);
     if (res.ok) {
       take(await settleSave({ data: res.data, forget: plan.forgetPush, navigator: window.navigator, fetchFn: fetch }));   // pings off or email only: this browser's device goes, and the count is read again
-      setNote({ text: "Saved." });
+      setNote(refused ? { text: `Saved. ${refused}`, bad: true } : { text: "Saved." });
     } else setNote({ text: res.error, bad: true });
     setBusy(false);
   };
@@ -88,7 +90,7 @@ export function NotificationsCard({ ui }) {
     const res = await sendTest(fetch);
     if (!res.ok) setNote({ text: res.error, bad: true });
     else if (res.data.sent) setNote({ text: "Test sent." });
-    else setNote({ text: "Nothing could be sent. Check that notifications are allowed on this device, or choose email.", bad: true });
+    else setNote({ text: nothingSent(alerts.available.email), bad: true });
     setBusy(false);
   };
 
@@ -117,6 +119,9 @@ export function NotificationsCard({ ui }) {
         <div role="note" data-testid="notifications-note" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{state.note}</div>
       )}
 
+      {known && state.deviceNote && (
+        <div role="note" data-testid="notifications-device-note" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{state.deviceNote}</div>
+      )}
       {known && state.emailNote && (
         <div role="note" data-testid="notifications-email-note" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{state.emailNote}</div>
       )}
@@ -170,7 +175,7 @@ export function NotificationsCard({ ui }) {
           </label>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-            <button type="button" data-testid="notifications-save" onClick={busy ? undefined : save} disabled={busy || !dirty} style={buttonStyle(C, { primary: true, busy: busy || !dirty })}>Save</button>
+            <button type="button" data-testid="notifications-save" onClick={busy || !(dirty || state.setUpHere) ? undefined : save} disabled={busy || !(dirty || state.setUpHere)} style={buttonStyle(C, { primary: true, busy: busy || !(dirty || state.setUpHere) })}>Save</button>
             {state.canTest && (
               <button type="button" data-testid="notifications-test" onClick={busy || dirty ? undefined : test} disabled={busy || dirty} style={buttonStyle(C, { busy: busy || dirty })}>Send a test</button>
             )}

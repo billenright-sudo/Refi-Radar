@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   pushSupport, keyToBytes, deviceBody, loadAlerts, saveAlerts, addDevice, removeDevice, sendTest, enablePush, resyncPush, forgetDevice, settleSave,
-  IOS_STEP, BLOCKED, UNSUPPORTED, WHAT_YOU_GET,
+  IOS_STEP, BLOCKED, UNSUPPORTED, WHAT_YOU_GET, BLOCKED_NO_EMAIL,
 } from "./push.mjs";
 
 const IPHONE_SAFARI = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
@@ -303,4 +303,20 @@ test("S4: after a save that removed this browser's device the settings are read 
   assert.deepEqual(await settleSave({ data: saved, forget: true, navigator: browserWith({ endpoint: "https://fcm.googleapis.com/a" }).navigator, fetchFn: other.fetch }), saved);
   const down = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0, removed: true } }) });
   assert.deepEqual(await settleSave({ data: saved, forget: true, navigator: browserWith({ endpoint: "https://fcm.googleapis.com/a" }).navigator, fetchFn: down.fetch }), saved);
+});
+
+test("T2: with email not available the turn-on lines do not point to email", async () => {
+  const s = fakeServer({ "POST /api/profile/alerts/devices": () => ({ status: 500, body: {} }) });
+  const nobody = (text) => assert.ok(!/email/i.test(text), text);
+  const denied = browser({ ask: "denied" });
+  assert.deepEqual(await enablePush({ navigator: denied.navigator, Notification: denied.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch, emailOk: false }), { error: BLOCKED_NO_EMAIL });
+  nobody((await enablePush({ navigator: denied.navigator, Notification: browser({ ask: "default" }).Notification, vapidPublicKey: "AQID", fetchFn: s.fetch, emailOk: false })).error);
+  nobody((await enablePush({ navigator: denied.navigator, Notification: denied.Notification, vapidPublicKey: null, fetchFn: s.fetch, emailOk: false })).error);
+  const ok = browser();
+  nobody((await enablePush({ navigator: ok.navigator, Notification: ok.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch, emailOk: false })).error);
+  const broken = browser();
+  broken.navigator.serviceWorker.register = async () => { throw new Error("boom"); };
+  nobody((await enablePush({ navigator: broken.navigator, Notification: broken.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch, emailOk: false })).error);
+  // with email available the lines are as they were
+  assert.match((await enablePush({ navigator: broken.navigator, Notification: broken.Notification, vapidPublicKey: "AQID", fetchFn: s.fetch })).error, /choose email/);
 });

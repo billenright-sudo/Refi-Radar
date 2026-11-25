@@ -17,6 +17,13 @@ export const BLOCKED = "Notifications are blocked for Broker Radar in this brows
 export const UNSUPPORTED = "This browser can't show phone notifications. You can choose email instead.";
 const NOT_ALLOWED = "You didn't allow notifications, so none were turned on. You can try again, or choose email.";
 const NOT_AVAILABLE = "Phone notifications aren't available yet. Choose email.";
+// The same lines for a server with no email: nothing there may point to it.
+const WITHOUT_EMAIL = {
+  [BLOCKED]: BLOCKED_NO_EMAIL,
+  "You didn't allow notifications, so none were turned on. You can try again, or choose email.": "You didn't allow notifications, so none were turned on. You can try again.",
+  "Phone notifications aren't available yet. Choose email.": "Phone notifications aren't available yet.",
+  "This device couldn't be set up for notifications. Try again, or choose email.": "This device couldn't be set up for notifications. Try again.",
+};
 const NO_DEVICE = "This device couldn't be set up for notifications. Try again, or choose email.";
 
 const NO_SERVER = "Couldn't reach the server. Check your connection and try again.";
@@ -158,7 +165,12 @@ export async function forgetDevice({ navigator, fetchFn }) {
 }
 
 // Asks for permission, so call it from a tap and from nowhere else. -> { ok: true } | { error } (a line to show as it is).
-export async function enablePush({ navigator, Notification, vapidPublicKey, fetchFn }) {
+export async function enablePush(args) {
+  const result = await askAndRegister(args);
+  return result.error && args.emailOk === false ? { error: WITHOUT_EMAIL[result.error] || result.error } : result;
+}
+
+async function askAndRegister({ navigator, Notification, vapidPublicKey, fetchFn }) {
   if (!vapidPublicKey) return { error: NOT_AVAILABLE };
   try {
     const permission = await Notification.requestPermission();
