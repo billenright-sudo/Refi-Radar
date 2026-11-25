@@ -2,7 +2,7 @@
 // When a rate-drop ping may go: the user's quiet hours and weekdays in THEIR time zone, and whether the drop is still news. Pure:
 // every decision reads only the wall clock at the instant it is given. "Allowed now" is never a stored "next allowed" instant, so a
 // clock change (DST) needs no special case.
-const { wallClock, toInstant, addDays } = require("../google/time");
+const { wallClock, toInstant, addDays, wallTimeExists } = require("../google/time");
 const { isDrop } = require("../rateDrop");
 
 // A drop whose observation is older than this many days (UTC) is no longer news.
@@ -40,7 +40,10 @@ function ttlSeconds(settings, zone, nowMs) {
   const start = toMinutes(settings.quietStart);
   if (start !== toMinutes(settings.quietEnd)) {
     const day = start > wall.minutes ? wall.date : tomorrow;
-    endMs = Math.min(endMs, toInstant(day, { hour: Math.floor(start / 60), minute: start % 60 }, zone));
+    const hour = Math.floor(start / 60);
+    // a quiet start inside the hour the clocks skip ends the expiry when the clocks change (the hour's own first instant)
+    const minute = wallTimeExists(day, { hour, minute: start % 60 }, zone) ? start % 60 : 0;
+    endMs = Math.min(endMs, toInstant(day, { hour, minute }, zone));
   }
   if (settings.weekdaysOnly && wall.weekday === 5) endMs = Math.min(endMs, toInstant(tomorrow, { hour: 0, minute: 0 }, zone));
   const seconds = Math.round((endMs - nowMs) / 1000);

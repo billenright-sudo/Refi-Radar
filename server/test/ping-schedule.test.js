@@ -84,6 +84,12 @@ test("ttlSeconds ends at the end of Friday when weekdays only is on", () => {
   assert.equal(ttlSeconds(quietFirst, NY, at("2026-11-28T04:00:00Z")), 1800, "quiet start at 23:30 comes before the midnight");
 });
 
+test("ttlSeconds: quiet hours that start inside the skipped spring hour end at the moment the clocks change", () => {
+  const s = { ...D, quietStart: "02:30", quietEnd: "07:00" };
+  assert.equal(ttlSeconds(s, NY, at("2027-03-14T06:30:00Z")), 1800, "01:30 EST: the clocks jump at 02:00, which is quiet time from 03:00 on the wall");
+  assert.equal(ttlSeconds(s, NY, at("2027-03-13T06:30:00Z")), 3600, "the night before: 02:30 is one hour away");
+});
+
 test("ttlSeconds on the night the clocks change reads the real wall clock", () => {
   const s = { ...D, quietStart: "03:00", quietEnd: "07:00" };
   assert.equal(ttlSeconds(s, NY, at("2027-03-14T06:30:00Z")), 1800, "01:30 EST, 03:00 is 03:00 EDT: thirty minutes");
