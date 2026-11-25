@@ -346,6 +346,41 @@ test("a success is never undone: if any one device took it, the ping is sent and
   assert.equal(push.calls.filter((c) => c.endpoint.includes("ann")).length, 2, "Ann's two devices were tried once each");
 });
 
+// A db whose "delete a gone device" statement throws `times` times (a disk error on the volume); everything else is the real db.
+const flakyDeletes = (times) => {
+  let left = times;
+  return new Proxy(db, {
+    get(target, key) {
+      if (key === "prepare") {
+        return (sql) => {
+          if (left > 0 && /DELETE FROM push_subscriptions WHERE id/.test(sql)) {
+            return { run: () => { left -= 1; throw Object.assign(new Error("disk I/O error"), { name: "SqliteError" }); } };
+          }
+          return target.prepare(sql);
+        };
+      }
+      const v = target[key];
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+};
+
+test("a failed delete of a gone device after another device took the ping never releases the claim", async () => {
+  addSub(ann, 2);
+  push = makePush({ statusFor: (sub) => (sub.endpoint === EP("ann", 2) ? 410 : 201) });
+  let s1;
+  const lines = await quiet(async () => { s1 = await run({ db: flakyDeletes(1) }); });
+  assert.equal(s1.sent, 2, "Ann and Lee are both counted as sent");
+  assert.equal(s1.failed, 0);
+  assert.equal(sentRow(ann).status, "sent");
+  assert.ok(lines.some((l) => /SqliteError/.test(l)), "the failure is logged by name");
+  assert.ok(!lines.some((l) => /ann@|fcm\.googleapis/.test(l)));
+  const before = push.calls.length;
+  const s2 = await run({ nowMs: T + 1_800_000 });
+  assert.equal(s2.sent, 0);
+  assert.equal(push.calls.length, before, "nothing is sent to Ann (or anyone) on the second run");
+});
+
 test("a locked brokerage gets nothing; an active one gets it", async () => {
   const locked = { enabled: true };
   db.prepare("UPDATE organizations SET billing_status = 'canceled' WHERE id = ?").run(orgId);

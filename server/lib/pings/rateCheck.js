@@ -63,13 +63,12 @@ const accessOkFor = (db, user, billingConfig, nowMs) => {
 async function pingUser({ db, user, settings, zone, drop, nowMs, push, mail }) {
   const nowUtc = utcText(nowMs);
   if (!claimPing(db, user.id, drop.obsDate, nowUtc)) return "skipped";   // already sent (or being sent) for this observation
-  let delivered = null;                                                  // "push" | "email" | "both" once any channel delivered
+  let pushOk = false;                                                    // kept outside the try: an error AFTER a device took the ping
+  let emailOk = false;                                                   // must never release the claim
   let attempted = false;
   try {
     const localDate = wallClock(zone, nowMs).date;
     const text = pingText(drop, localDate);
-    let pushOk = false;
-    let emailOk = false;
     if (settings.channels !== "email" && push && push.enabled) {
       const subs = db.prepare("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ? ORDER BY id").all(user.id);
       const ttl = ttlSeconds(settings, zone, nowMs);
@@ -78,17 +77,20 @@ async function pingUser({ db, user, settings, zone, drop, nowMs, push, mail }) {
         let result;
         try { result = await push.send(sub, text, { ttlSeconds: ttl }); } catch (_err) { result = { ok: false, gone: false, status: null }; }
         if (result && result.ok) pushOk = true;
-        else if (result && result.gone) db.prepare("DELETE FROM push_subscriptions WHERE id = ?").run(sub.id);
+        else if (result && result.gone) {
+          // removing a gone device is housekeeping: it may never throw into the send
+          try { db.prepare("DELETE FROM push_subscriptions WHERE id = ?").run(sub.id); } catch (err) { console.error(`[pings] removing a gone device failed: ${errName(err)}`); }
+        }
       }
     }
     if (settings.channels !== "push" && mail && mail.enabled) {
       attempted = true;
       try { emailOk = Boolean(await mail.sendRateDrop({ to: user.email, drop, localDate })); } catch (_err) { emailOk = false; }
     }
-    if (pushOk || emailOk) delivered = pushOk && emailOk ? "both" : pushOk ? "push" : "email";
   } catch (err) {
     console.error(`[pings] a user's ping step failed: ${errName(err)}`);
   }
+  const delivered = pushOk || emailOk ? (pushOk && emailOk ? "both" : pushOk ? "push" : "email") : null;
   if (delivered) {
     // from here the ping is sent: nothing below may release the claim
     try { finishPing(db, user.id, drop.obsDate, delivered); } catch (err) { console.error(`[pings] recording a sent ping failed: ${errName(err)}`); }

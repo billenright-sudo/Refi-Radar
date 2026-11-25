@@ -160,7 +160,9 @@ router.post("/test", someChannel, testLimiter, async (req, res) => {
           result = { ok: false };
         }
         if (result && result.ok) sent = true;
-        else if (result && result.gone) db.prepare("DELETE FROM push_subscriptions WHERE id = ?").run(sub.id);
+        else if (result && result.gone) {
+          try { db.prepare("DELETE FROM push_subscriptions WHERE id = ?").run(sub.id); } catch (err) { console.error(`[pings] removing a gone device failed: ${errName(err)}`); }
+        }
       }
     }
     if (settings.channels !== "push" && mail) {

@@ -239,6 +239,23 @@ test("the test notification: a dead device is removed, and nothing delivered say
   assert.deepEqual((await A("POST", `${R}/test`, {})).body, { sent: false }, "no device at all");
 });
 
+test("the test notification: a failed delete of a dead device does not turn a delivered test into an error", async () => {
+  const dead = device("fcm.googleapis.com", 8);
+  const push = makePush((sub) => (sub.endpoint === dead.endpoint ? 410 : 201));
+  channelsOn(push, makeMail());
+  await A("POST", `${R}/devices`, device("fcm.googleapis.com", 7));
+  await A("POST", `${R}/devices`, dead);
+  const realPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => (/DELETE FROM push_subscriptions WHERE id/.test(sql)
+    ? { run: () => { throw Object.assign(new Error("disk I/O error"), { name: "SqliteError" }); } }
+    : realPrepare(sql));
+  let r;
+  const keep = console.error; console.error = () => {};
+  try { r = await A("POST", `${R}/test`, {}); } finally { db.prepare = realPrepare; console.error = keep; }
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { sent: true });
+});
+
 test("the test notification: 503 when neither channel is available; three an hour per user", async () => {
   const r = await A("POST", `${R}/test`, {});
   assert.equal(r.status, 503);
