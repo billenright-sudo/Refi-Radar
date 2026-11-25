@@ -12,7 +12,7 @@ break-even, a blended rate (keep the first mortgage and add a second, or do a ca
 
 Charlie gets the same four calculators as tools, so the broker can ask out loud ("what's the payment on four hundred
 thousand at six and a half for thirty years?"). Code works out every figure, on the page and for Charlie, with the same
-functions. Charlie only reads out what a calculator returned.
+functions, and code also writes Charlie's spoken answer.
 
 **Not in v1:** ARM reset and payment shock; mortgage-insurance removal; amortization tables and extra payments;
 affordability and debt-to-income (a guideline question, which Charlie already hands off). No APR anywhere.
@@ -71,17 +71,18 @@ FHA, VA and USDA insurance are not estimated (the PMI table is conventional only
 |---|---|---|
 | Current balance | Owed today | Typed (pre-fill: today's balance) |
 | Current rate | % a year | Typed (pre-fill) |
-| Months left | Payments left on the current loan | Typed (pre-fill: from the close date and loan type, when known) |
+| Months left | Payments left on the current loan | Typed (pre-fill only as in section 3; never a guessed 360) |
 | New rate | % a year | Typed. A link offers today's FRED average for the term ("Use today's 30-year average, 6.52%, from <date>"); it fills only when clicked |
 | New term | Years | Typed; starts at 30 |
 | Closing costs | $ | Filled with the app's estimate (`estClosingCosts`: $2,500 + 1% of the balance), tagged "estimate" until typed over |
 | Costs paid how | In cash, or added to the new loan | Choice; starts at "in cash" |
-| Mortgage insurance now / on the new loan | $ a month | Typed (optional); new-loan PMI estimate offered as in 2.1 |
+| Mortgage insurance now / on the new loan | $ a month | Typed (optional); new-loan PMI estimate as in 2.1, on the new loan amount (costs added to the loan included) over the cautious value, the basis the rate-refi PMI rule uses (Bill, 2026-11-21) |
 
 **Outputs:** current monthly payment; new monthly payment; monthly savings; break-even month; total still to pay on
 the current loan; total to pay on the new loan; the difference.
 
-**Formula.** Current payment = `calcPayment(balance, current rate, months left ÷ 12)` (+ its insurance). New loan amount
+**Formula.** Current payment = `calcPayment(balance, current rate, months left ÷ 12)` (+ its insurance), worked out on
+purpose and labelled "worked out from the balance, rate and months left" (no typed actual-payment field in v1). New loan amount
 = balance, plus closing costs if they are added to the loan. New payment = `calcPayment(new amount, new rate, new
 term)` (+ its insurance). Monthly savings = current − new. Break-even = closing costs ÷ monthly savings, rounded up,
 whether the costs are paid in cash or added to the loan. Long-run totals use principal and interest only (how long
@@ -95,6 +96,11 @@ $781,804. The new loan is cheaper over the long run too.
 
 **Same loan at 6.75%:** new $2,270.09; savings $194.59; break-even month 31; but the new total is 2,270.09 × 360 +
 6,000 = $823,232, which is **$24,676 more** than the $798,556 left on the current loan. This shows the long-run warning.
+
+**Costs added to the loan** (same loan, 6.25% for 30 years, $6,000 in the loan): new amount $356,000, new payment
+$2,191.95; savings $272.73; break-even 6,000 ÷ 272.73 = 21.99, so **month 22**. Totals with no cash costs: current
+$798,556; new 2,191.95 × 360 = $789,102 ($9,454 less). The screen says: "Costs are in the new loan, so the new payment
+already includes them. Break-even is the cautious figure."
 
 **Warnings.** (a) Lower payment but higher total: shown whenever monthly savings are above $0 and the new total is
 above the current total. (b) No savings: the new payment is the same or higher; no break-even month is shown.
@@ -152,7 +158,7 @@ as the buydown." A reduced rate below 0% (note rate under the reduction): refuse
 buydown."
 
 **Permanent (points).** Inputs: loan amount, rate without points, rate with points (always typed: the app has no pricing
-engine), points (% of the loan) or cost in dollars (either; the other is shown), term. Outputs: cost, both payments,
+engine), points (% of the loan) and cost in dollars (both typeable: the one edited last wins, the other is recomputed), term. Outputs: cost, both payments,
 monthly savings, break-even month, and savings over the full term less the cost.
 Example: $400,000, 7% → 6.5% for 1.5 points. Cost 400,000 × 1.5% = **$6,000.00**; $2,661.21 → $2,528.27, savings
 **$132.94**; break-even 6,000 ÷ 132.94 = 45.1 → **month 46**; over 30 years 132.94 × 360 − 6,000 = **$41,858**.
@@ -171,70 +177,93 @@ what was typed in each until the page is left. The cards, inputs, buttons, color
 ones (`card`, `inputStyle`, the tile figures in `App.jsx`); no new visual style.
 
 **Open in calculator** is a button on a client's page beside the existing refi figures. It opens Calculators on
-**Refi break-even** and fills in the current balance, current rate and months left, and the same three in Payment and
-Blended rate. Balance and value are the client page's own figures (today's balance and cautious value, `equity.mjs`
-`pricedToday`), so they match the Equity Projection and Upgrades cards. A strip above the card says where they came
-from, in the app's existing basis words: "Filled in from Robert & Linda Chen's record: balance $350,000 (estimated for
-today), rate 7.25%, 324 months left. Change any figure. Nothing here is saved to the client." with a "Clear" link. A loan
-officer only ever has their own clients' pages, so they can only fill in their own clients.
+**Refi break-even** and fills in the current balance, current rate, months left, home value and credit score, in
+Payment and Blended rate too. Balance and value are the client page's own figures (today's balance and the cautious
+value behind "LTV today", `equity.mjs` `pricedToday`), so they match the Equity Projection and Upgrades cards; the
+credit score only when it is a real one, not the 700 default. Months left is filled only when the client has a close
+date and a 30-year or 15-year fixed loan, counted to today; otherwise the field stays blank with "Months left isn't on
+this client's record. Type it." A strip above the card says where the figures came from: "Filled in from Robert &
+Linda Chen's record: balance $350,000 (estimated for today), rate 7.25%, 324 months left (from the closing date, on a
+30-year term). Change any figure. Nothing here is saved to the client." with a "Clear" link. A loan officer only ever
+has their own clients' pages, so they can only fill in their own clients.
 
 **Phone width:** as on the other pages, the four buttons wrap, inputs stack in one column, and results sit under the
 inputs (`gridCols(2, isPhone)` and the `ph()` helper).
 
 ## 4. Charlie
 
-**Tools** (read-only, like `findClient`; they change nothing). Each takes the page's inputs by name, or `clientId`
-(from `findClient`) to fill the client's balance, rate and months left in code. Each returns the inputs it used, the
-outputs with the page's rounding, any warning as a code-written line, `estimates` (the fields that used the app's
-estimate), and `missing` (the one input it still needs). A result's source is `"calculator"`, so it grounds figures as
-other cited results do.
-- `paymentCalcTool` { loanAmount, rate, termYears, taxesYearly?, insuranceYearly?, miMonthly?, hoaMonthly?, clientId? }.
-  With none of the optional four, it returns principal and interest only, flagged `principalAndInterestOnly`.
-- `breakEvenCalcTool` { clientId? or currentBalance + currentRate + monthsLeft, newRate, newTermYears, closingCosts?, costsInLoan? }.
-  No closing costs given: it uses `estClosingCosts` and lists it in `estimates`.
-- `blendedRateCalcTool` { first loan or clientId, cashNeeded, second {kind, rate, termYears, costs?}, cashOut {rate, termYears, costs?}, compareYears }.
-- `buydownCalcTool` { kind: "2-1" | "3-2-1" | "1-0" | "points", loanAmount, noteRate, termYears, rateWithPoints?, points? }.
+**Her answers are written by code.** The model's only job is to pick the calculator tool and pass the inputs the broker
+said. The tool works out the figures and also returns `say`, one answer written by code from the inputs and outputs. The
+turn ends with that line, the way a set-up email or an opened screen already ends a turn in code (`orchestrator.js`:
+the compose and screen results, `LAST_CALL_TOOLS`). The model never sees the result and never rewords it. A missing
+input ends the turn the same way, with one code-written question. An input outside the limits ends it with the page's
+refusal line.
+
+**Tools** (read-only; they change nothing). Each takes the page's inputs by name, or `clientId` (from `findClient`, the
+existing scoped lookup) so code fills in that client's balance, rate, months left, value and real score, under the
+section 3 rules. Client data used carries the id, name and loan figures only, never email, phone or notes.
+- `paymentCalcTool` { loanAmount, rate, termYears?, taxesYearly?, insuranceYearly?, miMonthly?, hoaMonthly?, clientId? }
+- `breakEvenCalcTool` { clientId? or currentBalance + currentRate + monthsLeft, newRate, newTermYears?, closingCosts?, costsInLoan? }
+- `blendedRateCalcTool` { clientId? or first balance + rate + monthsLeft, cashNeeded, second {kind, rate, termYears, costs?}, cashOut {rate, termYears, costs?}, compareYears? }
+- `buydownCalcTool` { kind: "2-1" | "3-2-1" | "1-0" | "points", loanAmount, noteRate, termYears?, rateWithPoints?, points? }
 - `showScreenTool` gains the page `calculators` ("Here's Calculators."). It opens the page only; it does not fill it in.
 
-Client payloads carry the client's id and name and the loan figures used, never email, phone or notes. The new rate,
-taxes, insurance and HOA are never filled in by code for Charlie; closing costs are, and she says "estimated".
+Code fills in only what the page fills in: a term not said is 30 years, closing costs not said are the app's estimate,
+compare-over not said is 5 years, and the line always says each of them. The new rate, taxes, insurance, HOA, months
+left (when the record can't give it) and the rate with points are never filled in; they are asked for.
 
-**Example exchanges** (figures from the tools; the Okafor loan is the 2.2 example):
-- Broker: "What's the payment on four hundred thousand at six and a half for thirty years?" Tool: P&I 2,528.27.
-  Charlie: "On $400,000 at 6.5 percent over 30 years, principal and interest is $2,528.27 a month, before taxes,
-  insurance and any HOA."
-- Broker: "What's the break-even on the Okafors' refinance?" `findClient` → one match; `breakEvenCalcTool` returns
-  `missing: newRate`. Charlie: "What rate are you looking at for them?" Broker: "Six and a quarter, thirty years."
-  Charlie: "At 6.25 percent over 30 years their payment goes from $2,464.68 to $2,155.01, saving $309.67 a month. With
-  estimated closing costs of $6,000, they break even in month 20."
-- Same at 6.75: "That saves $194.59 a month with break-even in month 31, but restarting the clock costs $24,676 more
-  over the life of the loan."
-- Broker: "Open the calculators." → "Here's Calculators."
+**Line templates.** Money is written as the app's code-written lines write it: monthly amounts and the buydown cost to
+the cent ($2,528.27), totals in whole dollars ($24,676). Rates are written as typed with no extra zeros (6.5%, 6.25%).
+`toSpeech` reads them aloud ("six point five percent", "two thousand five hundred twenty-eight dollars and twenty-seven
+cents"). Parts in braces drop out when they don't apply.
+- Payment, nothing else said: "On {amount} at {rate}% over {years} years, principal and interest is {P&I} a month,
+  before taxes, insurance and any HOA."
+- Payment with extras: "On {amount} at {rate}% over {years} years, the payment is {total} a month: {P&I} principal and
+  interest{, {taxes} taxes}{, {insurance} insurance}{, {MI} {estimated }mortgage insurance}{, {HOA} HOA}.{ {list} not entered.}"
+- Break-even: "Taking {client's |the }{balance} at {rate}% with {months} months left to {new rate}% over {years} years
+  moves the payment from {current} to {new}, saving {savings} a month. With {estimated }closing costs of {costs}{ added
+  to the loan}, break-even is month {n}." Then the warning, if one applies.
+- Blended rate: "Keeping the {rate}% first and adding a {amount} {second|HELOC} at {rate}% over {years} years blends to
+  {blended}% at {combined} a month. A cash-out to {amount} at {rate}% over {years} years, with {estimated }costs of
+  {costs} in the loan, is {payment} a month. Over {Y} years, {keeping the first|the cash-out} costs {difference} less."
+- Temporary buydown: "On {amount} at {rate}% over {years} years, a {kind} buydown makes the payment {year 1} in year
+  one{, {year 2} in year two}{, {year 3} in year three}, then {note payment}. It costs {subsidy}."
+- Points: "On {amount}, {points} points for {cost} take the rate from {rate}% to {rate}% and the payment from {before}
+  to {after}, saving {savings} a month. Break-even is month {n}."
+- Warnings, added after the answer, word for word as on the page (section 6).
+- Questions: "What rate are you looking at for them?" (or "What's the new rate?" with no client); "How many months are
+  left on the current loan?"; "What's the loan amount?"; "What's the rate?"; "How much cash do they need?"; "What's
+  the rate on the second?"; "What rate for the cash-out?"; "What's the rate with points?"; "How many points?";
+  "Which buydown: 2-1, 3-2-1 or 1-0?"
 
-**Missing input:** she asks for that one input in one question, starting with the question word, as the confirmation
-rule already says; she never supplies it. Two clients match: she asks which one, as today.
+**Example** (the 2.2 loan, for the Okafors): Broker: "What's the break-even on the Okafors' refinance?" `findClient`
+finds one; `breakEvenCalcTool` returns the question "What rate are you looking at for them?" Broker: "Six and a quarter."
+Line: "Taking the Okafors' $350,000 at 7.25% with 324 months left to 6.25% over 30 years moves the payment from $2,464.68
+to $2,155.01, saving $309.67 a month. With estimated closing costs of $6,000, break-even is month 20." At 6.75% the line
+ends "…break-even is month 31. Lower payment, higher total: restarting the clock costs $24,676 more over the life of the
+loan than keeping the current loan."
 
-**Prompt:** one new paragraph: use the calculator tools for payment, break-even, blended-rate and buydown questions;
-say the inputs used before the answer; say "estimated" for anything in `estimates`; say "principal and interest" when
-the result is P&I only; never give an APR; never call a figure a quote or an offer.
+**Prompt:** one new paragraph: for payment, break-even, blended-rate and buydown questions call the matching tool with
+only the figures the broker said; never fill one in, work one out or say a figure yourself; the app writes the answer;
+a line of yours that was written by the app (as with "Here's") is true. Two clients match: she asks which, as today.
 
-**Must keep working:** the figure check (`ungroundedNumbers`), the ungrounded screens (`classifyUngrounded`), the
-action backstop and confirmation rule, "Charlie opens screens" (`navigation.js` page lists, `PAGE_NAME_RE`,
-`charlieNav.mjs` `SAME`, `nav.mjs`), the form-open lock, the broker-only page refusals, scoped lookups (an LO's
-`clientId` outside their book is "no such client"), and the Charlie eval suite.
+**Must keep working:** the figure check and ungrounded screens on every other turn, the confirmation rule and the
+one-at-a-time rule (a calculator answer plus another change in one turn is "one at a time"), "Charlie opens screens"
+(`server/lib/assistant/navigation.js` page lists and `PAGE_NAME_RE`, `client/src/charlieNav.mjs` `SAME`, `nav.mjs`),
+the form-open lock, broker-only refusals, scoped lookups (another LO's `clientId` is "no such client"), the eval suite.
 
 **Build risks:**
-1. The figure check accepts any number found anywhere in this turn's tool results. A calculator result is full of
-   numbers (inputs, each year's payment), so a figure said in the wrong place (year 1's payment as year 2's) passes.
-   Keep payloads small and named; add eval cases for swapped figures.
-2. The model turns the broker's spoken words into tool inputs ("six and a half" → 6.5). A mishearing becomes a
-   correctly computed answer to the wrong question. The tool echoes its inputs, and she must say them first.
-3. The closing-cost estimate is applied for Charlie without a question. The safeguard is that she must say
-   "estimated"; code should check that the word is in the reply when `estimates` is not empty, or the turn is can't-verify.
-4. "Show me the break-even on the Okafors" must stay a question, not a page request; "open the calculator" must be one.
-   Add both to the navigation tests.
-5. Months left for a client is worked out inside `lib/equity.js balanceToday` today but not sent to the browser; the
-   build adds it to the today block, which other screens read. Check nothing else changes.
+1. Ending a turn in code on a read tool is new: today only changes (an action to confirm, an email, a screen) do. The
+   build adds a fourth kind beside them without making it something to confirm.
+2. Mishearing a spoken input ("six and a half" heard as 6.05) still gives a correct answer to the wrong question. The
+   line always says the inputs first, so the broker hears it and corrects it.
+3. The figure check is not the safeguard on these turns; code wrote every word. But a later turn that talks about an
+   earlier answer ("so that's about $300 a month?") has no tool result behind it and gets can't-verify; she should
+   re-run the tool. Add eval cases.
+4. Phrases: "show me the break-even on the Okafors" must stay a calculator question, "open the calculator" a page
+   request. Add both to the navigation tests.
+5. Months left is worked out inside `lib/equity.js balanceToday` but not sent to the browser or the tools; the build
+   exposes it (30- and 15-year fixed only) in the today block, which other screens read. Check nothing else changes.
 
 ## 5. One source of math
 
@@ -254,7 +283,8 @@ each hold the four calculators between two marker lines, `// ---- calculators: s
 2. Every worked example in this document gives the same answer from both files.
 3. About 500 input sets (rates 0 to 12%, terms 1 to 40 years, every buydown kind, both cost choices) give identical
    results from both files, including `calcPayment`, `estClosingCosts` and `pmiMonthly` on each side.
-4. Each Charlie tool returns exactly the server function's outputs for the same inputs.
+4. Each Charlie tool returns exactly the server function's outputs, and its `say` line matches the section 4 template,
+   for the doc's examples.
 
 ## 6. Sentences for Bill's OK
 
@@ -262,8 +292,10 @@ each hold the four calculators between two marker lines, `// ---- calculators: s
 - Estimate line, under the page title and on every result (**for a lawyer's look**): "Estimate for your own use only.
   This is not a Loan Estimate, a rate quote or an offer of credit."
 - Pre-fill strip: "Filled in from <client>'s record: <figures and where they came from>. Change any figure. Nothing here
-  is saved to the client."
-- Estimate tag beside a filled-in default: "estimate".
+  is saved to the client." Months left missing: "Months left isn't on this client's record. Type it."
+- Estimate tag beside a filled-in default: "estimate". Current payment label: "worked out from the balance, rate and
+  months left".
+- Costs in the loan: "Costs are in the new loan, so the new payment already includes them. Break-even is the cautious figure."
 - Long-run warning: "Lower payment, higher total: restarting the clock costs $X more over the life of the loan than
   keeping the current loan."
 - No savings: "The new payment isn't lower, so the costs are never earned back."
@@ -273,39 +305,44 @@ each hold the four calculators between two marker lines, `// ---- calculators: s
   period changes the payment."
 - Refusals: "The term must be at least as long as the buydown." / "The note rate is too low for this buydown." /
   "The rate with points must be lower than the rate without." / "Enter the cash needed."
-- Charlie opening the page: "Here's Calculators."
+- Charlie: every line template and question in section 4, and "Here's Calculators."
 
 ## 7. Bill decides
 
-1. **Ship before the lawyer reads the estimate line?** Recommend yes: it is broker-only, with no client output; the
+1. **Charlie's calculator answers are written by code, not in her own words.** Recommend yes; the alternative is her
+   own wording with after-the-fact checks, which is weaker.
+2. **Ship before the lawyer reads the estimate line?** Recommend yes: it is broker-only, with no client output; the
    lawyer review gates any later client-facing step.
-2. **May Charlie use today's FRED average when the broker says "at today's rate"?** Recommend yes, said as "today's
+3. **May Charlie use today's FRED average when the broker says "at today's rate"?** Recommend yes, said as "today's
    estimated average", never as the client's rate. (As written, she asks for the rate.)
-3. **Long-run warning measured on total still to pay** (payments plus cash costs, as in 2.2) rather than interest
-   alone? Recommend total paid: it is what the borrower actually hands over.
 
 ### Sirius's calls for Bill to check
 
-- Code computes every number; Charlie reads only tool results (the existing grounding rule).
+- Code computes every number and, for Charlie, writes every word of the answer.
 - Broker-facing only; no print, share, email or client view; no APR; one estimate line on every result.
 - Taxes, insurance and HOA always typed; the rate after points always typed; closing costs and conventional PMI filled
   in as visible, tagged estimates; today's FRED rate offered by a link, never filled in by itself.
 - One Calculators page in the navigation for brokers and LOs; four cards, one shown at a time; existing look.
-- Open in calculator fills balance, rate and months left from the client page's own figures, and says so.
-- Nothing saved; no new table; same access and billing rules as the rest of the app.
-- Rounding as in section 2; page and Charlie get identical rounded numbers.
-- Charlie answers a bare payment question with principal and interest only, and says so, instead of asking for taxes.
-- HELOC worked as fixed and fully paid off over its term, with an interest-only line for information.
-- Compare-over window starts at 5 years. Refuse rather than guess when an input is out of range.
+- Open in calculator fills balance, rate, months left, cautious value and a real credit score, and says so; months
+  left only from a close date on a 30- or 15-year fixed loan, never a guessed 360.
+- PMI estimate on the new loan amount (costs in the loan included) over the cautious value, as the rate-refi rule does.
+- Current payment is worked out from balance, rate and months left, and labelled so; no typed actual payment in v1.
+- One break-even rule (costs ÷ savings, rounded up) whether costs are paid in cash or added to the loan: it matches how
+  the app's Refi Ready rule measures payback, and it errs on the cautious side.
+- Long-run warning measured on total still to pay (payments plus cash costs), not interest alone: it is what the
+  borrower actually hands over.
+- Points: percent and dollars both typeable; the one edited last wins.
+- Nothing saved; no new table; same access and billing rules. Rounding as in section 2, identical on page and Charlie.
+- A bare payment question is answered as principal and interest only, and says so. HELOC worked as fixed and paid off
+  over its term. Compare-over starts at 5 years. Refuse rather than guess out of range.
 - Two marked copies plus a byte-equality test, rather than changing the Dockerfile.
 
 ## 8. Left to the builder, and size
 
-Left to the builder: file and function names inside the two calculator files; how the page component is split out of
-`App.jsx` (a small `calculators` component file is preferred to growing `App.jsx`); the tool schemas' wording; where
-months left joins the today block; test layout.
+Left to the builder: file and function names; how the page component is split out of `App.jsx` (a small component file
+is preferred); tool schema wording; where months left joins the today block; test layout.
 
-Rough size: **about 11 plan tasks**: shared math and its tests (one task per calculator, 4); the browser copy and the
-drift test (1); the page shell, navigation and the Payment card (1); the other three cards (1); Open in calculator and
-months left (1); the four Charlie tools (1); prompt, `showScreenTool` page and navigation phrases (1); eval cases, phone
-pass and a practice run (1).
+Rough size: **about 12 plan tasks**: shared math and its tests (one per calculator, 4); browser copy and drift test (1);
+page shell, navigation and the Payment card (1); the other three cards (1); Open in calculator and months left (1); the
+four Charlie tools and their code-written lines (1); the orchestrator ending a turn on a calculator line (1); prompt,
+`showScreenTool` page and navigation phrases (1); eval cases, phone pass and a practice run (1).
