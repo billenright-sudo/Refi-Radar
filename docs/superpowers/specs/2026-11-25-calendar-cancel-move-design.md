@@ -37,23 +37,31 @@ Two new tools, both packaging a change for confirmation (they change nothing):
 `date`, `newDate`, `time` and `newTime` are resolved by code the way `createEventTool` resolves them. At least one of `time` or
 `title` is required.
 
-Code reads that day from Google (with the extra code-only fields it needs) and matches:
+Code reads that day from Google (with the extra code-only fields it needs). Only events that START on that day (in the
+calendar's zone) are matched: one that began on an earlier day is not found for this day. A day with more than one page of
+events (over 50) is treated as unreadable. Then code matches:
 
 1. If `time` is given and exactly one event starts at that time, that is the event (the read-back shows its real title, so a
    misheard title is visible before the yes).
-2. Otherwise match on `title`: case and punctuation ignored, every word the broker gave must appear in the event's title.
-   If `time` was also given, it must match too.
+2. Otherwise match on `title`, case and punctuation ignored, in two passes over the words the broker gave:
+   - Pass 1: ignore `the a an my our your with for to on at and of`. Every remaining word must appear in the title.
+   - Pass 2, only if pass 1 found nothing: also ignore `call meeting appointment appt event followup follow up`.
+   If ignoring words would leave none, the words are kept as given. If `time` was also given, it must match too.
 3. No match: the not-found line. More than one: the which-one line (up to four listed). Exactly one: go on.
 
 ## 4. Events she will not change
 
-Each is a code-written line that names the reason and points to Google Calendar. Nothing is packaged for confirmation.
+Each is a code-written line that names the reason and points to Google Calendar. Nothing is packaged for confirmation. They are
+checked in this order: someone else's, not a regular event, guests, repeating, more than one day, already started, all-day move.
+An overnight timed event shorter than 24 hours is an ordinary event on the day it starts.
 
 | Case | Why |
 |---|---|
 | The event has guests (anyone besides the broker) | Guests would not be told, and she never emails guests |
 | A repeating event (any instance of a series) | One-instance versus whole-series is not handled yet |
 | Organized by someone else, or Google says it can't be edited | Not the broker's to change |
+| Not a regular event (focus time, out of office, working location, from Gmail) | Not an ordinary event to change |
+| Runs over more than one day (timed, 24 hours or more; all-day, more than one day) | Changing it would change the other days too |
 | Already started or over | History stays as it is |
 | All-day event, asked to move | Cancel is fine; moving all-day events is not handled yet |
 
@@ -73,24 +81,33 @@ Each is a code-written line that names the reason and points to Google Calendar.
   the requested new time, answer with the Done line.
 - Google answers "gone" or "not found": she says the already-off line (true whether a repeat of this confirm or the broker
   removed it by hand).
-- Google refuses the token: the existing reconnect path. Any other failure: a fixed could-not-change line; nothing is claimed.
+- Google refuses the token: the existing reconnect path. Any other refusal from Google (a 4xx): the could-not-change line.
+- No answer, a timeout or a 5xx (the change may or may not have been made): read the event once. A cancel that is gone, or a
+  move that sits at the new start, is Done. An event still there as it was is the could-not-change line. If that read fails
+  too, the claim is given back and the answer is a retryable failure like a booking's, with no claim about what changed; the
+  same confirm can then be tried again safely.
+- The "how did the call go?" follow-up is brought in line after the Done line is sent, so it never delays it.
 - A repeat of the same confirm must never change anything a second time, the same guarantee a booking has today.
 
 ## 7. The words (code-written; Bill checks these at merge)
 
-`<zone>` is the calendar's zone name as bookings say it. Titles are cut at 80 characters.
+`<zone>` is the calendar's zone name as bookings say it. Titles are cut at 80 characters, and a straight double quote in a
+title is said as a single quote. Every read-back opens with `Just to confirm — `, as a booking's does.
 
-- Read-back, cancel: `Cancel "<title>" on <day> at <time> <zone>?`
-- Read-back, cancel, all-day: `Cancel "<title>", all day on <day>?`
-- Read-back, move: `Move "<title>" from <day> at <time> to <new day> at <new time> <zone>?`
+- Read-back, cancel: `Just to confirm — cancel "<title>" on <day> at <time> <zone>?`
+- Read-back, cancel, all-day: `Just to confirm — cancel "<title>", all day on <day>?`
+- Read-back, move: `Just to confirm — move "<title>" from <day> at <time> to <new day> at <new time> <zone>?`
   plus, when it overlaps: ` Heads up: that overlaps "<other title>" at <time>.`
 - Done, cancel: `Done — "<title>" on <day> is off your calendar.`
 - Done, move: `Done — "<title>" is now <new day> at <new time> <zone>.`
 - Not found: `I don't see that on your calendar for <day>.`
-- Which one: `I see more than one that fits on <day>: "<A>" at <time>, "<B>" at <time>. Which one?`
+- Which one: `I see more than one that fits on <day>: "<A>" at <time>, "<B>" at <time>. Which one?` (an all-day one reads
+  `"<A>", all day`)
 - Has guests: `"<title>" has guests, and I never email guests. Open Google Calendar to change it so they're told.`
 - Repeats: `"<title>" is a repeating event. I can't change those yet. Open Google Calendar.`
 - Not the broker's: `"<title>" was set up by someone else, so I can't change it. Open Google Calendar.`
+- Not a regular event: `"<title>" isn't a regular event, so I can't change it. Open Google Calendar.`
+- More than one day: `"<title>" runs over more than one day. I can't change those yet. Open Google Calendar.`
 - Already started: `"<title>" has already started, so I'll leave it alone.`
 - All-day move: `"<title>" is an all-day event. I can cancel it, but I can't move those yet.`
 - Same time: `"<title>" is already at that time.`
@@ -100,7 +117,8 @@ Each is a code-written line that names the reason and points to Google Calendar.
 - Any other edit (rename, length, guests): `I can cancel or move an event. For any other change, open Google Calendar.`
   This replaces today's `EVENT_CHANGE_UNSUPPORTED` wording; the constant keeps its name.
 
-The confirm tail ("Say yes or press Confirm", if bookings have one) follows whatever the booking read-back does today.
+The confirm tail follows the booking read-back, which has none. A spoken "cancel" / "cancel it" (alone or after a yes)
+confirms a pending cancel, and "move it" a pending move; a negation ("don't cancel", "leave it", "never mind") is a no.
 
 ## 8. Knock-on effects to check
 
