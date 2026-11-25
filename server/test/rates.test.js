@@ -42,3 +42,32 @@ test("rates endpoint degrades gracefully when all feeds are down", async () => {
     server.close();
   }
 });
+
+test("a cleared cache is not served", async () => {
+  delete process.env.FRED_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  const ratesCache = require("../lib/ratesCache");
+  const ratesRouter = require("../routes/rates");
+  const app = express();
+  app.use(express.json());
+  app.use("/api", ratesRouter);
+  const server = app.listen(0);
+  await new Promise((r) => server.once("listening", r));
+  const post = async () => (await fetch(`http://localhost:${server.address().port}/api/rates`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  })).json();
+  const PAYLOAD = { success: true, rates: { rate_30yr_fixed: 6.4, rate_15yr_fixed: 5.7, rate_5_1_arm: 6.3, date: "2026-11-24", source: "Optimal Blue lock data (2026-11-24) · ARM estimated" } };
+  try {
+    ratesCache.set(PAYLOAD);
+    const hit = await post();
+    assert.equal(hit.cached, true);
+    assert.deepEqual(hit.rates, PAYLOAD.rates);
+    ratesCache.clear();
+    const miss = await post();
+    assert.equal("cached" in miss, false);
+    assert.equal(miss.success, false, "with no keys the route falls back to its estimate, not the cleared payload");
+  } finally {
+    ratesCache.clear();
+    server.close();
+  }
+});

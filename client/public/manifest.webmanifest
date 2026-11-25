@@ -1,0 +1,13 @@
+{
+  "name": "Broker Radar",
+  "short_name": "Broker Radar",
+  "description": "Broker Intelligence Platform",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#15294f",
+  "theme_color": "#15294f",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

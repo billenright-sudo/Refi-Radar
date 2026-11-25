@@ -13,6 +13,7 @@ import { OVERVIEW_COPY, opportunityCount, ratesHeading, tileFigureSize } from ".
 import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
+import { resyncPush, forgetDevice } from "./push/push.mjs";
 import { emailChangedNotice, loadProfile, profileCheckDue, profileLanding, nextProfilePrompt, stillNeededLine, PROFILE_WELCOME } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./auth/signup.mjs";
@@ -3186,6 +3187,8 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // this browser stops getting this user's pings: its device is removed while the session still counts (never throws, never waits long)
+    try { await Promise.race([forgetDevice({ navigator: window.navigator, fetchFn: fetch }), new Promise((resolve) => setTimeout(resolve, 3000))]); } catch { /* ignore */ }
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     endKeptSession();
     setUser(null);
@@ -3314,6 +3317,10 @@ export default function App() {
     fetchRates();
     fetchTreasury();
   }, [appOpen, fetchRates, fetchTreasury]);
+  // Rate-drop notifications: once signed in, tell the server this browser's current push address again (it never asks for permission).
+  useEffect(() => {
+    if (appOpen) resyncPush({ navigator: window.navigator, Notification: window.Notification, fetchFn: fetch });
+  }, [appOpen]);
 
   // The device's local day, read on every render. A tab left open past midnight renders again when it comes back into view or takes
   // focus (no timers that wake the device), or when Charlie finds its briefing is yesterday's (onStale). Charlie's screens are keyed

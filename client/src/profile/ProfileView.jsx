@@ -3,6 +3,7 @@ import { createCoalescer, inputAfterReload } from "../charli/google.mjs";
 import { cleanName, validName, validEmail, loadProfile, saveName, requestEmailChange, saveStage, saveNmls } from "./profile.mjs";
 import { CalendarCard, NmlsCard, StageCard } from "./cards.jsx";
 import ConnectionsCard from "./ConnectionsCard.jsx";
+import NotificationsCard from "./NotificationsCard.jsx";
 
 // The Profile page: each user sets up their name, login email, Google calendar, tenure as a loan officer, NMLS IDs and LOS connection
 // in one place. The logic and every server call are in profile.mjs; the Google card, the tenure card and the NMLS card are in cards.jsx,
@@ -259,6 +260,7 @@ export default function ProfileView({ user, ui, onUserChanged, notice, onNoticeS
         {profile && <StageSection profile={profile} ui={ui} onSave={(stage) => change(() => saveStage(fetch, stage))} />}
         {profile && <NmlsCard profile={profile} ui={ui} onSave={(which, value) => change(() => saveNmls(fetch, which, value), { refetch: true })} />}
         <ConnectionsCard ui={ui} isBroker={user && user.role === "broker"} />
+        <NotificationsCard ui={ui} />
       </div>
     </div>
   );

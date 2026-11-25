@@ -188,6 +188,38 @@ test("a 30-year drop past the threshold leads with \"Rates dropped\" in the firs
   assert.ok((await brief(nellId, { rates })).reply.includes("Rates dropped: "));
 });
 
+test("the drop lead follows the user's own drop size", async () => {
+  const { saveSettings, DEFAULTS } = require("../lib/pings/settings");
+  recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.55 }), "2026-10-28", "fred");
+  const rates = live(YESTERDAY, { rate_30yr_fixed: 6.4 });
+  try {
+    const a = await brief(annId, { rates });
+    assert.match(a.reply, /Rates dropped: the 30-year is at 6\.4%, down 0\.15 since October 28th, as of October 29th\./);
+    saveSettings(db, nellId, { ...DEFAULTS, threshold: 0.25 });
+    const b = await brief(nellId, { rates });
+    assert.doesNotMatch(b.reply, /Rates dropped/);
+    assert.match(b.reply, /The 30-year is at 6\.4%, down 0\.15 since October 28th, as of October 29th\./);
+    assert.ok(!fu.dropAlreadyLed(db, nellId, YESTERDAY), "a drop below the user's size is not marked as led");
+    // pings on or off makes no difference to the lead: the size is what counts
+    saveSettings(db, louId, { ...DEFAULTS, enabled: true, threshold: 0.125 });
+    assert.match((await brief(louId, { rates })).reply, /Rates dropped: /);
+  } finally {
+    db.prepare("DELETE FROM user_alert_settings").run();
+  }
+});
+
+test("the lead falls back to the default size when the settings cannot be read", async () => {
+  recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.55 }), "2026-10-28", "fred");
+  const settings = require("../lib/pings/settings");
+  const real = settings.thresholdFor;
+  settings.thresholdFor = () => { throw new Error("settings table unreadable"); };
+  try {
+    assert.match((await brief(annId, { rates: live(YESTERDAY, { rate_30yr_fixed: 6.4 }) })).reply, /Rates dropped: /);
+  } finally {
+    settings.thresholdFor = real;
+  }
+});
+
 test("a drop smaller than the threshold is stated, never led with", async () => {
   recordSnapshot(live("2026-10-28", { rate_30yr_fixed: 6.62 }), "2026-10-28", "fred");
   const r = await brief(annId, { rates: live(YESTERDAY, { rate_30yr_fixed: 6.5 }) });

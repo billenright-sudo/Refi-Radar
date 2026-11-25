@@ -123,4 +123,32 @@ function getMovement(rates, provider) {
   return { current: rates, previous, deltas, hasHistory: true, since: sinceLabel(latest.date, nowDate), sinceDate: latest.date };
 }
 
-module.exports = { recordSnapshot, getMovement, providerOf, observationDate, sinceLabel, ordinal, MONTHS, WEEKDAYS };
+// The rate numbers an observation is made of. The 5/1 ARM is not one of them: OBMMI has no ARM index, so it is web-searched or
+// estimated and can differ between two fetches of the same observation.
+const OBSERVATION_KEYS = ["rate_30yr_fixed", "rate_15yr_fixed", "rate_30yr_jumbo", "rate_30yr_fha", "rate_30yr_va", "rate_30yr_top_tier"];
+
+// Records ONE FRED observation (the rate check's, lib/pings/rateCheck.js) against the latest stored FRED one (targets.latestRealSnapshot):
+//   "new"     its observation date is later (or none is stored): written under the UTC day of `nowMs`
+//   "revised" the same date with any OBMMI number different (FRED revised it): written, replacing that capture day's row
+//   "same"    the same date and numbers: NOT written, so a web-searched ARM stored by /api/rates is kept
+//   "older"   an earlier date, or no real date: not written
+// Only a FRED set goes through here: the provider is always "fred".
+function recordFredObservation(rates, nowMs) {
+  const obsDate = observationDate(rates);
+  if (!obsDate) return "older";
+  const latest = require("./targets").latestRealSnapshot(db);   // lazily: targets requires this module
+  let result = "new";
+  if (latest) {
+    if (obsDate < latest.obsDate) return "older";
+    if (obsDate === latest.obsDate) {
+      // only the numbers this fetch has: a VA series that failed to load this time is not a revision of the stored one
+      const differs = OBSERVATION_KEYS.some((key) => Number.isFinite(rates[key]) && rates[key] !== latest.rates[key]);
+      if (!differs) return "same";
+      result = "revised";
+    }
+  }
+  recordSnapshot(rates, dayKey(new Date(nowMs)), "fred");
+  return result;
+}
+
+module.exports = { recordSnapshot, getMovement, recordFredObservation, providerOf, observationDate, sinceLabel, ordinal, MONTHS, WEEKDAYS };

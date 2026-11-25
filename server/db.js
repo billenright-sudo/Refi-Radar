@@ -361,6 +361,43 @@ db.exec(`
   );
 `);
 
+// user_alert_settings: a user's rate-drop ping settings (lib/pings/settings.js). No row means the defaults: pings OFF. threshold is the
+// drop size in points; quiet_start / quiet_end are HH:MM wall-clock times in time_zone (NULL = the Google calendar's, else the sign-up
+// zone, else New York).
+// push_subscriptions: one row per phone or browser a user turned notifications on for. The endpoint is the push service's address for
+// that device (only allowlisted push-service hosts are stored, lib/pings/push.js); p256dh and auth are its public encryption keys.
+// rate_alerts_sent: the claim that makes one ping per user per FRED observation date: inserted 'sending' BEFORE any send, 'sent' after a
+// channel delivered, deleted when none did (lib/pings/rateCheck.js). sent_at is a UTC instant, "YYYY-MM-DD HH:MM:SS".
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_alert_settings (
+    user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    enabled       INTEGER NOT NULL DEFAULT 0,
+    threshold     REAL    NOT NULL DEFAULT 0.125,
+    quiet_start   TEXT    NOT NULL DEFAULT '20:00',
+    quiet_end     TEXT    NOT NULL DEFAULT '07:00',
+    weekdays_only INTEGER NOT NULL DEFAULT 1,
+    channels      TEXT    NOT NULL DEFAULT 'push' CHECK(channels IN ('push','email','both')),
+    time_zone     TEXT,
+    updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id         INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint   TEXT    NOT NULL UNIQUE,
+    p256dh     TEXT    NOT NULL,
+    auth       TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS rate_alerts_sent (
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    observation_date TEXT    NOT NULL,
+    channel          TEXT    NOT NULL DEFAULT '',
+    status           TEXT    NOT NULL CHECK(status IN ('sending','sent')),
+    sent_at          TEXT    NOT NULL,
+    UNIQUE(user_id, observation_date)
+  );
+`);
+
 // email_changes: a login-email change waiting for its confirmation link (routes/profile.js). One pending change per user; the
 // token is mailed to new_email only, and expires_at is epoch milliseconds. users.email changes only when the link is used.
 db.exec(`

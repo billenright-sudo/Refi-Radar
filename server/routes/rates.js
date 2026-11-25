@@ -9,17 +9,10 @@ const MODEL  = process.env.CLAUDE_MODEL || "claude-sonnet-4-5";
 const rateLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false });
 
 // ── Primary source: Optimal Blue daily mortgage indices via FRED ────────────
-// Computed from actual rate locks; published every business day (~1-day lag).
-const FRED_BASE = "https://api.stlouisfed.org/fred/series/observations";
-const OBMMI_SERIES = {
-  rate_30yr_fixed:    "OBMMIC30YF",             // 30yr conforming
-  rate_15yr_fixed:    "OBMMIC15YF",             // 15yr conforming
-  rate_30yr_jumbo:    "OBMMIJUMBO30YF",         // 30yr jumbo
-  rate_30yr_fha:      "OBMMIFHA30YF",           // 30yr FHA
-  rate_30yr_top_tier: "OBMMIC30YFLVLE80FGE740", // 30yr, LTV≤80 FICO≥740
-};
-// 30yr VA, fetched on its own: it only feeds the VA IRRRL check, so when it fails the rest of the set is served without it.
-const VA_SERIES = "OBMMIVA30YF";
+// Computed from actual rate locks; published every business day (~1-day lag). The fetch itself is lib/fred.js (the rate check uses
+// it too), and the 6-hour cache is lib/ratesCache.js.
+const { FRED_BASE, fetchFredObservations, fredRateSet } = require("../lib/fred");
+const ratesCache = require("../lib/ratesCache");
 
 // The keys the Claude web-search fallback may return; anything else in the model's JSON is dropped.
 const FALLBACK_KEYS = ["rate_30yr_fixed", "rate_15yr_fixed", "rate_5_1_arm", "date", "source"];
@@ -28,14 +21,7 @@ const FALLBACK_KEYS = ["rate_30yr_fixed", "rate_15yr_fixed", "rate_5_1_arm", "da
 // the 5/1 ARM comes from Claude web search, or an estimate as last resort.
 const ARM_SPREAD_ESTIMATE = -0.10; // typical recent 5/1 ARM spread vs 30yr fixed
 
-// Rates are daily — cache so refresh clicks don't refetch (or re-hit Claude).
-const RATES_TTL_MS = 6 * 60 * 60 * 1000;
-let ratesCache = null; // { payload, expires, day }
-
-// The cache is also bounded to the UTC day it was filled on: a payload cached before
-// midnight must not be served after it, or that response would have no same-day snapshot
-// and getMovement would compare the data against itself.
-const utcDay = () => new Date().toISOString().slice(0, 10);
+// Rates are daily — cached (lib/ratesCache.js) so refresh clicks don't refetch (or re-hit Claude).
 
 // Persist a genuinely resolved (FRED / Claude web-search) rate set for market-movement
 // tracking, with the provider of the code path that produced it ("fred" | "claude"): the
@@ -48,16 +34,6 @@ function captureSnapshot(rates, provider) {
   } catch (err) {
     console.error("Rate snapshot error:", err.message);
   }
-}
-
-async function fredLatest(seriesId, fredKey, signal) {
-  const url = `${FRED_BASE}?series_id=${seriesId}&api_key=${fredKey}&file_type=json&sort_order=desc&limit=5`;
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`FRED ${seriesId} HTTP ${response.status}`);
-  const data = await response.json();
-  const obs = (data.observations || []).find(o => o.value !== ".");
-  if (!obs) throw new Error(`FRED ${seriesId}: no observations`);
-  return { date: obs.date, value: parseFloat(obs.value) };
 }
 
 async function claudeJson(prompt, timeoutMs) {
@@ -85,31 +61,16 @@ async function claudeJson(prompt, timeoutMs) {
 
 // POST /api/rates — Optimal Blue (FRED) primary, Claude web search fallback
 router.post("/rates", rateLimiter, async (req, res) => {
-  if (ratesCache && Date.now() < ratesCache.expires && ratesCache.day === utcDay()) {
-    return res.json({ ...ratesCache.payload, cached: true });
-  }
+  const cached = ratesCache.get();
+  if (cached) return res.json({ ...cached, cached: true });
 
   const fredKey = process.env.FRED_API_KEY;
 
   try {
     if (!fredKey) throw new Error("FRED_API_KEY not configured");
 
-    const ac = new AbortController();
-    const timeout = setTimeout(() => ac.abort(), 10_000);
-    let obmmi, va;
-    try {
-      const vaFetch = fredLatest(VA_SERIES, fredKey, ac.signal).catch((err) => {
-        console.error(`FRED ${VA_SERIES} skipped:`, err.name === "AbortError" ? "FRED timeout" : err.message);
-        return null;
-      });
-      const entries = await Promise.all(
-        Object.entries(OBMMI_SERIES).map(async ([key, id]) => [key, await fredLatest(id, fredKey, ac.signal)])
-      );
-      obmmi = Object.fromEntries(entries);
-      va = await vaFetch;
-    } finally {
-      clearTimeout(timeout);
-    }
+    const fred = await fetchFredObservations({ fredKey });
+    const { obmmi } = fred;
 
     // 5/1 ARM: Claude web search, estimate from 30yr spread if that fails
     let arm, armSource;
@@ -131,21 +92,8 @@ router.post("/rates", rateLimiter, async (req, res) => {
       armSource = "ARM estimated";
     }
 
-    const payload = {
-      success: true,
-      rates: {
-        rate_30yr_fixed: obmmi.rate_30yr_fixed.value,
-        rate_15yr_fixed: obmmi.rate_15yr_fixed.value,
-        rate_5_1_arm: arm,
-        rate_30yr_jumbo: obmmi.rate_30yr_jumbo.value,
-        rate_30yr_fha: obmmi.rate_30yr_fha.value,
-        ...(va ? { rate_30yr_va: va.value } : {}),
-        rate_30yr_top_tier: obmmi.rate_30yr_top_tier.value,
-        date: obmmi.rate_30yr_fixed.date,
-        source: `Optimal Blue lock data (${obmmi.rate_30yr_fixed.date}) · ${armSource}`,
-      },
-    };
-    ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
+    const payload = { success: true, rates: fredRateSet(fred, { arm, armSource }) };
+    ratesCache.set(payload);
     captureSnapshot(payload.rates, "fred");
     return res.json(payload);
   } catch (err) {
@@ -167,7 +115,7 @@ router.post("/rates", rateLimiter, async (req, res) => {
     for (const key of FALLBACK_KEYS) if (found[key] !== undefined) rates[key] = found[key];
     if (typeof rates.rate_30yr_fixed !== "number") throw new Error("Unexpected rate format");
     const payload = { success: true, rates };
-    ratesCache = { payload, expires: Date.now() + RATES_TTL_MS, day: utcDay() };
+    ratesCache.set(payload);
     captureSnapshot(rates, "claude");
     res.json(payload);
   } catch (err) {
