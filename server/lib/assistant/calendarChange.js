@@ -11,9 +11,10 @@ const { spokenDay, spokenTime, zoneName, parseTime } = require("../google/time")
 const TITLE_SHOWN = 80;
 const WHICH_ONE_MAX = 4;
 
-// One line, at most TITLE_SHOWN characters (the last one an ellipsis when it was cut).
+// One line, at most TITLE_SHOWN characters (the last one an ellipsis when it was cut). A straight double quote becomes a single one
+// (F10): every spoken line puts the title in double quotes, and a title must never close that span early.
 const cut = (title) => {
-  const t = String(title == null ? "" : title).replace(/\s+/g, " ").trim();
+  const t = String(title == null ? "" : title).replace(/\s+/g, " ").trim().replace(/"/g, "'");
   return t.length > TITLE_SHOWN ? `${t.slice(0, TITLE_SHOWN - 1).trimEnd()}…` : t;
 };
 const quoted = (title) => `"${cut(title)}"`;
