@@ -233,6 +233,8 @@ export const pendingRows = (pending) => (pending && Array.isArray(pending.detail
 function failureText(res) {
   if (res.network) return "Sorry — I couldn't reach the server. Check your connection and try again.";
   if (res.status === 401) return "Your session has ended — please sign in again.";
+  // a line the server wrote for a calendar change Google refused ("That event changed after I read it to you ..."): said as it is
+  if (res.data && typeof res.data.say === "string" && res.data.say.trim()) return res.data.say.trim();
   const detail = res.data && typeof res.data.error === "string" ? res.data.error.trim() : "";
   if (res.data && res.data.errors && typeof res.data.errors === "object") {
     const fields = Object.values(res.data.errors).filter((v) => typeof v === "string").join("; ");

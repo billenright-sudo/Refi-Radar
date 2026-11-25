@@ -2064,3 +2064,58 @@ test("screens: a screen turn proposes nothing: a sideEffect beside a screen sets
     assert.equal(server.confirms().length, 0);
   }
 });
+
+// ── cancelling and moving a calendar event (2026-11-25) ──────────────────────
+
+const CANCEL_READ_BACK = 'Just to confirm — cancel "Walkthrough with Sam" on Wednesday, October 28th at 10:00 AM Mountain Standard Time?';
+const CANCEL_SIDE_EFFECT = {
+  type: "cancelEvent", confirmId: "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+  event: { id: "evt0000001", etag: '"e1"', title: "Walkthrough with Sam", date: "2026-10-28", time: "10:00", allDay: false, startAt: 1792000000000, timeZone: "America/Phoenix", durationMinutes: 30 },
+};
+const CANCEL_DETAILS = [
+  { label: "Change", value: "Cancel this event" }, { label: "Event", value: "Walkthrough with Sam" },
+  { label: "When", value: "Wednesday, October 28th, 10:00 AM – 10:30 AM Mountain Standard Time" }, { label: "Guests", value: "None — nobody is emailed" },
+];
+async function withCancelPending(confirm) {
+  const ctx = setup({
+    routes: {
+      "POST /api/assistant/turn": () => turnReply(CANCEL_READ_BACK, { sideEffect: CANCEL_SIDE_EFFECT, details: CANCEL_DETAILS, turnId: "cb" }),
+      "POST /api/assistant/confirm": confirm,
+    },
+  });
+  await ctx.session.submit("cancel my 10 AM walkthrough tomorrow");
+  return ctx;
+}
+
+test("a cancel read-back is the pending card with its rows; a spoken yes sends the sideEffect verbatim and the Done line is spoken", async () => {
+  const done = 'Done — "Walkthrough with Sam" on Wednesday, October 28th is off your calendar.';
+  const { session, server, spoken } = await withCancelPending(() => reply(200, { success: true, result: {}, reply: done }));
+  assert.deepEqual(session.getState().pending, { sideEffect: CANCEL_SIDE_EFFECT, readBack: CANCEL_READ_BACK, details: CANCEL_DETAILS });
+  assert.deepEqual(pendingRows(session.getState().pending).map((r) => r.label), ["Change", "Event", "When", "Guests"]);
+  assert.deepEqual(await session.heard("yes"), { ok: true, action: "confirm" });
+  assert.deepEqual(server.confirms().map((c) => c.body), [{ sideEffect: CANCEL_SIDE_EFFECT }]);
+  assert.equal(lastTurn(session).content, done);
+  assert.equal(spoken.at(-1).text, done);
+  assert.equal(session.getState().pending, null);
+});
+
+test("a spoken no to a cancel read-back confirms nothing", async () => {
+  const { session, server } = await withCancelPending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+  assert.deepEqual(await session.heard("no"), { ok: true, action: "cancel" });
+  assert.equal(server.confirms().length, 0);
+  assert.equal(session.getState().pending, null);
+});
+
+test("a line code wrote for a change Google refused (`say`) is shown and spoken as it is, not behind 'that didn't go through'", async () => {
+  const CHANGED = "That event changed after I read it to you, so I left it alone. Ask me again.";
+  const { session, spoken } = await withCancelPending(() => reply(409, { success: false, error: CHANGED, say: CHANGED }));
+  await session.submit("yes");
+  assert.equal(lastTurn(session).content, CHANGED);
+  assert.equal(lastTurn(session).kind, "error");
+  assert.equal(spoken.at(-1).text, CHANGED);
+  assert.equal(session.getState().pending, null, "it is final: a fresh ask is needed");
+  // a failure without one is as it always was
+  const plain = await withCancelPending(() => reply(409, { success: false, error: "your Google connection has expired — reconnect it on your Profile page" }));
+  await plain.session.submit("yes");
+  assert.equal(lastTurn(plain.session).content, "Sorry — that didn't go through: your Google connection has expired — reconnect it on your Profile page");
+});

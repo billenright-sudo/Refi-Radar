@@ -107,6 +107,7 @@ const lastUserTextOf = (kase) => {
 // The code-authored lines, by name: a reply that is exactly one of these is code's, not the model's.
 const FIXED_LINE_NAMES = [
   "CANT_VERIFY", "GUIDELINE_HANDOFF", "ADVICE_HANDOFF", "NO_LIVE_DATA", "NOTHING_CHANGED", "BOOKING_ASK", "EVENT_CHANGE_UNSUPPORTED",
+  "CHANGE_CHANGED", "ALREADY_OFF", "COULD_NOT_CHANGE",
   "ONE_AT_A_TIME", "DIDNT_CATCH", "ERROR_TURN", "TOOK_TOO_LONG", "GOOGLE_NOT_CONNECTED", "GOOGLE_RECONNECT",
   "GOOGLE_UNAVAILABLE", "NMLS_NEEDED", "NO_SEND", "NO_SENT_PAST", "LIVE_UNCLEAR",
 ];
@@ -528,7 +529,7 @@ const trimResult = (content) => {
 };
 
 const NO_RESULT = "(no result went back to the model)";
-const CHANGE_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool"]);
+const CHANGE_TOOLS = new Set(["addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool", "cancelEventTool", "moveEventTool"]);
 // A tool whose result never went back to the model (the turn ended on the change it packaged, or on a code line) has no result
 // block to keep: the change or the email the turn handed up stands in for it.
 function settleTools(tools, turn) {

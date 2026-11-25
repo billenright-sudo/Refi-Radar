@@ -450,3 +450,64 @@ test("turn: an event with guests is refused in code's words and nothing reaches 
   assert.equal(turn.data.sideEffect, undefined);
   assert.deepEqual(google.calls.map((c) => c.method), ["GET"]);
 });
+
+// ── the follow-up question follows the calendar (spec section 8) ─────────────
+
+const { localToday, localTimeOf } = require("../lib/google/time");
+const fu = require("../lib/assistant/followups");
+const sqliteUtc = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+
+// An event starting in a minute, so its day is today on the calendar's clock (a run that straddles midnight there skips: the
+// route reads the real clock). Lucy's recorded "How did the call go?" row is due when it ends.
+function todaysCall(title, minutes = 30) {
+  const startAt = Date.now() + 60_000;
+  const local = localTimeOf(new Date(startAt).toISOString(), PHX);
+  const today = localToday(PHX, Date.now());
+  if (local.date !== today) return null;
+  const lucy = Number(db.prepare(
+    "INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score) VALUES (?, ?, 'Lucy Tran', '30yr_fixed', 7.5, 400000, 600000, 700)"
+  ).run(orgA, ann).lastInsertRowid);
+  const endAt = startAt + minutes * 60_000;
+  fu.recordRecommendations(db, ann, today, [{ clientId: lucy, source: "calendar", reasonCode: "calendar", dueAt: sqliteUtc(endAt) }]);
+  const hhmm = `${String(local.hour).padStart(2, "0")}:${String(local.minute).padStart(2, "0")}`;
+  return { lucy, today, startAt, endAt, hhmm, title, minutes };
+}
+const recRows = () => db.prepare("SELECT client_id AS clientId, status, due_at AS dueAt FROM charlie_recommendations WHERE source = 'calendar'").all();
+
+test("cancel: the call's follow-up row is expired once Google has deleted it, so she never asks how it went", async (t) => {
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  const call = todaysCall("Follow-up: Lucy Tran");
+  if (!call) return t.skip("the calendar's midnight is within a minute");
+  const google = useGoogle(fakeFetch((c) => (c.method === "GET" ? json({ items: [] }) : empty(204))));   // the day is empty after the delete
+  const r = await post(ann, cancelBody(newId(), { id: "evtlucy0001", title: call.title, date: call.today, time: call.hhmm, startAt: call.startAt, durationMinutes: call.minutes }));
+  assert.equal(r.status, 200);
+  assert.deepEqual(google.calls.map((c) => c.method), ["DELETE", "GET"], "the change first, then one read of that day");
+  assert.deepEqual(recRows().map((x) => x.status), ["expired"]);
+  assert.deepEqual(fu.openFollowUps(db, ann, { localDate: call.today, localHour: 23, nowUtc: sqliteUtc(call.endAt + 3_600_000) }), []);
+  db.prepare("DELETE FROM clients WHERE id = ?").run(call.lucy);
+});
+
+test("move: the call's follow-up row is due at the new end", async (t) => {
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  const call = todaysCall("Follow-up: Lucy Tran");
+  if (!call) return t.skip("the calendar's midnight is within a minute");
+  const newStart = call.startAt + 3 * 3_600_000;
+  const newLocal = localTimeOf(new Date(newStart).toISOString(), PHX);
+  if (newLocal.date !== call.today) { db.prepare("DELETE FROM clients WHERE id = ?").run(call.lucy); return t.skip("the new time falls on tomorrow"); }
+  const newEnd = newStart + call.minutes * 60_000;
+  const google = useGoogle(fakeFetch((c) => (c.method === "GET"
+    ? json({ items: [{ id: "evtlucy0001", summary: call.title, status: "confirmed", start: { dateTime: new Date(newStart).toISOString() }, end: { dateTime: new Date(newEnd).toISOString() } }] })
+    : json({ id: "evtlucy0001" }))));
+  const hhmm = (l) => `${String(l.hour).padStart(2, "0")}:${String(l.minute).padStart(2, "0")}`;
+  const r = await post(ann, moveBody(newId(), { id: "evtlucy0001", title: call.title, date: call.today, time: call.hhmm, startAt: call.startAt, newDate: call.today, newTime: hhmm(newLocal), durationMinutes: call.minutes }));
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(google.calls.map((c) => c.method), ["PATCH", "GET"]);
+  assert.deepEqual(recRows().map((x) => [x.status, x.dueAt]), [["open", sqliteUtc(newEnd)]]);
+  db.prepare("DELETE FROM clients WHERE id = ?").run(call.lucy);
+});
+
+test("a change on a far day asks Google for nothing more", async () => {
+  const google = useGoogle(fakeFetch(() => empty(204)));
+  assert.equal((await post(ann, cancelBody(newId()))).status, 200);   // 2099: no row was ever recorded for it
+  assert.deepEqual(google.calls.map((c) => c.method), ["DELETE"]);
+});

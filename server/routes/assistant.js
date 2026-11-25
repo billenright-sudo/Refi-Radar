@@ -33,6 +33,7 @@ const assistantTools = require("../lib/assistant/tools");   // called as assista
 const assistantBriefing = require("../lib/assistant/briefing");   // called as assistantBriefing.buildBriefing(): tests can swap it
 const { ERROR_TURN, CHANGE_CHANGED, ALREADY_OFF, COULD_NOT_CHANGE } = require("../lib/assistant/prompt");
 const calendarChange = require("../lib/assistant/calendarChange");
+const { reconcileCalendarFollowUps } = require("../lib/assistant/calendarFollowUps");
 const { stageById, spokenStageLabel } = require("../lib/assistant/coaching");
 const { setCareerStageForUser } = require("../lib/careerStage");
 const { GREETING_OPENERS, openerFor, hourOf } = require("../lib/assistant/openers");   // the opening words (GREETING_OPENERS and openerFor re-exported below)
@@ -45,7 +46,7 @@ const { billingIsOn } = require("./billing");
 const { createClientForUser, logContactForUser, clientInReach, toClient, setTargetForUser } = require("./clients");
 const { round3 } = require("../lib/targets");
 const { googleFor } = require("../lib/google");
-const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, zoneName } = require("../lib/google/time");
+const { parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, zoneName, localToday } = require("../lib/google/time");
 
 const DEFAULT_USAGE_DAYS = 30;
 const MAX_USAGE_DAYS = 365;
@@ -482,8 +483,9 @@ async function confirmChangeEvent(req, res, sideEffect) {
 
   const release = () => releaseClaim(req.user.id, confirmId);
   let done = false;
+  let google = null;
   try {
-    const google = googleFor({ db, userId: req.user.id, fetchFn: req.app.get("googleFetch") || globalThis.fetch });
+    google = googleFor({ db, userId: req.user.id, fetchFn: req.app.get("googleFetch") || globalThis.fetch });
     const connection = google.connection();
     if (connection.code) { release(); return refuse(409, GOOGLE_REASONS[connection.code] || GOOGLE_UNREACHABLE); }
     if (event.timeZone !== connection.timeZone) { release(); return refuse(400, "that event isn't for the calendar you connected"); }
@@ -535,6 +537,15 @@ async function confirmChangeEvent(req, res, sideEffect) {
         .run(JSON.stringify(receipt), confirmId, req.user.id);
     } catch (err) {
       console.error("POST /api/assistant/confirm (receipt):", errText(err));
+    }
+    // "How did the call go?" follows the calendar: a cancelled call is no longer asked about, a moved one when it now ends
+    // (best effort and never throws: the next briefing would catch up anyway)
+    try {
+      await reconcileCalendarFollowUps({ google }, {
+        localDate: localToday(event.timeZone, Date.now()), days: move ? [event.date, event.newDate] : [event.date], db, userId: req.user.id,
+      });
+    } catch (err) {
+      console.error("POST /api/assistant/confirm (follow-ups):", errText(err));
     }
   }
   return res.json({ success: true, result: receipt, reply: confirmReply(type, receipt) });
