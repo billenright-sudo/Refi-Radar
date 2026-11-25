@@ -10,6 +10,9 @@
 
 export const WHAT_YOU_GET = "Market news only: a note when the national average 30-year falls by your drop size. Never a client's name. At most one per rate update, and never in your quiet hours.";
 export const IOS_STEP = "On iPhone or iPad, phone notifications work only after you add Broker Radar to your Home Screen: tap Share, then Add to Home Screen (iOS 16.4 or later). Open Broker Radar from that icon, sign in, and turn notifications on here. Until then you can choose email.";
+export const IOS_STEP_NO_EMAIL = "On iPhone or iPad, phone notifications work only after you add Broker Radar to your Home Screen: tap Share, then Add to Home Screen (iOS 16.4 or later). Open Broker Radar from that icon, sign in, and turn notifications on here.";
+export const BLOCKED_NO_EMAIL = "Notifications are blocked for Broker Radar in this browser's settings. Allow them there.";
+export const UNSUPPORTED_NO_EMAIL = "This browser can't show phone notifications.";
 export const BLOCKED = "Notifications are blocked for Broker Radar in this browser's settings. Allow them there, or choose email.";
 export const UNSUPPORTED = "This browser can't show phone notifications. You can choose email instead.";
 const NOT_ALLOWED = "You didn't allow notifications, so none were turned on. You can try again, or choose email.";
@@ -187,4 +190,14 @@ export async function resyncPush({ navigator, Notification, fetchFn }) {
   } catch {
     return { error: NO_DEVICE };
   }
+}
+
+// What the card shows after a save. A save that leaves pings off or email only takes this browser's device off the server (forgetDevice), so
+// the answer to the save, counted before that, can be one device too many: it is read again then. -> the settings answer to use
+export async function settleSave({ data, forget, navigator, fetchFn }) {
+  if (!forget) return data;
+  const forgotten = await forgetDevice({ navigator, fetchFn });
+  if (!forgotten.ok) return data;
+  const fresh = await loadAlerts(fetchFn);
+  return fresh.ok ? fresh.data : data;
 }

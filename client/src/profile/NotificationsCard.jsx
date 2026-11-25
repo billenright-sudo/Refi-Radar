@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
-import { loadAlerts, saveAlerts, enablePush, forgetDevice, sendTest, pushSupport, WHAT_YOU_GET } from "../push/push.mjs";
+import { loadAlerts, saveAlerts, enablePush, settleSave, sendTest, pushSupport, WHAT_YOU_GET } from "../push/push.mjs";
 import {
-  cardState, settingsToForm, zoneChoices, zoneLabel, channelOptions, shownChannel, savePlan, DROP_SIZES, IOS_STEP,
+  cardState, settingsToForm, zoneChoices, zoneLabel, channelOptions, shownChannel, savePlan, DROP_SIZES,
 } from "./notifications.mjs";
 
 // The Notifications card on the Profile page: rate-drop notifications, off until the user turns them on. All the logic is in
@@ -70,15 +70,14 @@ export function NotificationsCard({ ui }) {
   const save = async () => {
     setBusy(true); setNote(null);
     // the stored channel goes as it is unless this save changes "How" or turns pings on; only those saves may ask for permission
-    const plan = savePlan({ saved: alerts.settings, form, choices, devices: alerts.devices || 0, browserZone: zone });
+    const plan = savePlan({ saved: alerts.settings, form, choices, devices: alerts.devices || 0, pushOnServer: alerts.available.push, browserZone: zone });
     if (plan.askPush) {
       const asked = await enablePush({ navigator: window.navigator, Notification: window.Notification, vapidPublicKey: alerts.vapidPublicKey, fetchFn: fetch });
       if (asked.error) { setNote({ text: asked.error, bad: true }); setBusy(false); return; }
     }
     const res = await saveAlerts(fetch, plan.settings);
     if (res.ok) {
-      if (plan.forgetPush) await forgetDevice({ navigator: window.navigator, fetchFn: fetch });   // pings off or email only: this browser's device goes
-      take(res.data);
+      take(await settleSave({ data: res.data, forget: plan.forgetPush, navigator: window.navigator, fetchFn: fetch }));   // pings off or email only: this browser's device goes, and the count is read again
       setNote({ text: "Saved." });
     } else setNote({ text: res.error, bad: true });
     setBusy(false);
@@ -93,7 +92,8 @@ export function NotificationsCard({ ui }) {
     setBusy(false);
   };
 
-  const options = channelOptions(choices, alerts && alerts.settings ? alerts.settings.channels : undefined, alerts && alerts.devices ? alerts.devices : 0);
+  const extra = known ? { enabled: alerts.settings.enabled === true, pushOnServer: alerts.available.push } : {};
+  const options = channelOptions(choices, alerts && alerts.settings ? alerts.settings.channels : undefined, alerts && alerts.devices ? alerts.devices : 0, extra);
   const locked = options.length === 0;
 
   return (
@@ -111,10 +111,14 @@ export function NotificationsCard({ ui }) {
       )}
 
       {known && state.showIosStep && (
-        <div role="note" data-testid="notifications-ios" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{IOS_STEP}</div>
+        <div role="note" data-testid="notifications-ios" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{state.iosStep}</div>
       )}
       {known && state.note && (
         <div role="note" data-testid="notifications-note" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{state.note}</div>
+      )}
+
+      {known && state.emailNote && (
+        <div role="note" data-testid="notifications-email-note" style={{ color: C.mutedHi, fontSize: 12.5, lineHeight: 1.45, marginBottom: 10 }}>{state.emailNote}</div>
       )}
 
       {known && form && !off && (
@@ -137,7 +141,7 @@ export function NotificationsCard({ ui }) {
             </Labeled>
             <Labeled label="How" C={C}>
               {(id) => (
-                <select id={id} data-testid="notifications-channels" value={shownChannel(form.channels, choices, alerts.devices || 0)} disabled={locked} onChange={(e) => change({ channels: e.target.value })} style={inputStyle(C)}>
+                <select id={id} data-testid="notifications-channels" value={shownChannel(form.channels, choices, alerts.devices || 0, extra)} disabled={locked} onChange={(e) => change({ channels: e.target.value })} style={inputStyle(C)}>
                   {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               )}

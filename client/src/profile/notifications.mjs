@@ -1,10 +1,10 @@
 // The Notifications card's logic, with no DOM and no React (the card is NotificationsCard.jsx; the server calls and the browser side of
 // phone notifications are ../push/push.mjs). What each state shows is decided here so it can be tested.
 
-import { IOS_STEP, BLOCKED, UNSUPPORTED } from "../push/push.mjs";
+import { IOS_STEP, BLOCKED, UNSUPPORTED, IOS_STEP_NO_EMAIL, BLOCKED_NO_EMAIL, UNSUPPORTED_NO_EMAIL } from "../push/push.mjs";
 
 export const NOT_AVAILABLE = "Rate-drop notifications aren't switched on for Broker Radar yet.";
-export { IOS_STEP, BLOCKED, UNSUPPORTED };
+export { IOS_STEP, BLOCKED, UNSUPPORTED, IOS_STEP_NO_EMAIL, BLOCKED_NO_EMAIL, UNSUPPORTED_NO_EMAIL };
 
 // The server's defaults (server/lib/pings/settings.js): pings off, an eighth of a point, quiet from 8 p.m. to 7 a.m., weekdays only, phone.
 export const DEFAULT_FORM = { enabled: false, threshold: 0.125, quietStart: "20:00", quietEnd: "07:00", weekdaysOnly: true, channels: "push", timeZone: null };
@@ -28,12 +28,23 @@ export function cardState({ alerts, support }) {
   if (available.push && support === "ready") channelChoices.push("push");
   if (available.email) channelChoices.push("email");
   const showIosStep = !!available.push && support === "ios_home_screen";
+  const stored = settings.channels;
+  const phoneSaved = stored === "push" || stored === "both";
+  const phoneOff = !available.push && phoneSaved && (settings.enabled === true || alerts.devices > 0);   // a phone choice that is kept but cannot be sent
+  const emailOff = !available.email && (stored === "email" || stored === "both");
+  let browserNote = null;
+  if (available.push && support === "blocked") browserNote = available.email ? BLOCKED : BLOCKED_NO_EMAIL;
+  else if (available.push && support === "unsupported") browserNote = available.email ? UNSUPPORTED : UNSUPPORTED_NO_EMAIL;
   let note = null;
   if (!available.push && !available.email) note = NOT_AVAILABLE;
-  else if (available.push && support === "blocked") note = BLOCKED;
-  else if (available.push && support === "unsupported") note = UNSUPPORTED;
-  else if (!available.email && (settings.channels === "email" || settings.channels === "both")) note = EMAIL_OFF;
-  return { channelChoices, showIosStep, note, canTest: !!settings.enabled && channelChoices.length > 0 };
+  else if (browserNote) note = browserNote;
+  else if (showIosStep) note = null;   // the Home Screen step is the line
+  else if (phoneOff) note = PHONE_OFF;
+  else if (emailOff) note = EMAIL_OFF;
+  const state = { channelChoices, showIosStep, note, canTest: !!settings.enabled && channelChoices.length > 0 };
+  if (showIosStep) state.iosStep = available.email ? IOS_STEP : IOS_STEP_NO_EMAIL;
+  if ((browserNote || showIosStep) && emailOff) state.emailNote = EMAIL_OFF;   // the browser note is shown too, and it must not point to email
+  return state;
 }
 
 // The saved settings -> the form's starting values (a missing answer gives the defaults).
@@ -58,24 +69,30 @@ export function formToSettings(form, browserZone) {
 
 const CHANNEL_LABELS = { push: "Phone notification", email: "Email", both: "Both" };
 const EMAIL_OFF_LABELS = { both: "Both (email isn't available right now)", email: "Email (isn't available right now)" };
+const NO_DEVICE_LABELS = { push: "Phone notification (no device set up yet)", both: "Both (no phone set up yet)" };
+const PHONE_OFF_LABELS = { push: "Phone notification (isn't available right now)", both: "Both (phone isn't available right now)" };
 const ELSEWHERE_LABELS = { push: "Phone notification (set up on another device)", both: "Both (phone set up on another device)" };
 
 const wantsPush = (channels) => channels === "push" || channels === "both";
 const wantsEmail = (channels) => channels === "email" || channels === "both";
 
+export const PHONE_OFF = "Phone notifications aren't available right now. Your choice is kept, and phone notifications will resume when they are.";
 export const EMAIL_OFF = "Email isn't available right now. Your choice is kept, and email notifications will resume when it is.";
 
 // The stored channel, when it is none of the menu's own values and must still be listed (and kept when saving), else null:
 //   * a phone channel this browser cannot do is listed only when the user really has a device set up (`devices` > 0): it is then "set up
 //     on another device". With no device that claim would be false, so the menu shows only what this browser can do;
 //   * a channel that includes email while the server has email switched off is listed with that said, so the card never hides a saved choice.
-function keptOption(choices, channels, devices) {
+function keptOption(choices, channels, devices, { enabled = false, pushOnServer = true } = {}) {
   const own = choices.map((value) => value);
   if (choices.includes("push") && choices.includes("email")) own.push("both");
   if (!channels || own.includes(channels)) return null;
-  const phoneMissing = wantsPush(channels) && !choices.includes("push");
-  if (phoneMissing) {
-    return devices > 0 ? { value: channels, label: ELSEWHERE_LABELS[channels] } : null;
+  if (wantsPush(channels) && !choices.includes("push")) {
+    // phone switched off on the server: the saved choice is listed as that, once the user has pings on or a device
+    if (!pushOnServer) return enabled || devices > 0 ? { value: channels, label: PHONE_OFF_LABELS[channels] } : null;
+    if (devices > 0) return { value: channels, label: ELSEWHERE_LABELS[channels] };
+    // pings on, phone saved, no device: kept, so a save from a browser that cannot push does not turn it into email
+    return enabled ? { value: channels, label: NO_DEVICE_LABELS[channels] } : null;
   }
   if (wantsEmail(channels) && !choices.includes("email")) return { value: channels, label: EMAIL_OFF_LABELS[channels] };
   return null;
@@ -83,10 +100,10 @@ function keptOption(choices, channels, devices) {
 
 // The channel options to show for the choices available: one choice shows just that; both choices add "Both"; the stored channel is added
 // when keptOption says so.
-export function channelOptions(choices, current, devices = 0) {
+export function channelOptions(choices, current, devices = 0, extra = {}) {
   const options = choices.map((value) => ({ value, label: CHANNEL_LABELS[value] }));
   if (choices.includes("push") && choices.includes("email")) options.push({ value: "both", label: CHANNEL_LABELS.both });
-  const kept = keptOption(choices, current, devices);
+  const kept = keptOption(choices, current, devices, extra);
   if (kept) options.push(kept);
   return options;
 }
@@ -103,8 +120,8 @@ export function fitChannel(channels, choices) {
 }
 
 // What the channel menu shows: the stored channel when keptOption lists it, else the channel fitted to this browser.
-export function shownChannel(channels, choices, devices = 0) {
-  return keptOption(choices, channels, devices) ? channels : fitChannel(channels, choices);
+export function shownChannel(channels, choices, devices = 0, extra = {}) {
+  return keptOption(choices, channels, devices, extra) ? channels : fitChannel(channels, choices);
 }
 
 // What a save sends and does. A stored channel the menu keeps (keptOption) is sent unchanged, with no permission prompt, even when this
@@ -113,8 +130,8 @@ export function shownChannel(channels, choices, devices = 0) {
 // -> { settings, askPush, forgetPush }
 //   askPush:    ask this browser for permission and register it (the save turns phone pings on, here)
 //   forgetPush: pings are off or email only after this save, so this browser's device is removed from the server
-export function savePlan({ saved, form, choices, devices = 0, browserZone }) {
-  const kept = keptOption(choices, form.channels, devices) !== null;
+export function savePlan({ saved, form, choices, devices = 0, pushOnServer = true, browserZone }) {
+  const kept = keptOption(choices, form.channels, devices, { enabled: saved.enabled === true, pushOnServer }) !== null;
   const touched = form.channels !== saved.channels || (form.enabled === true && saved.enabled !== true);
   const channels = kept ? form.channels : fitChannel(form.channels, choices);
   const settings = formToSettings({ ...form, channels }, browserZone);

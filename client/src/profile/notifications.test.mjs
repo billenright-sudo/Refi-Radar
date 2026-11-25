@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  cardState, formToSettings, settingsToForm, zoneChoices, zoneLabel, channelOptions, fitChannel, shownChannel, savePlan, DROP_SIZES, DEFAULT_FORM, NOT_AVAILABLE, EMAIL_OFF,
+  cardState, formToSettings, settingsToForm, zoneChoices, zoneLabel, channelOptions, fitChannel, shownChannel, savePlan, DROP_SIZES, DEFAULT_FORM, NOT_AVAILABLE, EMAIL_OFF, PHONE_OFF, BLOCKED_NO_EMAIL, UNSUPPORTED_NO_EMAIL, IOS_STEP_NO_EMAIL,
 } from "./notifications.mjs";
 import { IOS_STEP, BLOCKED, UNSUPPORTED } from "../push/push.mjs";
 
@@ -50,12 +50,12 @@ test("blocked and unsupported browsers: email only, with the plain reason", () =
 test("with only phone available, a browser that cannot do it has nothing to choose", () => {
   const s = cardState({ alerts: alerts({ push: true, email: false }), support: "unsupported" });
   assert.deepEqual(s.channelChoices, []);
-  assert.equal(s.note, UNSUPPORTED);
+  assert.equal(s.note, UNSUPPORTED_NO_EMAIL, "email is not available, so the note does not point to it");
   assert.equal(s.canTest, false);
 });
 
 test("the email-only server: no phone notes at all", () => {
-  const s = cardState({ alerts: alerts({ push: false, email: true }), support: "ios_home_screen" });
+  const s = cardState({ alerts: alerts({ push: false, email: true, channels: "email" }), support: "ios_home_screen" });
   assert.deepEqual(s.channelChoices, ["email"]);
   assert.equal(s.showIosStep, false);
   assert.equal(s.note, null);
@@ -113,7 +113,7 @@ test("a channel the browser cannot do is changed to one it can", () => {
 
 // ── saving: the stored channel is only changed when the user changed it ──
 
-const plan = ({ saved, patch = {}, choices, devices = 0 }) => savePlan({ saved, form: { ...settingsToForm(saved), ...patch }, choices, devices, browserZone: "America/Phoenix" });
+const plan = ({ saved, patch = {}, choices, devices = 0, pushOnServer = true }) => savePlan({ saved, form: { ...settingsToForm(saved), ...patch }, choices, devices, pushOnServer, browserZone: "America/Phoenix" });
 
 test("saved phone channel with a device set up, a browser that cannot push, only quiet hours changed: the PUT keeps phone and asks for no permission", () => {
   const { settings: saved } = alerts({ channels: "push" });
@@ -225,4 +225,66 @@ test("a stored channel the server cannot send right now is shown and saved back,
   assert.deepEqual(channelOptions(e.channelChoices, "email", 0).map((o) => o.value), ["push", "email"]);
   assert.equal(plan({ saved: email.settings, patch: { threshold: 0.25 }, choices: e.channelChoices }).settings.channels, "email");
   assert.equal(cardState({ alerts: alerts({ push: true, email: false, channels: "push" }), support: "ready" }).note, null, "no line when email is simply not saved");
+});
+
+// ── third pass ──
+
+test("S1: pings on, phone stored, no device, a browser that cannot push: the channel is kept, labelled, and Email can still be picked", () => {
+  for (const support of ["blocked", "unsupported", "ios_home_screen"]) {
+    for (const [stored, label, value] of [["push", "Phone notification (no device set up yet)", "push"], ["both", "Both (no phone set up yet)", "both"]]) {
+      const a = alerts({ enabled: true, channels: stored });
+      const { channelChoices } = cardState({ alerts: a, support });
+      const extra = { enabled: true };
+      assert.deepEqual(channelOptions(channelChoices, stored, 0, extra), [{ value: "email", label: "Email" }, { value, label }], `${support} ${stored}`);
+      assert.equal(shownChannel(stored, channelChoices, 0, extra), stored);
+      const quiet = plan({ saved: a.settings, patch: { quietStart: "21:00" }, choices: channelChoices, devices: 0 });
+      assert.equal(quiet.settings.channels, stored, `${support} ${stored}: a quiet-hours-only save keeps the channel`);
+      assert.equal(quiet.askPush, false);
+      assert.equal(quiet.forgetPush, false);
+      const email = plan({ saved: a.settings, patch: { channels: "email" }, choices: channelChoices, devices: 0 });
+      assert.equal(email.settings.channels, "email", "picking Email in How still saves email");
+    }
+  }
+  // not for pings that are off (still Q1: email shown, email saved), and not on a browser that can push
+  const off = alerts({ enabled: false, channels: "push" });
+  assert.deepEqual(channelOptions(["email"], "push", 0, { enabled: false }), [{ value: "email", label: "Email" }]);
+  assert.equal(plan({ saved: off.settings, patch: { enabled: true }, choices: ["email"], devices: 0 }).settings.channels, "email");
+});
+
+test("S2: with email not available, the blocked, unsupported and Safari-tab notes do not point to email, and the email line still shows", () => {
+  const a = (channels) => alerts({ push: true, email: false, channels });
+  const blocked = cardState({ alerts: a("both"), support: "blocked" });
+  assert.equal(blocked.note, BLOCKED_NO_EMAIL);
+  assert.equal(blocked.emailNote, EMAIL_OFF);
+  assert.ok(!/email/i.test(BLOCKED_NO_EMAIL) && !/email/i.test(UNSUPPORTED_NO_EMAIL) && !/choose email|can choose email/i.test(IOS_STEP_NO_EMAIL));
+  const unsupported = cardState({ alerts: a("email"), support: "unsupported" });
+  assert.equal(unsupported.note, UNSUPPORTED_NO_EMAIL);
+  assert.equal(unsupported.emailNote, EMAIL_OFF);
+  const ios = cardState({ alerts: a("both"), support: "ios_home_screen" });
+  assert.equal(ios.showIosStep, true);
+  assert.equal(ios.iosStep, IOS_STEP_NO_EMAIL);
+  assert.equal(ios.emailNote, EMAIL_OFF);
+  // email available: the notes are as before, and no second line
+  const normal = cardState({ alerts: alerts({ channels: "push" }), support: "blocked" });
+  assert.equal(normal.note, BLOCKED);
+  assert.equal(normal.emailNote, undefined);
+  assert.equal(cardState({ alerts: alerts({ channels: "push" }), support: "ios_home_screen" }).iosStep, IOS_STEP);
+  // no email saved and email off: the blocked note alone
+  assert.equal(cardState({ alerts: a("push"), support: "blocked" }).emailNote, undefined);
+});
+
+test("S3: phone switched off on the server: a stored phone choice says so, with one plain line", () => {
+  const extra = { pushOnServer: false, enabled: true };
+  for (const [stored, label] of [["push", "Phone notification (isn't available right now)"], ["both", "Both (phone isn't available right now)"]]) {
+    const a = alerts({ push: false, email: true, channels: stored, devices: 2 });
+    const state = cardState({ alerts: a, support: "ready" });
+    assert.deepEqual(state.channelChoices, ["email"]);
+    assert.equal(state.note, PHONE_OFF, stored);
+    assert.deepEqual(channelOptions(state.channelChoices, stored, 2, extra), [{ value: "email", label: "Email" }, { value: stored, label }], stored);
+    assert.equal(shownChannel(stored, state.channelChoices, 2, extra), stored);
+    const p = plan({ saved: a.settings, patch: { quietStart: "21:00" }, choices: state.channelChoices, devices: 2, pushOnServer: false });
+    assert.equal(p.settings.channels, stored);
+    assert.equal(p.askPush, false);
+  }
+  assert.equal(cardState({ alerts: alerts({ push: false, email: true, channels: "email" }), support: "ready" }).note, null, "no line when no phone is saved");
 });

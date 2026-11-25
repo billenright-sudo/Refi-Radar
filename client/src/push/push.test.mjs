@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  pushSupport, keyToBytes, deviceBody, loadAlerts, saveAlerts, addDevice, removeDevice, sendTest, enablePush, resyncPush, forgetDevice,
+  pushSupport, keyToBytes, deviceBody, loadAlerts, saveAlerts, addDevice, removeDevice, sendTest, enablePush, resyncPush, forgetDevice, settleSave,
   IOS_STEP, BLOCKED, UNSUPPORTED, WHAT_YOU_GET,
 } from "./push.mjs";
 
@@ -283,4 +283,24 @@ test("the copy is the plan's wording", () => {
   assert.ok(IOS_STEP.includes("Open Broker Radar from that icon, sign in, and turn notifications on here."), "the Home Screen app has its own sign-in");
   assert.match(WHAT_YOU_GET, /Never a client's name/);
   assert.ok(BLOCKED && UNSUPPORTED);
+});
+
+test("S4: after a save that removed this browser's device the settings are read again, so the device count is fresh", async () => {
+  const saved = { ...ALERTS, devices: 1 };
+  const fresh = { ...ALERTS, devices: 0 };
+  const b = browserWith({ endpoint: "https://fcm.googleapis.com/mine" });
+  const s = fakeServer({
+    "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0, removed: true } }),
+    "GET /api/profile/alerts": () => ({ status: 200, body: fresh }),
+  });
+  assert.deepEqual(await settleSave({ data: saved, forget: true, navigator: b.navigator, fetchFn: s.fetch }), fresh);
+  // nothing to forget: the save's own answer stands and nothing is asked
+  const none = fakeServer({});
+  assert.deepEqual(await settleSave({ data: saved, forget: false, navigator: b.navigator, fetchFn: none.fetch }), saved);
+  assert.equal(none.calls.length, 0);
+  // the device was not this user's (skipped), or the re-read fails: the save's own answer stands
+  const other = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 1, removed: false } }) });
+  assert.deepEqual(await settleSave({ data: saved, forget: true, navigator: browserWith({ endpoint: "https://fcm.googleapis.com/a" }).navigator, fetchFn: other.fetch }), saved);
+  const down = fakeServer({ "DELETE /api/profile/alerts/devices": () => ({ status: 200, body: { devices: 0, removed: true } }) });
+  assert.deepEqual(await settleSave({ data: saved, forget: true, navigator: browserWith({ endpoint: "https://fcm.googleapis.com/a" }).navigator, fetchFn: down.fetch }), saved);
 });
