@@ -187,7 +187,7 @@ test("devices: allowlist, key shape, ownership, cap of 10", async () => {
   const annDevice = devices(ann)[0];
   const del = await L("DELETE", `${R}/devices`, { endpoint: annDevice });
   assert.equal(del.status, 200);
-  assert.deepEqual(del.body, { devices: 0 });
+  assert.deepEqual(del.body, { devices: 0, removed: false }, "nothing of Lee's was there");
   assert.ok(devices(ann).includes(annDevice), "Ann's device is still Ann's");
   const shared = device("web.push.apple.com", 99);
   await post(shared);
@@ -195,7 +195,7 @@ test("devices: allowlist, key shape, ownership, cap of 10", async () => {
   assert.ok(!devices(ann).includes(shared.endpoint));
   assert.deepEqual(devices(lee), [shared.endpoint]);
   // a user removes their own
-  assert.deepEqual((await L("DELETE", `${R}/devices`, { endpoint: shared.endpoint })).body, { devices: 0 });
+  assert.deepEqual((await L("DELETE", `${R}/devices`, { endpoint: shared.endpoint })).body, { devices: 0, removed: true });
   assert.equal((await L("DELETE", `${R}/devices`, { endpoint: 5 })).status, 400);
 });
 
@@ -271,6 +271,21 @@ test("the test notification has its own topic, so it can never replace a real qu
   await A("POST", `${R}/devices`, device());
   await A("POST", `${R}/test`, {});
   assert.equal(push.calls[0].topic, "rate-drop-test");
+});
+
+test("a saved channel can always be saved back, even when the server cannot send it right now", async () => {
+  channelsOn();
+  const both = { ...DEFAULTS, enabled: true, channels: "both" };
+  assert.equal((await A("PUT", R, both)).status, 200);
+  app.set("rateCheckDeps", { push: makePush(), mail: null });   // email switched off on the server
+  const again = await A("PUT", R, { ...both, quietStart: "21:00" });
+  assert.equal(again.status, 200);
+  assert.equal(again.body.settings.channels, "both");
+  assert.equal(again.body.settings.quietStart, "21:00");
+  // a channel that is not the stored one is still refused
+  assert.equal((await A("PUT", R, { ...both, channels: "email" })).status, 400);
+  // and a user with nothing stored cannot turn on a channel that is not there
+  assert.equal((await L("PUT", R, { ...both, channels: "both" })).status, 400);
 });
 
 test("the test notification: 503 when neither channel is available; three an hour per user", async () => {

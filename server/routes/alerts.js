@@ -8,7 +8,7 @@
 //   POST   /api/profile/alerts/devices { endpoint, keys: { p256dh, auth } } -> { devices }   400 "That device can't get notifications."
 //            unless the endpoint is a push service's and the keys are a P-256 point (65 octets) and a 16-octet secret, base64url.
 //            An endpoint already stored moves to this user; at most 10 devices per user (the oldest goes); 30 registrations an hour per user.
-//   DELETE /api/profile/alerts/devices { endpoint } -> { devices }   (only the caller's own)
+//   DELETE /api/profile/alerts/devices { endpoint } -> { devices, removed }   (only the caller's own; removed says whether one was)
 //   POST   /api/profile/alerts/test -> { sent }   a fixed test notification to the caller's own devices and/or email, per their channel;
 //            3 an hour per user; 503 "Notifications aren't available yet." when neither channel is available at all.
 // Which channels exist comes from app.get("rateCheckDeps") ({ push, mail }, set once at start-up by index.js; lib/pings/channels.js).
@@ -89,7 +89,14 @@ router.put("/", (req, res) => {
   if (parsed.error) return bad(res, parsed.error);
   const { push, mail } = channelsOf(req.app);
   const v = parsed.value;
-  if (v.enabled) {
+  // A channel the user already has saved can be saved back even when it is not available on the server right now (the sender skips an
+  // unavailable channel), so one switched-off channel never locks a user out of changing anything else.
+  let storedChannel = null;
+  try {
+    const row = db.prepare("SELECT channels FROM user_alert_settings WHERE user_id = ?").get(req.user.id);
+    storedChannel = row ? row.channels : null;
+  } catch (_err) { storedChannel = null; }
+  if (v.enabled && v.channels !== storedChannel) {
     if (v.channels !== "email" && !push) return bad(res, NO_PUSH);
     if (v.channels !== "push" && !mail) return bad(res, NO_EMAIL);
   }
@@ -143,8 +150,8 @@ router.delete("/devices", (req, res) => {
   const endpoint = req.body && req.body.endpoint;
   if (typeof endpoint !== "string" || !endpoint) return bad(res, BAD_REQUEST);
   try {
-    db.prepare("DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?").run(req.user.id, endpoint);
-    res.json({ devices: deviceCount(req.user.id) });
+    const { changes } = db.prepare("DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?").run(req.user.id, endpoint);
+    res.json({ devices: deviceCount(req.user.id), removed: changes > 0 });   // removed: it was the caller's own device
   } catch (err) {
     console.error(`[pings] removing a device failed: ${errName(err)}`);
     res.status(500).json({ success: false, error: "Database error" });
