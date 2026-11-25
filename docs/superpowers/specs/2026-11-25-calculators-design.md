@@ -1,6 +1,7 @@
 # Calculators: design
 
-Date: 2026-11-25. Author: Sirius. Status: for Bill's review. Branch `feature/calculators`, off live `9c7f2bc`.
+Date: 2026-11-25. Author: Sirius. Status: **APPROVED by Bill 2026-11-25** ("calculators approved"; section 7's three
+decisions all yes). Branch `feature/calculators`, off `6b52d5c` (live `9c7f2bc` plus the merged calendar and alerts work).
 Product: **Broker Radar**. v1 = the four calculators Bill listed on 2026-10-28.
 
 ## 1. What it is, and what it is not
@@ -203,14 +204,22 @@ refusal line.
 existing scoped lookup) so code fills in that client's balance, rate, months left, value and real score, under the
 section 3 rules. Client data used carries the id, name and loan figures only, never email, phone or notes.
 - `paymentCalcTool` { loanAmount, rate, termYears?, taxesYearly?, insuranceYearly?, miMonthly?, hoaMonthly?, clientId? }
-- `breakEvenCalcTool` { clientId? or currentBalance + currentRate + monthsLeft, newRate, newTermYears?, closingCosts?, costsInLoan? }
-- `blendedRateCalcTool` { clientId? or first balance + rate + monthsLeft, cashNeeded, second {kind, rate, termYears, costs?}, cashOut {rate, termYears, costs?}, compareYears? }
+- `breakEvenCalcTool` { clientId? or currentBalance + currentRate + monthsLeft, newRate or useTodaysAverage, newTermYears?, closingCosts?, costsInLoan? }
+- `blendedRateCalcTool` { clientId? or first balance + rate + monthsLeft, cashNeeded, second {kind, rate, termYears, costs?}, cashOut {rate or useTodaysAverage, termYears, costs?}, compareYears? }
 - `buydownCalcTool` { kind: "2-1" | "3-2-1" | "1-0" | "points", loanAmount, noteRate, termYears?, rateWithPoints?, points? }
 - `showScreenTool` gains the page `calculators` ("Here's Calculators."). It opens the page only; it does not fill it in.
 
 Code fills in only what the page fills in: a term not said is 30 years, closing costs not said are the app's estimate,
 compare-over not said is 5 years, and the line always says each of them. The new rate, taxes, insurance, HOA, months
 left (when the record can't give it) and the rate with points are never filled in; they are asked for.
+
+**"At today's rate" (Bill, 2026-11-25).** Where the page offers the FRED link (the new rate in break-even, the cash-out
+rate in blended rate), the broker may say "at today's rate" or "today's average" instead of a rate. The model then
+passes `useTodaysAverage: true` in place of that rate, and code fills in the app's stored FRED average for that loan's
+term: the 30-year average for a 30-year term, the 15-year average for a 15-year term. The line then says "today's
+estimated average of {rate}%" where it would say "{rate}%", every time. For any other term, or when the app has no
+stored average, she asks for the rate as before. It is never used for a current loan's rate, a second's rate, a
+payment question or a buydown; there she asks.
 
 **Line templates.** Money is written as the app's code-written lines write it: monthly amounts and the buydown cost to
 the cent ($2,528.27), totals in whole dollars ($24,676). Rates are written as typed with no extra zeros (6.5%, 6.25%).
@@ -314,7 +323,9 @@ each hold the four calculators between two marker lines, `// ---- calculators: s
 2. **Ship before the lawyer reads the estimate line?** Recommend yes: it is broker-only, with no client output; the
    lawyer review gates any later client-facing step.
 3. **May Charlie use today's FRED average when the broker says "at today's rate"?** Recommend yes, said as "today's
-   estimated average", never as the client's rate. (As written, she asks for the rate.)
+   estimated average", never as the client's rate.
+
+**Decided 2026-11-25: yes to all three.** Decision 3 is written into section 4 ("At today's rate").
 
 ### Sirius's calls for Bill to check
 
