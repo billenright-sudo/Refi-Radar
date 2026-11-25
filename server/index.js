@@ -23,6 +23,9 @@ const integrationRoutes = require("./routes/integrations");
 const billingWebhookRoutes = require("./routes/billingWebhook");
 const billingRoutes = require("./routes/billing");
 const feedbackRoutes = require("./routes/feedback");
+const alertsRoutes = require("./routes/alerts");
+const internalRoutes = require("./routes/internal");
+const { buildChannels } = require("./lib/pings/channels");
 const { charliModel } = require("./lib/assistant/orchestrator");
 const { startBilling } = require("./lib/billing/startup");
 const { createStripeGateway } = require("./lib/billing/stripeGateway");
@@ -57,9 +60,13 @@ app.use("/api/sweeps",        sweepsRoutes);
 app.use("/api/assistant",     assistantRoutes);
 app.use("/api/voice",         voiceRoutes);
 app.use("/api/google",        googleRoutes);
+app.use("/api/profile/alerts", alertsRoutes);   // rate-drop notification settings; before /api/profile, which would 404 the path
 app.use("/api/profile",       profileRoutes);
 app.use("/api/feedback",      feedbackRoutes);  // not gated: a locked user can still write to us
 app.use("/api/billing",       billingRoutes);   // not gated: a locked brokerage still adds a card and takes its clients out
+
+// The Cloud Scheduler door for the rate-drop check: POST only, answers 404 "not available" until RATE_CHECK_SECRET is set (lib/pings/).
+app.use("/internal", internalRoutes);
 
 // Health check
 app.get("/health", (req, res) => {
@@ -83,6 +90,15 @@ app.get("*", (req, res) => {
   } catch (err) {
     console.warn(`[billing] off: start-up failed (${err?.message})`);
     app.set("billingConfig", { enabled: false });
+  }
+  // Rate-drop pings (lib/pings/): the channels are built once, and the start-up line names reasons only, never a value. With the secrets
+  // unset the routes answer "not available" and nothing else changes. A failure here never stops the server.
+  try {
+    const { push, mail, line } = buildChannels(process.env);
+    app.set("rateCheckDeps", { push, mail });
+    console.log(line);
+  } catch (err) {
+    console.warn(`[pings] off: start-up failed (${err && err.name})`);
   }
   app.listen(PORT, () => {
     console.log(`RefiRadar v2 running on port ${PORT}`);
