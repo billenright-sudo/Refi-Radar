@@ -6,9 +6,11 @@
 //
 // Read tools query the CRM / the server sweep engine (lib/refi.js, the single math source). lookUpLive (a Promise) asks ctx.live,
 // lib/assistant/live.js, for one web search, after its screens have refused anything that must not leave the server.
-// Side-effect tools (addClientTool, logContactTool, callListTool, setCareerStageTool, createEventTool, setTargetRateTool) only PACKAGE
+// Side-effect tools (addClientTool, logContactTool, callListTool, setCareerStageTool, createEventTool, cancelEventTool, moveEventTool,
+// setTargetRateTool) only PACKAGE
 // the intent in `sideEffect` and return a preview — they never write. The write happens later, behind a confirmation.
-// The two Google Calendar tools (getCalendarTool, createEventTool) return a Promise: a read goes out to Google.
+// The Google Calendar tools (getCalendarTool, createEventTool, cancelEventTool, moveEventTool) return a Promise: a read goes out to Google.
+// cancelEventTool and moveEventTool, like createEventTool, only package a change (they never cancel or move anything).
 // draftEmailTool sets up a client email and returns it as compose links at the TOP level of the result (`compose`, next to
 // data and source): nothing is sent and no Google connection is involved; the broker sends it from their own mail app.
 // showScreenTool returns the screen to open at the TOP level (`screen`), the same way, and writes nothing: the browser opens it.
@@ -21,7 +23,8 @@ const { getMovement } = require("../rateHistory");
 const { CAREER_STAGES, stageById, stageForYears } = require("./coaching");
 const { GLOSSARY, GLOSSARY_SOURCE, lookupTerm } = require("./glossary");
 const { validateClient } = require("../../routes/clients");   // the one POST /api/clients runs
-const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime } = require("../google/time");
+const { resolveDate, parseTime, toInstant, wallTimeExists, spokenDay, spokenTime, localTimeOf } = require("../google/time");
+const calendarChange = require("./calendarChange");
 const { PURPOSES } = require("./outreach");
 const { setUpEmail, matchingOccasion } = require("./emailSetup");
 
@@ -515,6 +518,139 @@ async function createEventTool(args, ctx) {
   };
 }
 
+// ── Cancelling and moving an event (packaged for confirmation, like a booking) ──────────────────────────────────────────────
+
+// The one event a cancel or a move is about, found by code on the broker's own calendar (calendarChange.findMatches), or the code
+// line that says why there is none, or why she won't touch it. Nothing here changes anything. The model gave a day, a time and/or a
+// title and nothing else: the event's id and etag, its guests and its organizer are read here and stay in code (listDayDetailed is
+// not the model-facing read). `move` also needs the new start. -> { event, date, zone, now, newStart?, newDate?, newTime?, events }
+// or a tool result (a refusal, an error, a "not connected") to return as it is.
+const CHANGE_NOTE = "this change was refused: the app tells the user why, in its own words; say nothing about it";
+const NEEDS_TIME_OR_TITLE = "say the time or the title of the event";
+const refuseChange = (line) => ({ data: { error: CHANGE_NOTE, code: "calendar_change", line }, source: "(calendar change)" });
+const oneLineTitle = (t) => String(t == null ? "" : t).replace(/\s+/g, " ").trim().slice(0, TITLE_MAX + 80);
+
+async function locateEvent(a, ctx, move) {
+  const google = ctx && ctx.google;
+  if (!google) return { done: notConnected("not_connected") };
+  const connection = google.connection();
+  if (connection.code) return { done: notConnected(connection.code) };
+  const now = clockOf(ctx);
+  const zone = connection.timeZone;
+
+  let time;
+  if (a.time != null) {
+    time = parseTime(a.time);
+    if (!time) return { done: fail("(invalid input)", BAD_TIME) };
+  }
+  let title;
+  if (a.title != null) {
+    if (typeof a.title !== "string") return { done: fail("(invalid input)", BAD_TITLE) };
+    title = a.title;
+  }
+  if (!time && calendarChange.words(title).length === 0) return { done: fail("(invalid input)", NEEDS_TIME_OR_TITLE) };
+
+  let date;
+  let today;
+  let newDate;
+  let newTime;
+  let newStart;
+  try {
+    date = resolveDate(a.date, zone, now);
+    if (!date) return { done: fail("(invalid input)", BAD_DAY) };
+    today = resolveDate("today", zone, now);
+    if (move) {
+      newTime = parseTime(a.newTime);
+      if (!newTime) return { done: fail("(invalid input)", BAD_TIME) };
+      newDate = a.newDate == null ? date : resolveDate(a.newDate, zone, now);
+      if (!newDate) return { done: fail("(invalid input)", BAD_DAY) };
+      if (!wallTimeExists(newDate, newTime, zone)) return { done: fail("(invalid input)", NO_SUCH_TIME) };
+      newStart = toInstant(newDate, newTime, zone);
+      if (newStart < now) return { done: fail("(invalid input)", PAST_TIME) };
+    }
+  } catch (_err) {
+    return { done: fail("(unavailable)", "the time zone of the calendar could not be read") };
+  }
+
+  const listed = await google.listDayDetailed({ date });
+  if (listed.code) return { done: notConnected(listed.code) };
+  if (!Array.isArray(listed.events)) return { done: fail("(unavailable)", "Google Calendar could not be read right now") };
+
+  const matches = calendarChange.findMatches(listed.events, { time, title });
+  if (matches.length === 0) return { done: refuseChange(calendarChange.notFoundLine(date)) };
+  if (matches.length > 1) return { done: refuseChange(calendarChange.whichOneLine(date, matches)) };
+  const event = matches[0];
+
+  if (!event.mine) return { done: refuseChange(calendarChange.notMineLine(event.title)) };
+  if (event.guests) return { done: refuseChange(calendarChange.hasGuestsLine(event.title)) };
+  if (event.repeats) return { done: refuseChange(calendarChange.repeatsLine(event.title)) };
+  // history stays as it is: a timed event is started from its start instant; an all-day one only when its day is past
+  const started = event.allDay ? event.startDate < today : event.startAt <= now;
+  if (started) return { done: refuseChange(calendarChange.alreadyStartedLine(event.title)) };
+  return { event, date, zone, now, newDate, newTime, newStart, events: listed.events, google };
+}
+
+const clockText = (time) => `${String(time.hour).padStart(2, "0")}:${String(time.minute).padStart(2, "0")}`;
+// An instant as the "HH:MM" it reads on the calendar's clock.
+const hhmmOf = (ms, zone) => {
+  const t = localTimeOf(new Date(ms).toISOString(), zone);
+  return clockText(t);
+};
+
+// Package the cancelling of ONE event for confirmation. It cancels nothing: the delete happens later, behind /api/assistant/confirm.
+async function cancelEventTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const found = await locateEvent(a, ctx, false);
+  if (found.done) return found.done;
+  const { event, date, zone } = found;
+  const title = oneLineTitle(event.title);
+  const time = event.allDay ? null : hhmmOf(event.startAt, zone);
+  return {
+    data: { preview: { title, day: spokenDay(date), time: event.allDay ? null : event.start, allDay: event.allDay } },
+    source: "(unsaved)",
+    sideEffect: {
+      type: "cancelEvent",
+      event: { id: event.id, etag: event.etag, title, date, time, allDay: event.allDay, startAt: event.startAt, timeZone: zone },
+    },
+  };
+}
+
+// Package the moving of ONE timed event to a new start (same length) for confirmation. It moves nothing: the patch happens later,
+// behind /api/assistant/confirm. A new slot that overlaps another timed event is allowed, and said (data.preview.overlap).
+async function moveEventTool(args, ctx) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const found = await locateEvent(a, ctx, true);
+  if (found.done) return found.done;
+  const { event, date, zone, newDate, newTime, newStart, google } = found;
+  const title = oneLineTitle(event.title);
+  if (event.allDay) return refuseChange(calendarChange.allDayMoveLine(event.title));
+  if (newStart === event.startAt) return refuseChange(calendarChange.sameTimeLine(event.title));
+  const durationMinutes = Math.max(1, Math.round((event.endAt - event.startAt) / 60_000));
+  const newEnd = newStart + durationMinutes * 60_000;
+  let day = found.events;
+  if (newDate !== date) {
+    const other = await google.listDayDetailed({ date: newDate });
+    day = Array.isArray(other.events) ? other.events : [];
+  }
+  const clash = day.find((e) => e.id !== event.id && !e.allDay && e.startAt < newEnd && e.endAt > newStart);
+  return {
+    data: {
+      preview: {
+        title, day: spokenDay(date), time: event.start, newDay: spokenDay(newDate), newTime: spokenTime(newTime),
+        overlap: clash ? { title: oneLineTitle(clash.title), time: clash.start } : null,
+      },
+    },
+    source: "(unsaved)",
+    sideEffect: {
+      type: "moveEvent",
+      event: {
+        id: event.id, etag: event.etag, title, date, time: hhmmOf(event.startAt, zone), startAt: event.startAt,
+        newDate, newTime: clockText(newTime), durationMinutes, timeZone: zone,
+      },
+    },
+  };
+}
+
 // ── Client email: code-authored templates as compose links ───────────────────
 
 
@@ -914,8 +1050,8 @@ async function lookUpLive(args, ctx) {
 const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
-    getCalendarTool, createEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
-    upcomingDatesTool,
+    getCalendarTool, createEventTool, cancelEventTool, moveEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool,
+    upgradesTool, upcomingDatesTool,
   })
 );
 
@@ -1138,6 +1274,50 @@ const TOOL_SCHEMA = [
     },
   },
   {
+    name: "cancelEventTool",
+    description:
+      "Prepare to CANCEL one event on the user's OWN Google Calendar for them to confirm. This does NOT cancel anything: the app reads " +
+      "the day, finds the event, and asks the user to confirm in its own words; the event is only removed after they say yes. Use it " +
+      "when the user asks to cancel, delete or remove an event that is already on the calendar ('cancel my 3 PM', 'cancel the call " +
+      "with Dave tomorrow'). Pass the day as the user said it and the start time as 24-hour HH:MM and/or a few words of the title; " +
+      "the day is worked out for you, so never work out a date yourself, and never read the day first to look for the event: the " +
+      "app finds it. Ask for a missing day, or for the time or the title, rather than guessing. Nobody is told: she never emails " +
+      "guests, and events with guests, repeating events and ones someone else set up are refused in the app's own words. Never say " +
+      "an event was cancelled.",
+    input_schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "The day the event is on: today, tomorrow, a weekday name, or YYYY-MM-DD, as the user said it" },
+        time: { type: "string", description: "The event's start time, 24-hour HH:MM, e.g. '15:00'." },
+        title: { type: "string", description: "A few words of the event's title, as the user said them." },
+      },
+      required: ["date"],
+    },
+  },
+  {
+    name: "moveEventTool",
+    description:
+      "Prepare to MOVE one event on the user's OWN Google Calendar to a new start for them to confirm; the length stays the same. " +
+      "This does NOT move anything: the app reads the day, finds the event, and asks the user to confirm in its own words; the event is " +
+      "only moved after they say yes. Use it when the user asks to move, reschedule or push an event that is already on the calendar " +
+      "('move my 3 PM to 4', 'push the Dave call to Friday at ten'). `date` and `time`/`title` say which event; `newTime` (24-hour " +
+      "HH:MM) is the new start and `newDate` the new day when it changes (the same day if left out). Days are worked out for you: " +
+      "never work out a date yourself, and never read the day first to look for the event: the app finds it. Ask for a missing day or new " +
+      "time rather than guessing. Nobody is told: events with guests, repeating events and ones someone else set up are refused in " +
+      "the app's own words. Never say an event was moved.",
+    input_schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "The day the event is on now: today, tomorrow, a weekday name, or YYYY-MM-DD, as the user said it" },
+        time: { type: "string", description: "The event's current start time, 24-hour HH:MM." },
+        title: { type: "string", description: "A few words of the event's title, as the user said them." },
+        newDate: { type: "string", description: "The day to move it to, as the user said it. Leave out to keep the same day." },
+        newTime: { type: "string", description: "The new start time, 24-hour HH:MM." },
+      },
+      required: ["date", "newTime"],
+    },
+  },
+  {
     name: "draftEmailTool",
     description:
       "Set up a short email to one client for the user to send. Charlie never writes or sends the email herself: the wording is fixed " +
@@ -1203,7 +1383,7 @@ const TOOL_SCHEMA = [
 
 module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
-  getCalendarTool, createEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
+  getCalendarTool, createEventTool, cancelEventTool, moveEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
   withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
   upcomingDatesTool,
 };
