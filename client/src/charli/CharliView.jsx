@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { createSession, pendingRows, voiceNoteFor } from "./session.mjs";
+import { createSession, pendingRows, pendingButtons, voiceNoteFor } from "./session.mjs";
 import { COMPOSE_LINKS, composeSentRequest } from "../emails.mjs";
 import { keptSession } from "./keep.mjs";
 import { createReplay, shouldClear } from "./replay.mjs";
@@ -507,9 +507,9 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         {/* disabled while anything is in flight, speech-to-text included: a spoken answer may be on its way */}
         <button data-testid="charli-confirm" disabled={working} onClick={() => act(session.confirmPending)} style={{ ...primary, opacity: working ? 0.6 : 1 }}>
-          <Icon name="check" size={15} color="#0f2040" />Confirm
+          <Icon name="check" size={15} color="#0f2040" />{pendingButtons(snap.pending).confirm}
         </button>
-        <button data-testid="charli-cancel" disabled={working} onClick={() => act(session.cancelPending)} style={{ ...ghost, opacity: working ? 0.6 : 1 }}>Cancel</button>
+        <button data-testid="charli-cancel" disabled={working} onClick={() => act(session.cancelPending)} style={{ ...ghost, opacity: working ? 0.6 : 1 }}>{pendingButtons(snap.pending).cancel}</button>
         <span style={{ color: C.muted, fontSize: 12.5 }}>or say yes / no</span>
       </div>
     </div>

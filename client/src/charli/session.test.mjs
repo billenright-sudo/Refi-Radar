@@ -1,5 +1,6 @@
 // node --test src/charli/
 // The session talks to the server only through an injected fetch, so every flow here runs with no network.
+import { pendingButtons } from "./session.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -2137,7 +2138,7 @@ async function withMovePending(confirm) {
   await ctx.session.submit("move my 10 AM walkthrough to 2:30");
   return ctx;
 }
-const CANCEL_YES = ["cancel", "Cancel.", "cancel it", "Yes, cancel.", "yes cancel", "yes cancel it", "Yes, cancel it please.", "go ahead and cancel", "go ahead and cancel it"];
+const CANCEL_YES = ["cancel it", "Yes, cancel.", "yes cancel", "yes, cancel it", "yes cancel it", "Yes, cancel it please.", "go ahead and cancel", "go ahead and cancel it"];
 const MOVE_YES = ["move it", "Move it.", "yes move it", "Yes, move it.", "go ahead and move it"];
 const NEGATIONS = {
   cancelEvent: ["don't cancel", "Don't cancel it.", "no, don't cancel it", "leave it", "never mind", "no"],
@@ -2192,4 +2193,41 @@ test("F6: with another kind of change pending, a spoken 'cancel' is still a no",
   const { session, server } = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
   assert.deepEqual(await session.heard("cancel"), { ok: true, action: "cancel" });
   assert.equal(server.confirms().length, 0);
+});
+
+// ── fix list 2, G6: a bare "cancel" is always "don't"; the cancel card says which button does what ──
+
+test("G6 classifyReply: a bare 'cancel' is a no for every kind, the cancel kind included; the verb phrases stay a yes; keep it / leave it are a no", () => {
+  for (const kind of [undefined, "logContact", "createEvent", "cancelEvent", "moveEvent"]) {
+    for (const t of ["cancel", "Cancel.", "cancel please", "Cancel!", "please cancel"]) assert.equal(classifyReply(t, kind), "no", `${kind}: "${t}"`);
+  }
+  for (const t of ["cancel it", "yes cancel", "yes, cancel it", "Yes, cancel it please.", "go ahead and cancel", "go ahead and cancel it"]) {
+    assert.equal(classifyReply(t, "cancelEvent"), "yes", `cancelEvent: "${t}"`);
+  }
+  for (const t of ["move it", "yes move it", "go ahead and move it"]) assert.equal(classifyReply(t, "moveEvent"), "yes", `moveEvent: "${t}"`);
+  for (const [kind, negation] of [["cancelEvent", "don't cancel"], ["moveEvent", "no, don't move it"]]) {
+    for (const t of ["keep it", "Keep it.", "leave it", "no, keep it", negation, "never mind"]) {
+      assert.equal(classifyReply(t, kind), "no", `${kind}: "${t}"`);
+    }
+  }
+});
+
+test("G6: a spoken bare 'cancel' with a cancel pending confirms nothing; 'yes, cancel it' still confirms", async () => {
+  const a = await withCancelPending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+  assert.deepEqual(await a.session.heard("Cancel."), { ok: true, action: "cancel" });
+  assert.equal(a.server.confirms().length, 0);
+  const b = await withCancelPending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+  assert.deepEqual(await b.session.heard("Yes, cancel it."), { ok: true, action: "confirm" });
+  assert.equal(b.server.confirms().length, 1);
+  const c = await withCancelPending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+  assert.deepEqual(await c.session.heard("keep it"), { ok: true, action: "cancel" });
+  assert.equal(c.server.confirms().length, 0);
+});
+
+test("G6: the cancel card's buttons read 'Yes, cancel it' and 'Keep it'; every other card keeps Confirm and Cancel", () => {
+  assert.deepEqual(pendingButtons({ sideEffect: CANCEL_SIDE_EFFECT }), { confirm: "Yes, cancel it", cancel: "Keep it" });
+  for (const se of [MOVE_SIDE_EFFECT, SIDE_EFFECT, STAGE_SIDE_EFFECT, { type: "createEvent" }]) {
+    assert.deepEqual(pendingButtons({ sideEffect: se }), { confirm: "Confirm", cancel: "Cancel" }, se.type);
+  }
+  assert.deepEqual(pendingButtons(null), { confirm: "Confirm", cancel: "Cancel" });
 });

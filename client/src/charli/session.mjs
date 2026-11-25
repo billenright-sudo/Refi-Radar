@@ -88,23 +88,30 @@ const PHRASES = [
   ...NO_PHRASES.map((p) => [p.split(" "), "no"]),
   ...FILLER_WORDS.map((p) => [p.split(" "), "filler"]),
 ];
-// (fix wave F6) The read-back of a cancel asks "cancel ...?" and a move's "move ...?", so the verb itself is the natural yes: for a
-// pending cancelEvent "cancel", "cancel it", "yes cancel", "go ahead and cancel" are a yes, and for a pending moveEvent "move it",
-// "yes move it", "go ahead and move it" are. A negation still wins ("don't cancel", "no, don't move it", "leave it", "never mind").
-// For any other kind of change "cancel" stays a no.
+// (fix wave F6, fix list 2 G6) The read-back of a cancel asks "cancel ...?" and a move's "move ...?", so the verb with its object is the
+// natural yes: for a pending cancelEvent "cancel it", "yes cancel", "go ahead and cancel (it)" are a yes, and for a pending moveEvent
+// "move it", "yes move it", "go ahead and move it" are. A BARE "cancel" is a no for every kind, the cancel kind included: it is what
+// the card's Cancel button has always meant. "keep it" and "leave it" are a no for both kinds, and a negation always wins ("don't
+// cancel", "no, don't move it", "never mind").
 const KIND_YES = {
-  cancelEvent: ["cancel", "cancel it", "go ahead and cancel", "go ahead and cancel it"],
+  cancelEvent: ["yes cancel", "cancel it", "go ahead and cancel", "go ahead and cancel it"],
   moveEvent: ["move it", "go ahead and move it"],
 };
+const KIND_NO = ["keep it"];
 const KIND_MAX_REPLY_WORDS = 5;   // "go ahead and move it"
 const phrasesFor = (kind) => {
   const extra = KIND_YES[kind];
   if (!extra) return PHRASES;
-  // longest first, so "cancel it" is read as one yes and not as "cancel" and a stray "it"
+  // these come first, so "yes cancel" is read as one yes and not as "yes" and a bare (no) "cancel"; longest first
   const yes = extra.map((p) => [p.split(" "), "yes"]).sort((a, b) => b[0].length - a[0].length);
-  const cancelIsYes = kind === "cancelEvent";
-  return [...yes, ...PHRASES.filter(([words, k]) => !(cancelIsYes && k === "no" && words.length === 1 && words[0] === "cancel"))];
+  return [...yes, ...KIND_NO.map((p) => [p.split(" "), "no"]), ...PHRASES];
 };
+
+// The two buttons of the confirm card (CharliView). A pending cancel says what each does ("Yes, cancel it" / "Keep it"), since its
+// read-back asks "cancel ...?"; every other card keeps Confirm and Cancel. Same buttons, same order: only the words. Pure.
+export function pendingButtons(pending) {
+  return pendingTypeOf(pending) === "cancelEvent" ? { confirm: "Yes, cancel it", cancel: "Keep it" } : { confirm: "Confirm", cancel: "Cancel" };
+}
 
 // Speech-to-text audio-event tags ("(background noise)", "[laughter]") are not the user's words: they go before anything is read.
 const AUDIO_TAG_RE = /\([^()]*\)|\[[^[\]]*\]/g;
