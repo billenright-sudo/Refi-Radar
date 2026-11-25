@@ -2119,3 +2119,77 @@ test("a line code wrote for a change Google refused (`say`) is shown and spoken 
   await plain.session.submit("yes");
   assert.equal(lastTurn(plain.session).content, "Sorry — that didn't go through: your Google connection has expired — reconnect it on your Profile page");
 });
+
+// ── fix wave F6: "cancel ...?" and "move ...?" are answered with the verb ───
+
+const MOVE_SIDE_EFFECT = {
+  type: "moveEvent", confirmId: "8d2f0b3c-4e5a-4b6c-9d7e-1f2a3b4c5d6e",
+  event: { id: "evt0000002", etag: '"e2"', title: "Walkthrough with Sam", date: "2026-10-28", time: "10:00", startAt: 1792000000000, newDate: "2026-10-28", newTime: "14:30", durationMinutes: 30, timeZone: "America/Phoenix" },
+};
+const MOVE_READ_BACK = 'Just to confirm — move "Walkthrough with Sam" from Wednesday, October 28th at 10:00 AM to Wednesday, October 28th at 2:30 PM Mountain Standard Time?';
+async function withMovePending(confirm) {
+  const ctx = setup({
+    routes: {
+      "POST /api/assistant/turn": () => turnReply(MOVE_READ_BACK, { sideEffect: MOVE_SIDE_EFFECT, turnId: "mb" }),
+      "POST /api/assistant/confirm": confirm,
+    },
+  });
+  await ctx.session.submit("move my 10 AM walkthrough to 2:30");
+  return ctx;
+}
+const CANCEL_YES = ["cancel", "Cancel.", "cancel it", "Yes, cancel.", "yes cancel", "yes cancel it", "Yes, cancel it please.", "go ahead and cancel", "go ahead and cancel it"];
+const MOVE_YES = ["move it", "Move it.", "yes move it", "Yes, move it.", "go ahead and move it"];
+const NEGATIONS = {
+  cancelEvent: ["don't cancel", "Don't cancel it.", "no, don't cancel it", "leave it", "never mind", "no"],
+  moveEvent: ["no, don't move it", "don't move it", "leave it", "never mind", "no"],
+};
+
+test("F6 classifyReply: with a cancel pending, the cancel phrases are a yes; with a move pending, the move phrases are; a negation always wins", () => {
+  for (const t of CANCEL_YES) assert.equal(classifyReply(t, "cancelEvent"), "yes", `cancelEvent: "${t}"`);
+  for (const t of MOVE_YES) assert.equal(classifyReply(t, "moveEvent"), "yes", `moveEvent: "${t}"`);
+  for (const kind of ["cancelEvent", "moveEvent"]) for (const t of NEGATIONS[kind]) assert.equal(classifyReply(t, kind), "no", `${kind}: "${t}"`);
+  // "cancel" is no yes to a move, and "move it" is none to a cancel
+  assert.equal(classifyReply("cancel", "moveEvent"), "no");
+  assert.equal(classifyReply("move it", "cancelEvent"), "other");
+  // every other kind, or none: "cancel" is still a no, and "cancel it" / "move it" are not a yes
+  for (const kind of [undefined, "logContact", "createEvent", "setCareerStage"]) {
+    assert.equal(classifyReply("cancel", kind), "no", String(kind));
+    assert.equal(classifyReply("yes cancel", kind), "no", String(kind));
+    assert.notEqual(classifyReply("cancel it", kind), "yes", String(kind));
+    assert.notEqual(classifyReply("move it", kind), "yes", String(kind));
+  }
+  assert.equal(classifyReply("go ahead and cancel the Chens too", "cancelEvent"), "other", "still short and made of answers only");
+});
+
+test("F6: a spoken 'Yes, cancel it' confirms the pending cancel; 'don't cancel' confirms nothing", async () => {
+  for (const said of CANCEL_YES) {
+    const { session, server } = await withCancelPending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+    assert.deepEqual(await session.heard(said), { ok: true, action: "confirm" }, said);
+    assert.deepEqual(server.confirms().map((c) => c.body), [{ sideEffect: CANCEL_SIDE_EFFECT }]);
+    assert.equal(server.turns().length, 1, "no new turn");
+  }
+  for (const said of NEGATIONS.cancelEvent) {
+    const { session, server } = await withCancelPending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+    assert.deepEqual(await session.heard(said), { ok: true, action: "cancel" }, said);
+    assert.equal(server.confirms().length, 0);
+  }
+});
+
+test("F6: a spoken 'move it' confirms the pending move; 'no, don't move it' confirms nothing", async () => {
+  for (const said of MOVE_YES) {
+    const { session, server } = await withMovePending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+    assert.deepEqual(await session.heard(said), { ok: true, action: "confirm" }, said);
+    assert.deepEqual(server.confirms().map((c) => c.body), [{ sideEffect: MOVE_SIDE_EFFECT }]);
+  }
+  for (const said of NEGATIONS.moveEvent) {
+    const { session, server } = await withMovePending(() => reply(200, { success: true, result: {}, reply: "Done." }));
+    assert.deepEqual(await session.heard(said), { ok: true, action: "cancel" }, said);
+    assert.equal(server.confirms().length, 0);
+  }
+});
+
+test("F6: with another kind of change pending, a spoken 'cancel' is still a no", async () => {
+  const { session, server } = await withPending({ "POST /api/assistant/confirm": () => reply(200, { success: true, result: {}, reply: "Done." }) });
+  assert.deepEqual(await session.heard("cancel"), { ok: true, action: "cancel" });
+  assert.equal(server.confirms().length, 0);
+});

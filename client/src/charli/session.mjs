@@ -88,9 +88,27 @@ const PHRASES = [
   ...NO_PHRASES.map((p) => [p.split(" "), "no"]),
   ...FILLER_WORDS.map((p) => [p.split(" "), "filler"]),
 ];
+// (fix wave F6) The read-back of a cancel asks "cancel ...?" and a move's "move ...?", so the verb itself is the natural yes: for a
+// pending cancelEvent "cancel", "cancel it", "yes cancel", "go ahead and cancel" are a yes, and for a pending moveEvent "move it",
+// "yes move it", "go ahead and move it" are. A negation still wins ("don't cancel", "no, don't move it", "leave it", "never mind").
+// For any other kind of change "cancel" stays a no.
+const KIND_YES = {
+  cancelEvent: ["cancel", "cancel it", "go ahead and cancel", "go ahead and cancel it"],
+  moveEvent: ["move it", "go ahead and move it"],
+};
+const KIND_MAX_REPLY_WORDS = 5;   // "go ahead and move it"
+const phrasesFor = (kind) => {
+  const extra = KIND_YES[kind];
+  if (!extra) return PHRASES;
+  // longest first, so "cancel it" is read as one yes and not as "cancel" and a stray "it"
+  const yes = extra.map((p) => [p.split(" "), "yes"]).sort((a, b) => b[0].length - a[0].length);
+  const cancelIsYes = kind === "cancelEvent";
+  return [...yes, ...PHRASES.filter(([words, k]) => !(cancelIsYes && k === "no" && words.length === 1 && words[0] === "cancel"))];
+};
 
 // Speech-to-text audio-event tags ("(background noise)", "[laughter]") are not the user's words: they go before anything is read.
 const AUDIO_TAG_RE = /\([^()]*\)|\[[^[\]]*\]/g;
+const pendingTypeOf = (pending) => (pending && pending.sideEffect && typeof pending.sideEffect.type === "string" ? pending.sideEffect.type : undefined);
 export const withoutAudioTags = (text) => String(text ?? "").replace(AUDIO_TAG_RE, " ");
 
 const normalize = (text) => withoutAudioTags(text)
@@ -103,12 +121,15 @@ const normalize = (text) => withoutAudioTags(text)
 // "yes" | "no" | "other". A reply counts as yes or no only when it is SHORT (four words at most) and made up
 // entirely of those phrases, so "yes but not the Chens" and "yes, and also log the Smiths" are "other". If a yes
 // and a no are both present ("okay never mind", "yes stop") the answer is "no": ambiguity never writes.
-export function classifyReply(text) {
+// `pendingType` (optional) is the type of the change the reply answers (the pending sideEffect's): see KIND_YES.
+export function classifyReply(text, pendingType) {
   const words = normalize(text).split(" ").filter(Boolean);
-  if (!words.length || words.length > MAX_REPLY_WORDS) return "other";
+  const phrases = phrasesFor(pendingType);
+  const max = phrases === PHRASES ? MAX_REPLY_WORDS : KIND_MAX_REPLY_WORDS;
+  if (!words.length || words.length > max) return "other";
   const walk = (i) => {
     if (i === words.length) return { yes: false, no: false };
-    for (const [phrase, kind] of PHRASES) {
+    for (const [phrase, kind] of phrases) {
       if (i + phrase.length > words.length) continue;
       if (!phrase.every((w, k) => words[i + k] === w)) continue;
       const rest = walk(i + phrase.length);
@@ -643,7 +664,7 @@ export function createSession({
     if (!disposed && !away && briefingTurn && state.briefing && isBriefRequest(clean) && staleBriefing()) return { ok: false, reason: "stale" };
     return exclusive(async () => {
       if (state.pending) {
-        const answer = classifyReply(clean);
+        const answer = classifyReply(clean, pendingTypeOf(state.pending));
         if (answer === "yes" || answer === "no") {
           // Shown in the transcript, but never in the history sent to /turn.
           addTurn({ role: "user", content: clean, inHistory: false });
@@ -673,7 +694,7 @@ export function createSession({
     const said = withoutAudioTags(text).trim();
     if (said) emptyRun = false;
     if (said && pendingAtStart !== undefined && state.pending !== pendingAtStart && !disposed) {
-      const answer = classifyReply(text);
+      const answer = classifyReply(text, pendingTypeOf(pendingAtStart));
       if (answer === "yes" || answer === "no") {
         addNotice(LATE_ANSWER);
         return { ok: true, action: "late-answer" };
