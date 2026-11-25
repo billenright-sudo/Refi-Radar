@@ -26,6 +26,7 @@ const feedbackRoutes = require("./routes/feedback");
 const alertsRoutes = require("./routes/alerts");
 const internalRoutes = require("./routes/internal");
 const { buildChannels } = require("./lib/pings/channels");
+const { clientStatic } = require("./lib/clientStatic");
 const { charliModel } = require("./lib/assistant/orchestrator");
 const { startBilling } = require("./lib/billing/startup");
 const { createStripeGateway } = require("./lib/billing/stripeGateway");
@@ -47,12 +48,8 @@ app.use("/api/billing/webhook", billingWebhookRoutes);
 
 app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
-// The service worker and the manifest are re-checked on every load, so a new version reaches phones at once (everything else keeps the
-// static defaults).
-const NO_CACHE = new Set(["sw.js", "manifest.webmanifest"]);
-app.use(express.static(CLIENT_BUILD, {
-  setHeaders: (res, filePath) => { if (NO_CACHE.has(path.basename(filePath))) res.setHeader("Cache-Control", "no-cache"); },
-}));
+// The built client. The service worker and the manifest are re-checked on every load (lib/clientStatic.js).
+app.use(clientStatic(CLIENT_BUILD));
 
 // API routes
 app.use("/api/auth",          authRoutes);
