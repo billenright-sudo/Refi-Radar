@@ -19,7 +19,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const db = require("../db");
-const { NOTHING_CHANGED, BOOKING_ASK } = require("../lib/assistant/prompt");
+const { NOTHING_CHANGED, BOOKING_ASK, EVENT_CHANGE_UNSUPPORTED } = require("../lib/assistant/prompt");
 const { runTurn, claimsEventChange, calendarChangeBusiness, isActionRequest, isEventChangeRequest } = require("../lib/assistant/orchestrator");
 
 // Every row is checked and every failing row is listed, not only the first.
@@ -48,7 +48,9 @@ const READ_EVENTS = [
   { title: "Call Dave", start: "3:00 PM", end: "3:30 PM", allDay: false, endAt: Date.UTC(2026, 9, 28, 22, 30) },
   { title: "Chen call", start: "4:00 PM", end: "4:30 PM", allDay: false, endAt: Date.UTC(2026, 9, 28, 23, 30) },
 ];
-const google = { connection: () => ({ timeZone: PHX, googleEmail: "ann@gmail.example" }), listDay: async () => ({ events: READ_EVENTS }), insertEvent: async () => ({ eventId: "never" }) };
+const google = { connection: () => ({ timeZone: PHX, googleEmail: "ann@gmail.example" }), listDay: async () => ({ events: READ_EVENTS }),
+  // (fourth pass, V3) the day can't be read for a change: cancelEventTool / moveEventTool hand the model a plain error
+  listDayDetailed: async () => ({ error: "Google Calendar could not be read" }), insertEvent: async () => ({ eventId: "never" }) };
 
 const CANCEL_READ_BACK = 'Just to confirm — cancel "Walkthrough with Sam" on Wednesday, October 28th at 10:00 AM Mountain Standard Time?';
 const MOVE_READ_BACK = 'Just to confirm — move "Walkthrough with Sam" from Wednesday, October 28th at 10:00 AM to Wednesday, October 28th at 2:30 PM Mountain Standard Time?';
@@ -60,6 +62,8 @@ const SETUPS = {
   market: (said) => [useTool("getMarketUpdate", {}), say(said)],
   client: (said) => [useTool("findClient", { query: "chen" }), say(said)],
   read: (said) => [useTool("getCalendarTool", { date: "tomorrow" }), say(said)],
+  cancelError: (said) => [useTool("cancelEventTool", { date: "tomorrow", title: "thing with Dave" }), say(said)],
+  moveError: (said) => [useTool("moveEventTool", { date: "tomorrow", title: "Dave", newTime: "16:00" }), say(said)],
 };
 async function endToEnd({ user, setup = "text", history = [], said }) {
   const messages = [...history, { role: "user", content: user }];
@@ -141,6 +145,9 @@ test("table 2: the turn kinds — only a change request or a cancel / move read-
   const is = (kind) => { const t = TURNS[kind]; return calendarChangeBusiness([...t.history, { role: "user", content: t.user }], t.user); };
   assert.deepStrictEqual(Object.keys(TURNS).map((k) => [k, is(k)]), [["none", false], ["change", true], ["readback", true], ["moveback", true], ["other", false]]);
   assert.equal(calendarChangeBusiness([{ role: "user", content: "what's on my calendar tomorrow?" }], "what's on my calendar tomorrow?"), false);
+  // (fourth pass, V3) a turn where cancelEventTool or moveEventTool ran is a change turn; a calendar read (no flag) is not
+  assert.equal(calendarChangeBusiness([{ role: "user", content: "cancel the thing with Dave" }], "cancel the thing with Dave", true), true);
+  assert.equal(calendarChangeBusiness([{ role: "user", content: "cancel the thing with Dave" }], "cancel the thing with Dave", false), false);
 });
 
 // HELD on every turn: rules A (first person + cancelled / rescheduled), B (first person + a softer verb + an event word, a clock
@@ -181,6 +188,9 @@ const PASS_NO_CHANGE = [
   "The deal is off, so Dave is shopping again.", "The Smiths' lock is gone, since it expired on Tuesday.", "Rates are now at six point four, the lowest since March.",
   "The Chens' payment is now at about two thousand a month.", "Grace's appointment with the appraiser was cancelled by the AMC.",
   "I've cancelled nothing; your call list is as it was.",
+  // fourth pass (V1): rule D is about the broker's own event as the subject of the change verb; "your calendar" / "your notes" are none
+  "I can't tell from your calendar whether it was moved by Dave.", "Nothing on your calendar was cancelled.",
+  "Your meeting notes say the closing was moved to December.", "Your meeting notes say her call with the realtor was cancelled.",
   // fix list 2 (G1: the softer verbs need context; G3: not the broker's own event; accepted)
   "I moved Dave.", "I pushed the Chens.", "I removed Grace.", "The appointment with the appraiser was cancelled by the AMC.", "Amy Chen's call was moved to Friday.",
   // fix list 3: a clock time elsewhere, or "your <someone>'s", is not the broker's own event
@@ -312,6 +322,18 @@ const E2E = [
   { user: "can you push the Chens today?", said: "Sure. Lead with the savings, since their rate is well above the market.", expect: "free" },
   { user: "can you move fast on the Okafors today?", said: "Yes. Call them this morning and lead with the lower payment.", expect: "free" },
   { user: "move Dave back to the top", said: "Sure. Dave is first on today's list now, since his rate is highest.", expect: "free" },
+  // fourth pass (V1): after a read, and grounded, honest sentences that mention "your calendar" / "your meeting notes"
+  { user: "did Dave move our call?", setup: "read", said: "I see Call Dave at 3:00 PM tomorrow. I can't tell from your calendar whether it was moved by Dave.", expect: "said" },
+  { user: "did Dave move our call?", setup: "read", said: "Nothing on your calendar was cancelled.", expect: "free" },
+  { user: "how is Amy Chen doing?", setup: "client", said: "Your meeting notes say the closing was moved to December.", expect: "free" },
+  { user: "how is Amy Chen doing?", setup: "client", said: "Amy Chen is at 7.5 percent. Your meeting notes say her call with the realtor was cancelled.", expect: "free" },
+  // fourth pass (V2): an edit of something that is no event is not the "any other edit" line
+  { user: "update my visit notes for the Chens", said: "Which notes should I look at?", expect: "not-unsupported" },
+  { user: "edit my interview questions for new hires", said: "Which questions do you want to change?", expect: "not-unsupported" },
+  { user: "change the demo account name", said: "Which account do you mean?", expect: "not-unsupported" },
+  { user: "rename my 3 PM meeting to Closing prep", said: "Which meeting?", expect: "unsupported" },
+  // fourth pass (V3): the change tool ran and handed the model an error: the turn is a change turn
+  { user: "cancel the thing with Dave", setup: "cancelError", said: "Okay, it's cancelled.", expect: "held" },
   // not-said: an ungrounded passive claim on a plain turn is still never said as written (can't-verify)
   { user: "hey Charlie", said: "The call was moved to Friday.", expect: "not-said" },
 ];
@@ -323,7 +345,11 @@ test("table 3: end to end — held, said as written, or not held by the change s
     for (const [row, reply] of results) {
       const where = `${row.expect} | ${row.setup || "text"} | ${row.user} | ${row.said} -> ${reply}`;
       const held = [NOTHING_CHANGED, BOOKING_ASK].includes(reply);
-      check(row.expect === "held" ? held : row.expect === "said" ? reply === row.said : row.expect === "free" ? !held : reply !== row.said, where);
+      const ok = {
+        held, said: reply === row.said, free: !held, "not-said": reply !== row.said,
+        unsupported: reply === EVENT_CHANGE_UNSUPPORTED, "not-unsupported": reply !== EVENT_CHANGE_UNSUPPORTED,
+      }[row.expect];
+      check(ok === true, where);
     }
   });
 });
