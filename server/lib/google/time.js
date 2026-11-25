@@ -232,4 +232,16 @@ function zoneName(timeZone) {
   }
 }
 
-module.exports = { localToday, resolveDate, addDays, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime, zoneName };
+// The wall clock in `timeZone` at the instant `ms`, for the rate-drop ping's quiet hours: { date: "YYYY-MM-DD", minutes: minutes since
+// local midnight (0..1439), weekday: 0 = Sunday .. 6 = Saturday }. Read off the zone at that instant every time, so a DST change
+// needs no special case. An unknown zone throws, as everywhere in this module.
+function wallClock(timeZone, ms) {
+  const p = wallParts(timeZone, ms);
+  return {
+    date: `${String(p.year).padStart(4, "0")}-${pad2(p.month)}-${pad2(p.day)}`,
+    minutes: p.hour * 60 + p.minute,
+    weekday: new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay(),
+  };
+}
+
+module.exports = { localToday, resolveDate, addDays, parseTime, toInstant, wallTimeExists, dayBounds, localTimeOf, spokenDay, spokenTime, zoneName, wallClock };
