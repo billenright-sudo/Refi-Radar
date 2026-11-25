@@ -2855,21 +2855,41 @@ const CLOCK_TIME = "\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m|p\\.?m)\\b|\\d{1,2}:\\d{2}
 const HOUR_WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
 const NO_NOUN_LEAD_RE = new RegExp(
   "^(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?|please\\s+|i\\s+need\\s+to\\s+|let['\\u2019]?s\\s+|let\\s+us\\s+)?" +
-    "(?:cancel|move|reschedule|push|bump|drop)\\b(?!\\s+(?:on|off|by|in|out|up|down|through|over|toward|towards|for|me|us|a|an)\\b)",
+    "(cancel|move|reschedule|push|bump|drop)\\b(?!\\s+(?:on|off|by|in|out|up|down|through|over|toward|towards|for|me|us|a|an)\\b)",
   "i"
 );
-const DAY_OR_CLOCK_LATER_RE = new RegExp(
-  "\\b(?:" + DAY_WORD + ")\\b|" + CLOCK_TIME + "|\\b(?:noon|midnight)\\b" +
-    "|\\b(?:at|to)\\s+(?:\\d{1,2}(?::\\d{2})?|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent)",
+// (fix list 2, G2) What must follow the verb's object. cancel / drop: a day word or a clock time. move / push / bump / reschedule: a
+// destination, "to / until / till / for" and a day word or a clock time (a bare hour after it counts), or "back".
+const DAY_OR_CLOCK_AT_RE = new RegExp("^(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME + ")", "i");
+const DESTINATION_AT_RE = new RegExp(
+  "^(?:back\\b|(?:to|until|till|for)\\s+(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME +
+    "|(?:\\d{1,2}(?::\\d{2})?|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent)))",
   "i"
 );
+const NO_NOUN_ADVERBS = new Set(["fast", "quickly", "hard", "harder", "ahead", "forward", "along", "again", "up"]);
+const BARE_PRONOUNS = new Set(["that", "it", "this", "them", "those"]);
 const LOAN_WORD_RE =
   /\b(?:rates?|refis?|refinanc\w*|loans?|locks?|pmi|mortgages?|payments?|terms?|years?|[\w]+-years?|arms?|points?|escrow|appraisals?|apr|ltv|equity|heloc|pre-?approvals?|applications?|cash-?out|stages?|list|pipeline|records?|scenarios?)\b/i;
+// The object is the words between the verb and the first point where what must follow it begins. It is never empty, never holds an
+// adverb (fast, quickly, hard, ...: "push Grace hard tomorrow" is sales talk), for cancel is no bare pronoun ("cancel that"), and for
+// drop is at most four words with no "a" / "an" in it ("drop Dave a note tomorrow").
 function changeWithoutNoun(c) {
   const m = NO_NOUN_LEAD_RE.exec(c);
   if (!m) return false;
-  const rest = c.slice(m[0].length);
-  return DAY_OR_CLOCK_LATER_RE.test(rest) && !LOAN_WORD_RE.test(rest);
+  const verb = m[1].toLowerCase();
+  const rest = c.slice(m[0].length).trim();
+  if (LOAN_WORD_RE.test(rest)) return false;
+  const words = rest.split(/\s+/).filter(Boolean);
+  const after = verb === "cancel" || verb === "drop" ? DAY_OR_CLOCK_AT_RE : DESTINATION_AT_RE;
+  for (let k = 1; k < words.length; k++) {
+    if (!after.test(words.slice(k).join(" "))) continue;
+    const object = words.slice(0, k).map((w) => w.toLowerCase().replace(/[^\w'\u2019-]/g, ""));
+    if (object.some((w) => NO_NOUN_ADVERBS.has(w))) return false;
+    if (verb === "cancel" && object.length === 1 && BARE_PRONOUNS.has(object[0])) return false;
+    if (verb === "drop" && (object.length > 4 || object.some((w) => w === "a" || w === "an"))) return false;
+    return true;
+  }
+  return false;
 }
 function isEventChangeRequest(text) {
   return String(text == null ? "" : text).split(EVENT_CLAUSE_BREAK_RE).some((clause) => {
@@ -2916,7 +2936,27 @@ const PRONOUN_RE = /\b(?:it|that|them|those|these)\b/i;
 const FIRST_PERSON_CHANGE =
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and|gone\\s+and))*\\s+";
 const PASSIVE_CHANGE = "\\b(?:is|are|was|were|been|got|get|gets|['\\u2019]s)\\s+(?:(?:now|just|already|been|successfully|all|officially)\\s+)*";
-const FIRST_PERSON_CHANGE_RE = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b", "i");
+const NOT_NOTHING = "(?!\\s+(?:nothing|anything)\\b)";
+const FIRST_PERSON_CHANGE_RE = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b" + NOT_NOTHING, "i");
+// (G1) "I cancelled / I've canceled / I have rescheduled ...": held on every turn, no other word needed
+const FIRST_PERSON_SURE_RE = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b" + NOT_NOTHING, "i");
+// (G3) a passive change claim about the broker's own event (your <event>, <event> with you, a clock time): held on every turn
+const OWN_PASSIVE_RE = new RegExp(PASSIVE_CHANGE + NOT_BEFORE + "(?:cancell?ed|rescheduled|moved|pushed)\\b", "i");
+const OWN_EVENT_RE = new RegExp(
+  "\\byour\\s+(?:[\\w'\\u2019-]+\\s+){0,2}?(?:" + EVENT_WORD + ")\\b|\\b(?:" + EVENT_WORD + ")\\s+with\\s+you\\b|" + CLOCK_TIME, "i"
+);
+// (G4) more wordings, on calendar turns only
+const EXTRA_VERB_RE = new RegExp(NOT_BEFORE + "\\b(?:scrapped|wiped|killed|called\\s+off)\\b", "i");
+const DAY_CONTEXT_RE = new RegExp("\\b(?:" + DAY_WORD + ")\\b", "i");
+const EXTRA_FORM_RE = new RegExp(
+  "\\b(?:is|are|['\\u2019]s)\\s+now\\s+(?:" + CLOCK_TIME + ")" +
+    "|\\bset\\s+for\\s+(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME + "|(?:\\d{1,2}|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent))" +
+    "|\\boff\\s+(?:of\\s+)?your\\s+schedule\\b" +
+    "|^\\W*moved\\s+to\\b" +
+    "|(?:\\b(?:" + EVENT_WORD + ")|" + CLOCK_TIME + ")\\s*:\\s*(?:cancell?ed|rescheduled|moved)\\b",
+  "i"
+);
+const WONT_HAPPEN_RE = /\b(?:won['\u2019]t|will\s+not|isn['\u2019]t|is\s+not|is\s+no\s+longer)\s+(?:happen(?:ing)?|going\s+ahead)\b/i;
 const PASSIVE_CLAIM_RE = new RegExp(
   "(?:" + PASSIVE_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b" +
     "|\\bconsider\\s+(?:it|that|them)\\s+(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b" +
@@ -2940,10 +2980,17 @@ function claimsEventChange(text, userText, calendarTurn = true) {
     const sentence = raw.replace(AUDIO_TAG_RE, " ").trim();
     if (!sentence || /\?\s*$/.test(sentence)) return false;
     if (OFF_CALENDAR_RE.test(sentence)) return true;
+    if (FIRST_PERSON_SURE_RE.test(sentence)) return true;
     if (MOVED_ON_RE.test(sentence)) return false;
     const firstPerson = FIRST_PERSON_CHANGE_RE.test(sentence);
     if (firstPerson && STRONG_CONTEXT_RE.test(sentence)) return true;
+    if (OWN_PASSIVE_RE.test(sentence) && OWN_EVENT_RE.test(sentence)) return !reported;
     if (!calendarTurn) return false;
+    if (EXTRA_VERB_RE.test(sentence) && (EVENT_OR_CLOCK_RE.test(sentence) || DAY_CONTEXT_RE.test(sentence))) {
+      return /\b(?:I|we)\b/.test(sentence) || !reported;
+    }
+    if (EXTRA_FORM_RE.test(sentence)) return !reported;
+    if (WONT_HAPPEN_RE.test(sentence) && EVENT_OR_CLOCK_RE.test(sentence)) return !reported;
     if (firstPerson && PRONOUN_RE.test(sentence)) return true;
     // "Done — rescheduled.": a lone verb (after a dash, or alone) is the claim by itself
     if (sentence.split(/\s*[—–]\s*/).some((piece) => LONE_VERB_RE.test(piece))) return true;
@@ -2952,6 +2999,16 @@ function claimsEventChange(text, userText, calendarTurn = true) {
     if (NOW_AT_RE.test(sentence)) return !reported;
     return false;
   });
+}
+
+// Whether this turn is calendar-change business, for claimsEventChange: the user asked for a change, a calendar tool was called this
+// turn, or (G5) the user is answering a CANCEL or a MOVE read-back of hers (another kind of read-back does not count).
+function calendarChangeBusiness(messages, userText, calendarToolCalled) {
+  if (isEventChangeRequest(userText) || calendarToolCalled) return true;
+  const prior = Array.isArray(messages) ? messages[messages.length - 2] : null;
+  if (!prior || prior.role !== "assistant") return false;
+  const said = messageText(prior);
+  return said.includes(`${READ_BACK_PREFIX} cancel "`) || said.includes(`${READ_BACK_PREFIX} move "`);
 }
 
 // runTurn({ messages, ctx, client, judge?, adviceJudge?, deadlineMs }) -> { reply, sources, sideEffect?, details?, compose?, screen?, error?, reason?, usage }
@@ -3122,9 +3179,7 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       // Nothing was cancelled or moved here (the tools only package it, and the Done line is code's): any claim that it was is false
       // (F2) the passive and pronoun-only branches run only on calendar-change business: the user asked for a change, a calendar tool
       // was called this turn, or the user is answering a read-back of hers
-      const prior = messages[messages.length - 2];
-      const calendarBusiness = isEventChangeRequest(userText) || calendarToolCalled ||
-        (!!prior && prior.role === "assistant" && messageText(prior).includes(READ_BACK_PREFIX));
+      const calendarBusiness = calendarChangeBusiness(messages, userText, calendarToolCalled);
       if (claimsEventChange(text, userText, calendarBusiness)) return finish(NOTHING_CHANGED);
       // Ruling 70 (d): a calendar read this turn came back with a Google code (not connected, expired, unreachable) and was handed back
       // to the model (Ruling 55: the user did not ask about the calendar). Whatever the question, a sentence of the reply that names a
@@ -3370,6 +3425,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel, claimsEventChange,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel, claimsEventChange, calendarChangeBusiness,
   classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip, isNavigationTurn,
 };

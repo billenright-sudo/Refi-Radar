@@ -342,8 +342,13 @@ test("F2: a first-person claim with an event word, a clock time, a day word or '
 });
 
 test("F2: the pronoun-only and passive branches are off outside calendar business, and on inside it", () => {
-  for (const s of ["I cancelled it.", "It's cancelled now.", "Consider it cancelled.", "Cancelled.", "The call was moved to Friday.", "Your 3 PM call is cancelled."]) {
+  for (const s of ["It's cancelled now.", "Consider it cancelled.", "Cancelled.", "The call was moved to Friday."]) {
     assert.equal(claimsEventChange(s, "how are rates today?", false), false, `off: ${s}`);
+    assert.equal(claimsEventChange(s, "cancel Dave tomorrow", true), true, `on: ${s}`);
+  }
+  // (fix list 2) G1: a first-person "cancelled" and G3: a passive claim about "your 3 PM call" are held on every turn
+  for (const s of ["I cancelled it.", "Your 3 PM call is cancelled."]) {
+    assert.equal(claimsEventChange(s, "how are rates today?", false), true, `G1/G3: ${s}`);
     assert.equal(claimsEventChange(s, "cancel Dave tomorrow", true), true, `on: ${s}`);
   }
   // inside calendar business the passive still needs an event word, a clock time or a pronoun: a closing is no event word
@@ -388,4 +393,76 @@ test("F5: end to end, the three false claims after a request with no event noun 
     const { r } = await turn(userText, [say(said)]);
     assert.ok([NOTHING_CHANGED, BOOKING_ASK].includes(r.reply), `${userText} / ${said} -> ${r.reply}`);
   }
+});
+
+// ── fix list 2 ────────────────────────────────────────────────────────────────
+const { calendarChangeBusiness } = require("../lib/assistant/orchestrator");
+const amyId = Number(db.prepare(
+  "INSERT INTO clients (org_id, user_id, name, loan_type, current_rate, loan_balance, property_value, credit_score) VALUES (?, ?, 'Amy Chen', '30yr_fixed', 7.5, 400000, 600000, 700)"
+).run(orgId, brokerId).lastInsertRowid);
+const groundedTurn = (userText, said) => turn(userText, [useTool("findClient", { query: "chen" }), say(said)]);
+
+test("G1: a first-person 'cancelled / canceled / rescheduled' claim is held on every turn, with no other word needed", async () => {
+  for (const [userText, said] of [["cancel Dave", "I canceled Dave."], ["cancel the Dave thing", "I cancelled the Dave thing."]]) {
+    const { r } = await turn(userText, [say(said)]);
+    assert.equal(r.reply, NOTHING_CHANGED, `${userText} / ${said}`);
+  }
+  for (const s of ["I cancelled Dave.", "I've canceled the Dave thing.", "I have rescheduled Dave.", "I just cancelled it.", "We rescheduled Pat."]) {
+    assert.equal(claimsEventChange(s, "how are rates today?", false), true, s);
+  }
+  // the softer verbs still need context outside calendar business; the I1 list still passes
+  for (const s of ["I moved Dave.", "I pushed the Chens.", "I removed Grace."]) assert.equal(claimsEventChange(s, "how are rates today?", false), false, s);
+  for (const s of NOT_CALENDAR_SENTENCES) assert.equal(claimsEventChange(s, "what should I tell the Patels?", false), false, s);
+  assert.equal(claimsEventChange("I've cancelled nothing; your calendar is as it was.", "hey", false), false, "a cancelled-nothing is no claim");
+});
+
+test("G2: the no-noun request detector counts only a real change: an object, then a day or a time (cancel, drop) or a destination (move, push, bump, reschedule)", () => {
+  for (const text of [
+    "cancel Dave tomorrow", "cancel everything tomorrow", "drop the Chens tomorrow", "push Dave back to Friday", "push Dave back",
+    "move my 3 PM to 4", "move Dave to Friday at ten", "reschedule Dave to Friday", "can you push the Okafors to 6 tomorrow?",
+  ]) assert.equal(isActionRequest(text), true, text);
+  for (const text of [
+    "can you push the Chens today?", "can you push Amy Chen today?", "can you move fast on the Okafors today?", "push Grace hard tomorrow",
+    "Let's move quickly tomorrow", "bump Grace up today", "drop Dave a note tomorrow", "should I move the Okafors to a 15-year?",
+    "move on to the next client", "cancel that", "cancel that tomorrow", "move Dave tomorrow", "push Grace forward to Friday",
+  ]) assert.equal(isActionRequest(text), false, text);
+});
+
+test("G2: end to end, 'can you push Amy Chen today?' is sales talk: the grounded answer reaches the broker as said", async () => {
+  const said = "Yes. Amy Chen is at 7.5 percent, so lead with the savings.";
+  assert.equal((await groundedTurn("can you push Amy Chen today?", said)).r.reply, said);
+});
+
+test("G3: a passive claim about the broker's own event (your <event>, <event> with you, a clock time) is held on a turn with no calendar business", async () => {
+  for (const said of ["Amy Chen's call with you was moved to Friday.", "Your call with Amy Chen was cancelled.", "Your 3 PM was moved to Friday."]) {
+    assert.equal((await groundedTurn("how is Amy Chen doing?", said)).r.reply, NOTHING_CHANGED, said);
+  }
+  for (const said of ["Last week's Fed meeting was rescheduled, so watch for news.", "The appointment with the appraiser was cancelled by the AMC."]) {
+    assert.equal((await groundedTurn("how is Amy Chen doing?", said)).r.reply, said, said);
+    assert.equal(claimsEventChange(said, "how is Amy Chen doing?", false), false, said);
+  }
+  // accepted: no "your", no "with you", no clock time
+  assert.equal((await groundedTurn("how is Amy Chen doing?", "Amy Chen's call was moved to Friday.")).r.reply, "Amy Chen's call was moved to Friday.");
+});
+
+test("G4: more claim wordings are held on a calendar turn", () => {
+  for (const s of [
+    "I scrapped your 3 PM.", "I've wiped tomorrow's call with Dave.", "Your 3 PM is now 4 PM.", "Dave's call is set for Friday at ten.",
+    "Moved to Friday at ten.", "Dave's call: cancelled.", "Your 3 PM won't happen now.", "Dave is off your schedule.",
+    "The call with Dave got called off.", "I killed the Friday meeting.", "Canceled.",
+  ]) assert.equal(claimsEventChange(s, "cancel Dave tomorrow", true), true, s);
+  assert.equal(claimsEventChange("Their rate is set for the year.", "cancel Dave tomorrow", true), false);
+});
+
+test("G5: only a cancel or a move read-back makes the next turn calendar business", () => {
+  const after = (readBack, userText) => [{ role: "user", content: "x" }, { role: "assistant", content: readBack }, { role: "user", content: userText }];
+  const other = after("Just to confirm — add the Chens as a new client?", "no wait, what happened with their lock?");
+  assert.equal(calendarChangeBusiness(other, "no wait, what happened with their lock?", false), false);
+  assert.equal(claimsEventChange("It was cancelled when the appraisal came in low.", "no wait, what happened with their lock?", false), false);
+  const cancel = after('Just to confirm — cancel "Walkthrough with Sam" on Wednesday, October 28th at 10:00 AM Mountain Standard Time?', "no, leave it");
+  const move = after('Just to confirm — move "Walkthrough with Sam" from Wednesday, October 28th at 10:00 AM to Wednesday, October 28th at 2:30 PM Mountain Standard Time?', "no");
+  assert.equal(calendarChangeBusiness(cancel, "no, leave it", false), true);
+  assert.equal(calendarChangeBusiness(move, "no", false), true);
+  assert.equal(calendarChangeBusiness(other, "cancel Dave tomorrow", false), true, "a change request");
+  assert.equal(calendarChangeBusiness(other, "hey", true), true, "a calendar tool this turn");
 });
