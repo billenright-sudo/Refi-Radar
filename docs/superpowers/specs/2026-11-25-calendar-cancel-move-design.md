@@ -117,8 +117,12 @@ title is said as a single quote. Every read-back opens with `Just to confirm —
 - Any other edit (rename, length, guests): `I can cancel or move an event. For any other change, open Google Calendar.`
   This replaces today's `EVENT_CHANGE_UNSUPPORTED` wording; the constant keeps its name.
 
-The confirm tail follows the booking read-back, which has none. A spoken "cancel" / "cancel it" (alone or after a yes)
-confirms a pending cancel, and "move it" a pending move; a negation ("don't cancel", "leave it", "never mind") is a no.
+The confirm tail follows the booking read-back, which has none.
+
+Spoken answers: a bare "cancel" always means "don't", for every kind of change, a pending cancel included. With a cancel
+pending, "cancel it", "yes cancel", "yes, cancel it (please)" and "go ahead and cancel (it)" confirm it; with a move pending,
+"move it", "yes move it" and "go ahead and move it" do. "Keep it", "leave it", "never mind" and any negation are a no. On the
+confirm card for a cancel only, the two buttons read `Yes, cancel it` and `Keep it`; every other card keeps Confirm and Cancel.
 
 ## 8. Knock-on effects to check
 
