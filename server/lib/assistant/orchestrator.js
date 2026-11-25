@@ -2843,10 +2843,38 @@ const EVENT_MOVE_REQUEST_RE = requestLeadRe(CANCEL_MOVE_CORE + "|" + MOVE_LIKE_C
 const MOVE_LIKE_RE = new RegExp(MOVE_LIKE_CORE, "i");
 // the clause break without the colon: "3:00" is a time here, not a clause
 const EVENT_CLAUSE_BREAK_RE = /[.!?;,\u2014\u2013\u2026\n]|--|\s-\s/;
+// (fix wave F5) A request with no event noun ("cancel Dave tomorrow", "push Dave back to Friday", "move my 3 PM to 4"): one of these
+// verbs leads the clause, bare or after "can you / could you / would you / will you / please / I need to / let's", and a day word
+// (today, tonight, tomorrow, a weekday, "next week", a date) or a clock time ("3 PM", "3:30", "to 4", "at ten", noon) comes later in
+// the same clause. Not when a particle follows the verb ("move on", "drop off", "push for", "push toward"), and not when the clause
+// names a loan word ("drop the rate to 6 tomorrow", "move them to a thirty-year loan Friday"): when unsure it is not a request, since
+// a first-person claim is held on every turn anyway.
+const DAY_WORD = "today|tonight|tomorrow|yesterday|(?:mon|tues|wednes|thurs|fri|satur|sun)day|next\\s+week" +
+  "|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}/\\d{1,2}|\\d{4}-\\d{2}-\\d{2}";
+const CLOCK_TIME = "\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m|p\\.?m)\\b|\\d{1,2}:\\d{2}\\b";
+const HOUR_WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
+const NO_NOUN_LEAD_RE = new RegExp(
+  "^(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?|please\\s+|i\\s+need\\s+to\\s+|let['\\u2019]?s\\s+|let\\s+us\\s+)?" +
+    "(?:cancel|move|reschedule|push|bump|drop)\\b(?!\\s+(?:on|off|by|in|out|up|down|through|over|toward|towards|for|me|us|a|an)\\b)",
+  "i"
+);
+const DAY_OR_CLOCK_LATER_RE = new RegExp(
+  "\\b(?:" + DAY_WORD + ")\\b|" + CLOCK_TIME + "|\\b(?:noon|midnight)\\b" +
+    "|\\b(?:at|to)\\s+(?:\\d{1,2}(?::\\d{2})?|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent)",
+  "i"
+);
+const LOAN_WORD_RE =
+  /\b(?:rates?|refis?|refinanc\w*|loans?|locks?|pmi|mortgages?|payments?|terms?|years?|[\w]+-years?|arms?|points?|escrow|appraisals?|apr|ltv|equity|heloc|pre-?approvals?|applications?|cash-?out|stages?|list|pipeline|records?|scenarios?)\b/i;
+function changeWithoutNoun(c) {
+  const m = NO_NOUN_LEAD_RE.exec(c);
+  if (!m) return false;
+  const rest = c.slice(m[0].length);
+  return DAY_OR_CLOCK_LATER_RE.test(rest) && !LOAN_WORD_RE.test(rest);
+}
 function isEventChangeRequest(text) {
   return String(text == null ? "" : text).split(EVENT_CLAUSE_BREAK_RE).some((clause) => {
     const c = afterFiller(clause);
-    return !STATE_QUESTION_LEAD_RE.test(c) && (EVENT_MOVE_LEAD_RE.test(c) || EVENT_MOVE_REQUEST_RE.test(c));
+    return !STATE_QUESTION_LEAD_RE.test(c) && (EVENT_MOVE_LEAD_RE.test(c) || EVENT_MOVE_REQUEST_RE.test(c) || changeWithoutNoun(c.trim()));
   });
 }
 const CHANGE_EVENT_RE = new RegExp(
@@ -2868,50 +2896,61 @@ const changeEventLine = (text, before) => {
 // words; the rest need a calendar word (an event, a call, a time, "your calendar") in the sentence ("I moved on to the next
 // client" is none). A negation right before the verb is no claim ("I haven't cancelled it", "nothing has been moved"). The
 // user's own report that it happened ("Dave cancelled our meeting") may be repeated back in the passive, never in the first person.
+//
+// (fix wave F2) Client stories and rate news say "cancelled / moved / pushed / removed" all the time ("their lock was cancelled",
+// "rates were pushed higher"), so the screen has two tiers:
+//   every turn: a first-person claim ("I cancelled / I've moved / I rescheduled / I took ... off / I dropped ...") with an event word,
+//     a clock time, a day word or "calendar" in the sentence; and any "off your calendar" claim.
+//   only when `calendarTurn` (this turn is calendar-change business: runTurn works it out, see calendarBusiness there): the rest.
+//     A first-person claim with only a pronoun ("I cancelled it"); a lone "Cancelled." / "Done — rescheduled."; and the passive
+//     ("was cancelled / got moved / has been dropped / is off / is gone", "consider it moved") with an event word, a clock time or
+//     a pronoun ("it / that / them") in the sentence; and (F5) "is now at / on <a day or a time>". A closing is no event word.
+// `calendarTurn` defaults to true: the whole screen, as a caller that does not know the turn gets it.
 const SURE_VERB = "cancell?ed|rescheduled";
-const CAL_VERB = "moved|pushed|bumped|shifted|removed|deleted|taken\\s+off|took\\s+off";
+const CAL_VERB = "moved|pushed|bumped|shifted|removed|deleted|dropped|(?:taken|took)(?:\\s+[\\w'\\u2019]+){0,3}?\\s+off";
 const NOT_BEFORE = "(?<!(?:\\bnot|\\bnever|n['\\u2019]t|\\bnothing|\\bnone)\\s+(?:(?:yet|been|actually|just|already|have|has|had|is|was|now|ever|really)\\s+)*)";
-const CAL_CONTEXT_RE = new RegExp(
-  "\\b(?:calendar|events?|meetings?|appointments?|appts?|calls?|showings?|closings?|zoom|lunch|block|invites?|walk-?through|it|that|them|those|these)\\b" +
-    "|\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m|p\\.?m)\\b|\\d{1,2}:\\d{2}\\b",
-  "i"
-);
+const EVENT_WORD = "calendar|events?|meetings?|appointments?|appts?|calls?(?!\\s+list)|showings?|zoom|lunch|block|invites?|walk-?through";
+const EVENT_OR_CLOCK_RE = new RegExp("\\b(?:" + EVENT_WORD + ")\\b|" + CLOCK_TIME, "i");
+const STRONG_CONTEXT_RE = new RegExp("\\b(?:" + EVENT_WORD + "|" + DAY_WORD + ")\\b|" + CLOCK_TIME, "i");
+const PRONOUN_RE = /\b(?:it|that|them|those|these)\b/i;
 const FIRST_PERSON_CHANGE =
   "\\b(?:I|we)(?:['\\u2019]ve|\\s+have)?(?:\\s+(?:just|already|now|also|went\\s+ahead\\s+and|gone\\s+ahead\\s+and|gone\\s+and))*\\s+";
 const PASSIVE_CHANGE = "\\b(?:is|are|was|were|been|got|get|gets|['\\u2019]s)\\s+(?:(?:now|just|already|been|successfully|all|officially)\\s+)*";
-const CLAIM_SURE_RE = new RegExp(
-  "(?:" + FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b" +
-    "|" + PASSIVE_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b" +
-    "|\\bconsider\\s+(?:it|that|them)\\s+(?:" + SURE_VERB + "|moved)\\b" +
-    "|^\\W*(?:cancell?ed|rescheduled)\\W*$)",
+const FIRST_PERSON_CHANGE_RE = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b", "i");
+const PASSIVE_CLAIM_RE = new RegExp(
+  "(?:" + PASSIVE_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b" +
+    "|\\bconsider\\s+(?:it|that|them)\\s+(?:" + SURE_VERB + "|" + CAL_VERB + ")\\b" +
+    "|\\b(?:is|are|['\\u2019]s)\\s+(?:(?:now|all|officially)\\s+)?off\\b(?!\\s+(?:the|a|an|to|of|track|base|limits)\\b)" +
+    "|\\b(?:is|are|['\\u2019]s)\\s+(?:(?:now|all)\\s+)?gone\\b)",
   "i"
 );
-const CLAIM_CONTEXT_RE = new RegExp(
-  "(?:" + FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + CAL_VERB + ")\\b" +
-    "|" + PASSIVE_CHANGE + NOT_BEFORE + "(?:" + CAL_VERB + ")\\b" +
-    "|\\bconsider\\s+(?:it|that|them)\\s+(?:" + CAL_VERB + ")\\b)",
+const NOW_AT_RE = new RegExp(
+  "\\b(?:is|are|['\\u2019]s)\\s+now\\s+(?:at|on|for|set\\s+for)\\s+(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME +
+    "|(?:\\d{1,2}|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent))",
   "i"
 );
+const LONE_VERB_RE = /^\W*(?:cancell?ed|rescheduled)\W*$/i;
 const OFF_CALENDAR_RE =
   /\b(?:off|(?:removed|cleared|deleted|gone|dropped|taken)\s+(?:off|from)|no\s+longer\s+on)\s+(?:of\s+)?your\s+(?:google\s+)?calendar\b/i;
 const MOVED_ON_RE = /\bmov(?:ed|ing)\s+on\b/i;
 const REPORTED_RE = /\b(?:cancell?ed|rescheduled|postponed|moved|called\s+off|pushed)\b/i;
-function claimsEventChange(text, userText) {
+function claimsEventChange(text, userText, calendarTurn = true) {
   const reported = REPORTED_RE.test(String(userText == null ? "" : userText));
   return factSentencesOf(text).some((raw) => {
     const sentence = raw.replace(AUDIO_TAG_RE, " ").trim();
     if (!sentence || /\?\s*$/.test(sentence)) return false;
-    const firstPerson = new RegExp("^[^]*?" + FIRST_PERSON_CHANGE, "i").test(sentence);
-    // "Done — rescheduled.": a lone verb after a dash is the claim by itself
-    if (sentence.split(/\s*[—–]\s*/).some((piece) => /^\W*(?:cancell?ed|rescheduled)\W*$/i.test(piece))) return true;
-    if (CLAIM_SURE_RE.test(sentence)) {
-      // the user's own report, repeated back in the passive, is no claim of hers
-      const mine = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b", "i").test(sentence);
-      return mine || !reported;
-    }
+    if (OFF_CALENDAR_RE.test(sentence)) return true;
     if (MOVED_ON_RE.test(sentence)) return false;
-    if (CLAIM_CONTEXT_RE.test(sentence) && CAL_CONTEXT_RE.test(sentence)) return firstPerson || !reported;
-    return OFF_CALENDAR_RE.test(sentence);
+    const firstPerson = FIRST_PERSON_CHANGE_RE.test(sentence);
+    if (firstPerson && STRONG_CONTEXT_RE.test(sentence)) return true;
+    if (!calendarTurn) return false;
+    if (firstPerson && PRONOUN_RE.test(sentence)) return true;
+    // "Done — rescheduled.": a lone verb (after a dash, or alone) is the claim by itself
+    if (sentence.split(/\s*[—–]\s*/).some((piece) => LONE_VERB_RE.test(piece))) return true;
+    // the user's own report, repeated back in the passive, is no claim of hers
+    if (PASSIVE_CLAIM_RE.test(sentence) && (EVENT_OR_CLOCK_RE.test(sentence) || PRONOUN_RE.test(sentence))) return !reported;
+    if (NOW_AT_RE.test(sentence)) return !reported;
+    return false;
   });
 }
 
@@ -2989,6 +3028,7 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
   const calendarEvents = [];  // { title, date, timeZone } of each event those reads returned (the title as the model saw it)
   const clientNames = new Set();   // the client names this turn's cited tool results carry (Ruling 70 a)
   let calendarCode = null;    // the Google code a calendar read this turn came back with, handed back to the model (Ruling 70 d)
+  let calendarToolCalled = false;   // (F2) a calendar tool was asked for this turn: the turn is calendar-change business
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   let lookupsRun = 0;         // lookUpLive calls asked for this turn (M-5: past MAX_LOOKUPS_PER_TURN each is the limit's error)
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
@@ -3080,7 +3120,12 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       const noChange = changeEventLine(userText, messages[messages.length - 2]);
       if (noChange) return finish(noChange);
       // Nothing was cancelled or moved here (the tools only package it, and the Done line is code's): any claim that it was is false
-      if (claimsEventChange(text, userText)) return finish(NOTHING_CHANGED);
+      // (F2) the passive and pronoun-only branches run only on calendar-change business: the user asked for a change, a calendar tool
+      // was called this turn, or the user is answering a read-back of hers
+      const prior = messages[messages.length - 2];
+      const calendarBusiness = isEventChangeRequest(userText) || calendarToolCalled ||
+        (!!prior && prior.role === "assistant" && messageText(prior).includes(READ_BACK_PREFIX));
+      if (claimsEventChange(text, userText, calendarBusiness)) return finish(NOTHING_CHANGED);
       // Ruling 70 (d): a calendar read this turn came back with a Google code (not connected, expired, unreachable) and was handed back
       // to the model (Ruling 55: the user did not ask about the calendar). Whatever the question, a sentence of the reply that names a
       // day or a time is the Google line that says why: nothing read the calendar, and the failed read is why ("Call the Chens first."
@@ -3213,6 +3258,7 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
     }
 
     convo.push({ role: "assistant", content });
+    if (toolUses.some((b) => CALENDAR_TOOLS.has(b.name))) calendarToolCalled = true;
     // On the last allowed call no narration can follow, so only a change to confirm (or an email to set up) matters.
     const runBlocks = lastCall ? toolUses.filter((b) => LAST_CALL_TOOLS.has(b.name)) : toolUses;
     // The tools get what is left of the turn, like the model calls do: a Google call that hangs cannot hold the mic past the deadline.

@@ -249,12 +249,15 @@ test("claimsEventChange: first person, passive and 'off your calendar' claims ar
 test("a cancel/move claim on any turn is held: a calendar read, a plain question, a read-back in view", async () => {
   for (const [text, script] of [
     ["what's on my calendar tomorrow?", [useTool("getCalendarTool", { date: "tomorrow" }), say("You have Walkthrough with Sam at 10:00 AM, and I've cancelled it for you.")]],
-    ["hey Charlie", [say("The call was moved to Friday.")]],
     ["what's up", [say("Your 3 PM is off your calendar.")]],
   ]) {
     const { r } = await turn(text, script);
     assert.equal(r.reply, NOTHING_CHANGED, text);
   }
+  // (fix wave F2) a passive claim on a turn with no calendar business is no longer this screen's: it is still never said as written
+  // (an ungrounded calendar fact is the can't-verify line)
+  const plain = await turn("hey Charlie", [say("The call was moved to Friday.")]);
+  assert.notEqual(plain.r.reply, "The call was moved to Friday.");
   // after a read-back Charlie said and the user declined, the model cannot say it was cancelled either
   const client = fakeClient([say("Okay, I cancelled it.")]);
   const r = await runTurn({
@@ -290,4 +293,99 @@ test("the three fixed change lines are exactly the spec's words", () => {
   assert.equal(CHANGE_CHANGED, "That event changed after I read it to you, so I left it alone. Ask me again.");
   assert.equal(ALREADY_OFF, "That event is already off your calendar.");
   assert.equal(COULD_NOT_CHANGE, "Google Calendar couldn't make that change. Nothing was changed.");
+});
+
+// ── fix wave F2 / F5: the claim screen is scoped to calendar-change business; requests without an event noun ──
+
+// Sentences from client stories and rate news that say cancelled / moved / pushed / removed of something that is no event. On a turn
+// with no calendar business (no change asked for, no calendar tool called) none of them is a claim.
+const NOT_CALENDAR_SENTENCES = [
+  "Their purchase contract was cancelled last month, so they may be ready to shop again.",
+  "The Okafors' closing was moved to December twelfth.",
+  "Their closing got pushed back a week, so check the rate lock.",
+  "Rates were pushed higher by the jobs report, and that hurts the Chens.",
+  "Grace's appraisal was cancelled and needs to be reordered.",
+  "Once that's removed, his payment drops.",
+  "PMI is removed at seventy-eight percent LTV, which saves them money.",
+  "Their refinance was cancelled because the appraisal came in low.",
+  "That deal got cancelled, but the Chens are still a good call.",
+  "Last week's Fed meeting was rescheduled, so watch for news.",
+  "Any client whose lock was cancelled can relock now.",
+  "Since their purchase contract was cancelled, tell them their preapproval is still good.",
+  "I've moved the Okafors to the top of your call list because their rate is highest.",
+];
+
+test("F2: on a turn with no calendar business, ordinary sentences about cancelled or moved things are not held", () => {
+  for (const s of NOT_CALENDAR_SENTENCES) assert.equal(claimsEventChange(s, "what should I tell the Patels?", false), false, s);
+});
+
+test("F2: end to end, a grounded or plain reply about a cancelled lock or a rescheduled Fed meeting reaches the broker as said", async () => {
+  for (const said of [
+    "The thirty-year is at 6.52 percent. Last week's Fed meeting was rescheduled, so watch for news.",
+    "The thirty-year is at 6.52 percent. Any client whose lock was cancelled can relock now.",
+  ]) {
+    const { r } = await turn("how are rates today?", [useTool("getMarketUpdate", {}), say(said)]);
+    assert.equal(r.reply, said);
+  }
+  const plain = "Since their purchase contract was cancelled, tell them their preapproval is still good.";
+  assert.equal((await turn("what should I tell the Patels?", [say(plain)])).r.reply, plain);
+});
+
+test("F2: a first-person claim with an event word, a clock time, a day word or 'calendar', and any 'off your calendar', is held on every turn", async () => {
+  for (const s of [
+    "I've cancelled your 3 PM.", "I moved the call with Dave to Friday.", "I rescheduled Dave for tomorrow.", "I took the walkthrough off for you.",
+    "I dropped the Chens from tomorrow.", "I've removed it from your calendar.", "Your 3 PM is off your calendar.",
+  ]) assert.equal(claimsEventChange(s, "how are rates today?", false), true, s);
+  for (const said of ["The thirty-year is at 6.52 percent. I've cancelled your 3 PM call.", "The thirty-year is at 6.52 percent. Your 3 PM is off your calendar."]) {
+    assert.equal((await turn("how are rates today?", [useTool("getMarketUpdate", {}), say(said)])).r.reply, NOTHING_CHANGED, said);
+  }
+});
+
+test("F2: the pronoun-only and passive branches are off outside calendar business, and on inside it", () => {
+  for (const s of ["I cancelled it.", "It's cancelled now.", "Consider it cancelled.", "Cancelled.", "The call was moved to Friday.", "Your 3 PM call is cancelled."]) {
+    assert.equal(claimsEventChange(s, "how are rates today?", false), false, `off: ${s}`);
+    assert.equal(claimsEventChange(s, "cancel Dave tomorrow", true), true, `on: ${s}`);
+  }
+  // inside calendar business the passive still needs an event word, a clock time or a pronoun: a closing is no event word
+  assert.equal(claimsEventChange("Their refinance was cancelled because the appraisal came in low.", "cancel Dave tomorrow", true), false);
+  assert.equal(claimsEventChange("The Okafors' closing was moved to December twelfth.", "cancel Dave tomorrow", true), false);
+});
+
+test("F2: a calendar tool called this turn makes it calendar business: a passive claim after a calendar read is held", async () => {
+  const { r } = await turn("what's on my calendar tomorrow?", [useTool("getCalendarTool", { date: "tomorrow" }), say("Your walkthrough with Sam was moved to Friday.")]);
+  assert.equal(r.reply, NOTHING_CHANGED);
+});
+
+test("F5: a cancel / move / reschedule / push / bump / drop verb leading a clause, with a day word or a clock time, is a change request", () => {
+  for (const text of [
+    "cancel Dave tomorrow", "push Dave back to Friday", "drop the Chens tomorrow", "move my 3 PM to 4", "can you cancel Dave tomorrow?",
+    "please bump Pat to Thursday", "I need to reschedule Kim to next week", "let's move the Okafors to 3:30", "could you push the Patels to October 30th",
+    "hey Charlie, cancel Sam today", "move Dave to 4",
+  ]) assert.equal(isActionRequest(text), true, text);
+  for (const text of [
+    "should I move the Okafors to a 15-year?", "move on to the next client", "cancel that", "can we drop the rate for the Chens?",
+    "push them toward a refinance this week", "drop off the docs tomorrow", "push the Chens' rate lock to Friday", "Did Dave cancel tomorrow?",
+    "drop the rate to 6 for the Okafors tomorrow", "move the Patels to a thirty-year loan tomorrow",
+  ]) assert.equal(isActionRequest(text), false, text);
+});
+
+test("F5: 'is off', 'is now at / on', 'has been dropped', 'taken ... off', 'is gone' are claims on a calendar-change turn", () => {
+  for (const s of [
+    "The meeting with Dave is off.", "Done — the call is off.", "Your 3 PM has been dropped.", "Dave's call is now at 4 PM.", "I have taken the call off.",
+    "The call with Dave is now on Friday.", "Your 3 PM is gone.", "Okay, Dave is now on Friday at ten.",
+  ]) assert.equal(claimsEventChange(s, "cancel Dave tomorrow", true), true, s);
+  for (const s of ["Is the call with Dave off?", "The call with Dave is not off.", "Your rate is now at 6.5 percent."]) {
+    assert.equal(claimsEventChange(s, "cancel Dave tomorrow", true), false, s);
+  }
+});
+
+test("F5: end to end, the three false claims after a request with no event noun are held", async () => {
+  for (const [userText, said] of [
+    ["cancel Dave tomorrow", "Got it, Dave's off tomorrow."],
+    ["push Dave back to Friday", "Okay, Dave is now on Friday at ten."],
+    ["drop the Chens tomorrow", "I dropped the Chens from tomorrow."],
+  ]) {
+    const { r } = await turn(userText, [say(said)]);
+    assert.ok([NOTHING_CHANGED, BOOKING_ASK].includes(r.reply), `${userText} / ${said} -> ${r.reply}`);
+  }
 });
