@@ -464,5 +464,6 @@ test("G5: only a cancel or a move read-back makes the next turn calendar busines
   assert.equal(calendarChangeBusiness(cancel, "no, leave it", false), true);
   assert.equal(calendarChangeBusiness(move, "no", false), true);
   assert.equal(calendarChangeBusiness(other, "cancel Dave tomorrow", false), true, "a change request");
-  assert.equal(calendarChangeBusiness(other, "hey", true), true, "a calendar tool this turn");
+  // (fix list 3) a calendar tool called this turn no longer makes it a change turn
+  assert.equal(calendarChangeBusiness(other, "hey", true), false, "a calendar tool this turn is no change turn");
 });

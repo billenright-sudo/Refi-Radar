@@ -2831,7 +2831,8 @@ const sendLine = (text, before) => {
 // the calendar in another way (rename it, change its length, add guests), is said by code, whatever the model said. The verb comes
 // with an event (or "my 3 PM") at most four words after it, in the same sentence. "change / edit / update ... to Friday" is a move.
 const CHANGE_NOUN =
-  "(?:(?:calls?|meetings?|appointments?|appts?|events?|zoom|showings?|closings?|lunch|block|calendar)\\b" +
+  "(?:(?:calls?|meetings?|appointments?|appts?|events?|zoom|showings?|closings?|lunch|block|calendar" +
+    "|walk-?throughs?|coffee|dinner|breakfast|demos?|interviews?|sessions?|visits?|check-?ins?)\\b" +
   "|\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\b\\.?|p\\.?m\\b\\.?)|\\d{1,2}:\\d{2}\\b)";
 const EVENT_GAP = "(?:\\s+[\\w'\\u2019&.-]+){0,4}?\\s+";
 const CANCEL_MOVE_CORE = "(?:cancel|delete|remove|clear|reschedule|move|push|bump|shift)" + EVENT_GAP + CHANGE_NOUN;
@@ -2858,34 +2859,47 @@ const NO_NOUN_LEAD_RE = new RegExp(
     "(cancel|move|reschedule|push|bump|drop)\\b(?!\\s+(?:on|off|by|in|out|up|down|through|over|toward|towards|for|me|us|a|an)\\b)",
   "i"
 );
-// (fix list 2, G2) What must follow the verb's object. cancel / drop: a day word or a clock time. move / push / bump / reschedule: a
-// destination, "to / until / till / for" and a day word or a clock time (a bare hour after it counts), or "back".
-const DAY_OR_CLOCK_AT_RE = new RegExp("^(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME + ")", "i");
+// (fix list 3) What makes a clause with no event noun a change request, after the verb:
+//   cancel / reschedule: a day word or a clock time ANYWHERE after the verb, the object included ("cancel Friday's walkthrough",
+//     "cancel tomorrow's thing with Dave"), and an object (the words that are left) that is not a bare it / that / this / them / those.
+//   drop: as fix list 2: a day word or a clock time right after an object of at most four words, with no "a" / "an" in it.
+//   move / push / bump: a destination after the object: "to / until / till / for" + a day word or a clock time (a bare hour counts),
+//     or "back" that ends the clause, or "back" + "to" a day word or a clock time, or "back" + an amount ("an hour", "30 minutes",
+//     "a day", "a week"). "back to the top" is none.
+// For every verb the object holds no adverb (fast, quickly, hard, harder, ahead, forward, along, again, up), and the clause no loan word.
+const DAY_OR_CLOCK = "(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME + ")";
+const DAY_OR_CLOCK_AT_RE = new RegExp("^" + DAY_OR_CLOCK, "i");
+const DAY_OR_CLOCK_ANY_RE = new RegExp("\\b" + DAY_OR_CLOCK, "gi");
+const HOUR_OR_CLOCK = "(?:" + DAY_OR_CLOCK + "|(?:\\d{1,2}(?::\\d{2})?|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent))";
+const AMOUNT = "(?:an?|half\\s+an|\\d{1,3}|" + HOUR_WORDS + "|a\\s+couple(?:\\s+of)?|a\\s+few)\\s+(?:minutes?|mins?|hours?|days?|weeks?)\\b";
 const DESTINATION_AT_RE = new RegExp(
-  "^(?:back\\b|(?:to|until|till|for)\\s+(?:(?:" + DAY_WORD + "|noon|midnight)\\b|" + CLOCK_TIME +
-    "|(?:\\d{1,2}(?::\\d{2})?|" + HOUR_WORDS + ")(?![\\w.%-]|\\s*percent)))",
+  "^(?:(?:to|until|till|for)\\s+" + HOUR_OR_CLOCK + "|back\\W*$|back\\s+(?:to\\s+" + HOUR_OR_CLOCK + "|" + AMOUNT + "))",
   "i"
 );
 const NO_NOUN_ADVERBS = new Set(["fast", "quickly", "hard", "harder", "ahead", "forward", "along", "again", "up"]);
 const BARE_PRONOUNS = new Set(["that", "it", "this", "them", "those"]);
 const LOAN_WORD_RE =
   /\b(?:rates?|refis?|refinanc\w*|loans?|locks?|pmi|mortgages?|payments?|terms?|years?|[\w]+-years?|arms?|points?|escrow|appraisals?|apr|ltv|equity|heloc|pre-?approvals?|applications?|cash-?out|stages?|list|pipeline|records?|scenarios?)\b/i;
-// The object is the words between the verb and the first point where what must follow it begins. It is never empty, never holds an
-// adverb (fast, quickly, hard, ...: "push Grace hard tomorrow" is sales talk), for cancel is no bare pronoun ("cancel that"), and for
-// drop is at most four words with no "a" / "an" in it ("drop Dave a note tomorrow").
+const objectWords = (text) => text.split(/\s+/).filter(Boolean).map((w) => w.toLowerCase().replace(/[^\w'\u2019-]/g, "")).filter(Boolean);
 function changeWithoutNoun(c) {
   const m = NO_NOUN_LEAD_RE.exec(c);
   if (!m) return false;
   const verb = m[1].toLowerCase();
   const rest = c.slice(m[0].length).trim();
   if (LOAN_WORD_RE.test(rest)) return false;
+  if (verb === "cancel" || verb === "reschedule") {
+    if (!new RegExp("\\b" + DAY_OR_CLOCK, "i").test(rest)) return false;
+    // the object: what is left once the day and time words go ("Friday's walkthrough" -> "'s walkthrough")
+    const object = objectWords(rest.replace(DAY_OR_CLOCK_ANY_RE, " ")).filter((w) => !/^['\u2019]s$/.test(w));
+    if (object.length === 0 || object.some((w) => NO_NOUN_ADVERBS.has(w))) return false;
+    return !(object.length === 1 && BARE_PRONOUNS.has(object[0]));
+  }
   const words = rest.split(/\s+/).filter(Boolean);
-  const after = verb === "cancel" || verb === "drop" ? DAY_OR_CLOCK_AT_RE : DESTINATION_AT_RE;
+  const after = verb === "drop" ? DAY_OR_CLOCK_AT_RE : DESTINATION_AT_RE;
   for (let k = 1; k < words.length; k++) {
     if (!after.test(words.slice(k).join(" "))) continue;
-    const object = words.slice(0, k).map((w) => w.toLowerCase().replace(/[^\w'\u2019-]/g, ""));
+    const object = objectWords(words.slice(0, k).join(" "));
     if (object.some((w) => NO_NOUN_ADVERBS.has(w))) return false;
-    if (verb === "cancel" && object.length === 1 && BARE_PRONOUNS.has(object[0])) return false;
     if (verb === "drop" && (object.length > 4 || object.some((w) => w === "a" || w === "an"))) return false;
     return true;
   }
@@ -2942,8 +2956,14 @@ const FIRST_PERSON_CHANGE_RE = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?
 const FIRST_PERSON_SURE_RE = new RegExp(FIRST_PERSON_CHANGE + NOT_BEFORE + "(?:" + SURE_VERB + ")\\b" + NOT_NOTHING, "i");
 // (G3) a passive change claim about the broker's own event (your <event>, <event> with you, a clock time): held on every turn
 const OWN_PASSIVE_RE = new RegExp(PASSIVE_CHANGE + NOT_BEFORE + "(?:cancell?ed|rescheduled|moved|pushed)\\b", "i");
+// (fix list 3, rule D) "own event" is exactly: "your" + an event word with at most two words between, none of them a possessive
+// ("your call", "your 3 PM call", "your call with Amy Chen"; not "your client's appointment"); "your" + a clock time ("your 3 PM");
+// or an event word + "with you". A clock time anywhere else does not make it the broker's own event.
 const OWN_EVENT_RE = new RegExp(
-  "\\byour\\s+(?:[\\w'\\u2019-]+\\s+){0,2}?(?:" + EVENT_WORD + ")\\b|\\b(?:" + EVENT_WORD + ")\\s+with\\s+you\\b|" + CLOCK_TIME, "i"
+  "\\byour\\s+(?:(?![\\w-]+['\\u2019]s\\b)[\\w'\\u2019:-]+\\s+){0,2}?(?:" + EVENT_WORD + ")\\b" +
+    "|\\byour\\s+(?:" + CLOCK_TIME + ")" +
+    "|\\b(?:" + EVENT_WORD + ")\\s+with\\s+you\\b",
+  "i"
 );
 // (G4) more wordings, on calendar turns only
 const EXTRA_VERB_RE = new RegExp(NOT_BEFORE + "\\b(?:scrapped|wiped|killed|called\\s+off)\\b", "i");
@@ -3001,10 +3021,11 @@ function claimsEventChange(text, userText, calendarTurn = true) {
   });
 }
 
-// Whether this turn is calendar-change business, for claimsEventChange: the user asked for a change, a calendar tool was called this
-// turn, or (G5) the user is answering a CANCEL or a MOVE read-back of hers (another kind of read-back does not count).
-function calendarChangeBusiness(messages, userText, calendarToolCalled) {
-  if (isEventChangeRequest(userText) || calendarToolCalled) return true;
+// Whether this turn is a change turn, for claimsEventChange (fix list 3): the user's text is an event-change request, or (G5) the
+// user is answering a CANCEL or a MOVE read-back of hers (another kind of read-back does not count). A calendar tool called this turn,
+// a read above all, does not make it one: "Call Dave is set for 3:00 PM" narrates a read.
+function calendarChangeBusiness(messages, userText) {
+  if (isEventChangeRequest(userText)) return true;
   const prior = Array.isArray(messages) ? messages[messages.length - 2] : null;
   if (!prior || prior.role !== "assistant") return false;
   const said = messageText(prior);
@@ -3085,7 +3106,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
   const calendarEvents = [];  // { title, date, timeZone } of each event those reads returned (the title as the model saw it)
   const clientNames = new Set();   // the client names this turn's cited tool results carry (Ruling 70 a)
   let calendarCode = null;    // the Google code a calendar read this turn came back with, handed back to the model (Ruling 70 d)
-  let calendarToolCalled = false;   // (F2) a calendar tool was asked for this turn: the turn is calendar-change business
   let glossaryMiss = false;   // an explainTerm call this turn got no definition back
   let lookupsRun = 0;         // lookUpLive calls asked for this turn (M-5: past MAX_LOOKUPS_PER_TURN each is the limit's error)
   const glossaryDefs = [];    // the definitions explainTerm returned this turn, once per term, in the order asked
@@ -3179,7 +3199,7 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
       // Nothing was cancelled or moved here (the tools only package it, and the Done line is code's): any claim that it was is false
       // (F2) the passive and pronoun-only branches run only on calendar-change business: the user asked for a change, a calendar tool
       // was called this turn, or the user is answering a read-back of hers
-      const calendarBusiness = calendarChangeBusiness(messages, userText, calendarToolCalled);
+      const calendarBusiness = calendarChangeBusiness(messages, userText);
       if (claimsEventChange(text, userText, calendarBusiness)) return finish(NOTHING_CHANGED);
       // Ruling 70 (d): a calendar read this turn came back with a Google code (not connected, expired, unreachable) and was handed back
       // to the model (Ruling 55: the user did not ask about the calendar). Whatever the question, a sentence of the reply that names a
@@ -3313,7 +3333,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
     }
 
     convo.push({ role: "assistant", content });
-    if (toolUses.some((b) => CALENDAR_TOOLS.has(b.name))) calendarToolCalled = true;
     // On the last allowed call no narration can follow, so only a change to confirm (or an email to set up) matters.
     const runBlocks = lastCall ? toolUses.filter((b) => LAST_CALL_TOOLS.has(b.name)) : toolUses;
     // The tools get what is left of the turn, like the model calls do: a Google call that hangs cannot hold the mic past the deadline.
@@ -3425,6 +3444,6 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 
 module.exports = {
   runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
-  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel, claimsEventChange, calendarChangeBusiness,
+  isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel, claimsEventChange, calendarChangeBusiness, isEventChangeRequest,
   classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip, isNavigationTurn,
 };
