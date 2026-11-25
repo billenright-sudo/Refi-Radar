@@ -33,7 +33,8 @@ const assistantTools = require("../lib/assistant/tools");   // called as assista
 const assistantBriefing = require("../lib/assistant/briefing");   // called as assistantBriefing.buildBriefing(): tests can swap it
 const { ERROR_TURN, CHANGE_CHANGED, ALREADY_OFF, COULD_NOT_CHANGE } = require("../lib/assistant/prompt");
 const calendarChange = require("../lib/assistant/calendarChange");
-const { reconcileCalendarFollowUps } = require("../lib/assistant/calendarFollowUps");
+// called through the module (not destructured), so a test can stand in for it
+const calendarFollowUps = require("../lib/assistant/calendarFollowUps");
 const { stageById, spokenStageLabel } = require("../lib/assistant/coaching");
 const { setCareerStageForUser } = require("../lib/careerStage");
 const { GREETING_OPENERS, openerFor, hourOf } = require("../lib/assistant/openers");   // the opening words (GREETING_OPENERS and openerFor re-exported below)
@@ -82,6 +83,7 @@ function turnDeadlineMs() {
 
 // What gets logged for a failure: the message only (never the stack or the request, which hold client data).
 const errText = (err) => (err && err.message) || String(err);
+const errName = (err) => (err && typeof err.name === "string" && /^[A-Za-z0-9_]{1,40}$/.test(err.name) ? err.name : "error");
 
 // ── Request shaping ──────────────────────────────────────────────────────────
 
@@ -551,17 +553,22 @@ async function confirmChangeEvent(req, res, sideEffect) {
     } catch (err) {
       console.error("POST /api/assistant/confirm (receipt):", errText(err));
     }
-    // "How did the call go?" follows the calendar: a cancelled call is no longer asked about, a moved one when it now ends
-    // (best effort and never throws: the next briefing would catch up anyway)
-    try {
-      await reconcileCalendarFollowUps({ google }, {
-        localDate: localToday(event.timeZone, Date.now()), days: move ? [event.date, event.newDate] : [event.date], db, userId: req.user.id,
-      });
-    } catch (err) {
-      console.error("POST /api/assistant/confirm (follow-ups):", errText(err));
-    }
   }
-  return res.json({ success: true, result: receipt, reply: confirmReply(type, receipt) });
+  const answered = res.json({ success: true, result: receipt, reply: confirmReply(type, receipt) });
+  if (done) {
+    // (F9) "How did the call go?" follows the calendar: a cancelled call is no longer asked about, a moved one when it now ends.
+    // It runs after the Done line is sent, so a slow Google never holds the answer; best effort: an error is logged by its name
+    // only (the next briefing would catch up anyway). A test may watch the run through the app's "followUpReconcile" setting.
+    const reconcile = calendarFollowUps.reconcileCalendarFollowUps;
+    const run = Promise.resolve()
+      .then(() => reconcile({ google }, {
+        localDate: localToday(event.timeZone, Date.now()), days: move ? [event.date, event.newDate] : [event.date], db, userId: req.user.id,
+      }))
+      .catch((err) => { console.error("POST /api/assistant/confirm (follow-ups):", errName(err)); });
+    const watch = req.app.get("followUpReconcile");
+    if (typeof watch === "function") watch(run);
+  }
+  return answered;
 }
 
 // ── The router ───────────────────────────────────────────────────────────────

@@ -77,6 +77,8 @@ const noNetwork = () => fakeFetch(() => { throw new Error("no Google call was ex
 const changes = (g) => g.calls.filter((c) => c.method === "DELETE" || c.method === "PATCH");
 
 let app, server, as;
+const reconciles = [];
+const reconciled = () => Promise.all(reconciles.splice(0));
 const useGoogle = (fetchFn) => { app.set("googleFetch", fetchFn); return fetchFn; };
 before(async () => {
   app = express();
@@ -84,6 +86,8 @@ before(async () => {
   app.use(cookieParser());
   app.use("/api/clients", clientRoutes);
   app.use("/api/assistant", assistantRoutes.createAssistantRouter({ limiter: { max: 100000 } }));
+  // (F9) the follow-up reconcile runs after the answer is sent: the route hands each run here, so a test can wait for it
+  app.set("followUpReconcile", (run) => reconciles.push(run));
   server = app.listen(0);
   await new Promise((r) => server.once("listening", r));
   const base = `http://localhost:${server.address().port}`;
@@ -482,6 +486,7 @@ test("cancel: the call's follow-up row is expired once Google has deleted it, so
   const google = useGoogle(fakeFetch((c) => (c.method === "GET" ? json({ items: [] }) : empty(204))));   // the day is empty after the delete
   const r = await post(ann, cancelBody(newId(), { id: "evtlucy0001", title: call.title, date: call.today, time: call.hhmm, startAt: call.startAt, durationMinutes: call.minutes }));
   assert.equal(r.status, 200);
+  await reconciled();
   assert.deepEqual(google.calls.map((c) => c.method), ["DELETE", "GET"], "the change first, then one read of that day");
   assert.deepEqual(recRows().map((x) => x.status), ["expired"]);
   assert.deepEqual(fu.openFollowUps(db, ann, { localDate: call.today, localHour: 23, nowUtc: sqliteUtc(call.endAt + 3_600_000) }), []);
@@ -502,6 +507,7 @@ test("move: the call's follow-up row is due at the new end", async (t) => {
   const hhmm = (l) => `${String(l.hour).padStart(2, "0")}:${String(l.minute).padStart(2, "0")}`;
   const r = await post(ann, moveBody(newId(), { id: "evtlucy0001", title: call.title, date: call.today, time: call.hhmm, startAt: call.startAt, newDate: call.today, newTime: hhmm(newLocal), durationMinutes: call.minutes }));
   assert.equal(r.status, 200, JSON.stringify(r.data));
+  await reconciled();
   assert.deepEqual(google.calls.map((c) => c.method), ["PATCH", "GET"]);
   assert.deepEqual(recRows().map((x) => [x.status, x.dueAt]), [["open", sqliteUtc(newEnd)]]);
   db.prepare("DELETE FROM clients WHERE id = ?").run(call.lucy);
@@ -510,7 +516,56 @@ test("move: the call's follow-up row is due at the new end", async (t) => {
 test("a change on a far day asks Google for nothing more", async () => {
   const google = useGoogle(fakeFetch(() => empty(204)));
   assert.equal((await post(ann, cancelBody(newId()))).status, 200);   // 2099: no row was ever recorded for it
+  await reconciled();
   assert.deepEqual(google.calls.map((c) => c.method), ["DELETE"]);
+});
+
+// ── fix wave F9: the Done line is sent first; the reconcile runs after it ──
+// The route calls the reconcile through its module, so a test can make it throw for one request.
+async function withReconcileThrowing(err, run) {
+  const followUps = require("../lib/assistant/calendarFollowUps");
+  const real = followUps.reconcileCalendarFollowUps;
+  followUps.reconcileCalendarFollowUps = async () => { throw err; };
+  try { return await run(); } finally { followUps.reconcileCalendarFollowUps = real; }
+}
+test("F9: the Done line does not wait for the follow-up reconcile; the reconcile still runs after it, and its failure is logged by name only", async (t) => {
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  const call = todaysCall("Follow-up: Lucy Tran");
+  if (!call) return t.skip("the calendar's midnight is within a minute");
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const google = useGoogle(fakeFetch(async (c) => {
+    if (c.method !== "GET") return empty(204);
+    await held;   // the day read for the reconcile hangs until the answer has arrived
+    return json({ items: [] });
+  }));
+  const body = cancelBody(newId(), { id: "evtlucy0001", title: call.title, date: call.today, time: call.hhmm, startAt: call.startAt, durationMinutes: call.minutes });
+  const r = await post(ann, body);
+  assert.equal(r.status, 200);
+  assert.match(r.data.reply, /^Done — "Follow-up: Lucy Tran" on .* is off your calendar\.$/);
+  assert.deepEqual(recRows().map((x) => x.status), ["open"], "not reconciled yet: the answer came first");
+  release();
+  await reconciled();
+  assert.deepEqual(google.calls.map((c) => c.method), ["DELETE", "GET"]);
+  assert.deepEqual(recRows().map((x) => x.status), ["expired"]);
+  db.prepare("DELETE FROM clients WHERE id = ?").run(call.lucy);
+
+  // a reconcile that throws is swallowed after the Done line, and logged by the error's name only
+  db.prepare("DELETE FROM charlie_recommendations").run();
+  const again = todaysCall("Follow-up: Lucy Tran");
+  if (!again) return;
+  const followUps = require("../lib/assistant/calendarFollowUps");
+  const realReconcile = followUps.reconcileCalendarFollowUps;
+  logged.length = 0;
+  useGoogle(fakeFetch((c) => (c.method === "GET" ? json({ items: [] }) : empty(204))));
+  const boom = Object.assign(new Error("secret detail ya29.SECRET"), { name: "RangeError" });
+  const r2 = await withReconcileThrowing(boom, () => post(ann, cancelBody(newId(), { id: "evtlucy0002", title: again.title, date: again.today, time: again.hhmm, startAt: again.startAt, durationMinutes: again.minutes })));
+  assert.equal(r2.status, 200);
+  await reconciled();
+  assert.ok(logged.some((l) => l.includes("follow-ups") && l.includes("RangeError")), logged.join(" | "));
+  assert.ok(logged.every((l) => !l.includes("SECRET") && !l.includes("secret detail")));
+  assert.equal(followUps.reconcileCalendarFollowUps, realReconcile);
+  db.prepare("DELETE FROM clients WHERE id = ?").run(again.lucy);
 });
 
 // ── fix wave F3: an unknown outcome is never "Nothing was changed" until a read says so ──
