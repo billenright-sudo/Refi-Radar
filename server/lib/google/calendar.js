@@ -182,10 +182,11 @@ function allDayIsOneDay(startDate, endDate) {
 }
 
 // One event of events.list for a change: { id, etag, title, start, end, allDay, startAt, endAt, startDate, multiDay, guests, repeats,
-// mine }, or null for a cancelled one. `start` / `end` are spoken labels as toEvent's; `startAt` / `endAt` epoch ms (null for an
+// mine, regular }, or null for a cancelled one. `start` / `end` are spoken labels as toEvent's; `startAt` / `endAt` epoch ms (null for an
 // all-day one, whose day is `startDate`). `multiDay`: a timed event of 24 hours or more, or an all-day one over more than one day.
 // `guests`: anyone besides the broker is on it (a list Google left out counts). `repeats`: any instance of
-// a series, or the series itself. `mine`: the broker organized it, it is an ordinary event and Google has not locked it.
+// a series, or the series itself. `mine`: the broker organized it and Google has not locked it. `regular`: an ordinary event (not
+// focus time, out of office, a working location, from Gmail or a birthday).
 function toChangeable(item, timeZone) {
   const base = toEvent(item, timeZone);
   if (!base) return null;
@@ -201,7 +202,8 @@ function toChangeable(item, timeZone) {
     multiDay: base.allDay ? !allDayIsOneDay(item.start.date, item.end && item.end.date) : base.endAt - Date.parse(item.start.dateTime) >= DAY_MS,
     guests: item.attendeesOmitted === true || attendees.some((a) => !(a && a.self === true)),
     repeats: typeof item.recurringEventId === "string" || (Array.isArray(item.recurrence) && item.recurrence.length > 0),
-    mine: organizer.self === true && item.locked !== true && (item.eventType === undefined || item.eventType === "default"),
+    mine: organizer.self === true && item.locked !== true,
+    regular: item.eventType === undefined || item.eventType === "default",
   };
 }
 

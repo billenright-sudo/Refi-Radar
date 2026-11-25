@@ -590,6 +590,7 @@ async function locateEvent(a, ctx, move) {
   const event = matches[0];
 
   if (!event.mine) return { done: refuseChange(calendarChange.notMineLine(event.title)) };
+  if (event.regular === false) return { done: refuseChange(calendarChange.notRegularLine(event.title)) };
   if (event.guests) return { done: refuseChange(calendarChange.hasGuestsLine(event.title)) };
   if (event.repeats) return { done: refuseChange(calendarChange.repeatsLine(event.title)) };
   if (event.multiDay) return { done: refuseChange(calendarChange.multiDayLine(event.title)) };

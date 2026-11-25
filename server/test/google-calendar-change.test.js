@@ -105,7 +105,7 @@ test("listDayDetailed: id, etag and the instants for code; guests, repeating and
   assert.deepEqual(by.evtone12345, {
     id: "evtone12345", etag: '"3100000000000000"', title: "Walkthrough with Sam", start: "10:00 AM", end: "10:30 AM", allDay: false,
     startAt: Date.UTC(2026, 9, 28, 17, 0), endAt: Date.UTC(2026, 9, 28, 17, 30), startDate: null, multiDay: false,
-    guests: false, repeats: false, mine: true,
+    guests: false, repeats: false, mine: true, regular: true,
   });
   assert.equal(by.evttwo12345.guests, false, "the broker alone is no guest");
   assert.equal(by.evtthree1234.guests, true);
@@ -113,7 +113,10 @@ test("listDayDetailed: id, etag and the instants for code; guests, repeating and
   assert.equal(by.evtfive12345.repeats, true);
   assert.equal(by.evtsix123456.mine, false);
   assert.equal(by.evtseven1234.mine, false, "Google says it can't be edited");
-  assert.equal(by.evteight1234.mine, false, "not an ordinary event");
+  // (F7) an entry that is not an ordinary event is the broker's still, but not regular: it gets its own line
+  assert.equal(by.evteight1234.mine, true);
+  assert.equal(by.evteight1234.regular, false, "not an ordinary event");
+  assert.equal(by.evtone12345.regular, true);
   assert.equal(by.evtnine12345.allDay, true);
   assert.equal(by.evtnine12345.startAt, null);
   assert.equal(by.evtnine12345.startDate, "2026-10-28");

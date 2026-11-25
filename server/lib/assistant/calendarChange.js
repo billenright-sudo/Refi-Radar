@@ -74,6 +74,7 @@ const whichOneLine = (date, matches) => {
 const hasGuestsLine = (title) => `${quoted(title)} has guests, and I never email guests. Open Google Calendar to change it so they're told.`;
 const repeatsLine = (title) => `${quoted(title)} is a repeating event. I can't change those yet. Open Google Calendar.`;
 const notMineLine = (title) => `${quoted(title)} was set up by someone else, so I can't change it. Open Google Calendar.`;
+const notRegularLine = (title) => `${quoted(title)} isn't a regular event, so I can't change it. Open Google Calendar.`;
 const multiDayLine = (title) => `${quoted(title)} runs over more than one day. I can't change those yet. Open Google Calendar.`;
 const alreadyStartedLine = (title) => `${quoted(title)} has already started, so I'll leave it alone.`;
 const allDayMoveLine = (title) => `${quoted(title)} is an all-day event. I can cancel it, but I can't move those yet.`;
@@ -94,6 +95,6 @@ const doneMoveLine = (event) => `Done — ${quoted(event.title)} is now ${spoken
 
 module.exports = {
   TITLE_SHOWN, cut, words, findMatches,
-  notFoundLine, whichOneLine, hasGuestsLine, repeatsLine, notMineLine, multiDayLine, alreadyStartedLine, allDayMoveLine, sameTimeLine,
+  notFoundLine, whichOneLine, hasGuestsLine, repeatsLine, notMineLine, notRegularLine, multiDayLine, alreadyStartedLine, allDayMoveLine, sameTimeLine,
   cancelReadBack, moveReadBack, doneCancelLine, doneMoveLine,
 };

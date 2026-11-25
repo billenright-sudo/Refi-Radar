@@ -394,3 +394,22 @@ test("F4: function words are ignored, then (only if nothing fit) generic words; 
   assert.match(refusal(await cancelEventTool({ date: WED, title: "Dave" }, ctxOf(google))), /^I see more than one that fits on Wednesday, October 28th: "Call Dave" at 3:00 PM, "Lunch with Dave" at 12:00 PM\. Which one\?$|^I see more than one that fits on Wednesday, October 28th: "Lunch with Dave" at 12:00 PM, "Call Dave" at 3:00 PM\. Which one\?$/);
   assert.match(refusal(await cancelEventTool({ date: WED, title: "call with Dave", time: "16:00" }, ctxOf(google))), /^I don't see that/);
 });
+
+// ── entries that are not regular events (fix wave F7) ─────────────────────────
+test("F7: focus time, out of office, working location and from-Gmail entries get their own line; someone else's still comes first", async () => {
+  const at9 = (h) => ({ dateTime: `2026-10-28T${String(h).padStart(2, "0")}:00:00-07:00` });
+  const kinds = [["focusTime", "Focus", 9], ["outOfOffice", "Out of office", 11], ["workingLocation", "Home", 13], ["fromGmail", "Flight to Denver", 15]];
+  const google = realDay([
+    ...kinds.map(([eventType, summary, h], i) => ({ id: `kind0000${i}`, etag: `"k${i}"`, summary, eventType, start: at9(h), end: at9(h + 1), organizer: own })),
+    { id: "theirfocus", etag: '"t"', summary: "Their deep work", eventType: "focusTime", start: at9(17), end: at9(18), organizer: { self: false } },
+  ]);
+  for (const [, summary] of kinds) {
+    for (const [tool, extra] of [[cancelEventTool, {}], [moveEventTool, { newTime: "20:00" }]]) {
+      assert.equal(refusal(await tool({ date: WED, title: summary, ...extra }, ctxOf(google))), `"${summary}" isn't a regular event, so I can't change it. Open Google Calendar.`);
+    }
+  }
+  assert.equal(refusal(await cancelEventTool({ date: WED, title: "their deep work" }, ctxOf(google))), '"Their deep work" was set up by someone else, so I can\'t change it. Open Google Calendar.');
+  // before guests
+  const both = realDay([{ id: "focusguest", etag: '"g"', summary: "Focus with guests", eventType: "focusTime", attendees: [{ self: true }, {}], start: at9(9), end: at9(10), organizer: own }]);
+  assert.match(refusal(await cancelEventTool({ date: WED, title: "focus" }, ctxOf(both))), /isn't a regular event/);
+});
