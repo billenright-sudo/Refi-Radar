@@ -107,6 +107,15 @@ test("send passes the TTL and topic; 410 is gone, 500 is not", async () => {
   assert.deepEqual(await s.send(SUB, TEXT, { ttlSeconds: 60 }), { ok: false, gone: false, status: 500 });
 });
 
+test("send uses the topic it is given; the default is rate-drop", async () => {
+  const fake = fakeWebpush([201, 201]);
+  const s = createPushSender(cfg, { webpush: fake });
+  await s.send(SUB, TEXT, { ttlSeconds: 60, topic: "rate-drop-test" });
+  await s.send(SUB, TEXT, { ttlSeconds: 60 });
+  assert.equal(fake.calls[0].options.topic, "rate-drop-test");
+  assert.equal(fake.calls[1].options.topic, "rate-drop");
+});
+
 test("404 is gone; 429, 503 and a timeout are failed sends that keep the device", async () => {
   const fake = fakeWebpush([404, 429, 503, "timeout"]);
   const s = createPushSender(cfg, { webpush: fake });
@@ -294,6 +303,22 @@ test("sendNotification: the headers, the encrypted body, no redirects", async ()
   assert.equal(init.headers["Content-Type"], "application/octet-stream");
   assert.equal(jwtParts(init.headers.Authorization).claims.aud, "https://fcm.googleapis.com");
   assert.deepEqual(JSON.parse(decryptAsReceiver(init.body, dev.ecdh.getPrivateKey(), dev.uaPublic, dev.authSecret)), TEXT);
+});
+
+test("sendNotification: the response body is drained or cancelled, on success and on failure", async () => {
+  for (const status of [201, 410, 500]) {
+    let drained = 0;
+    const fetchImpl = async () => ({ status, ok: status < 300, arrayBuffer: async () => { drained += 1; return new ArrayBuffer(0); } });
+    const wp = lite.createWebPush({ fetchImpl });
+    const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: newDevice().p256dh, auth: newDevice().auth } };
+    await wp.sendNotification(sub, JSON.stringify(TEXT), { vapidDetails, TTL: 60 }).catch(() => {});
+    assert.equal(drained, 1, `status ${status}`);
+  }
+  let cancelled = 0;
+  const wp = lite.createWebPush({ fetchImpl: async () => ({ status: 201, ok: true, body: { cancel: async () => { cancelled += 1; } } }) });
+  const dev = newDevice();
+  await wp.sendNotification({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: dev.p256dh, auth: dev.auth } }, "{}", { vapidDetails, TTL: 60 });
+  assert.equal(cancelled, 1, "a body with no arrayBuffer is cancelled");
 });
 
 test("sendNotification: an object payload is sent as JSON; an invalid urgency or topic is left off", async () => {

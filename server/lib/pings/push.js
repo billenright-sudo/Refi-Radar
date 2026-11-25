@@ -57,7 +57,7 @@ function isPushEndpoint(url) {
 const GONE = new Set([404, 410]);
 const SEND_TIMEOUT_MS = 10_000;
 
-// -> { send(sub, payload, { ttlSeconds }) -> Promise<{ ok: true } | { ok: false, gone: boolean, status: number | null }> }.
+// -> { send(sub, payload, { ttlSeconds, topic = "rate-drop" }) -> Promise<{ ok: true } | { ok: false, gone: boolean, status: number | null }> }.
 //   sub      { endpoint, p256dh, auth } (a push_subscriptions row) or { endpoint, keys: { p256dh, auth } }
 //   payload  the object a service worker reads (pingText's)
 // `webpush` is anything with the `web-push` package's sendNotification; the default is lib/pings/webpushLite.js, loaded on first use.
@@ -66,14 +66,14 @@ const SEND_TIMEOUT_MS = 10_000;
 function createPushSender(config, { webpush } = {}) {
   const sender = () => webpush || require("./webpushLite");
   return {
-    async send(sub, payload, { ttlSeconds }) {
+    async send(sub, payload, { ttlSeconds, topic = "rate-drop" }) {
       const subscription = { endpoint: sub.endpoint, keys: sub.keys || { p256dh: sub.p256dh, auth: sub.auth } };
       try {
         const result = await sender().sendNotification(subscription, JSON.stringify(payload), {
           vapidDetails: { subject: config.subject, publicKey: config.publicKey, privateKey: config.privateKey },
           TTL: ttlSeconds,
           urgency: "normal",
-          topic: "rate-drop",
+          topic,
           timeout: SEND_TIMEOUT_MS,
         });
         const status = result && Number.isInteger(result.statusCode) ? result.statusCode : 201;

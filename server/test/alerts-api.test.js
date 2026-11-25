@@ -67,7 +67,7 @@ const device = (host = "fcm.googleapis.com", n = 1) => {
 function makePush(statusFor = () => 201) {
   const calls = [];
   return { enabled: true, publicKey: "PUBLIC-KEY-SAMPLE", calls, async send(sub, payload, opts) {
-    calls.push({ endpoint: sub.endpoint, payload, ttlSeconds: opts.ttlSeconds });
+    calls.push({ endpoint: sub.endpoint, payload, ttlSeconds: opts.ttlSeconds, topic: opts.topic });
     const s = statusFor(sub);
     return s < 300 ? { ok: true } : { ok: false, gone: s === 404 || s === 410, status: s };
   } };
@@ -83,7 +83,7 @@ beforeEach(() => {
   db.prepare("UPDATE users SET time_zone = NULL").run();
   app.set("rateCheckDeps", undefined);
   app.set("pingTestLimit", undefined);
-  for (const id of [ann, lee]) alertsRouter.limiter.resetKey(`user:${id}`);
+  for (const id of [ann, lee]) { alertsRouter.limiter.resetKey(`user:${id}`); alertsRouter.deviceLimiter.resetKey(`user:${id}`); }
 });
 
 const devices = (id) => db.prepare("SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY id").all(id).map((r) => r.endpoint);
@@ -254,6 +254,23 @@ test("the test notification: a failed delete of a dead device does not turn a de
   try { r = await A("POST", `${R}/test`, {}); } finally { db.prepare = realPrepare; console.error = keep; }
   assert.equal(r.status, 200);
   assert.deepEqual(r.body, { sent: true });
+});
+
+test("device registrations are limited to 30 an hour per user: the 31st is refused, another user is not affected", async () => {
+  const d = device();
+  for (let i = 0; i < 30; i += 1) assert.equal((await A("POST", `${R}/devices`, d)).status, 200, `registration ${i + 1}`);
+  const r = await A("POST", `${R}/devices`, d);
+  assert.equal(r.status, 429);
+  assert.deepEqual(r.body, { success: false, error: "Too many device registrations. Please try again in an hour." });
+  assert.equal((await L("POST", `${R}/devices`, device("fcm.googleapis.com", 5))).status, 200);
+});
+
+test("the test notification has its own topic, so it can never replace a real queued ping", async () => {
+  const push = makePush();
+  channelsOn(push, makeMail());
+  await A("POST", `${R}/devices`, device());
+  await A("POST", `${R}/test`, {});
+  assert.equal(push.calls[0].topic, "rate-drop-test");
 });
 
 test("the test notification: 503 when neither channel is available; three an hour per user", async () => {

@@ -7,7 +7,7 @@
 //            "Phone notifications aren't available yet. Choose email." / "Email notifications aren't available yet."
 //   POST   /api/profile/alerts/devices { endpoint, keys: { p256dh, auth } } -> { devices }   400 "That device can't get notifications."
 //            unless the endpoint is a push service's and the keys are a P-256 point (65 octets) and a 16-octet secret, base64url.
-//            An endpoint already stored moves to this user; at most 10 devices per user (the oldest goes).
+//            An endpoint already stored moves to this user; at most 10 devices per user (the oldest goes); 30 registrations an hour per user.
 //   DELETE /api/profile/alerts/devices { endpoint } -> { devices }   (only the caller's own)
 //   POST   /api/profile/alerts/test -> { sent }   a fixed test notification to the caller's own devices and/or email, per their channel;
 //            3 an hour per user; 503 "Notifications aren't available yet." when neither channel is available at all.
@@ -26,7 +26,9 @@ router.use(requireAuth);
 
 const MAX_DEVICES = 10;
 const TEST_TTL_SECONDS = 300;
+const TEST_TOPIC = "rate-drop-test";   // not the real ping's topic, so a test can never replace a real ping queued for an offline phone
 const TEST_LIMIT = 3;   // test notifications per signed-in user per hour; app.set("pingTestLimit", n) overrides it (tests)
+const DEVICE_LIMIT = 30;   // device registrations per signed-in user per hour
 const BAD_DEVICE = "That device can't get notifications.";
 const BAD_REQUEST = "Something in this request isn't valid.";
 const NO_PUSH = "Phone notifications aren't available yet. Choose email.";
@@ -45,6 +47,16 @@ const testLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => `user:${req.user.id}`,
   message: { success: false, error: "Too many test notifications. Please try again in an hour." },
+});
+
+// Each registration does a key check and three writes on the data volume, so it is limited per signed-in user too: 30 an hour.
+const deviceLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: DEVICE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.user.id}`,
+  message: { success: false, error: "Too many device registrations. Please try again in an hour." },
 });
 
 const channelsOf = (app) => {
@@ -107,7 +119,7 @@ function validKeys(keys) {
   }
 }
 
-router.post("/devices", (req, res) => {
+router.post("/devices", deviceLimiter, (req, res) => {
   const body = req.body;
   if (!body || typeof body !== "object" || !isPushEndpoint(body.endpoint) || !validKeys(body.keys)) return bad(res, BAD_DEVICE);
   try {
@@ -155,7 +167,7 @@ router.post("/test", someChannel, testLimiter, async (req, res) => {
       const subs = db.prepare("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ? ORDER BY id").all(req.user.id);
       for (const sub of subs) {
         let result;
-        try { result = await push.send(sub, TEST_TEXT, { ttlSeconds: TEST_TTL_SECONDS }); } catch (err) {
+        try { result = await push.send(sub, TEST_TEXT, { ttlSeconds: TEST_TTL_SECONDS, topic: TEST_TOPIC }); } catch (err) {
           console.error(`[pings] test send failed: ${errName(err)}`);
           result = { ok: false };
         }
@@ -176,4 +188,5 @@ router.post("/test", someChannel, testLimiter, async (req, res) => {
 });
 
 router.limiter = testLimiter;
+router.deviceLimiter = deviceLimiter;
 module.exports = router;

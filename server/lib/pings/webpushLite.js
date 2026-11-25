@@ -125,6 +125,11 @@ function createWebPush({ fetchImpl, now = Date.now, salt, ephemeralPrivateKey } 
     } finally {
       clearTimeout(timer);
     }
+    // the answer's body is never used, but an unread body keeps the connection held: drain it (or cancel it) before answering either way
+    try {
+      if (typeof response.arrayBuffer === "function") await response.arrayBuffer();
+      else if (response.body && typeof response.body.cancel === "function") await response.body.cancel();
+    } catch (_err) { /* nothing to do with a body that will not read */ }
     if (response.status >= 200 && response.status < 300) return { statusCode: response.status };
     throw Object.assign(new Error(`push service answered ${response.status}`), { statusCode: response.status });
   }
