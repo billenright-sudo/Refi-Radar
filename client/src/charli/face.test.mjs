@@ -4,12 +4,13 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { FACE, PORTRAIT, faceState } from "./face.mjs";
 
-test("Charlie's face talks while she speaks, thinks while she works, and listens otherwise", () => {
-  assert.equal(faceState({ speaking: true, working: false, paused: false }), "talking");
-  assert.equal(faceState({ speaking: true, working: true, paused: false }), "talking", "her voice wins over the thinking look");
-  assert.equal(faceState({ speaking: false, working: true, paused: false }), "thinking");
-  assert.equal(faceState({ speaking: false, working: false, paused: false }), "listening");
-  assert.equal(faceState({ speaking: true, working: true, paused: true }), "listening", "paused: she is still and quiet");
+test("Charlie's face talks only while her voice is heard, thinks while she works, and listens otherwise", () => {
+  assert.equal(faceState({ sounding: true, working: false, paused: false }), "talking");
+  assert.equal(faceState({ sounding: true, working: true, paused: false }), "talking", "her voice wins over the thinking look");
+  assert.equal(faceState({ sounding: false, working: true, paused: false }), "thinking");
+  assert.equal(faceState({ sounding: false, working: false, paused: false }), "listening");
+  assert.equal(faceState({ sounding: true, working: true, paused: true }), "listening", "paused: she is still and quiet");
+  assert.equal(faceState({ speaking: true }), "listening", "a line that is queued or still loading does not move her mouth");
   assert.equal(faceState({}), "listening");
 });
 
