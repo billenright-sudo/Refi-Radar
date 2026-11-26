@@ -30,6 +30,8 @@ const { setUpEmail, matchingOccasion } = require("./emailSetup");
 
 const { isGuidelineQuestion } = require("./guidelines");
 const { SCREEN_PAGES, BROKER_PAGES } = require("./navigation");
+const calc = require("../calculators");
+const calcLines = require("./calcLines");
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const hasRates = (rates) => !!rates && Number.isFinite(rates.rate_30yr_fixed);
@@ -435,6 +437,142 @@ function showScreenTool(args, ctx) {
     return { data: { error: "billing is not turned on", code: "billing_off" }, source: "(not available)" };
   }
   return { data: { page: a.page }, source: "(screen)", screen: { page: a.page } };
+}
+
+// ── Calculators (spec 4) ─────────────────────────────────────────────────────
+// paymentCalcTool, breakEvenCalcTool, blendedRateCalcTool and buydownCalcTool work out a figure with the page's own functions
+// (lib/calculators.js) and return the line to say at the TOP level (`say`), written by code (calcLines.js): the answer, the question
+// for the first missing figure, or the refusal line of the first figure outside its limits. They write nothing. The orchestrator ends
+// the turn with `say`; the model never sees the result. A bad or out-of-scope clientId is a plain error with no `say`.
+const calcObj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+const unsaid = (v) => v === undefined || v === null;
+// A figure as the model may pass it: a finite number, or a plain decimal string ("400000", "6.5", "-5"). Anything else ("400k", NaN)
+// is not read (null), so it is asked for, never guessed.
+const calcNum = (v) => (typeof v === "number" ? (Number.isFinite(v) ? v : null)
+  : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : null);
+const calcRate = (v) => {
+  const n = calcNum(v);
+  return n === null ? null : calc.roundRate(n);
+};
+// A figure the user said wins over the record; one said but unreadable is asked for (the record never stands in for it).
+const saidOr = (raw, read, fromRecord) => (unsaid(raw) ? (fromRecord === undefined ? null : fromRecord) : read(raw));
+const recordAmount = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+
+// The client's figures as the page's "Open in calculator" fills them in: today's balance and cautious value (the today block, as the
+// rate lenses price them), the rate on file, months left (30- and 15-year fixed with a close date only) and the score only when it is
+// a real one (never the 700 default). -> { row: null } with no clientId, { error } for a bad or unseen one, else { row, figures }.
+function calcClient(a, ctx) {
+  if (unsaid(a.clientId)) return { row: null };
+  const id = idOf(a.clientId);
+  if (!Number.isInteger(id) || id <= 0) return { error: fail("(invalid input)", "a valid clientId is required") };
+  const row = scopedClients(ctx).find((r) => r.id === id);
+  if (!row) return { error: fail("(not found)", "no such client in your book") };
+  const now = clockOf(ctx);
+  const view = upgradeAlerts.safeUpgradeViewsFor(ctx.db, [row], upgradeAlerts.safeCheckUpgrades(ctx.db, ctx.user.org_id, now), now).get(row.id);
+  const today = view ? view.today : undefined;
+  const priced = refi.pricedToday(refi.norm(row), today);
+  const rate = typeof row.current_rate === "number" && Number.isFinite(row.current_rate) && row.current_rate > 0 ? row.current_rate : null;
+  const months = today && Number.isInteger(today.monthsLeft) ? today.monthsLeft : null;
+  const score = row.credit_score_known === 1 && typeof row.credit_score === "number" && Number.isFinite(row.credit_score) ? row.credit_score : null;
+  return { row, figures: { balance: recordAmount(priced.loanBalance), value: recordAmount(priced.propertyValue), rate, months, score } };
+}
+
+// The stored FRED average for a 30- or 15-year term (a term not said is 30), the set every upgrade surface uses; null for any other
+// term, with no snapshot, one more than 10 days old, or no finite rate: then the rate is asked for.
+function todaysAverageRate(ctx, termYears) {
+  const term = termYears === null ? 30 : termYears;
+  const key = term === 30 ? "rate_30yr_fixed" : term === 15 ? "rate_15yr_fixed" : null;
+  if (!key) return null;
+  const rates = upgradeAlerts.safeUpgradeRates(ctx.db, clockOf(ctx));
+  const v = rates ? rates[key] : undefined;
+  return typeof v === "number" && Number.isFinite(v) ? calc.roundRate(v) : null;
+}
+
+// The tool's result for the shared function's `result`: the answer, else the first refusal line, else the first missing field's question.
+function calcReply(calculator, result, row, todaysAverage, lineOf) {
+  if (!result.ok) {
+    const refused = Object.keys(result.errors)[0];
+    if (refused) return { data: { calculator, refused }, source: "(calculator refusal)", say: result.errors[refused] };
+    const missing = result.missing[0];
+    return { data: { calculator, missing }, source: "(calculator question)", say: calcLines.questionFor(calculator, missing, { forClient: !!row }) };
+  }
+  return {
+    data: { calculator, result, client: row ? { id: row.id, name: row.name } : null, todaysAverage },
+    source: "calculator",
+    say: lineOf(result),
+  };
+}
+
+function paymentCalcTool(args, ctx) {
+  const a = calcObj(args);
+  const c = calcClient(a, ctx);
+  if (c.error) return c.error;
+  const f = c.figures || {};
+  const input = {
+    loanAmount: saidOr(a.loanAmount, calcNum, f.balance), rate: saidOr(a.rate, calcRate, f.rate), termYears: calcNum(a.termYears),
+    taxesYearly: calcNum(a.taxesYearly), insuranceYearly: calcNum(a.insuranceYearly), miMonthly: calcNum(a.miMonthly),
+    hoaMonthly: calcNum(a.hoaMonthly), homeValue: f.value === undefined ? null : f.value, creditScore: f.score === undefined ? null : f.score,
+  };
+  return calcReply("payment", calc.paymentCalc(input), c.row, false, calcLines.paymentLine);
+}
+
+function breakEvenCalcTool(args, ctx) {
+  const a = calcObj(args);
+  const c = calcClient(a, ctx);
+  if (c.error) return c.error;
+  const f = c.figures || {};
+  const newTermYears = calcNum(a.newTermYears);
+  let newRate = saidOr(a.newRate, calcRate);
+  let todaysAverage = false;
+  if (unsaid(a.newRate) && a.useTodaysAverage === true) {
+    newRate = todaysAverageRate(ctx, newTermYears);
+    todaysAverage = newRate !== null;
+  }
+  const input = {
+    currentBalance: saidOr(a.currentBalance, calcNum, f.balance), currentRate: saidOr(a.currentRate, calcRate, f.rate),
+    monthsLeft: saidOr(a.monthsLeft, calcNum, f.months), newRate, newTermYears, closingCosts: calcNum(a.closingCosts),
+    costsInLoan: a.costsInLoan === true, miNowMonthly: null, miNewMonthly: null,
+    homeValue: f.value === undefined ? null : f.value, creditScore: f.score === undefined ? null : f.score,
+  };
+  const name = c.row ? c.row.name : undefined;
+  return calcReply("breakEven", calc.breakEvenCalc(input), c.row, todaysAverage,
+    (r) => calcLines.breakEvenLine(r, { clientName: name, todaysAverage }));
+}
+
+function blendedRateCalcTool(args, ctx) {
+  const a = calcObj(args);
+  const c = calcClient(a, ctx);
+  if (c.error) return c.error;
+  const f = c.figures || {};
+  const second = calcObj(a.second), cashOut = calcObj(a.cashOut);
+  const cashOutTermYears = calcNum(cashOut.termYears);
+  let cashOutRate = saidOr(cashOut.rate, calcRate);
+  let todaysAverage = false;
+  if (unsaid(cashOut.rate) && (cashOut.useTodaysAverage === true || a.useTodaysAverage === true)) {
+    cashOutRate = todaysAverageRate(ctx, cashOutTermYears);
+    todaysAverage = cashOutRate !== null;
+  }
+  const input = {
+    firstBalance: saidOr(a.firstBalance, calcNum, f.balance), firstRate: saidOr(a.firstRate, calcRate, f.rate),
+    firstMonthsLeft: saidOr(a.firstMonthsLeft, calcNum, f.months), cashNeeded: saidOr(a.cashNeeded, calcNum),
+    secondKind: second.kind === "heloc" ? "heloc" : "second", secondRate: saidOr(second.rate, calcRate),
+    secondTermYears: calcNum(second.termYears), secondCosts: calcNum(second.costs),
+    cashOutRate, cashOutTermYears, cashOutCosts: calcNum(cashOut.costs), compareYears: calcNum(a.compareYears),
+  };
+  return calcReply("blendedRate", calc.blendedRateCalc(input), c.row, todaysAverage, (r) => calcLines.blendedLine(r, { todaysAverage }));
+}
+
+// No client: a buydown is a question about a new loan.
+function buydownCalcTool(args, ctx) {
+  void ctx;
+  const a = calcObj(args);
+  const rateWithPoints = saidOr(a.rateWithPoints, calcRate), points = saidOr(a.points, calcNum);
+  const kind = unsaid(a.kind) ? (rateWithPoints !== null || points !== null ? "points" : null) : a.kind;
+  const input = {
+    kind, loanAmount: saidOr(a.loanAmount, calcNum), noteRate: saidOr(a.noteRate, calcRate), termYears: calcNum(a.termYears),
+    rateWithPoints, points, pointsCost: null,
+  };
+  return calcReply("buydown", calc.buydownCalc(input), null, false, calcLines.buydownLine);
 }
 
 // Package a client's target rate (`targetRate` a number), or taking it off (null), for the user to confirm. It does NOT write:
@@ -1064,7 +1202,7 @@ const tools = Object.freeze(
   Object.assign(Object.create(null), {
     getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
     getCalendarTool, createEventTool, cancelEventTool, moveEventTool, draftEmailTool, lookUpLive, setTargetRateTool, targetRatesTool, showScreenTool,
-    upgradesTool, upcomingDatesTool,
+    upgradesTool, upcomingDatesTool, paymentCalcTool, breakEvenCalcTool, blendedRateCalcTool, buydownCalcTool,
   })
 );
 
@@ -1374,6 +1512,113 @@ const TOOL_SCHEMA = [
     },
   },
   {
+    name: "paymentCalcTool",
+    description:
+      "Work out a monthly mortgage payment (principal and interest, plus taxes, insurance, mortgage insurance and HOA when said). " +
+      "Call it with only the figures the user said, and the clientId from findClient for a client (the app fills in that client's " +
+      "balance, rate, value and score). Never fill a figure in, work one out or round one yourself: the app works out the answer and " +
+      "says it, or asks for what is missing. Changes nothing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        loanAmount: { type: "number", description: "The loan amount in dollars, as said." },
+        rate: { type: "number", description: "The interest rate in percent, as said (6.5 for six and a half)." },
+        termYears: { type: "number", description: "The term in years, only when said." },
+        taxesYearly: { type: "number", description: "Property taxes a year in dollars, only when said." },
+        insuranceYearly: { type: "number", description: "Homeowner's insurance a year in dollars, only when said." },
+        miMonthly: { type: "number", description: "Mortgage insurance a month in dollars, only when said." },
+        hoaMonthly: { type: "number", description: "HOA dues a month in dollars, only when said." },
+        clientId: { type: "integer", description: "The id of the client, from findClient: only when the user named a client." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "breakEvenCalcTool",
+    description:
+      "Work out a refinance break-even: the current loan against a new rate, the monthly saving and the month the closing costs are " +
+      "earned back. Call it with only the figures the user said, and the clientId from findClient for a client (the app fills in that " +
+      "client's balance, rate, months left, value and score). Never fill a figure in, work one out or round one yourself: the app works " +
+      "out the answer and says it, or asks for what is missing. Pass useTodaysAverage true instead of newRate only when the user says " +
+      "\"today's rate\" or \"today's average\" for the new rate. Changes nothing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        clientId: { type: "integer", description: "The id of the client, from findClient: only when the user named a client." },
+        currentBalance: { type: "number", description: "The current loan balance in dollars, as said." },
+        currentRate: { type: "number", description: "The current loan's rate in percent, as said." },
+        monthsLeft: { type: "number", description: "Months left on the current loan, as said." },
+        newRate: { type: "number", description: "The new rate in percent, as said." },
+        useTodaysAverage: { type: "boolean", description: "true only when the user said \"today's rate\" or \"today's average\" for the new rate." },
+        newTermYears: { type: "number", description: "The new loan's term in years, only when said." },
+        closingCosts: { type: "number", description: "Closing costs in dollars, only when said." },
+        costsInLoan: { type: "boolean", description: "true only when the user said the costs are rolled into the new loan." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "blendedRateCalcTool",
+    description:
+      "Compare keeping the first mortgage and adding a second (or a HELOC) with a cash-out refinance: the blended rate, both monthly " +
+      "payments and which costs less over the years compared. Call it with only the figures the user said, and the clientId from " +
+      "findClient for a client (the app fills in that client's first-mortgage balance, rate and months left). Never fill a figure in, " +
+      "work one out or round one yourself: the app works out the answer and says it, or asks for what is missing. Pass " +
+      "cashOut.useTodaysAverage true instead of cashOut.rate only when the user says \"today's rate\" or \"today's average\" for the " +
+      "cash-out rate. Changes nothing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        clientId: { type: "integer", description: "The id of the client, from findClient: only when the user named a client." },
+        firstBalance: { type: "number", description: "The first mortgage's balance in dollars, as said." },
+        firstRate: { type: "number", description: "The first mortgage's rate in percent, as said." },
+        firstMonthsLeft: { type: "number", description: "Months left on the first mortgage, as said." },
+        cashNeeded: { type: "number", description: "The cash needed in dollars, as said." },
+        second: {
+          type: "object",
+          description: "The second mortgage or HELOC.",
+          properties: {
+            kind: { type: "string", enum: ["second", "heloc"], description: "\"heloc\" for a HELOC, else \"second\"." },
+            rate: { type: "number", description: "The second's rate in percent, as said." },
+            termYears: { type: "number", description: "The second's term in years, only when said." },
+            costs: { type: "number", description: "The second's costs in dollars, only when said." },
+          },
+        },
+        cashOut: {
+          type: "object",
+          description: "The cash-out refinance.",
+          properties: {
+            rate: { type: "number", description: "The cash-out rate in percent, as said." },
+            useTodaysAverage: { type: "boolean", description: "true only when the user said \"today's rate\" or \"today's average\" for the cash-out rate." },
+            termYears: { type: "number", description: "The cash-out loan's term in years, only when said." },
+            costs: { type: "number", description: "The cash-out's closing costs in dollars, only when said." },
+          },
+        },
+        compareYears: { type: "number", description: "How many years to compare over, only when said." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "buydownCalcTool",
+    description:
+      "Work out a buydown on a new loan: a temporary 2-1, 3-2-1 or 1-0 buydown (each year's payment and what it costs), or points " +
+      "(the payment with and without, and the break-even month). Call it with only the figures the user said. Never fill a figure in, " +
+      "work one out or round one yourself: the app works out the answer and says it, or asks for what is missing. Changes nothing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["2-1", "3-2-1", "1-0", "points"], description: "Which buydown, as said." },
+        loanAmount: { type: "number", description: "The loan amount in dollars, as said." },
+        noteRate: { type: "number", description: "The note rate (the rate without points) in percent, as said." },
+        termYears: { type: "number", description: "The term in years, only when said." },
+        rateWithPoints: { type: "number", description: "Points only: the rate with points in percent, as said." },
+        points: { type: "number", description: "Points only: how many points, as said." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "lookUpLive",
     description:
       "Look something up on the web: a sports score or result, the news (headlines), the weather, or something else happening in " +
@@ -1398,5 +1643,5 @@ module.exports = {
   tools, TOOL_SCHEMA, getMarketUpdate, runSweepTool, findClient, explainTerm, addClientTool, logContactTool, callListTool, setCareerStageTool,
   getCalendarTool, createEventTool, cancelEventTool, moveEventTool, draftEmailTool, lookUpLive, LIVE_SOURCE_PREFIX, PAST_TIME, NO_SUCH_TIME, mentionsClient, namesClient,
   withTurnClientNames, clientsInText, buildOwnerIndex, clientsInIndex, callOutcome, callNotes, setTargetRateTool, targetRatesTool, showScreenTool, upgradesTool,
-  upcomingDatesTool,
+  upcomingDatesTool, paymentCalcTool, breakEvenCalcTool, blendedRateCalcTool, buydownCalcTool,
 };

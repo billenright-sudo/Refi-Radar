@@ -1227,7 +1227,8 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
     ["addClientTool", "callListTool", "cancelEventTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "moveEventTool", "runSweepTool", "setCareerStageTool",
-      "setTargetRateTool", "showScreenTool", "targetRatesTool", "upcomingDatesTool", "upgradesTool"]
+      "setTargetRateTool", "showScreenTool", "targetRatesTool", "upcomingDatesTool", "upgradesTool",
+      "blendedRateCalcTool", "breakEvenCalcTool", "buydownCalcTool", "paymentCalcTool"].sort()
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);
