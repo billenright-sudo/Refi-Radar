@@ -161,8 +161,52 @@ const breakEvenCalc = (input) => {
   return calcOk({ ...input, newTermYears, closingCosts, costsInLoan, miNowMonthly: miNow, miNewMonthly: miNew },
     { defaulted, estimated, warnings, notes, out });
 };
+
+const blendedRateCalc = (input) => {
+  const bad = checkFields(input, [
+    ["firstBalance", "amount", true], ["firstRate", "rate", true], ["firstMonthsLeft", "months", true],
+    ["cashNeeded", "cash", true], ["secondRate", "rate", true], ["secondTermYears", "term", false],
+    ["secondCosts", "optionalAmount", false], ["cashOutRate", "rate", true], ["cashOutTermYears", "term", false],
+    ["cashOutCosts", "optionalAmount", false], ["compareYears", "compareYears", false],
+  ]);
+  if (bad) return bad;
+  const { firstBalance, firstRate, firstMonthsLeft, cashNeeded, secondRate, cashOutRate } = input;
+  const defaulted = [], estimated = {}, notes = [], notEntered = [];
+  const secondKind = input.secondKind === "heloc" ? "heloc" : "second";
+  const secondTermYears = orDefault(input.secondTermYears, 30);
+  if (input.secondTermYears == null) defaulted.push("secondTermYears");
+  const cashOutTermYears = orDefault(input.cashOutTermYears, 30);
+  if (input.cashOutTermYears == null) defaulted.push("cashOutTermYears");
+  const compareYears = orDefault(input.compareYears, 5);
+  if (input.compareYears == null) defaulted.push("compareYears");
+  const secondCosts = orDefault(input.secondCosts, 0);
+  if (input.secondCosts == null) notEntered.push("secondCosts");
+  let cashOutCosts = input.cashOutCosts;
+  if (cashOutCosts == null) { cashOutCosts = roundDollars(estClosingCosts(firstBalance + cashNeeded)); estimated.cashOutCosts = true; }
+  const blendedRate = roundRate((firstBalance * firstRate + cashNeeded * secondRate) / (firstBalance + cashNeeded));
+  const firstPayment = roundCents(calcPayment(firstBalance, firstRate, firstMonthsLeft / 12));
+  const secondPayment = roundCents(calcPayment(cashNeeded, secondRate, secondTermYears));
+  const k = compareYears * 12;
+  const firstOwed = roundDollars(remainingBalance(firstBalance, firstRate, firstMonthsLeft / 12, k));
+  const secondOwed = roundDollars(remainingBalance(cashNeeded, secondRate, secondTermYears, k));
+  const keepPaid = roundDollars(firstPayment * Math.min(k, firstMonthsLeft) + secondPayment * Math.min(k, secondTermYears * 12));
+  const keep = { paid: keepPaid, firstOwed, secondOwed, cashCosts: secondCosts, total: roundDollars(keepPaid + firstOwed + secondOwed + secondCosts) };
+  const cashOutAmount = firstBalance + cashNeeded + cashOutCosts;
+  const cashOutPayment = roundCents(calcPayment(cashOutAmount, cashOutRate, cashOutTermYears));
+  const coPaid = roundDollars(cashOutPayment * Math.min(k, cashOutTermYears * 12));
+  const coOwed = roundDollars(remainingBalance(cashOutAmount, cashOutRate, cashOutTermYears, k));
+  const cashOut = { paid: coPaid, owed: coOwed, total: coPaid + coOwed };
+  const helocInterestOnly = secondKind === "heloc" ? roundCents(cashNeeded * secondRate / 1200) : null;
+  if (secondKind === "heloc") notes.push(CALC_LINES.helocInterestOnly(fmtCents(helocInterestOnly)), CALC_LINES.helocNote);
+  const out = { blendedRate, firstPayment, secondPayment, combinedPayment: roundCents(firstPayment + secondPayment), helocInterestOnly,
+    cashOutAmount, cashOutCosts, cashOutPayment, keep, cashOut,
+    cheaper: keep.total < cashOut.total ? "keep" : keep.total > cashOut.total ? "cashOut" : "same",
+    difference: Math.abs(keep.total - cashOut.total) };
+  return calcOk({ ...input, secondKind, secondTermYears, cashOutTermYears, compareYears, secondCosts, cashOutCosts },
+    { defaulted, estimated, notes, notEntered, out });
+};
 // ---- calculators: shared math end ----
 
 module.exports = {
-  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc,
+  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc, blendedRateCalc,
 };

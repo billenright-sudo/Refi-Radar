@@ -115,3 +115,28 @@ each("new-loan PMI estimate over the cautious value", (side) => {
   assert.equal(r.out.miNew, pmiOf(side)(740, 356000 / 400000 * 100, 30, 356000)); assert.deepEqual(r.estimated, { closingCosts: true, miNew: true });
   assert.equal(r.out.newPayment, side.roundCents(r.out.newPI + r.out.miNew));
 });
+
+const BLEND = { firstBalance: 300000, firstRate: 3, firstMonthsLeft: 300, cashNeeded: 100000, secondKind: "second",
+  secondRate: 8.5, secondTermYears: 20, secondCosts: 1500, cashOutRate: 6.75, cashOutTermYears: 30, compareYears: 7 };
+each("blended rate, spec 2.3", (side) => {
+  const r = side.blendedRateCalc(BLEND);
+  assert.equal(r.out.firstPayment, 1422.63); assert.equal(r.out.secondPayment, 867.82);
+  assert.equal(r.out.blendedRate, 4.375); assert.equal(r.out.combinedPayment, 2290.45);
+  assert.equal(r.out.cashOutCosts, 6500); assert.equal(r.out.cashOutAmount, 406500); assert.equal(r.out.cashOutPayment, 2636.55);
+  assert.deepEqual(r.out.keep, { paid: 192398, firstOwed: 237215, secondOwed: 81779, cashCosts: 1500, total: 512892 });
+  assert.deepEqual(r.out.cashOut, { paid: 221470, owed: 369051, total: 590521 });
+  assert.equal(r.out.cheaper, "keep"); assert.equal(r.out.difference, 77629);
+});
+each("HELOC: interest-only line and note", (side) => {
+  const r = side.blendedRateCalc({ ...BLEND, secondKind: "heloc" });
+  assert.equal(r.out.helocInterestOnly, 708.33);
+  assert.deepEqual(r.notes, ["Interest-only payment on the second: $708.33 a month", side.CALC_LINES.helocNote]);
+});
+each("blended edge cases", (side) => {
+  assert.deepEqual(side.blendedRateCalc({ ...BLEND, cashNeeded: 0 }).errors, { cashNeeded: "Enter the cash needed." });
+  const long = side.blendedRateCalc({ ...BLEND, compareYears: 40 });
+  assert.equal(long.out.keep.firstOwed, 0); assert.equal(long.out.keep.secondOwed, 0); assert.equal(long.out.cashOut.owed, 0);
+  assert.equal(long.out.keep.paid, Math.round(1422.63 * 300 + 867.82 * 240));
+  assert.equal(side.blendedRateCalc({ ...BLEND, secondRate: 2 }).ok, true);   // a second below the first: no warning
+  assert.deepEqual(side.blendedRateCalc({ ...BLEND, compareYears: null }).defaulted, ["compareYears"]);
+});
