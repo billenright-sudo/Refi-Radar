@@ -9178,3 +9178,51 @@ test("Upgrades: CHARLI_SYSTEM carries the upgrades rule exactly, once, as a para
   assert.equal(CHARLI_SYSTEM.split(RULE).length, 2);
   assert.ok(CHARLI_SYSTEM.split("\n\n").includes(RULE));
 });
+
+// ── Calculators (Task 12): the page, the calculator-topic phrases, and the prompt paragraph ─────────────────────────────────────
+
+test("Calculators: \"open the calculator\" opens the page with the code's line", async () => {
+  const client = fakeClient([useTool("showScreenTool", { page: "calculators" }), say("Opening the calculators.")]);
+  const r = await runTurn({ messages: userSays("open the calculator"), ctx: screensCtx, client });
+  assert.equal(r.reply, "Here's Calculators.");
+  assert.deepStrictEqual(r.screen, { page: "calculators" });
+  assert.equal(client.calls.length, 1);
+  // a loan officer too: the page is not a broker's
+  const lo = await runTurn({ messages: userSays("take me to Calculators"), ctx: loScreensCtx, client: fakeClient([useTool("showScreenTool", { page: "calculators" })]) });
+  assert.equal(lo.reply, "Here's Calculators.");
+  assert.deepStrictEqual(lo.screen, { page: "calculators" });
+});
+
+test("Calculators: a calculator question is no page request; a client's page opened on one is dropped", async () => {
+  for (const [said, id] of [["show me the break-even on the Chens", chensS], ["pull up the payment for Helen", helenS]]) {
+    const client = fakeClient([useTool("showScreenTool", { page: "client", clientId: id })]);
+    const r = await runTurn({ messages: userSays(said), ctx: screensCtx, client });
+    assert.equal(r.reply, NOTHING_CHANGED, said);
+    noScreen(r);
+  }
+});
+
+test("Calculators: a sentence that names a fixed page stays a page request, whatever calculator word it carries", async () => {
+  for (const [said, page, line] of [["open billing so I can update my payment method", "billing", "Here's Billing."],
+    ["take me to Rate Watch, I want to see where points are", "rates", "Here's Rate Watch."]]) {
+    const r = await runTurn({ messages: userSays(said), ctx: { ...screensCtx, billingOn: true }, client: fakeClient([useTool("showScreenTool", { page })]) });
+    assert.equal(r.reply, line, said);
+    assert.deepStrictEqual(r.screen, { page }, said);
+  }
+});
+
+test("Calculators: CHARLI_SYSTEM carries the calculator paragraph exactly, once, as a paragraph of its own", () => {
+  const CALCULATORS =
+    "Calculators: for a payment, refinance break-even, blended-rate (keep the first mortgage and add a second, or a cash-out) or " +
+    "buydown question, call paymentCalcTool, breakEvenCalcTool, blendedRateCalcTool or buydownCalcTool with only the figures the user " +
+    "said, and the clientId from findClient for a client. Never fill a figure in, work one out, round one or say one yourself: the app " +
+    "works out the answer and says it, or asks for what is missing. When the user says \"at today's rate\" or \"today's average\" for a " +
+    "break-even's new rate or a cash-out's rate, pass useTodaysAverage true instead of a rate. A line in your earlier messages that " +
+    "starts with \"On $\", \"Taking \" or \"Keeping the \" right after such a question was written by the app; it is true. To talk about " +
+    "one of its figures again, call the tool again. If more than one client matches, ask which one, as always.";
+  assert.equal(CHARLI_SYSTEM.split(CALCULATORS).length, 2);
+  const paragraphs = CHARLI_SYSTEM.split("\n\n");
+  const at = paragraphs.indexOf(CALCULATORS);
+  assert.ok(at > 0, "a paragraph of its own");
+  assert.ok(paragraphs[at - 1].startsWith("Screens: "), "right after the Screens paragraph");
+});

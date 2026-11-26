@@ -1530,3 +1530,10 @@ test("M7: Charlie's client shape sends no credit score when it is not known", ()
   assert.strictEqual(findClient({ query: "una unknown" }, ctx).data.matches[0].creditScore, null);
   assert.strictEqual(findClient({ query: "kay known" }, ctx).data.matches[0].creditScore, 700);
 });
+
+test("showScreenTool: Calculators opens for a loan officer too, and the schema names it", () => {
+  assert.deepStrictEqual(showScreenTool({ page: "calculators" }, lo1Ctx), { data: { page: "calculators" }, source: "(screen)", screen: { page: "calculators" } });
+  const def = TOOL_SCHEMA.find((t) => t.name === "showScreenTool");
+  assert.ok(def.input_schema.properties.page.enum.includes("calculators"));
+  assert.match(def.description, /calculators \(Calculators\)/);
+});

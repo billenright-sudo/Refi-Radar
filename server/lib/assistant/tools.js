@@ -1501,7 +1501,7 @@ const TOOL_SCHEMA = [
   {
     name: "showScreenTool",
     description:
-      "Open a page of the app on the user's screen: a client's page (page \"client\" with the clientId from findClient; never guess it), or one of the app's pages: home (Home), sweeps (Sweeps), clients (All Clients), rates (Rate Watch), add (Add Client), team (My Team), import (Import Clients), profile (Profile), billing (Billing). Use it only when the user asks to see, open, pull up, bring up or go to that client or page, never on your own. It changes nothing but what is on the screen. The app says what opened: say nothing about it yourself. If findClient returns more than one match, ask which one first. A list or figures (\"show me who's at their target\", \"show me today's rates\") is answered in words, not with this.",
+      "Open a page of the app on the user's screen: a client's page (page \"client\" with the clientId from findClient; never guess it), or one of the app's pages: home (Home), sweeps (Sweeps), clients (All Clients), rates (Rate Watch), calculators (Calculators), add (Add Client), team (My Team), import (Import Clients), profile (Profile), billing (Billing). Use it only when the user asks to see, open, pull up, bring up or go to that client or page, never on your own. It changes nothing but what is on the screen. The app says what opened: say nothing about it yourself. If findClient returns more than one match, ask which one first. A list or figures (\"show me who's at their target\", \"show me today's rates\") is answered in words, not with this.",
     input_schema: {
       type: "object",
       properties: {

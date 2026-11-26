@@ -4,7 +4,7 @@
 // the model. Pure: no I/O, no state, no figures.
 
 // Page ids are the client's nav.mjs ids. Broker-only pages are the ones a broker's own account sees.
-const SCREEN_PAGES = Object.freeze(["home", "sweeps", "clients", "rates", "add", "team", "import", "profile", "billing"]);
+const SCREEN_PAGES = Object.freeze(["home", "sweeps", "clients", "rates", "calculators", "add", "team", "import", "profile", "billing"]);
 const BROKER_PAGES = Object.freeze(new Set(["team", "import", "billing"]));
 
 const FORM_OPEN = "You've got a form open. Save or cancel it first, then ask me again.";
@@ -17,6 +17,7 @@ const PAGE_LINES = Object.freeze({
   sweeps: "Here's Sweeps.",
   clients: "Here's your client list.",
   rates: "Here's Rate Watch.",
+  calculators: "Here's Calculators.",
   add: "Here's the Add Client form.",
   team: "Here's your team.",
   import: "Here's Import Clients.",
@@ -24,7 +25,8 @@ const PAGE_LINES = Object.freeze({
   billing: "Here's Billing.",
 });
 
-const ON_SCREEN_PAGES = new Set(["home", "sweeps", "clients", "rates", "team", "import", "profile", "billing", "client", "form"]);
+// Calculators is no form for the form-open lock: nothing on it is saved, so Charlie may open another page from it.
+const ON_SCREEN_PAGES = new Set(["home", "sweeps", "clients", "rates", "calculators", "team", "import", "profile", "billing", "client", "form"]);
 
 // What the browser says is on screen: { page } or { page: "client", clientId }. Anything else is unknown (null).
 function cleanOnScreen(raw) {
@@ -90,9 +92,14 @@ const SOFT_RE = /^(?:show(?:\s+me)?|look\s+up)\b\s*(.*)$/;
 // (final review I2) an email, a draft, Gmail, Outlook, mail or a link is never a page, whatever the strong verb ("pull up Helen's
 // email" after a compose card is about the card)
 const NOT_A_PAGE_RE = /\b(?:e-?mails?|drafts?|gmail|outlook|mail|links?)\b/;
-const PAGE_NAME_RE = /^(?:the\s+)?(?:home(?:\s+page)?|dashboard|sweeps(?:\s+page)?|(?:all|my)\s+clients|client\s+list|rate\s+watch|rates\s+page|add\s+(?:a\s+)?client|my\s+team|import(?:\s+clients)?|(?:my\s+)?profile|billing(?:\s+page)?)$/;
+const PAGE_NAME_RE = /^(?:the\s+)?(?:home(?:\s+page)?|dashboard|sweeps(?:\s+page)?|(?:all|my)\s+clients|client\s+list|rate\s+watch|rates\s+page|calculators?(?:\s+page)?|add\s+(?:a\s+)?client|my\s+team|import(?:\s+clients)?|(?:my\s+)?profile|billing(?:\s+page)?)$/;
 const QUESTION_WORD_RE = /\b(?:what|who|whom|whose|when|where|why|how|which|is|are|does|do|did|can)\b/;
 const POSSESSIVE_RE = /['’]s\b|s['’](?:\s|$)/;
+// (Calculators, spec risk 4) a calculator topic: "show me the break-even on the Chens" or "pull up the payment for Helen" is a
+// calculator question, not a page, unless the sentence names a page of the app (PAGE_MENTION_RE: "open billing so I can update my
+// payment method", "take me to Rate Watch, I want to see where points are", "open the calculator").
+const CALC_TOPIC_RE = /\b(?:break[\s-]?even|payments?|blended|blend|buy[\s-]?downs?|points|cash[\s-]?out)\b/;
+const calcTopicOnly = (rest) => CALC_TOPIC_RE.test(rest) && !/\bcalculators?\b/.test(rest) && !PAGE_MENTION_RE.test(rest);
 
 // (final review I1) "'s page" / "'s file" and the plural "s' page" / "s' file" go with the rest ("show me the Chens' file" -> "the chens")
 const TRAILING_RE = /(?:'s\s+(?:page|file)|(?<=s)'\s+(?:page|file)|\s+(?:page|file|please|for\s+me))$|[\s.?!,;:]+$/;
@@ -126,6 +133,7 @@ function isNavigationRequest(text, namesClient) {
     const rest = stripTrailing(strong[2]);
     if (NO_OBJECT_VERBS.has(verb)) return true;
     if (!rest) return false;
+    if (calcTopicOnly(rest)) return false;
     return !NOT_A_PAGE_RE.test(rest);
   }
   const split = splitFormOf(s);
@@ -134,6 +142,7 @@ function isNavigationRequest(text, namesClient) {
   const soft = SOFT_RE.exec(s);
   if (soft) {
     const rest = soft[1];
+    if (calcTopicOnly(rest)) return false;
     // A page name, allowing a trailing "please" / "for me", and "page" after a page's name ("show me Rate Watch page"; "the rates
     // page" is a page name with it, "the rates" is no page without it).
     const pageish = stripTrailing(rest, /(?:\s+(?:please|for\s+me))$|[\s.?!,;:]+$/);
@@ -191,7 +200,7 @@ const CLAIM_RE = new RegExp(
   "i"
 );
 const CLAIM_PAGE_WORD = "(?:page|screen|file|profile|list)";
-const CLAIM_PAGE_NAME = "(?:rate\\s+watch|sweeps|billing|import\\s+clients|add\\s+client|home\\s+page)";
+const CLAIM_PAGE_NAME = "(?:rate\\s+watch|sweeps|billing|import\\s+clients|add\\s+client|home\\s+page|calculators?)";
 const CLAIM_NAME_WORD = "[\\w&'.-]+";
 const CLAIM_OPENED_RE = new RegExp(
   "\\bopen(?:ed|ing)(?:\\s+up)?\\s+(?:(?:it|them|him)\\b" +
@@ -237,7 +246,7 @@ function claimsScreenOpened(text, namesClient) {
 // A request that targets a screen (Ruling R5): it names one of the app's pages, says page / file / screen, or names a client
 // (`namesClient`, when given). "pull up Helen Brandt", "take me to Rate Watch", "bring up the Chen file"; not "pull up today's rates"
 // or "pull up my top opportunities", which are answered in words.
-const PAGE_MENTION_RE = /\b(?:home|dashboard|sweeps|(?:all|my)\s+clients|client\s+list|rate\s+watch|rates\s+page|add\s+(?:a\s+)?client|my\s+team|import(?:\s+clients)?|profile|billing)\b/;
+const PAGE_MENTION_RE = /\b(?:home|dashboard|sweeps|(?:all|my)\s+clients|client\s+list|rate\s+watch|rates\s+page|calculators?|add\s+(?:a\s+)?client|my\s+team|import(?:\s+clients)?|profile|billing)\b/;
 const SCREEN_WORD_RE = /\b(?:pages?|files?|screens?)\b/;
 // (final review I1, my call) the split form with a person's pronoun, "pull her up", "bring them up", is a client's page: a person is
 // a client here. "Pull it up" / "pull that up" are not (it may be the email card or a figure).

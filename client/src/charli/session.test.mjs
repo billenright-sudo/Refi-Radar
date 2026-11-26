@@ -1792,6 +1792,7 @@ test("screens: the client's lines match the server's navigation.js", { skip: !ex
   assert.equal(FORM_OPEN, server.FORM_OPEN);
   assert.equal(COULDNT_OPEN, "I couldn't open that page.");
   assert.equal(FORM_OPEN, "You've got a form open. Save or cancel it first, then ask me again.");
+  assert.ok(server.SCREEN_PAGES.includes("calculators"), "the Calculators page is one the server may send")
   // every page the server may send reaches the App as { page }
   for (const page of server.SCREEN_PAGES) {
     const { session, shown } = screenSetup({ replies: [screenReply("Here's that page.", { page })] });

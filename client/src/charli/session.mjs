@@ -208,10 +208,10 @@ function cleanCompose(compose) {
   return { to, subject, body, links: kept, ...composeMarkFields(compose) };
 }
 
-// A page Charli was asked to open (/turn's `screen`): { page } of the nine sidebar ids (nav.mjs; keep in sync with SCREEN_PAGES in
+// A page Charli was asked to open (/turn's `screen`): { page } of the ten sidebar ids (nav.mjs; keep in sync with SCREEN_PAGES in
 // server/lib/assistant/navigation.js) or { page: "client", clientId } with a positive integer id, checked as a compose card is.
 // -> a fresh object with only those fields, or null (nothing opens).
-const SCREEN_PAGES = new Set(["home", "sweeps", "clients", "rates", "add", "team", "import", "profile", "billing"]);
+const SCREEN_PAGES = new Set(["home", "sweeps", "clients", "rates", "calculators", "add", "team", "import", "profile", "billing"]);
 function cleanScreen(screen) {
   if (!screen || typeof screen !== "object" || Array.isArray(screen)) return null;
   const { page, clientId } = screen;

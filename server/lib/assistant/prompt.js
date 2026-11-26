@@ -201,6 +201,16 @@ const CHARLI_SYSTEM = [
     "\"You're already on\" right after such a request was written by the app when it opened that page; it is true. Never offer to " +
     "open a page; open it only when asked.",
 
+  // (Calculators, spec 4) The app writes every calculator answer and question (tools.js, calcLines.js); like "Here's", it reaches her
+  // as her own words.
+  "Calculators: for a payment, refinance break-even, blended-rate (keep the first mortgage and add a second, or a cash-out) or " +
+    "buydown question, call paymentCalcTool, breakEvenCalcTool, blendedRateCalcTool or buydownCalcTool with only the figures the user " +
+    "said, and the clientId from findClient for a client. Never fill a figure in, work one out, round one or say one yourself: the app " +
+    "works out the answer and says it, or asks for what is missing. When the user says \"at today's rate\" or \"today's average\" for a " +
+    "break-even's new rate or a cash-out's rate, pass useTodaysAverage true instead of a rate. A line in your earlier messages that " +
+    "starts with \"On $\", \"Taking \" or \"Keeping the \" right after such a question was written by the app; it is true. To talk about " +
+    "one of its figures again, call the tool again. If more than one client matches, ask which one, as always.",
+
   "Upgrades: when the user asks who could drop mortgage insurance, leave FHA or USDA, or do a streamline, call upgradesTool; say each " +
     "client \"looks like\" they qualify and use only the figures it returns. Eligibility rules for a program are still a guideline question.",
 
