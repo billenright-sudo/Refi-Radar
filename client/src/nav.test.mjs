@@ -19,7 +19,7 @@ test("Home uses the dashboard icon, and there is no separate Overview item", () 
 
 test("the old Overview view lands on Home; every other view is kept", () => {
   assert.equal(viewFor("overview"), "home");
-  for (const view of ["home", "sweeps", "clients", "rates", "add", "profile", "team", "import", "billing", "client-detail", "edit", "lo-portal"]) {
+  for (const view of ["home", "sweeps", "clients", "rates", "calculators", "add", "profile", "team", "import", "billing", "client-detail", "edit", "lo-portal"]) {
     assert.equal(viewFor(view), view);
   }
 });
@@ -41,6 +41,7 @@ test("the loan officer's items are in this order: Home (the old Overview) first"
       ["sweeps", "Sweeps"],
       ["clients", "All Clients"],
       ["rates", "Rate Watch"],
+      ["calculators", "Calculators"],
       ["add", "Add Client"],
       ["profile", "Profile"],
     ]
@@ -110,4 +111,13 @@ test("with billing on, a broker gets Billing before Profile; nobody else does", 
   assert.ok(!ids(navItems("lo", { billing: true })).includes("billing"));
   const { broker } = navGroups("broker", { billing: true });
   assert.ok(ids(broker).includes("billing"));
+});
+
+test("Calculators follows Rate Watch for a loan officer and a broker, and the view id is kept", () => {
+  for (const role of ["lo", "broker"]) {
+    const list = ids(navItems(role));
+    assert.equal(list.indexOf("calculators"), list.indexOf("rates") + 1, role);
+    assert.deepEqual(navItems(role).find((i) => i.id === "calculators"), { id: "calculators", label: "Calculators", icon: "calculator" });
+  }
+  assert.equal(viewFor("calculators"), "calculators");
 });

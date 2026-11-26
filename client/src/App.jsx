@@ -33,6 +33,7 @@ import {
   WINDOW_DAYS, MAX_CHILDREN, CONTACT_OPTIONS, MONTH_NAMES, EMPTY_CHILD, occasionsFor, upcomingDates, occasionText, localToday, dayLabel, awayLabel,
   personalRows, personalToForm, formToPersonal, daysInMonth,
 } from "./personal.mjs";
+import CalculatorsView from "./CalculatorsView.jsx";
 import { COMPOSE_LINKS, isEmailed, emailRequest, sentRequest, refusalLine, safeComposeLinks } from "./emails.mjs";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     dashboard: "M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z",
     users:     "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
     trending:  "M23 6l-9.5 9.5-5-5L1 18M17 6h6v6",
+    calculator: "M4 2h16v20H4zM8 6h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M8 19h2M12 19h2M16 15v4",
     plus:      "M12 5v14M5 12h14",
     refresh:   "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
     arrow:     "M19 12H5M12 5l-7 7 7 7",
@@ -3469,6 +3471,7 @@ export default function App() {
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} onProfile={handleProfileTaken} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} clients={clients} />}
+            {view === "calculators"   && <CalculatorsView rates={rates} prefill={null} onClearPrefill={() => {}} ui={{ C, card, mono, Icon, inputStyle, btnPrimary, btnGhost, ph }} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}
             {view === "client-detail" && selected && <ClientDetail key={selected.id} client={selected} rates={rates} setView={setView} onDelete={handleDeleteClient} onUpdated={handleClientUpdated} />}
             {view === "edit"          && selected && <EditClient client={selected} setClients={setClients} setSelected={setSelected} setView={setView} />}
