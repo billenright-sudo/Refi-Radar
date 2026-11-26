@@ -62,10 +62,12 @@ const FIND_CLIENT_MAX_MATCHES = 5;
 const SIDE_EFFECT_TOOLS = new Set([
   "addClientTool", "logContactTool", "callListTool", "setCareerStageTool", "createEventTool", "cancelEventTool", "moveEventTool", "setTargetRateTool",
 ]);
+// The calculators (tools.js): each returns a code-written line (`say`) that ends the turn.
+const CALC_TOOLS = new Set(["paymentCalcTool", "breakEvenCalcTool", "blendedRateCalcTool", "buydownCalcTool"]);
 // On the last allowed model call these are the only tools run, because nothing else's result could be used: a change to
-// confirm, an email to set up and a screen to open (their results end the turn in code, so no later model call is needed to
-// narrate them).
-const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool", "showScreenTool"]);
+// confirm, an email to set up, a screen to open and a calculator line (read-only, nothing to confirm): their results end the turn
+// in code, so no later model call is needed to narrate them.
+const LAST_CALL_TOOLS = new Set([...SIDE_EFFECT_TOOLS, "draftEmailTool", "showScreenTool", ...CALC_TOOLS]);
 
 // Charlie's own model setting. CLAUDE_MODEL stays the setting of routes/rates.js (and index.js's log line) and does not move her.
 // Read per call so the env can change.
@@ -1896,8 +1898,13 @@ function trimChange(data) {
   return out;
 }
 
+// A calculator's result never reaches the model: the app says the answer (or its question) itself. Only an error (a client that is
+// not in the book, a bad id) goes back, as any read's would.
+const trimCalc = (data) => (data && typeof data === "object" && data.error ? { error: data.error } : { answeredByApp: true });
+
 const forModel = (name, data) =>
-  name === "cancelEventTool" || name === "moveEventTool" ? trimChange(data)
+  CALC_TOOLS.has(name) ? trimCalc(data)
+  : name === "cancelEventTool" || name === "moveEventTool" ? trimChange(data)
     : name === "runSweepTool" ? trimSweep(data)
     : name === "findClient" ? trimFindClient(data)
       : name === "getCalendarTool" ? trimCalendar(data)
@@ -1914,9 +1921,9 @@ const cleanName = (n) => (typeof n === "string" ? n.replace(/\s+/g, " ").trim() 
 
 // Runs one tool and shapes what goes back to the model. A throwing tool never leaks its error
 // text to the model: it becomes an is_error result the model can apologise for (a tool that returns a Promise, as the Google
-// ones do, is awaited, and one that rejects is the same). Returns { source, sideEffect?, compose?, screen?, data, toolResult };
-// `compose` is the email draftEmailTool set up and `screen` the page showScreenTool named, each carried to the caller and never
-// shown to the model.
+// ones do, is awaited, and one that rejects is the same). Returns { source, sideEffect?, compose?, screen?, say?, data, toolResult };
+// `compose` is the email draftEmailTool set up, `screen` the page showScreenTool named and `say` a calculator's code-written line,
+// each carried to the caller and never shown to the model.
 async function runTool(block, ctx) {
   try {
     const result = await tools[block.name](block.input && typeof block.input === "object" ? block.input : {}, ctx);
@@ -1924,6 +1931,7 @@ async function runTool(block, ctx) {
     let { sideEffect } = result;
     const compose = result.compose && typeof result.compose === "object" ? result.compose : undefined;
     const screen = result.screen && typeof result.screen === "object" ? result.screen : undefined;
+    const say = typeof result.say === "string" && result.say.trim() !== "" ? result.say : undefined;
     if (sideEffect && sideEffect.type === "addClient") {
       // The saved name must be the one the read-back speaks; no usable name means nothing to confirm.
       const fields = sideEffect.fields || {};
@@ -1935,7 +1943,7 @@ async function runTool(block, ctx) {
       sideEffect = { ...sideEffect, fields: { ...fields, name } };
     }
     return {
-      source: result.source, sideEffect, compose, screen, data: result.data,
+      source: result.source, sideEffect, compose, screen, say, data: result.data,
       toolResult: toolResultBlock(block.id, result.source, forModel(block.name, result.data)),
     };
   } catch (_err) {
@@ -3072,6 +3080,8 @@ function calendarChangeBusiness(messages, userText, changeToolCalled = false) {
 //   screen:     on a page request, the page showScreenTool named ({ page } or { page: "client", clientId }) for the browser to
 //               open, beside the code-written "Here's …" line; never on any other turn, never with the already-there line, and never
 //               without ctx.screensSupported
+//   calculator: on a turn a calculator tool ended, its name; the reply is that tool's code-written line (no sideEffect, compose,
+//               screen or details beside it)
 async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs = DEFAULT_TURN_DEADLINE_MS, minCallMs = MIN_CALL_MS } = {}) {
   if (!Array.isArray(messages)) throw new TypeError("runTurn: messages must be an array");
   if (!client || !client.messages || typeof client.messages.create !== "function") {
@@ -3389,12 +3399,15 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
     // The tools only package a change; here it is handed up for confirmation, not acted on. An email set up by draftEmailTool
     // counts as a change for the one-at-a-time rule (it changes what is on the user's screen), though it has nothing to confirm:
     // it ends the turn at once with a code-authored reply and its compose links, and the model never narrates it. A screen to open
-    // counts the same way and ends the turn the same way, with its own code-written line.
-    const changes = outs.filter((o) => o.sideEffect || o.compose || o.screen);
+    // counts the same way and ends the turn the same way, with its own code-written line. So does the fourth kind, a calculator line:
+    // read-only, nothing to confirm, said as the tool wrote it (the model's text in the same response is dropped), with no page or
+    // action gate since it changes nothing.
+    const changes = outs.filter((o) => o.sideEffect || o.compose || o.screen || o.say);
     if (changes.length > 1) return finish(ONE_AT_A_TIME);
     if (changes.length === 1) {
       const change = changes[0];
       const cited = isCitation(change.source) ? [change.source] : [];
+      if (change.say) return { ...finish(change.say, cited), calculator: runBlocks[outs.indexOf(change)].name };
       if (change.screen) {
         // the stored client name, from the tool's own data; the page already open is said so, and nothing is handed up
         const name = cleanName(change.data && change.data.name);

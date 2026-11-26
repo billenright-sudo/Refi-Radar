@@ -2632,3 +2632,13 @@ test("turn screens: a greeting-style chat turn with onScreen is unchanged", asyn
   assert.equal(r.data.reply, "Hello there.");
   assert.equal("screen" in r.data, false);
 });
+
+// Calculators (Task 11): a calculator turn comes back as { reply, sources, turnId } and nothing else: the route is unchanged.
+test("turn: a calculator line comes back with only reply, sources and turnId", async () => {
+  setClient(fakeClient([useTool("paymentCalcTool", { loanAmount: 400000, rate: 6.5 })]));
+  const r = await as(ann)("POST", "/api/assistant/turn", { messages: userMsgs("what's the payment on 400k at 6.5?"), rates: LIVE });
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual(Object.keys(r.data).sort(), ["reply", "sources", "turnId"]);
+  assert.equal(r.data.reply, "On $400,000 at 6.5% over 30 years, principal and interest is $2,528.27 a month, before taxes, insurance and any HOA.");
+  assert.deepStrictEqual(r.data.sources, ["calculator"]);
+});
