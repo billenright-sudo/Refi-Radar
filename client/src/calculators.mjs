@@ -101,10 +101,11 @@ const paymentCalc = (input) => {
   const termYears = orDefault(input.termYears, 30);
   if (input.termYears == null) defaulted.push("termYears");
   const taxesYearly = orDefault(input.taxesYearly, 0), insuranceYearly = orDefault(input.insuranceYearly, 0);
-  const hoaMonthly = orDefault(input.hoaMonthly, 0);
+  const rate = roundRate(input.rate);
+  const hoaMonthly = roundCents(orDefault(input.hoaMonthly, 0));
   if (input.taxesYearly == null) notEntered.push("taxes");
   if (input.insuranceYearly == null) notEntered.push("insurance");
-  let mi = orDefault(input.miMonthly, 0);
+  let mi = roundCents(orDefault(input.miMonthly, 0));
   if (input.miMonthly == null) {
     const ltv = input.homeValue != null ? input.loanAmount / input.homeValue * 100 : null;
     if (ltv !== null && input.creditScore != null && ltv > 80) {
@@ -113,10 +114,10 @@ const paymentCalc = (input) => {
     } else notEntered.push("mi");
   }
   if (input.hoaMonthly == null) notEntered.push("hoa");
-  const pi = roundCents(calcPayment(input.loanAmount, input.rate, termYears));
+  const pi = roundCents(calcPayment(input.loanAmount, rate, termYears));
   const taxes = roundCents(taxesYearly / 12), insurance = roundCents(insuranceYearly / 12);
   const out = { pi, taxes, insurance, mi, hoa: hoaMonthly, total: roundCents(pi + taxes + insurance + mi + hoaMonthly) };
-  return calcOk({ ...input, termYears, taxesYearly, insuranceYearly, miMonthly: mi, hoaMonthly }, { defaulted, estimated, notEntered, out });
+  return calcOk({ ...input, rate, termYears, taxesYearly, insuranceYearly, miMonthly: mi, hoaMonthly }, { defaulted, estimated, notEntered, out });
 };
 
 const breakEvenCalc = (input) => {
@@ -127,20 +128,24 @@ const breakEvenCalc = (input) => {
     ["homeValue", "amount", false], ["creditScore", "score", false],
   ]);
   if (bad) return bad;
-  const { currentBalance, currentRate, monthsLeft, newRate } = input;
-  const defaulted = [], estimated = {}, warnings = [], notes = [];
+  const { currentBalance, monthsLeft } = input;
+  const currentRate = roundRate(input.currentRate), newRate = roundRate(input.newRate);
+  const defaulted = [], estimated = {}, warnings = [], notes = [], notEntered = [];
   const newTermYears = orDefault(input.newTermYears, 30);
   if (input.newTermYears == null) defaulted.push("newTermYears");
   let closingCosts = input.closingCosts;
   if (closingCosts == null) { closingCosts = roundDollars(estClosingCosts(currentBalance)); estimated.closingCosts = true; }
   const costsInLoan = input.costsInLoan === true;
   const newAmount = currentBalance + (costsInLoan ? closingCosts : 0);
-  const miNow = orDefault(input.miNowMonthly, 0);
-  let miNew = orDefault(input.miNewMonthly, 0);
+  const miNow = roundCents(orDefault(input.miNowMonthly, 0));
+  let miNew = roundCents(orDefault(input.miNewMonthly, 0));
+  if (input.miNowMonthly == null) notEntered.push("miNow");
+  let miNewEstimated = false;
   if (input.miNewMonthly == null && input.homeValue != null && input.creditScore != null) {
     const ltv = newAmount / input.homeValue * 100;
-    if (ltv > 80) { miNew = pmiMonthly(input.creditScore, ltv, newTermYears, newAmount); estimated.miNew = true; }
+    if (ltv > 80) { miNew = pmiMonthly(input.creditScore, ltv, newTermYears, newAmount); estimated.miNew = true; miNewEstimated = true; }
   }
+  if (input.miNewMonthly == null && !miNewEstimated) notEntered.push("miNew");
   const currentPI = roundCents(calcPayment(currentBalance, currentRate, monthsLeft / 12));
   const newPI = roundCents(calcPayment(newAmount, newRate, newTermYears));
   const currentPayment = roundCents(currentPI + miNow), newPayment = roundCents(newPI + miNew);
@@ -156,8 +161,8 @@ const breakEvenCalc = (input) => {
   if (closingCosts === 0) notes.push(CALC_LINES.noCosts);
   const out = { currentPI, miNow, currentPayment, newAmount, newPI, miNew, newPayment, monthlySavings, breakEvenMonth,
     closingCosts, costsInLoan, currentTotal, newTotal, totalDifference };
-  return calcOk({ ...input, newTermYears, closingCosts, costsInLoan, miNowMonthly: miNow, miNewMonthly: miNew },
-    { defaulted, estimated, warnings, notes, out });
+  return calcOk({ ...input, currentRate, newRate, newTermYears, closingCosts, costsInLoan, miNowMonthly: miNow, miNewMonthly: miNew },
+    { defaulted, estimated, warnings, notes, notEntered, out });
 };
 
 const blendedRateCalc = (input) => {
@@ -168,7 +173,8 @@ const blendedRateCalc = (input) => {
     ["cashOutCosts", "optionalAmount", false], ["compareYears", "compareYears", false],
   ]);
   if (bad) return bad;
-  const { firstBalance, firstRate, firstMonthsLeft, cashNeeded, secondRate, cashOutRate } = input;
+  const { firstBalance, firstMonthsLeft, cashNeeded } = input;
+  const firstRate = roundRate(input.firstRate), secondRate = roundRate(input.secondRate), cashOutRate = roundRate(input.cashOutRate);
   const defaulted = [], estimated = {}, notes = [], notEntered = [];
   const secondKind = input.secondKind === "heloc" ? "heloc" : "second";
   const secondTermYears = orDefault(input.secondTermYears, 30);
@@ -200,7 +206,7 @@ const blendedRateCalc = (input) => {
     cashOutAmount, cashOutCosts, cashOutPayment, keep, cashOut,
     cheaper: keep.total < cashOut.total ? "keep" : keep.total > cashOut.total ? "cashOut" : "same",
     difference: Math.abs(keep.total - cashOut.total) };
-  return calcOk({ ...input, secondKind, secondTermYears, cashOutTermYears, compareYears, secondCosts, cashOutCosts },
+  return calcOk({ ...input, firstRate, secondRate, cashOutRate, secondKind, secondTermYears, cashOutTermYears, compareYears, secondCosts, cashOutCosts },
     { defaulted, estimated, notes, notEntered, out });
 };
 
@@ -218,7 +224,8 @@ const buydownCalc = (input) => {
     const refusal = bad || { ok: false, errors: {}, missing: [] };
     return noPoints ? { ...refusal, missing: [...refusal.missing, "points"] } : refusal;
   }
-  const { loanAmount, noteRate } = input;
+  const { loanAmount } = input;
+  const noteRate = roundRate(input.noteRate);
   const defaulted = [], warnings = [], notes = [];
   const termYears = orDefault(input.termYears, 30);
   if (input.termYears == null) defaulted.push("termYears");
@@ -233,10 +240,11 @@ const buydownCalc = (input) => {
       return { year: i + 1, rate, payment: roundCents(calcPayment(loanAmount, rate, termYears)) };
     });
     const subsidy = roundCents(years.reduce((sum, y) => sum + 12 * (notePayment - y.payment), 0));
-    return calcOk({ ...input, termYears }, { defaulted, out: { kind, notePayment, years, subsidy } });
+    return calcOk({ ...input, noteRate, termYears }, { defaulted, out: { kind, notePayment, years, subsidy } });
   }
-  const { rateWithPoints } = input;
+  const rateWithPoints = roundRate(input.rateWithPoints);
   if (rateWithPoints >= noteRate) return { ok: false, errors: { rateWithPoints: CALC_LINES.pointsNotLower }, missing: [] };
+  if (input.points == null && input.pointsCost / loanAmount * 100 > CALC_LIMITS.pointsMax) return { ok: false, errors: { pointsCost: CALC_LINES.points }, missing: [] };
   const cost = input.points != null ? roundCents(loanAmount * input.points / 100) : input.pointsCost;
   const points = input.points != null ? input.points : roundRate(cost / loanAmount * 100);
   const paymentWith = roundCents(calcPayment(loanAmount, rateWithPoints, termYears));
@@ -246,7 +254,7 @@ const buydownCalc = (input) => {
   if (cost === 0) notes.push(CALC_LINES.noCost);
   if (cost > 0 && (!earns || breakEvenMonth > termYears * 12)) warnings.push(CALC_LINES.pointsNever);
   const fullTermSavings = roundDollars(monthlySavings * termYears * 12 - cost);
-  return calcOk({ ...input, termYears }, { defaulted, warnings, notes,
+  return calcOk({ ...input, noteRate, rateWithPoints, termYears }, { defaulted, warnings, notes,
     out: { kind, cost, points, paymentWithout: notePayment, paymentWith, monthlySavings, breakEvenMonth, fullTermSavings } });
 };
 // ---- calculators: shared math end ----

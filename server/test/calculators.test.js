@@ -232,3 +232,39 @@ test("500 input sets give identical results from both files", async () => {
     assert.ok(seen[name][0] > seen[name][1], `${name}: no result seen`);
   }
 });
+
+// ---- fix round 1 ----
+each("fix 1: rates are rounded to three decimals inside the calculators", (side) => {
+  const a = side.paymentCalc({ loanAmount: 400000, rate: 6.12345 }), b = side.paymentCalc({ loanAmount: 400000, rate: 6.123 });
+  assert.deepEqual(a.out, b.out); assert.equal(a.inputs.rate, 6.123);
+  assert.equal(side.paymentCalc({ loanAmount: 400000, rate: 1e-12, termYears: 30 }).out.pi, 1111.11);
+  const y = side.buydownCalc({ kind: "3-2-1", loanAmount: 400000, noteRate: 6.1234 });
+  assert.equal(y.inputs.noteRate, 6.123); assert.deepEqual(y.out.years.map((v) => v.rate), [3.123, 4.123, 5.123]);
+  assert.equal(y.out.notePayment, side.paymentCalc({ loanAmount: 400000, rate: 6.123 }).out.pi);
+  const be = side.breakEvenCalc({ currentBalance: 350000, currentRate: 7.2512, monthsLeft: 324, newRate: 6.2499 });
+  assert.equal(be.inputs.currentRate, 7.251); assert.equal(be.inputs.newRate, 6.25);
+  const bl = side.blendedRateCalc({ firstBalance: 300000, firstRate: 3.0004, firstMonthsLeft: 300, cashNeeded: 100000, secondRate: 8.5004, cashOutRate: 6.7504 });
+  assert.deepEqual([bl.inputs.firstRate, bl.inputs.secondRate, bl.inputs.cashOutRate], [3, 8.5, 6.75]);
+  const pt = side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7.0004, rateWithPoints: 6.5004, points: 1.5 });
+  assert.deepEqual([pt.inputs.noteRate, pt.inputs.rateWithPoints], [7, 6.5]);
+});
+each("fix 2: points implied by a typed cost are held to the points limit", (side) => {
+  const bad = side.buydownCalc({ kind: "points", loanAmount: 100000, noteRate: 7, rateWithPoints: 6.5, pointsCost: 50000000 });
+  assert.equal(bad.ok, false); assert.deepEqual(bad.errors, { pointsCost: side.CALC_LINES.points });
+  const good = side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, pointsCost: 6000 });
+  assert.equal(good.out.points, 1.5); assert.equal(good.out.breakEvenMonth, 46);
+});
+each("fix 3: typed monthly amounts are cent-rounded before they are summed", (side) => {
+  const r = side.paymentCalc({ loanAmount: 400000, rate: 6.5, taxesYearly: 4800, insuranceYearly: 1800, miMonthly: 126.666, hoaMonthly: 50.004 });
+  assert.equal(r.out.mi, 126.67); assert.equal(r.out.hoa, 50);
+  assert.equal(r.out.total, side.roundCents(r.out.pi + r.out.taxes + r.out.insurance + r.out.mi + r.out.hoa));
+  const be = side.breakEvenCalc({ currentBalance: 350000, currentRate: 7.25, monthsLeft: 324, newRate: 6.25, miNowMonthly: 10.004, miNewMonthly: 5.006 });
+  assert.equal(be.out.miNow, 10); assert.equal(be.out.miNew, 5.01);
+  assert.equal(be.out.currentPayment, side.roundCents(be.out.currentPI + 10)); assert.equal(be.out.newPayment, side.roundCents(be.out.newPI + 5.01));
+});
+each("fix 4: break-even says which monthly MI amounts were not entered", (side) => {
+  const L = { currentBalance: 350000, currentRate: 7.25, monthsLeft: 324, newTermYears: 30, newRate: 6.25 };
+  assert.deepEqual(side.breakEvenCalc(L).notEntered, ["miNow", "miNew"]);
+  assert.deepEqual(side.breakEvenCalc({ ...L, homeValue: 400000, creditScore: 740, costsInLoan: true }).notEntered, ["miNow"]);
+  assert.deepEqual(side.breakEvenCalc({ ...L, miNowMonthly: 0, miNewMonthly: 0 }).notEntered, []);
+});
