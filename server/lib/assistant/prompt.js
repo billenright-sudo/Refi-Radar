@@ -63,7 +63,7 @@ const TOOK_TOO_LONG = "Sorry — that took longer than it should. Say that again
 
 // What Charli says, written by code, when the Google calendar is not usable: the model is not asked to put these into words.
 // The orchestrator returns the one that matches the `code` a calendar tool came back with.
-const GOOGLE_NOT_CONNECTED = "Your Google calendar isn't connected yet — connect it on your Profile page and I can read and book your calendar.";
+const GOOGLE_NOT_CONNECTED = "Your Google calendar isn't connected yet — connect it on your Profile page and I can read, book, cancel and move events on your calendar.";
 const GOOGLE_RECONNECT = "Your Google connection has expired — reconnect it on your Profile page, then ask me again.";
 const GOOGLE_UNAVAILABLE = "I couldn't reach Google just now — try that again in a moment.";
 

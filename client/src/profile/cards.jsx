@@ -56,7 +56,7 @@ async function callApi(method, url, body) {
 const errorOf = (res, fallback) => (res.data && typeof res.data.error === "string" && res.data.error.trim()) || fallback;
 
 const GOOGLE_BUTTONS = { connect: "Connect", reconnect: "Reconnect", disconnect: "Disconnect" };
-const DISCONNECT_CONFIRM = "Disconnect Google? Charlie will stop reading and booking your calendar.";
+const DISCONNECT_CONFIRM = "Disconnect Google? Charlie will stop reading and changing your calendar.";
 
 // The card reads Google's state on open and whenever the window gets focus back: Charlie can find out mid-conversation that the
 // connection expired (her reply says to reconnect it here).

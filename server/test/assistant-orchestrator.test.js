@@ -4247,7 +4247,7 @@ test("Task 5: a calendar narration still gets every screen: a completion claim o
 
 test("Task 5: not connected, expired and unreachable Google each end the turn with their own code-authored line, before the model sees it", async () => {
   const lines = { not_connected: GOOGLE_NOT_CONNECTED, reconnect: GOOGLE_RECONNECT, unavailable: GOOGLE_UNAVAILABLE };
-  assert.equal(GOOGLE_NOT_CONNECTED, "Your Google calendar isn't connected yet — connect it on your Profile page and I can read and book your calendar.");
+  assert.equal(GOOGLE_NOT_CONNECTED, "Your Google calendar isn't connected yet — connect it on your Profile page and I can read, book, cancel and move events on your calendar.");
   assert.equal(GOOGLE_RECONNECT, "Your Google connection has expired — reconnect it on your Profile page, then ask me again.");
   assert.equal(GOOGLE_UNAVAILABLE, "I couldn't reach Google just now — try that again in a moment.");
   for (const [code, line] of Object.entries(lines)) {
