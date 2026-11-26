@@ -167,6 +167,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const [paused, setPaused] = useState(false);
   const [mic, setMic] = useState("off");   // off | starting | live | denied | unavailable | error ("off" until Talk is tapped)
   const [speaking, setSpeaking] = useState(false);
+  const [sounding, setSounding] = useState(false);   // her voice is really heard right now (her face follows this, not `speaking`)
   const [hearing, setHearing] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [needsStart, setNeedsStart] = useState(false);   // the browser would not play audio without a tap
@@ -243,6 +244,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
     const audio = createAudio({
       onUtterance: handleUtterance,
       onSpeakingChange: (on) => { speakingRef.current = on; if (!on) handoffRef.current = false; setSpeaking(on); },
+      onSoundChange: setSounding,
       onHearing: setHearing,
       onMicChange: (state) => { micLiveRef.current = state === "live"; setMic(state); },
       onAutoplayBlocked: () => setNeedsStart(true),
@@ -405,7 +407,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   else status = handsFree ? "Tap Talk to speak, or type below" : "Tap to talk, or type below";
 
   const micNote = !paused && MIC_NOTES[mic];
-  const face = faceState({ speaking, working, paused });
+  const face = faceState({ sounding, working, paused });
   const buttonBase = { display: "flex", alignItems: "center", gap: 8, border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "inherit" };
   const primary = { ...buttonBase, background: C.amber, color: "#0f2040" };
   const ghost = { ...buttonBase, background: "transparent", color: C.mutedHi, border: `1px solid ${C.border}` };

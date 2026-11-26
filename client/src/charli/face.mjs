@@ -14,10 +14,12 @@ export const PORTRAIT = Object.freeze({
   idleWebm: "/charlie/charlie-portrait-idle.webm",
 });
 
-// "talking" while her voice plays, "thinking" while a turn is being worked out, "listening" otherwise (and always when paused).
-export function faceState({ speaking = false, working = false, paused = false } = {}) {
+// "talking" only while her voice is really heard (`sounding`, audio.js onSoundChange: not while a line is queued or its clip is
+// still loading, which on a phone takes seconds), "thinking" while a turn is being worked out, "listening" otherwise (and always
+// when paused).
+export function faceState({ sounding = false, working = false, paused = false } = {}) {
   if (paused) return "listening";
-  if (speaking) return "talking";
+  if (sounding) return "talking";
   if (working) return "thinking";
   return "listening";
 }

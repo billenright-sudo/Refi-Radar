@@ -105,9 +105,12 @@ const abortError = () => Object.assign(new Error("aborted"), { name: "AbortError
 
 // ── the controller ───────────────────────────────────────────────────────────
 
-// createAudio({ fetch, onUtterance, onSpeakingChange, onHearing, onMicChange, onAutoplayBlocked, onTtsError, onTtsOk })
+// createAudio({ fetch, onUtterance, onSpeakingChange, onSoundChange, onHearing, onMicChange, onAutoplayBlocked, onTtsError, onTtsOk })
 //   onUtterance(blob)        one finished utterance worth transcribing
-//   onSpeakingChange(bool)   Charli's voice started / finished everything queued
+//   onSpeakingChange(bool)   Charli's voice started / finished everything queued (true from the moment a line is queued: the
+//                            half-duplex gate, not what is heard)
+//   onSoundChange(bool)      her voice is really coming out / has stopped: false while a clip is fetched (a phone waits for the
+//                            whole clip), while playback stalls or is paused, and between two queued lines. Her face follows this.
 //   onHearing(bool)          an utterance is being recorded
 //   onMicChange(state)       "live" | "off" | "denied" | "unavailable" | "error"
 //   onAutoplayBlocked()      the browser refused to play without a tap: show a "Start Charli" button, then call
@@ -119,6 +122,7 @@ export function createAudio({
   fetch: fetchFn,
   onUtterance = () => {},
   onSpeakingChange = () => {},
+  onSoundChange = () => {},
   onHearing = () => {},
   onMicChange = () => {},
   onAutoplayBlocked = () => {},
@@ -261,6 +265,12 @@ export function createAudio({
   let blocked = [];
   let current = null;   // AbortController of the clip being fetched/played
   let pumping = false;
+  let sounding = false;   // her voice is coming out right now
+  const sound = (on) => {
+    if (sounding === on) return;
+    sounding = on;
+    if (!disposed) onSoundChange(on);
+  };
   const audioEl = () => {
     if (!element) { element = new Audio(); element.preload = "auto"; }
     return element;
@@ -284,7 +294,8 @@ export function createAudio({
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        el.onended = el.onerror = el.onplaying = null;
+        el.onended = el.onerror = el.onplaying = el.onwaiting = el.onpause = null;
+        sound(false);
         try { el.pause(); } catch { /* nothing to pause */ }
         if (reader) reader.cancel().catch(() => {});
         if (sink) sink.dispose();
@@ -297,6 +308,13 @@ export function createAudio({
       signal.addEventListener("abort", onAbort);
       if (signal.aborted) { onAbort(); return; }
 
+      // Her voice is heard from "playing" until the element waits for more data, is paused (a call takes the audio) or the clip
+      // is done (finish). Set only once the element holds this clip, so the silent unlock clip never counts.
+      const hear = () => {
+        el.onplaying = () => { started = true; sound(true); };
+        el.onwaiting = el.onpause = () => sound(false);
+      };
+
       // Everything has arrived: play it as one file.
       const playWhole = () => {
         if (settled) return;
@@ -305,6 +323,7 @@ export function createAudio({
         blobUrl = URL.createObjectURL(new Blob(chunks, { type: "audio/mpeg" }));
         el.onended = () => finish();
         el.onerror = () => finish(new Error("playback failed"));
+        hear();
         el.src = blobUrl;
         el.play().catch((e) => finish(e));
       };
@@ -325,7 +344,7 @@ export function createAudio({
       if (streaming) {
         el.onended = () => finish();
         el.onerror = () => { if (started) finish(new Error("playback failed")); else sinkFailed(); };
-        el.onplaying = () => { started = true; };
+        hear();
         // A refusal for lack of a tap is the one rejection that matters here; any other (a load interrupted by
         // the whole-file fallback) is followed by an event that deals with it.
         el.play().catch((e) => { if (e && e.name === "NotAllowedError") finish(e); });
