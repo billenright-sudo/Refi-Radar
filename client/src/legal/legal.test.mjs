@@ -61,3 +61,13 @@ test("privacy: names every subprocessor and the sign-in cookie", () => {
     assert.ok(text.includes(s), `privacy policy is missing "${s}"`);
   }
 });
+
+test("privacy and terms: rate-drop notifications (what is collected, why, who delivers them, and what they are not)", () => {
+  const p = fullText(privacy);
+  for (const s of [
+    "Notification settings, and if a user turns on phone notifications, the push address each of their devices gives us.",
+    "refinance alerts and the billing confirmation, and the rate-drop notifications a user turns on.",
+    "If a user turns on phone notifications, their browser's push service (such as Apple, Google or Mozilla) delivers them. It receives an encrypted message with market news only, never client information.",
+  ]) assert.ok(p.includes(s), `privacy policy is missing "${s}"`);
+  assert.ok(fullText(terms).includes("Rate notifications report a public national average and can be late or missed. They are not a rate quote, a lock or advice."));
+});

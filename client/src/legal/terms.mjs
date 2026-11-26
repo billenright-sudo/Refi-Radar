@@ -135,6 +135,7 @@ export const SECTIONS = [
     heading: "Rate estimates and other disclaimers",
     paragraphs: [
       "Rates, payments and savings shown in Broker Radar are estimates. They are not loan offers, rate quotes or commitments to lend, and they are not financial advice.",
+      "Rate notifications report a public national average and can be late or missed. They are not a rate quote, a lock or advice.",
       "Charlie's answers and suggestions come from AI and can be wrong. Check them before you rely on them.",
       "Your brokerage makes its own lending decisions and is responsible for its own compliance, including licensing, disclosures, fair lending and the rules on contacting consumers.",
       "Broker Radar is provided \"as is\" and \"as available\". [lawyer: warranty disclaimer wording.]",
