@@ -15,6 +15,8 @@ test("onScreenOf maps the open view", () => {
     assert.deepEqual(onScreenOf({ view: p }), { page: p });
   }
   assert.equal(onScreenOf({ view: "nope" }), null);
+  // (Calculators) the page is no form: nothing on it is saved, so Charlie may open another page from it
+  assert.deepEqual(onScreenOf({ view: "calculators" }), { page: "calculators" });
 });
 
 test("onScreenOf (final review): a client page reports its id only when it is a positive integer", () => {
@@ -108,6 +110,8 @@ test("pageAllowed follows the sidebar", () => {
   assert.equal(pageAllowed("billing", "broker", true), true);
   assert.equal(pageAllowed("rates", "lo", false), true);
   assert.equal(pageAllowed("client", "broker", true), false);
+  assert.equal(pageAllowed("calculators", "lo", false), true);
+  assert.equal(pageAllowed("calculators", "broker", false), true);
 });
 
 test("panelAfter", () => {

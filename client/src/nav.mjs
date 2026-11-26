@@ -15,6 +15,7 @@ const MAIN = [
   { id: "sweeps",  label: "Sweeps",      icon: "search" },
   { id: "clients", label: "All Clients", icon: "users" },
   { id: "rates",   label: "Rate Watch",  icon: "trending" },
+  { id: "calculators", label: "Calculators", icon: "calculator" },
   { id: "add",     label: "Add Client",  icon: "plus" },
 ];
 

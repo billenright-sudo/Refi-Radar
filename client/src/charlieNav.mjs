@@ -1,6 +1,6 @@
 import { navItems } from "./nav.mjs";
 
-const SAME = new Set(["home", "sweeps", "clients", "rates", "team", "profile", "billing"]);
+const SAME = new Set(["home", "sweeps", "clients", "rates", "calculators", "team", "profile", "billing"]);
 
 // What the app has open now, as Charlie's session reports it. -> { page, clientId? } | null
 // (final review M4, R15) one loan officer's portal is no page she knows (null), so "take me to My Team" from it opens the team list.

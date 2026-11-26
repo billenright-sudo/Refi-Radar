@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
-const { balanceToday, valueToday, CAUTION_CUT, TYPED_FRESH_MONTHS } = require("../lib/equity");
+const { balanceToday, valueToday, monthsLeftToday, CAUTION_CUT, TYPED_FRESH_MONTHS } = require("../lib/equity");
 const { createIndex } = require("../lib/hpi");
 
 function series(last) {
@@ -70,4 +70,15 @@ test("a falling index lowers the value", () => {
   const r = valueToday(v, "2026-11-13", idx(90));
   assert.strictEqual(r.value, 319500);
   assert.strictEqual(r.cautious, 287550);
+});
+
+test("monthsLeftToday: 30- and 15-year fixed only, counted to today", () => {
+  const T = "2026-11-25";
+  assert.equal(monthsLeftToday({ loanType: "30yr_fixed", closeDate: "2024-03-15" }, T), 330);
+  assert.equal(monthsLeftToday({ loanType: "15yr_fixed", closeDate: "2024-03-15" }, T), 150);
+  assert.equal(monthsLeftToday({ loanType: "30yr_fixed", closeDate: "2026-11-01" }, T), 360);   // first payment still ahead
+  assert.equal(monthsLeftToday({ loanType: "30yr_fixed", closeDate: "1990-01-10" }, T), null);  // paid off
+  assert.equal(monthsLeftToday({ loanType: "5_1_arm", closeDate: "2024-03-15" }, T), null);
+  assert.equal(monthsLeftToday({ loanType: "30yr_fixed", closeDate: null }, T), null);
+  assert.equal(monthsLeftToday({ loanType: "30yr_fixed", closeDate: "2024-03-15" }, "bad"), null);
 });

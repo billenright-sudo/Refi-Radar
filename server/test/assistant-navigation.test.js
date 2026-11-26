@@ -23,7 +23,13 @@ const YES = ["pull up Helen Brandt", "Charlie, bring up the Brandts", "open Hele
   "Just pull up Helen", "Now pull up Helen", "Yes, pull up Helen", "Thanks — take me to Rate Watch", "pull Helen up", "bring them up",
   "go back home", "show me Rate Watch page", "show me the Chens' file", "show me Helen Brandt's file", "bring her up", "bring him up",
   "pull it up", "pull that up", "[laughter] open Sweeps", "take me back home", "go back to Rate Watch", "bring Robert & Linda Chen up",
-  "pull the Chens up", "Okay Charlie, pull her up please", "show me the rates page", "show me the profile page"];
+  "pull the Chens up", "Okay Charlie, pull her up please", "show me the rates page", "show me the profile page",
+  // (Calculators) the page by name; a sentence that names a fixed page stays a page request whatever calculator word it has
+  "open the calculator", "take me to Calculators", "show me the calculators", "pull up the calculators page",
+  "open billing so I can update my payment method", "take me to Rate Watch, I want to see where points are",
+  // (final fix wave I1) a client's page, file or screen named with a calculator word is still a page request
+  "take me to Helen's page, I need her payment", "open Grace Okafor's page so we can look at the payment",
+  "pull up Grace Okafor's file, I want to go over her payment", "open the Chen file for the cash-out"];
 const NO = ["show me who's at their target", "show me today's rates", "what's Helen's target?", "log a call with Helen",
   "open the email", "open it in Gmail", "look up the Cowboys score", "look up Helen's balance", "who should I call?",
   "what are rates today", "show me Helen's target", "show me what Helen owes", "pull up", "open the draft",
@@ -32,10 +38,13 @@ const NO = ["show me who's at their target", "show me today's rates", "what's He
   "bring up that email again", "pull that email up", "open my email", "go to my email", "pull up her draft", "bring up the link",
   "take me to Gmail", "switch to Outlook",
   // (final review I1) the split form ends with "up"; filler alone asks for nothing
-  "bring it up with her", "bring that up with Helen", "okay", "(background noise)", "yes", "show me the rates"];
+  "bring it up with her", "bring that up with Helen", "okay", "(background noise)", "yes", "show me the rates",
+  // (Calculators, spec risk 4) a calculator topic is a calculator question, not a page, unless a page is named
+  "show me the break-even on the Chens", "pull up the payment for Helen", "show me Helen Brandt's buydown",
+  "show me the blended rate for the Chens"];
 
 test("constants", () => {
-  assert.deepStrictEqual([...SCREEN_PAGES], ["home", "sweeps", "clients", "rates", "add", "team", "import", "profile", "billing"]);
+  assert.deepStrictEqual([...SCREEN_PAGES], ["home", "sweeps", "clients", "rates", "calculators", "add", "team", "import", "profile", "billing"]);
   assert.ok(Object.isFrozen(SCREEN_PAGES));
   assert.deepStrictEqual([...BROKER_PAGES].sort(), ["billing", "import", "team"]);
   assert.strictEqual(FORM_OPEN, "You've got a form open. Save or cancel it first, then ask me again.");
@@ -64,6 +73,7 @@ test("cleanOnScreen", () => {
   assert.deepStrictEqual(cleanOnScreen({ page: "client", clientId: 7 }), { page: "client", clientId: 7 });
   assert.deepStrictEqual(cleanOnScreen({ page: "rates", clientId: 7 }), { page: "rates" });
   assert.deepStrictEqual(cleanOnScreen({ page: "form" }), { page: "form" });
+  assert.deepStrictEqual(cleanOnScreen({ page: "calculators" }), { page: "calculators" });
   for (const bad of [null, "rates", { page: "admin" }, { page: "client" }, { page: "client", clientId: 0 },
     { page: "client", clientId: "7" }, { page: "add" }, undefined, [], { page: "client", clientId: 1.5 }])
     assert.strictEqual(cleanOnScreen(bad), null);
@@ -73,6 +83,8 @@ test("screenLine, alreadyLine, isAlreadyOn", () => {
   assert.strictEqual(screenLine({ page: "client", clientId: 7 }, "Helen  Brandt"), "Here's Helen Brandt.");
   assert.strictEqual(screenLine({ page: "clients" }), "Here's your client list.");
   assert.strictEqual(alreadyLine({ page: "rates" }), "You're already on Rate Watch.");
+  assert.strictEqual(screenLine({ page: "calculators" }), "Here's Calculators.");
+  assert.strictEqual(alreadyLine({ page: "calculators" }), "You're already on Calculators.");
   assert.strictEqual(alreadyLine({ page: "client", clientId: 7 }, "Helen Brandt"), "You're already on Helen Brandt's page.");
   assert.strictEqual(isAlreadyOn({ page: "client", clientId: 7 }, { page: "client", clientId: 7 }), true);
   assert.strictEqual(isAlreadyOn({ page: "client", clientId: 7 }, { page: "client", clientId: 8 }), false);
@@ -84,7 +96,7 @@ test("screenLine: the fixed line for every page id", () => {
   const lines = {
     home: "Here's Home.", sweeps: "Here's Sweeps.", clients: "Here's your client list.", rates: "Here's Rate Watch.",
     add: "Here's the Add Client form.", team: "Here's your team.", import: "Here's Import Clients.",
-    profile: "Here's your profile.", billing: "Here's Billing.",
+    profile: "Here's your profile.", billing: "Here's Billing.", calculators: "Here's Calculators.",
   };
   for (const page of SCREEN_PAGES) {
     assert.strictEqual(screenLine({ page }), lines[page], page);
@@ -201,4 +213,10 @@ test("targetsScreen (final review I1): a person's pronoun in the split form is a
   }
   // "it" / "that" may be the email card or a figure ("It's on your screen — tap Open in Gmail on the card." stays as it is)
   for (const t of ["pull it up", "pull that up", "bring it up with her"]) assert.ok(!targetsScreen(t, knownNames), t);
+});
+
+test("Calculators: a claim that it opened, and a request that targets it", () => {
+  for (const t of ["I opened Calculators for you.", "I'm opening calculators now.", "Here's Calculators."]) assert.ok(claimsScreenOpened(t, knownNames), t);
+  for (const t of ["open the calculators", "take me to the calculator page", "pull up Calculators"]) assert.ok(targetsScreen(t, knownNames), t);
+  assert.ok(!targetsScreen("pull up the break-even numbers", knownNames));
 });

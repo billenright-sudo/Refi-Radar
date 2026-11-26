@@ -5,7 +5,7 @@
 // also a number field on the lens.
 
 const { analyze, calcPayment, estClosingCosts, PRIORITY_RANK, impact } = require("./refi");
-const { balanceToday, valueToday } = require("./equity");
+const { balanceToday, valueToday, monthsLeftToday } = require("./equity");
 const { currentMi, endsWithinMonths } = require("./mortgageInsurance");
 const { firstPaymentFromClosing } = require("./intake/loan");
 const hpi = require("./hpi");
@@ -92,6 +92,7 @@ function todayBlock(c, today, index) {
       balance, balanceFrom, balanceAsOf: c.balanceAsOf || null, balanceBasis: b.basis,
       value, valueFrom, cautiousValue, valueAsOf: c.valueAsOf || null,
       valueBasis: v.basis, growthPct: v.growthPct, ltv: rawLtv == null ? null : r1(rawLtv),
+      monthsLeft: monthsLeftToday(c, today),
     },
     rawLtv,
   };

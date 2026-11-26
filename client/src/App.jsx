@@ -33,6 +33,8 @@ import {
   WINDOW_DAYS, MAX_CHILDREN, CONTACT_OPTIONS, MONTH_NAMES, EMPTY_CHILD, occasionsFor, upcomingDates, occasionText, localToday, dayLabel, awayLabel,
   personalRows, personalToForm, formToPersonal, daysInMonth,
 } from "./personal.mjs";
+import CalculatorsView from "./CalculatorsView.jsx";
+import { prefillFrom } from "./calculatorsPage.mjs";
 import { COMPOSE_LINKS, isEmailed, emailRequest, sentRequest, refusalLine, safeComposeLinks } from "./emails.mjs";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +77,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     dashboard: "M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z",
     users:     "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
     trending:  "M23 6l-9.5 9.5-5-5L1 18M17 6h6v6",
+    calculator: "M4 2h16v20H4zM8 6h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M8 19h2M12 19h2M16 15v4",
     plus:      "M12 5v14M5 12h14",
     refresh:   "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
     arrow:     "M19 12H5M12 5l-7 7 7 7",
@@ -1573,7 +1576,7 @@ const Clients = ({ scored, setSelected, setView }) => {
 // ---------------------------------------------------------------------------
 // Client Detail (with edit + delete)
 // ---------------------------------------------------------------------------
-const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
+const ClientDetail = ({ client, rates, setView, onDelete, onUpdated, onOpenCalculator }) => {
   const isPhone = useIsPhone();
   // Priced on today's balance and cautious value (the Upgrades and Equity Projection cards' figures). FHA, VA, USDA: never refi-ready here.
   const a = withGovGuard(analyze(pricedToday(client), rates), client.loanProgram);
@@ -1759,9 +1762,12 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
 
       {a ? (
         <div style={{ ...card, background: a.good ? C.greenBg : C.surface, borderColor: a.good ? "#0f4a25" : C.border }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: "1rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            {a.good ? "Refi Opportunity Analysis" : "Refi Analysis"}
-          </h3>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: "1rem", ...ph(isPhone, { flexWrap: "wrap" }) }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              {a.good ? "Refi Opportunity Analysis" : "Refi Analysis"}
+            </h3>
+            <button onClick={() => onOpenCalculator(client)} style={{ ...btnGhost, padding: "6px 12px", fontSize: 13 }}>Open in calculator</button>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: gridCols(3, isPhone), gap: "1.25rem" }}>
             {[
               ["Est. Client Rate",    $r(a.effRate),                     C.blue],
@@ -1789,7 +1795,10 @@ const ClientDetail = ({ client, rates, setView, onDelete, onUpdated }) => {
           )}
         </div>
       ) : (
-        <div style={{ ...card, textAlign: "center", color: C.muted, padding: "2rem" }}>Fetch the latest rates to see refi analysis.</div>
+        <div style={{ ...card, textAlign: "center", color: C.muted, padding: "2rem" }}>
+          Fetch the latest rates to see refi analysis.
+          <div style={{ marginTop: 12 }}><button onClick={() => onOpenCalculator(client)} style={{ ...btnGhost, padding: "6px 12px", fontSize: 13 }}>Open in calculator</button></div>
+        </div>
       )}
 
       {/* ── Upgrades ──────────────────────────────────────────────────── */}
@@ -2987,6 +2996,7 @@ export default function App() {
   const [ratesError, setRatesError] = useState(null);
   const [lastFetched, setLastFetched] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [calcPrefill, setCalcPrefill] = useState(null);   // what "Open in calculator" filled in; never saved, gone when the page is left
   const [treasury, setTreasury] = useState(null);
   const [selectedLO, setSelectedLO] = useState(null);
   const [googleNotice, setGoogleNotice] = useState(null);   // the line for the Profile page after Google sent the browser back
@@ -3151,6 +3161,14 @@ export default function App() {
 
   // Charlie is docked on Home: going there takes the panel away (only one Charlie screen is live at a time: one mic, one greeting).
   useEffect(() => { if (view === "home") setPanelOpen(false); }, [view]);
+
+  // Calculators opened from a client's page: fill in from that client; leaving the page forgets it.
+  const openCalculator = useCallback((client) => {
+    setCalcPrefill({ ...prefillFrom(client), stamp: Date.now() });
+    setView("calculators");
+    window.scrollTo(0, 0);
+  }, [setView]);
+  useEffect(() => { if (view !== "calculators") setCalcPrefill(null); }, [view]);
 
   const closePanel = useCallback(() => {
     setPanelOpen(false);
@@ -3469,8 +3487,9 @@ export default function App() {
             {view === "profile"       && <ProfileView user={user} ui={{ C, card, mono, Icon, $c }} onUserChanged={handleUserChanged} notice={googleNotice} onNoticeShown={() => setGoogleNotice(null)} onProfile={handleProfileTaken} />}
             {view === "clients"       && <Clients scored={scored} setSelected={setSelected} setView={setView} />}
             {view === "rates"         && <RateWatch rates={rates} ratesLoading={ratesLoading} fetchRates={fetchRates} lastFetched={lastFetched} ratesError={ratesError} treasury={treasury} clients={clients} />}
+            {view === "calculators"   && <CalculatorsView key={calcPrefill ? calcPrefill.stamp : "blank"} rates={rates} prefill={calcPrefill} onClearPrefill={() => setCalcPrefill(null)} ui={{ C, card, mono, Icon, inputStyle, btnPrimary, btnGhost, ph }} />}
             {view === "add"           && <AddClient setClients={setClients} setView={setView} />}
-            {view === "client-detail" && selected && <ClientDetail key={selected.id} client={selected} rates={rates} setView={setView} onDelete={handleDeleteClient} onUpdated={handleClientUpdated} />}
+            {view === "client-detail" && selected && <ClientDetail key={selected.id} client={selected} rates={rates} setView={setView} onDelete={handleDeleteClient} onUpdated={handleClientUpdated} onOpenCalculator={openCalculator} />}
             {view === "edit"          && selected && <EditClient client={selected} setClients={setClients} setSelected={setSelected} setView={setView} />}
             {view === "team"          && user?.role === "broker" && <MyTeam setView={setView} setSelectedLO={setSelectedLO} billingOn={teamBillingOn} />}
             {view === "lo-portal"     && selectedLO && user?.role === "broker" && <LOPortal lo={selectedLO} rates={rates} setView={setView} />}

@@ -1227,7 +1227,8 @@ test("TOOL_SCHEMA is a valid Anthropic tool array that lines up 1:1 with the too
   assert.deepStrictEqual(
     TOOL_SCHEMA.map((t) => t.name).sort(),
     ["addClientTool", "callListTool", "cancelEventTool", "createEventTool", "draftEmailTool", "explainTerm", "findClient", "getCalendarTool", "getMarketUpdate", "logContactTool", "lookUpLive", "moveEventTool", "runSweepTool", "setCareerStageTool",
-      "setTargetRateTool", "showScreenTool", "targetRatesTool", "upcomingDatesTool", "upgradesTool"]
+      "setTargetRateTool", "showScreenTool", "targetRatesTool", "upcomingDatesTool", "upgradesTool",
+      "blendedRateCalcTool", "breakEvenCalcTool", "buydownCalcTool", "paymentCalcTool"].sort()
   );
   const find = TOOL_SCHEMA.find((t) => t.name === "findClient");
   assert.deepStrictEqual(find.input_schema.required, ["query"]);
@@ -1528,4 +1529,11 @@ test("M7: Charlie's client shape sends no credit score when it is not known", ()
   const ctx = { user: user(broker, "broker", org), rates: LIVE, db };
   assert.strictEqual(findClient({ query: "una unknown" }, ctx).data.matches[0].creditScore, null);
   assert.strictEqual(findClient({ query: "kay known" }, ctx).data.matches[0].creditScore, 700);
+});
+
+test("showScreenTool: Calculators opens for a loan officer too, and the schema names it", () => {
+  assert.deepStrictEqual(showScreenTool({ page: "calculators" }, lo1Ctx), { data: { page: "calculators" }, source: "(screen)", screen: { page: "calculators" } });
+  const def = TOOL_SCHEMA.find((t) => t.name === "showScreenTool");
+  assert.ok(def.input_schema.properties.page.enum.includes("calculators"));
+  assert.match(def.description, /calculators \(Calculators\)/);
 });

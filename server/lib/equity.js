@@ -40,6 +40,19 @@ function balanceToday(c, today) {
   return { balance: Math.max(0, Math.round(rolled)), asOf: today, basis: "rolled" };
 }
 
+// Payments left on a 30- or 15-year fixed loan today, on the same schedule balanceToday rolls on (first payment two months after
+// closing). Null for any other loan type, an unreadable close date or today, or a loan with nothing left.
+function monthsLeftToday(c, today) {
+  const term = c.loanType === "30yr_fixed" ? 360 : c.loanType === "15yr_fixed" ? 180 : null;
+  if (term === null || !parts(today)) return null;
+  const first = firstPaymentFromClosing(c.closeDate);
+  if (!first) return null;
+  const made = monthsBetween(first, today);
+  if (made === null) return null;
+  const left = Math.min(term, term - made);
+  return left >= 1 ? left : null;
+}
+
 function valueToday(c, today, index = hpi.defaultIndex) {
   const value = Number(c.propertyValue);
   const asOf = c.valueAsOf || null;
@@ -63,4 +76,4 @@ function valueToday(c, today, index = hpi.defaultIndex) {
   };
 }
 
-module.exports = { balanceToday, valueToday, CAUTION_CUT, TYPED_FRESH_MONTHS };
+module.exports = { balanceToday, valueToday, monthsLeftToday, CAUTION_CUT, TYPED_FRESH_MONTHS };

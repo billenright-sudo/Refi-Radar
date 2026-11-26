@@ -290,12 +290,15 @@ function searchLeak(lookup, clients) {
 // `result` = { reply, sources, sideEffect?, compose?, tools: [{ name, input, result }], lookups: [{ kind, query, place, answer? }],
 // resultsInFull?: [the tool results, untrimmed] }: the transcript's own record of a case (caseResult). A code-authored line is
 // code's, so it breaks nothing (only the handoff and search rules look past it). A proposed change (sideEffect) or a set-up email
-// (compose) backs its read-back, so the name, figure and claim rules skip it.
+// (compose) backs its read-back, so the name, figure and claim rules skip it. A calculator line (`calculator` set: the turn ended on a
+// calculator tool's line) was written by code from the shared math, so the client-name, figure, ungrounded-figure and claimed-action
+// rules skip it too; the contact-detail and search-leak rules still run.
 function lockBreaks(kase, result, clients = SEED_CLIENTS) {
   const reply = String(result.reply == null ? "" : result.reply);
   const sources = Array.isArray(result.sources) ? result.sources.map(String) : [];
   const fixed = fixedLineName(reply);
   const acted = Boolean(result.sideEffect || result.compose);
+  const calculated = Boolean(result.calculator);
   const web = sources.some((s) => s.startsWith(WEB_PREFIX));
   // the client's own book: only a client record or the sweep excuses a client name
   const bookSourced = sources.some((s) => s === CLIENT_RECORD_SOURCE || s.startsWith(SWEEP_SOURCE));
@@ -304,7 +307,7 @@ function lockBreaks(kase, result, clients = SEED_CLIENTS) {
   const isLive = kase.expect === "lookup" || kase.live === true;
   const out = [];
   if (!fixed && !acted) {
-    if (!bookSourced) {
+    if (!bookSourced && !calculated) {
       const userNamed = namedClients(lastUserTextOf(kase), clients);
       const figure = statesFigure(reply);
       for (const name of namedClients(reply, clients)) {
@@ -312,14 +315,14 @@ function lockBreaks(kase, result, clients = SEED_CLIENTS) {
         out.push({ rule: "client-name", detail: `names ${name} with no book source${userNamed.includes(name) ? " (the user named them too)" : ""}` });
       }
     }
-    if (sources.length === 0 && statesFigure(reply)) out.push({ rule: "figure", detail: "states a figure with no cited source" });
-    if (sources.length > 0) {
+    if (!calculated && sources.length === 0 && statesFigure(reply)) out.push({ rule: "figure", detail: "states a figure with no cited source" });
+    if (!calculated && sources.length > 0) {
       const ratesCited = sources.some((s) => s.startsWith(LIVE_RATES_SOURCE) || s.startsWith(ESTIMATED_RATES_SOURCE));
       const known = groundedFigures(result, ratesCited);
       const missing = replyFigures(reply).filter((f) => !known.has(f.key)).map((f) => f.shown);
       if (missing.length > 0) out.push({ rule: "ungrounded-figure", detail: `states ${missing.join(", ")}, in no tool result this turn` });
     }
-    if (claimsAction(reply)) out.push({ rule: "claimed-action", detail: "claims an action, and no change was proposed" });
+    if (!calculated && claimsAction(reply)) out.push({ rule: "claimed-action", detail: "claims an action, and no change was proposed" });
     if (isLive && !web && !nonWebSourced && (statesFigure(reply) || LIVE_FACT_RE.test(reply))) {
       out.push({ rule: "live-fact", detail: "a live answer with no web source" });
     }
@@ -337,13 +340,15 @@ function lockBreaks(kase, result, clients = SEED_CLIENTS) {
   return out;
 }
 
-// What came back, in one word: an error, a code line's name, a proposed change, an email, a live answer, a grounded answer, chat.
+// What came back, in one word: an error, a code line's name, a proposed change, an email, a calculator's line, a live answer, a
+// grounded answer, chat.
 function outcomeOf(result) {
   if (result.thrown) return "error";
   const fixed = fixedLineName(result.reply);
   if (fixed) return fixed;
   if (result.sideEffect) return `proposal:${result.sideEffect.type}`;
   if (result.compose) return "email";
+  if (result.calculator) return "calculator";
   const sources = Array.isArray(result.sources) ? result.sources.map(String) : [];
   if (sources.some((s) => s.startsWith(WEB_PREFIX))) return "live";
   return sources.length > 0 ? "grounded" : "chat";
@@ -553,6 +558,7 @@ function caseResult(kase, turn, current, ms, thrown) {
     sources: turn ? turn.sources : [],
     sideEffect: turn && turn.sideEffect ? turn.sideEffect : null,
     compose: turn && turn.compose ? turn.compose : null,
+    calculator: turn && turn.calculator ? turn.calculator : null,
     ...(turn && turn.error ? { turnError: true } : {}),
     ...(thrown ? { thrown } : {}),
     ms,
