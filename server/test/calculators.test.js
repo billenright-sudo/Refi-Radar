@@ -69,3 +69,49 @@ each("formatting", (side) => {
   assert.equal(side.possessive("Grace Okafor"), "Grace Okafor's"); assert.equal(side.possessive("James Rivers"), "James Rivers'");
   assert.equal(side.roundRate(6.12345), 6.123);
 });
+
+const LOAN = { currentBalance: 350000, currentRate: 7.25, monthsLeft: 324, newTermYears: 30 };
+each("break-even, spec 2.2 at 6.25% in cash", (side) => {
+  const r = side.breakEvenCalc({ ...LOAN, newRate: 6.25 });
+  assert.equal(r.out.currentPayment, 2464.68); assert.equal(r.out.newPayment, 2155.01);
+  assert.equal(r.out.monthlySavings, 309.67); assert.equal(r.out.closingCosts, 6000); assert.deepEqual(r.estimated, { closingCosts: true });
+  assert.equal(r.out.breakEvenMonth, 20); assert.equal(r.out.currentTotal, 798556); assert.equal(r.out.newTotal, 781804);
+  assert.deepEqual(r.warnings, []);
+});
+each("break-even at 6.75%: the long-run warning", (side) => {
+  const r = side.breakEvenCalc({ ...LOAN, newRate: 6.75 });
+  assert.equal(r.out.newPayment, 2270.09); assert.equal(r.out.monthlySavings, 194.59); assert.equal(r.out.breakEvenMonth, 31);
+  assert.equal(r.out.newTotal, 823232); assert.equal(r.out.totalDifference, 24676);
+  assert.deepEqual(r.warnings, ["Lower payment, higher total: restarting the clock costs $24,676 more over the life of the loan than keeping the current loan."]);
+});
+each("break-even with the costs in the loan", (side) => {
+  const r = side.breakEvenCalc({ ...LOAN, newRate: 6.25, costsInLoan: true });
+  assert.equal(r.out.newAmount, 356000); assert.equal(r.out.newPayment, 2191.95); assert.equal(r.out.monthlySavings, 272.73);
+  assert.equal(r.out.breakEvenMonth, 22); assert.equal(r.out.newTotal, 789102); assert.equal(r.out.totalDifference, -9454);
+  assert.deepEqual(r.notes, [side.CALC_LINES.costsInLoan]);
+});
+each("break-even edge cases", (side) => {
+  const none = side.breakEvenCalc({ ...LOAN, newRate: 6.25, closingCosts: 0 });
+  assert.equal(none.out.breakEvenMonth, null); assert.ok(none.notes.includes("No costs entered"));
+  const worse = side.breakEvenCalc({ ...LOAN, newRate: 8 });   // 30 years at 8%: $2,568.18, above today's $2,464.68
+  assert.ok(worse.out.monthlySavings < 0); assert.equal(worse.out.breakEvenMonth, null);
+  assert.deepEqual(worse.warnings, [side.CALC_LINES.noSavings]);
+  assert.equal(side.CALC_LINES.moreAMonth("$12.40"), "$12.40 more a month");
+  // same P&I both sides (27 years = 324 months) and $10 of current MI: $10 saved, break-even month 600 > 324
+  const late = side.breakEvenCalc({ ...LOAN, newRate: 7.25, newTermYears: 27, miNowMonthly: 10 });
+  assert.equal(late.out.breakEvenMonth, 600); assert.ok(late.warnings.includes(side.CALC_LINES.tooLate));
+  assert.equal(side.breakEvenCalc({ ...LOAN, newRate: 0 }).out.newPI, 972.22);      // zero rate: calcPayment spreads it
+  assert.deepEqual(side.breakEvenCalc({ currentBalance: 350000 }).missing, ["currentRate", "monthsLeft", "newRate"]);
+  assert.equal(side.breakEvenCalc({ ...LOAN, monthsLeft: 481, newRate: 6 }).errors.monthsLeft, side.CALC_LINES.monthsLeft);
+});
+each("Review Focus 3: a one-cent saving gives a finite late break-even", (side) => {
+  // same P&I both sides (27 years = 324 months), so a typed cent of current MI is the whole saving
+  const r = side.breakEvenCalc({ ...LOAN, newRate: 7.25, newTermYears: 27, miNewMonthly: 0, miNowMonthly: 0.01 });
+  assert.equal(r.out.monthlySavings, 0.01); assert.equal(r.out.breakEvenMonth, 600000);
+  assert.ok(Number.isFinite(r.out.breakEvenMonth)); assert.ok(r.warnings.includes(side.CALC_LINES.tooLate));
+});
+each("new-loan PMI estimate over the cautious value", (side) => {
+  const r = side.breakEvenCalc({ ...LOAN, newRate: 6.25, costsInLoan: true, homeValue: 400000, creditScore: 740 });
+  assert.equal(r.out.miNew, pmiOf(side)(740, 356000 / 400000 * 100, 30, 356000)); assert.deepEqual(r.estimated, { closingCosts: true, miNew: true });
+  assert.equal(r.out.newPayment, side.roundCents(r.out.newPI + r.out.miNew));
+});

@@ -120,8 +120,49 @@ const paymentCalc = (input) => {
   const out = { pi, taxes, insurance, mi, hoa: hoaMonthly, total: roundCents(pi + taxes + insurance + mi + hoaMonthly) };
   return calcOk({ ...input, termYears, taxesYearly, insuranceYearly, miMonthly: mi, hoaMonthly }, { defaulted, estimated, notEntered, out });
 };
+
+const breakEvenCalc = (input) => {
+  const bad = checkFields(input, [
+    ["currentBalance", "amount", true], ["currentRate", "rate", true], ["monthsLeft", "months", true],
+    ["newRate", "rate", true], ["newTermYears", "term", false], ["closingCosts", "optionalAmount", false],
+    ["miNowMonthly", "optionalAmount", false], ["miNewMonthly", "optionalAmount", false],
+    ["homeValue", "amount", false], ["creditScore", "score", false],
+  ]);
+  if (bad) return bad;
+  const { currentBalance, currentRate, monthsLeft, newRate } = input;
+  const defaulted = [], estimated = {}, warnings = [], notes = [];
+  const newTermYears = orDefault(input.newTermYears, 30);
+  if (input.newTermYears == null) defaulted.push("newTermYears");
+  let closingCosts = input.closingCosts;
+  if (closingCosts == null) { closingCosts = roundDollars(estClosingCosts(currentBalance)); estimated.closingCosts = true; }
+  const costsInLoan = input.costsInLoan === true;
+  const newAmount = currentBalance + (costsInLoan ? closingCosts : 0);
+  const miNow = orDefault(input.miNowMonthly, 0);
+  let miNew = orDefault(input.miNewMonthly, 0);
+  if (input.miNewMonthly == null && input.homeValue != null && input.creditScore != null) {
+    const ltv = newAmount / input.homeValue * 100;
+    if (ltv > 80) { miNew = pmiMonthly(input.creditScore, ltv, newTermYears, newAmount); estimated.miNew = true; }
+  }
+  const currentPI = roundCents(calcPayment(currentBalance, currentRate, monthsLeft / 12));
+  const newPI = roundCents(calcPayment(newAmount, newRate, newTermYears));
+  const currentPayment = roundCents(currentPI + miNow), newPayment = roundCents(newPI + miNew);
+  const monthlySavings = roundCents(currentPayment - newPayment);
+  const breakEvenMonth = closingCosts > 0 && monthlySavings > 0 ? Math.ceil(closingCosts / monthlySavings) : null;
+  const currentTotal = roundDollars(currentPI * monthsLeft);
+  const newTotal = roundDollars(newPI * newTermYears * 12 + (costsInLoan ? 0 : closingCosts));
+  const totalDifference = newTotal - currentTotal;
+  if (monthlySavings <= 0) warnings.push(CALC_LINES.noSavings);
+  if (monthlySavings > 0 && newTotal > currentTotal) warnings.push(CALC_LINES.longRun(fmtDollars(totalDifference)));
+  if (breakEvenMonth !== null && breakEvenMonth > monthsLeft) warnings.push(CALC_LINES.tooLate);
+  if (costsInLoan) notes.push(CALC_LINES.costsInLoan);
+  if (closingCosts === 0) notes.push(CALC_LINES.noCosts);
+  const out = { currentPI, miNow, currentPayment, newAmount, newPI, miNew, newPayment, monthlySavings, breakEvenMonth,
+    closingCosts, costsInLoan, currentTotal, newTotal, totalDifference };
+  return calcOk({ ...input, newTermYears, closingCosts, costsInLoan, miNowMonthly: miNow, miNewMonthly: miNew },
+    { defaulted, estimated, warnings, notes, out });
+};
 // ---- calculators: shared math end ----
 
 module.exports = {
-  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc,
+  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc,
 };
