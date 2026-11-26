@@ -140,3 +140,39 @@ each("blended edge cases", (side) => {
   assert.equal(side.blendedRateCalc({ ...BLEND, secondRate: 2 }).ok, true);   // a second below the first: no warning
   assert.deepEqual(side.blendedRateCalc({ ...BLEND, compareYears: null }).defaulted, ["compareYears"]);
 });
+
+each("2-1 buydown, spec 2.4", (side) => {
+  const r = side.buydownCalc({ kind: "2-1", loanAmount: 400000, noteRate: 7, termYears: 30 });
+  assert.equal(r.out.notePayment, 2661.21);
+  assert.deepEqual(r.out.years, [{ year: 1, rate: 5, payment: 2147.29 }, { year: 2, rate: 6, payment: 2398.2 }]);
+  assert.equal(r.out.subsidy, 9323.16);
+});
+each("3-2-1 buydown", (side) => {
+  const r = side.buydownCalc({ kind: "3-2-1", loanAmount: 400000, noteRate: 7, termYears: 30 });
+  assert.equal(r.out.years[0].payment, 1909.66); assert.equal(r.out.subsidy, 18341.76);
+});
+each("Review Focus 2: reduced rates carry no float noise", (side) => {
+  assert.deepEqual(side.buydownCalc({ kind: "3-2-1", loanAmount: 400000, noteRate: 6.15 }).out.years.map((y) => y.rate), [3.15, 4.15, 5.15]);
+});
+each("temporary buydown refusals", (side) => {
+  assert.deepEqual(side.buydownCalc({ kind: "3-2-1", loanAmount: 400000, noteRate: 7, termYears: 2 }).errors, { termYears: side.CALC_LINES.termTooShort });
+  assert.deepEqual(side.buydownCalc({ kind: "3-2-1", loanAmount: 400000, noteRate: 2.5 }).errors, { noteRate: side.CALC_LINES.noteTooLow });
+  assert.equal(side.buydownCalc({ kind: "2-1", loanAmount: 400000, noteRate: 2 }).out.years[0].payment, 1111.11);  // 0% year: calcPayment
+  assert.deepEqual(side.buydownCalc({ kind: "4-3", loanAmount: 400000, noteRate: 7 }).missing, ["kind"]);
+});
+each("points, spec 2.4", (side) => {
+  const r = side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 1.5, termYears: 30 });
+  assert.deepEqual(r.out, { kind: "points", cost: 6000, points: 1.5, paymentWithout: 2661.21, paymentWith: 2528.27,
+    monthlySavings: 132.94, breakEvenMonth: 46, fullTermSavings: 41858 });
+  assert.equal(side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, pointsCost: 6000 }).out.points, 1.5);
+});
+each("points edge cases", (side) => {
+  assert.deepEqual(side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 7, points: 1 }).errors,
+    { rateWithPoints: side.CALC_LINES.pointsNotLower });
+  const free = side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 0 });
+  assert.equal(free.out.breakEvenMonth, null); assert.deepEqual(free.notes, ["No cost entered"]);
+  const never = side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.99, points: 5, termYears: 5 });
+  assert.deepEqual(never.warnings, [side.CALC_LINES.pointsNever]);
+  assert.deepEqual(side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5 }).missing, ["points"]);
+  assert.equal(side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 21 }).errors.points, side.CALC_LINES.points);
+});

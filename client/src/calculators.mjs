@@ -203,8 +203,54 @@ const blendedRateCalc = (input) => {
   return calcOk({ ...input, secondKind, secondTermYears, cashOutTermYears, compareYears, secondCosts, cashOutCosts },
     { defaulted, estimated, notes, notEntered, out });
 };
+
+const BUYDOWN_STEPS = { "2-1": [2, 1], "3-2-1": [3, 2, 1], "1-0": [1] };
+
+const buydownCalc = (input) => {
+  const kind = input.kind;
+  const temporary = typeof kind === "string" && Object.prototype.hasOwnProperty.call(BUYDOWN_STEPS, kind);
+  if (!temporary && kind !== "points") return { ok: false, errors: {}, missing: ["kind"] };
+  const specs = [["loanAmount", "amount", true], ["noteRate", "rate", true], ["termYears", "term", false]];
+  if (kind === "points") specs.push(["rateWithPoints", "rate", true], ["points", "points", false], ["pointsCost", "optionalAmount", false]);
+  const bad = checkFields(input, specs);
+  const noPoints = kind === "points" && input.points == null && input.pointsCost == null;
+  if (bad || noPoints) {
+    const refusal = bad || { ok: false, errors: {}, missing: [] };
+    return noPoints ? { ...refusal, missing: [...refusal.missing, "points"] } : refusal;
+  }
+  const { loanAmount, noteRate } = input;
+  const defaulted = [], warnings = [], notes = [];
+  const termYears = orDefault(input.termYears, 30);
+  if (input.termYears == null) defaulted.push("termYears");
+  const notePayment = roundCents(calcPayment(loanAmount, noteRate, termYears));
+  if (temporary) {
+    const steps = BUYDOWN_STEPS[kind], errors = {};
+    if (termYears < steps.length) errors.termYears = CALC_LINES.termTooShort;
+    if (roundRate(noteRate - steps[0]) < 0) errors.noteRate = CALC_LINES.noteTooLow;
+    if (Object.keys(errors).length) return { ok: false, errors, missing: [] };
+    const years = steps.map((step, i) => {
+      const rate = roundRate(noteRate - step);
+      return { year: i + 1, rate, payment: roundCents(calcPayment(loanAmount, rate, termYears)) };
+    });
+    const subsidy = roundCents(years.reduce((sum, y) => sum + 12 * (notePayment - y.payment), 0));
+    return calcOk({ ...input, termYears }, { defaulted, out: { kind, notePayment, years, subsidy } });
+  }
+  const { rateWithPoints } = input;
+  if (rateWithPoints >= noteRate) return { ok: false, errors: { rateWithPoints: CALC_LINES.pointsNotLower }, missing: [] };
+  const cost = input.points != null ? roundCents(loanAmount * input.points / 100) : input.pointsCost;
+  const points = input.points != null ? input.points : roundRate(cost / loanAmount * 100);
+  const paymentWith = roundCents(calcPayment(loanAmount, rateWithPoints, termYears));
+  const monthlySavings = roundCents(notePayment - paymentWith);
+  const earns = cost > 0 && monthlySavings > 0;
+  const breakEvenMonth = earns ? Math.ceil(cost / monthlySavings) : null;
+  if (cost === 0) notes.push(CALC_LINES.noCost);
+  if (cost > 0 && (!earns || breakEvenMonth > termYears * 12)) warnings.push(CALC_LINES.pointsNever);
+  const fullTermSavings = roundDollars(monthlySavings * termYears * 12 - cost);
+  return calcOk({ ...input, termYears }, { defaulted, warnings, notes,
+    out: { kind, cost, points, paymentWithout: notePayment, paymentWith, monthlySavings, breakEvenMonth, fullTermSavings } });
+};
 // ---- calculators: shared math end ----
 
 export {
-  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc, blendedRateCalc,
+  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc, blendedRateCalc, BUYDOWN_STEPS, buydownCalc,
 };
