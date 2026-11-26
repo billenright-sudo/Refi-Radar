@@ -42,9 +42,9 @@ const withWarnings = (line, warnings) => [line, ...(warnings || [])].join(" ");
 
 const NOT_ENTERED_WORDS = { taxes: "taxes", insurance: "insurance", mi: "mortgage insurance", hoa: "HOA" };
 
-function paymentLine(r) {
+function paymentLine(r, { clientName } = {}) {
   const { inputs: i, out: o } = r;
-  const lead = `On ${fmtAmount(i.loanAmount)} at ${fmtRate(i.rate)} over ${years(i.termYears)}`;
+  const lead = `On ${clientName ? `${possessive(clientName)} ` : ""}${fmtAmount(i.loanAmount)} at ${fmtRate(i.rate)} over ${years(i.termYears)}`;
   const missing = r.notEntered || [];
   const miEstimated = !!(r.estimated && r.estimated.mi);
   if (["taxes", "insurance", "mi", "hoa"].every((k) => missing.includes(k)) && !miEstimated) {
@@ -65,9 +65,12 @@ function breakEvenLine(r, { clientName, todaysAverage } = {}) {
   const { inputs: i, out: o } = r;
   const whose = clientName ? `${possessive(clientName)} ` : "the ";
   const saving = o.monthlySavings > 0;
+  // a saving of exactly $0.00 says no difference at all; a higher payment is said by its size ("$12.40 more a month")
+  const change = saving ? `, saving ${fmtCents(o.monthlySavings)} a month`
+    : o.monthlySavings < 0 ? `, ${CALC_LINES.moreAMonth(fmtCents(Math.abs(o.monthlySavings)))}` : "";
   let line = `Taking ${whose}${fmtAmount(i.currentBalance)} at ${fmtRate(i.currentRate)} with ${plural(i.monthsLeft, "month", "months")} left to ` +
     `${rateSaid(i.newRate, todaysAverage)} over ${years(i.newTermYears)} moves the payment from ${fmtCents(o.currentPayment)} to ` +
-    `${fmtCents(o.newPayment)}, ${saving ? `saving ${fmtCents(o.monthlySavings)} a month` : CALC_LINES.moreAMonth(fmtCents(-o.monthlySavings))}.`;
+    `${fmtCents(o.newPayment)}${change}.`;
   if (r.estimated && r.estimated.miNew) line += ` The new payment includes ${fmtCents(o.miNew)} of estimated mortgage insurance.`;
   if (o.closingCosts === 0) line += ` ${CALC_LINES.noCosts}.`;
   else if (saving && o.breakEvenMonth !== null) {
@@ -77,10 +80,12 @@ function breakEvenLine(r, { clientName, todaysAverage } = {}) {
   return withWarnings(line, r.warnings);
 }
 
-function blendedLine(r, { todaysAverage } = {}) {
+function blendedLine(r, { clientName, todaysAverage } = {}) {
   const { inputs: i, out: o } = r;
   const heloc = i.secondKind === "heloc";
-  let line = `Keeping the ${fmtRate(i.firstRate)} first and adding a ${fmtAmount(i.cashNeeded)} ${heloc ? "HELOC" : "second"} at ` +
+  const whose = clientName ? `${possessive(clientName)} ` : "the ";
+  let line = `Keeping ${whose}${fmtAmount(i.firstBalance)} first at ${fmtRate(i.firstRate)} with ` +
+    `${plural(i.firstMonthsLeft, "month", "months")} left and adding a ${heloc ? "HELOC" : "second"} of ${fmtAmount(i.cashNeeded)} at ` +
     `${fmtRate(i.secondRate)} over ${years(i.secondTermYears)} blends to ${fmtBlended(o.blendedRate)} at ${fmtCents(o.combinedPayment)} a month. ` +
     `A cash-out to ${fmtAmount(o.cashOutAmount)} at ${rateSaid(i.cashOutRate, todaysAverage)} over ${years(i.cashOutTermYears)}, with ` +
     `${r.estimated && r.estimated.cashOutCosts ? "estimated " : ""}costs of ${fmtAmount(o.cashOutCosts)} in the loan, is ` +
@@ -103,7 +108,7 @@ function buydownLine(r) {
       `${fmtCents(first.payment)} in year one${later}, then ${fmtCents(o.notePayment)}. It costs ${fmtCents(o.subsidy)}.`;
   }
   const pts = Number(o.points.toFixed(3));
-  let line = `On ${fmtAmount(i.loanAmount)} over ${years(i.termYears)}, ${plural(pts, "point", "points")} for ${fmtCents(o.cost)} take the rate ` +
+  let line = `On ${fmtAmount(i.loanAmount)} over ${years(i.termYears)}, ${plural(pts, "point", "points")} for ${fmtCents(o.cost)} ${pts === 1 ? "takes" : "take"} the rate ` +
     `from ${fmtRate(i.noteRate)} to ${fmtRate(i.rateWithPoints)} and the payment from ${fmtCents(o.paymentWithout)} to ` +
     `${fmtCents(o.paymentWith)}, saving ${fmtCents(o.monthlySavings)} a month.`;
   if (o.cost === 0) line += ` ${CALC_LINES.noCost}.`;

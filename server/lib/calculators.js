@@ -179,6 +179,8 @@ const blendedRateCalc = (input) => {
     ["cashOutCosts", "optionalAmount", false], ["compareYears", "compareYears", false],
   ]);
   if (bad) return bad;
+  // the cash-out loan (first balance plus cash needed) must itself be inside the amount limit
+  if (input.firstBalance + input.cashNeeded > CALC_LIMITS.amountMax) return { ok: false, errors: { cashNeeded: CALC_LINES.amount }, missing: [] };
   const { firstBalance, firstMonthsLeft, cashNeeded } = input;
   const firstRate = roundRate(input.firstRate), secondRate = roundRate(input.secondRate), cashOutRate = roundRate(input.cashOutRate);
   const defaulted = [], estimated = {}, notes = [], notEntered = [];

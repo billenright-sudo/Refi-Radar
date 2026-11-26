@@ -26,7 +26,10 @@ const YES = ["pull up Helen Brandt", "Charlie, bring up the Brandts", "open Hele
   "pull the Chens up", "Okay Charlie, pull her up please", "show me the rates page", "show me the profile page",
   // (Calculators) the page by name; a sentence that names a fixed page stays a page request whatever calculator word it has
   "open the calculator", "take me to Calculators", "show me the calculators", "pull up the calculators page",
-  "open billing so I can update my payment method", "take me to Rate Watch, I want to see where points are"];
+  "open billing so I can update my payment method", "take me to Rate Watch, I want to see where points are",
+  // (final fix wave I1) a client's page, file or screen named with a calculator word is still a page request
+  "take me to Helen's page, I need her payment", "open Grace Okafor's page so we can look at the payment",
+  "pull up Grace Okafor's file, I want to go over her payment", "open the Chen file for the cash-out"];
 const NO = ["show me who's at their target", "show me today's rates", "what's Helen's target?", "log a call with Helen",
   "open the email", "open it in Gmail", "look up the Cowboys score", "look up Helen's balance", "who should I call?",
   "what are rates today", "show me Helen's target", "show me what Helen owes", "pull up", "open the draft",

@@ -94,7 +94,7 @@ test("at today's rate: the stored 30- or 15-year FRED average, said as an estima
 test("blended and buydown lines, spec examples", () => {
   assert.equal(tools.blendedRateCalcTool({ firstBalance: 300000, firstRate: 3, firstMonthsLeft: 300, cashNeeded: 100000,
     second: { kind: "second", rate: 8.5, termYears: 20, costs: 1500 }, cashOut: { rate: 6.75, termYears: 30 }, compareYears: 7 }, ctxLo1).say,
-    "Keeping the 3% first and adding a $100,000 second at 8.5% over 20 years blends to 4.375% at $2,290.45 a month. A cash-out to " +
+    "Keeping the $300,000 first at 3% with 300 months left and adding a second of $100,000 at 8.5% over 20 years blends to 4.375% at $2,290.45 a month. A cash-out to " +
     "$406,500 at 6.75% over 30 years, with estimated costs of $6,500 in the loan, is $2,636.55 a month. Over 7 years, keeping the " +
     "first costs $77,629 less.");
   assert.equal(tools.buydownCalcTool({ kind: "2-1", loanAmount: 400000, noteRate: 7 }, ctxLo1).say,
@@ -168,7 +168,7 @@ test("break-even wording: no costs, no saving, a month left", () => {
 test("blended: a HELOC adds its note; today's average on the cash-out rate only", () => {
   const heloc = tools.blendedRateCalcTool({ firstBalance: 300000, firstRate: 3, firstMonthsLeft: 300, cashNeeded: 100000,
     second: { kind: "heloc", rate: 8.5, termYears: 20 }, cashOut: { rate: 6.75, termYears: 30 }, compareYears: 7 }, ctxLo1).say;
-  assert.match(heloc, /adding a \$100,000 HELOC at 8\.5% over 20 years/);
+  assert.match(heloc, /adding a HELOC of \$100,000 at 8\.5% over 20 years/);
   assert.ok(heloc.endsWith(" " + calc.CALC_LINES.helocNote));
   const avg = tools.blendedRateCalcTool({ firstBalance: 300000, firstRate: 3, firstMonthsLeft: 300, cashNeeded: 100000,
     second: { rate: 8.5, termYears: 20 }, cashOut: { useTodaysAverage: true } }, ctxLo1);
@@ -182,7 +182,7 @@ test("blended: a HELOC adds its note; today's average on the cash-out rate only"
     "How much cash do they need?");
 });
 test("buydown: points said without a kind is points; zero cost; a bare points kind asks how many", () => {
-  assert.match(tools.buydownCalcTool({ loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 1 }, ctxLo1).say, /, 1 point for \$4,000\.00 take /);
+  assert.match(tools.buydownCalcTool({ loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 1 }, ctxLo1).say, /, 1 point for \$4,000\.00 takes the rate /);
   assert.match(tools.buydownCalcTool({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 0 }, ctxLo1).say,
     /saving \$132\.94 a month\. No cost entered\.$/);
   assert.equal(tools.buydownCalcTool({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5 }, ctxLo1).say, "How many points?");
@@ -203,4 +203,59 @@ test("the tools are registered and described: figures are numbers, clientId an i
   assert.equal(be.newRate.type, "number");
   assert.deepEqual(tools.TOOL_SCHEMA.find((s) => s.name === "buydownCalcTool").input_schema.properties.kind.enum, ["2-1", "3-2-1", "1-0", "points"]);
   assert.equal(tools.TOOL_SCHEMA.find((s) => s.name === "buydownCalcTool").input_schema.properties.clientId, undefined);
+});
+
+// ── final fix wave ──
+const recordClient = (name, f) => addClient(lo1, { name, loanType: "30yr_fixed", rate: 6.75, balance: 250000, value: 400000, score: 720,
+  scoreKnown: 1, closeDate: "2023-01-20", balanceAsOf: "2026-11-25", ...f });
+const scoreZeroId = recordClient("Zed Zero");
+const scoreHighId = recordClient("Hy Score");
+const bigBalanceId = recordClient("Bigg Balance", { balance: 60000000, value: 90000000 });
+const highRateId = recordClient("Ray Highrate", { rate: 25 });
+db.prepare("UPDATE clients SET credit_score = 0 WHERE id = ?").run(scoreZeroId);
+db.prepare("UPDATE clients SET credit_score = 900 WHERE id = ?").run(scoreHighId);
+
+test("fix I2: a negative saving is said as its size; an exact $0.00 saving drops the clause", () => {
+  const worse = tools.breakEvenCalcTool({ currentBalance: 350000, currentRate: 6.25, monthsLeft: 324, newRate: 7.25 }, ctxLo1).say;
+  assert.doesNotMatch(worse, /\$-/);
+  assert.match(worse, /to \$\d[\d,]*\.\d\d, \$\d[\d,]*\.\d\d more a month\. The new payment isn't lower/);
+  assert.equal(tools.breakEvenCalcTool({ currentBalance: 350000, currentRate: 6.25, monthsLeft: 360, newRate: 6.25 }, ctxLo1).say,
+    "Taking the $350,000 at 6.25% with 360 months left to 6.25% over 30 years moves the payment from $2,155.01 to $2,155.01. " +
+    "The new payment isn't lower, so the costs are never earned back.");
+});
+test("fix I3: a blended cash-out above $50,000,000 is refused on the cash needed, nothing throws", () => {
+  const r = tools.blendedRateCalcTool({ firstBalance: 30000000, firstRate: 3, firstMonthsLeft: 300, cashNeeded: 30000000,
+    second: { rate: 8.5 }, cashOut: { rate: 6.75 } }, ctxLo1);
+  assert.equal(r.say, "Enter an amount above $0, up to $50,000,000.");
+  assert.deepEqual(r.data, { calculator: "blendedRate", refused: "cashNeeded" });
+});
+test("fix I4: the payment and blended lines name the client and say the record's figures", () => {
+  assert.equal(tools.paymentCalcTool({ clientId: okaforId }, ctxLo1).say,
+    "On Grace Okafor's $350,000 at 7.25% over 30 years, principal and interest is $2,387.62 a month, before taxes, insurance and any HOA.");
+  assert.match(tools.paymentCalcTool({ clientId: okaforId, taxesYearly: 4800 }, ctxLo1).say,
+    /^On Grace Okafor's \$350,000 at 7\.25% over 30 years, the payment is \$2,787\.62 a month: \$2,387\.62 principal and interest, \$400\.00 taxes\./);
+  const blended = tools.blendedRateCalcTool({ clientId: okaforId, cashNeeded: 50000, second: { rate: 8.5 }, cashOut: { rate: 6.75 } }, ctxLo1).say;
+  assert.match(blended, /^Keeping Grace Okafor's \$350,000 first at 7\.25% with 330 months left and adding a second of \$50,000 at 8\.5% over 30 years blends to /);
+  assert.match(tools.blendedRateCalcTool({ firstBalance: 300000, firstRate: 3, firstMonthsLeft: 1, cashNeeded: 100000,
+    second: { rate: 8.5 }, cashOut: { rate: 6.75 } }, ctxLo1).say, /^Keeping the \$300,000 first at 3% with 1 month left and adding/);
+});
+test("fix M2: one point takes, more points take", () => {
+  assert.match(tools.buydownCalcTool({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 1 }, ctxLo1).say, / 1 point for \$4,000\.00 takes the rate /);
+  assert.match(tools.buydownCalcTool({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 2 }, ctxLo1).say, / 2 points for \$8,000\.00 take the rate /);
+});
+test("fix M4: a second's kind is read in any case", () => {
+  for (const kind of ["HELOC", "Heloc", "heloc"]) {
+    const r = tools.blendedRateCalcTool({ firstBalance: 300000, firstRate: 3, firstMonthsLeft: 300, cashNeeded: 100000,
+      second: { kind, rate: 8.5, termYears: 20 }, cashOut: { rate: 6.75 } }, ctxLo1);
+    assert.equal(r.data.result.inputs.secondKind, "heloc", kind);
+    assert.match(r.say, /adding a HELOC of \$100,000/, kind);
+  }
+});
+test("fix M6: a record figure outside the limits is not on record; a said one is still refused", () => {
+  assert.equal(tools.paymentCalcTool({ clientId: scoreZeroId }, ctxLo1).data.result.inputs.creditScore, null);
+  assert.equal(tools.paymentCalcTool({ clientId: scoreHighId }, ctxLo1).data.result.inputs.creditScore, null);
+  assert.equal(tools.paymentCalcTool({ clientId: bigBalanceId }, ctxLo1).say, "What's the loan amount?");
+  assert.equal(tools.breakEvenCalcTool({ clientId: highRateId, newRate: 6 }, ctxLo1).say, "What's the rate?");
+  assert.equal(tools.paymentCalcTool({ clientId: bigBalanceId, loanAmount: 60000000 }, ctxLo1).say, "Enter an amount above $0, up to $50,000,000.");
+  assert.equal(tools.paymentCalcTool({ clientId: highRateId, rate: 25 }, ctxLo1).say, "Enter a rate from 0% to 20%.");
 });

@@ -1919,6 +1919,10 @@ const toolResultBlock = (id, source, data, isError) => {
 
 const cleanName = (n) => (typeof n === "string" ? n.replace(/\s+/g, " ").trim() : "");
 
+// A calculator tool's code-written line (a non-empty string), and only a calculator tool's: a `say` on any other result is ignored.
+const sayOf = (name, result) =>
+  (CALC_TOOLS.has(name) && result && typeof result.say === "string" && result.say.trim() !== "" ? result.say : undefined);
+
 // Runs one tool and shapes what goes back to the model. A throwing tool never leaks its error
 // text to the model: it becomes an is_error result the model can apologise for (a tool that returns a Promise, as the Google
 // ones do, is awaited, and one that rejects is the same). Returns { source, sideEffect?, compose?, screen?, say?, data, toolResult };
@@ -1931,7 +1935,7 @@ async function runTool(block, ctx) {
     let { sideEffect } = result;
     const compose = result.compose && typeof result.compose === "object" ? result.compose : undefined;
     const screen = result.screen && typeof result.screen === "object" ? result.screen : undefined;
-    const say = typeof result.say === "string" && result.say.trim() !== "" ? result.say : undefined;
+    const say = sayOf(block.name, result);
     if (sideEffect && sideEffect.type === "addClient") {
       // The saved name must be the one the read-back speaks; no usable name means nothing to confirm.
       const fields = sideEffect.fields || {};
@@ -3469,7 +3473,7 @@ async function runTurn({ messages, ctx, client, judge, adviceJudge, deadlineMs =
 }
 
 module.exports = {
-  runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
+  sayOf, runTurn, DEFAULT_TURN_DEADLINE_MS, MIN_CALL_MS, screenUngroundedText, ungroundedNumbers, isLoneClarifyingQuestion, stripOpener, claimsCompletion,
   isYesNoQuestion, isActionRequest, isQuestionShaped, isCitation, claimsStage, stageClaims, forModel, claimsEventChange, calendarChangeBusiness, isEventChangeRequest,
   classifyUngrounded, verdictLine, charliModel, randomJokeTopic, isSkip, isNavigationTurn,
 };

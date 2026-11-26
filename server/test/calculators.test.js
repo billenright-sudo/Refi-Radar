@@ -275,3 +275,13 @@ each("closingCostsEstimate: the app's estimate, whole dollars, only for a balanc
   for (const bad of [0, -1, NaN, null, undefined, "350000", 50000001]) assert.equal(m.closingCostsEstimate(bad), null, String(bad));
   assert.notEqual(m.closingCostsEstimate(50000000), null);
 });
+
+// ---- final fix wave (I3) ----
+each("blended: a first balance plus cash needed above $50,000,000 is refused on the cash needed, with no result", (side) => {
+  const r = side.blendedRateCalc({ ...BLEND, firstBalance: 30000000, cashNeeded: 30000000 });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors, { cashNeeded: side.CALC_LINES.amount });
+  assert.equal("out" in r, false);
+  // exactly at the limit is still worked
+  assert.equal(side.blendedRateCalc({ ...BLEND, firstBalance: 30000000, cashNeeded: 20000000, cashOutCosts: 0 }).ok, true);
+});

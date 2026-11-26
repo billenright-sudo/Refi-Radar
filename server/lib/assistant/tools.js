@@ -456,7 +456,11 @@ const calcRate = (v) => {
 };
 // A figure the user said wins over the record; one said but unreadable is asked for (the record never stands in for it).
 const saidOr = (raw, read, fromRecord) => (unsaid(raw) ? (fromRecord === undefined ? null : fromRecord) : read(raw));
-const recordAmount = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+// A figure from the record is used only when it is inside the calculators' limits (CALC_LIMITS); outside them it counts as not on
+// record (an optional one is left out, a required one is asked for), so she never says a limit line for a figure nobody said.
+const LIMITS = calc.CALC_LIMITS;
+const recordFig = (v, ok) => (typeof v === "number" && Number.isFinite(v) && ok(v) ? v : null);
+const recordAmount = (v) => recordFig(v, (n) => n > 0 && n <= LIMITS.amountMax);
 
 // The client's figures as the page's "Open in calculator" fills them in: today's balance and cautious value (the today block, as the
 // rate lenses price them), the rate on file, months left (30- and 15-year fixed with a close date only) and the score only when it is
@@ -471,9 +475,9 @@ function calcClient(a, ctx) {
   const view = upgradeAlerts.safeUpgradeViewsFor(ctx.db, [row], upgradeAlerts.safeCheckUpgrades(ctx.db, ctx.user.org_id, now), now).get(row.id);
   const today = view ? view.today : undefined;
   const priced = refi.pricedToday(refi.norm(row), today);
-  const rate = typeof row.current_rate === "number" && Number.isFinite(row.current_rate) && row.current_rate > 0 ? row.current_rate : null;
-  const months = today && Number.isInteger(today.monthsLeft) ? today.monthsLeft : null;
-  const score = row.credit_score_known === 1 && typeof row.credit_score === "number" && Number.isFinite(row.credit_score) ? row.credit_score : null;
+  const rate = recordFig(row.current_rate, (n) => n > 0 && n <= LIMITS.rateMax);
+  const months = today ? recordFig(today.monthsLeft, (n) => Number.isInteger(n) && n >= 1 && n <= LIMITS.monthsMax) : null;
+  const score = row.credit_score_known === 1 ? recordFig(row.credit_score, (n) => n >= LIMITS.scoreMin && n <= LIMITS.scoreMax) : null;
   return { row, figures: { balance: recordAmount(priced.loanBalance), value: recordAmount(priced.propertyValue), rate, months, score } };
 }
 
@@ -513,7 +517,8 @@ function paymentCalcTool(args, ctx) {
     taxesYearly: calcNum(a.taxesYearly), insuranceYearly: calcNum(a.insuranceYearly), miMonthly: calcNum(a.miMonthly),
     hoaMonthly: calcNum(a.hoaMonthly), homeValue: f.value === undefined ? null : f.value, creditScore: f.score === undefined ? null : f.score,
   };
-  return calcReply("payment", calc.paymentCalc(input), c.row, false, calcLines.paymentLine);
+  const name = c.row ? c.row.name : undefined;
+  return calcReply("payment", calc.paymentCalc(input), c.row, false, (r) => calcLines.paymentLine(r, { clientName: name }));
 }
 
 function breakEvenCalcTool(args, ctx) {
@@ -555,11 +560,11 @@ function blendedRateCalcTool(args, ctx) {
   const input = {
     firstBalance: saidOr(a.firstBalance, calcNum, f.balance), firstRate: saidOr(a.firstRate, calcRate, f.rate),
     firstMonthsLeft: saidOr(a.firstMonthsLeft, calcNum, f.months), cashNeeded: saidOr(a.cashNeeded, calcNum),
-    secondKind: second.kind === "heloc" ? "heloc" : "second", secondRate: saidOr(second.rate, calcRate),
+    secondKind: typeof second.kind === "string" && second.kind.trim().toLowerCase() === "heloc" ? "heloc" : "second", secondRate: saidOr(second.rate, calcRate),
     secondTermYears: calcNum(second.termYears), secondCosts: calcNum(second.costs),
     cashOutRate, cashOutTermYears, cashOutCosts: calcNum(cashOut.costs), compareYears: calcNum(a.compareYears),
   };
-  return calcReply("blendedRate", calc.blendedRateCalc(input), c.row, todaysAverage, (r) => calcLines.blendedLine(r, { todaysAverage }));
+  return calcReply("blendedRate", calc.blendedRateCalc(input), c.row, todaysAverage, (r) => calcLines.blendedLine(r, { clientName: c.row ? c.row.name : undefined, todaysAverage }));
 }
 
 // No client: a buydown is a question about a new loan.

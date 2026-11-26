@@ -97,9 +97,10 @@ const QUESTION_WORD_RE = /\b(?:what|who|whom|whose|when|where|why|how|which|is|a
 const POSSESSIVE_RE = /['’]s\b|s['’](?:\s|$)/;
 // (Calculators, spec risk 4) a calculator topic: "show me the break-even on the Chens" or "pull up the payment for Helen" is a
 // calculator question, not a page, unless the sentence names a page of the app (PAGE_MENTION_RE: "open billing so I can update my
-// payment method", "take me to Rate Watch, I want to see where points are", "open the calculator").
+// payment method", "take me to Rate Watch, I want to see where points are", "open the calculator") or says page / file / screen
+// (SCREEN_WORD_RE: "open Grace Okafor's page so we can look at the payment", "open the Chen file for the cash-out").
 const CALC_TOPIC_RE = /\b(?:break[\s-]?even|payments?|blended|blend|buy[\s-]?downs?|points|cash[\s-]?out)\b/;
-const calcTopicOnly = (rest) => CALC_TOPIC_RE.test(rest) && !/\bcalculators?\b/.test(rest) && !PAGE_MENTION_RE.test(rest);
+const calcTopicOnly = (rest) => CALC_TOPIC_RE.test(rest) && !/\bcalculators?\b/.test(rest) && !PAGE_MENTION_RE.test(rest) && !SCREEN_WORD_RE.test(rest);
 
 // (final review I1) "'s page" / "'s file" and the plural "s' page" / "s' file" go with the rest ("show me the Chens' file" -> "the chens")
 const TRAILING_RE = /(?:'s\s+(?:page|file)|(?<=s)'\s+(?:page|file)|\s+(?:page|file|please|for\s+me))$|[\s.?!,;:]+$/;

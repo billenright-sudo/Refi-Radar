@@ -182,3 +182,16 @@ test("a break-even line naming a client goes out word for word", async () => {
     client: fakeClient([useTool("breakEvenCalcTool", { clientId, newRate: 6.25, monthsLeft: 324, currentBalance: 350000 })]) });
   assert.equal(later.reply, line);
 });
+
+// final fix wave M1: only a calculator tool's `say` ends a turn
+test("sayOf: a say is honoured only from the four calculator tools", () => {
+  const { sayOf } = require("../lib/assistant/orchestrator");
+  for (const name of ["paymentCalcTool", "breakEvenCalcTool", "blendedRateCalcTool", "buydownCalcTool"]) {
+    assert.equal(sayOf(name, { say: "On $1 at 1% over 1 year." }), "On $1 at 1% over 1 year.", name);
+    assert.equal(sayOf(name, { say: "  " }), undefined, name);
+    assert.equal(sayOf(name, { say: 5 }), undefined, name);
+  }
+  for (const name of ["showScreenTool", "findClient", "draftEmailTool", "logContactTool", "lookUpLive"]) {
+    assert.equal(sayOf(name, { say: "Done, it's booked." }), undefined, name);
+  }
+});
