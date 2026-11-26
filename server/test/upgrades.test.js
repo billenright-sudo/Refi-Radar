@@ -769,3 +769,14 @@ describe("today block golden", () => {
     FIXTURES.forEach((c, i) => assert.deepStrictEqual(withoutMonthsLeft(upgradesFor(c, R, T)), GOLDEN[i], "fixture " + i));
   });
 });
+
+describe("months left in the today block", () => {
+  const fixture30 = { loanProgram: "conventional", occupancy: "primary", loanType: "30yr_fixed", currentRate: 7.25, loanBalance: 360000, balanceAsOf: "2024-03-15", closeDate: "2024-03-15", originalAmount: 380000, originalValue: 475000, propertyValue: 475000, valueAsOf: "2024-03-15", propertyZip: "85016", creditScore: 742, creditScoreKnown: true, monthlyMi: null, editedByHand: "" };
+  const T = "2026-11-25", R = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91 };
+  test("monthsLeft is on the today block (last key of the block todayBlock builds)", () => {
+    assert.strictEqual(upgradesFor(fixture30, R, T).today.monthsLeft, 330);
+    assert.strictEqual(U.todayFigures(fixture30, T).monthsLeft, 330);
+    assert.strictEqual(Object.keys(U.todayFigures(fixture30, T)).at(-1), "monthsLeft");
+    assert.strictEqual(upgradesFor({ ...fixture30, loanType: "5_1_arm" }, R, T).today.monthsLeft, null);
+  });
+});
