@@ -3,8 +3,8 @@
 import { createContext, useContext, useState } from "react";
 import { gridCols } from "./layout.mjs";
 import { useIsPhone } from "./useIsPhone.js";
-import { CALC_LINES, paymentCalc, breakEvenCalc, blendedRateCalc, buydownCalc, fmtCents, fmtDollars, fmtRate, fmtBlended } from "./calculators.mjs";
-import { CARDS, freshInputs, inputFor, fredLink, fmtSigned, readNumber, MONTHS_MISSING, prefillStrip, prefillInputs } from "./calculatorsPage.mjs";
+import { CALC_LINES, paymentCalc, breakEvenCalc, blendedRateCalc, buydownCalc, closingCostsEstimate, fmtCents, fmtDollars, fmtRate, fmtBlended } from "./calculators.mjs";
+import { CARDS, freshInputs, inputFor, fredLink, readNumber, fmtSigned, lifeDifference, seedTouched, MONTHS_MISSING, prefillStrip, prefillInputs } from "./calculatorsPage.mjs";
 
 const Ctx = createContext(null);
 
@@ -181,7 +181,7 @@ function BreakEvenCard() {
   const r = breakEvenCalc(inputFor("breakEven", s));
   const errors = r.ok ? null : r.errors;
   const blank = (f) => s[f].trim() === "";
-  const costsEst = r.ok && r.estimated.closingCosts && blank("closingCosts");
+  const costsFigure = blank("closingCosts") ? closingCostsEstimate(readNumber(s.currentBalance)) : null;
   const miNewEst = r.ok && r.estimated.miNew && blank("miNewMonthly");
   const F = (field, label, extra) => <Field cardId="breakEven" field={field} label={label} errors={errors} {...extra} />;
   const o = r.ok ? r.out : null;
@@ -194,7 +194,7 @@ function BreakEvenCard() {
         {F("monthsLeft", "Months left on the current loan", { children: <MonthsMissing cardId="breakEven" field="monthsLeft" /> })}
         {F("newRate", "New rate (% a year)", { children: <AverageLink cardId="breakEven" field="newRate" termYears={s.newTermYears} /> })}
         {F("newTermYears", "New term (years)")}
-        {F("closingCosts", "Closing costs ($)", { tag: costsEst ? CALC_LINES.estimateTag : null, placeholder: costsEst ? String(r.out.closingCosts) : "" })}
+        {F("closingCosts", "Closing costs ($)", { tag: costsFigure !== null ? CALC_LINES.estimateTag : null, placeholder: costsFigure !== null ? String(costsFigure) : "" })}
         <Choice label="Costs paid how" options={[["cash", "In cash"], ["loan", "Added to the new loan"]]} current={s.costsPaid} onPick={(v) => set("breakEven", "costsPaid", v)} />
         {F("miNowMonthly", "Mortgage insurance now ($ a month)")}
         {F("miNewMonthly", "Mortgage insurance on the new loan ($ a month)", { tag: miNewEst ? CALC_LINES.estimateTag : null, placeholder: miNewEst ? String(r.out.miNew) : "" })}
@@ -213,7 +213,7 @@ function BreakEvenCard() {
             {o.costsInLoan && <Tile label="New loan amount" value={fmtDollars(o.newAmount)} />}
             <Tile label="Still to pay, current loan" value={fmtDollars(o.currentTotal)} />
             <Tile label="To pay, new loan" value={fmtDollars(o.newTotal)} />
-            <Tile label="New minus current" value={fmtSigned(o.totalDifference)} />
+            <Tile label="Difference over the life of the loan" value={lifeDifference(o.totalDifference)} />
           </Tiles>
           <Lines warnings={r.warnings} notes={r.notes.filter((n) => n !== CALC_LINES.noCosts)} />
         </Results>
@@ -227,7 +227,8 @@ function BlendedCard() {
   const s = vals.blended;
   const r = blendedRateCalc(inputFor("blended", s));
   const errors = r.ok ? null : r.errors;
-  const costsEst = r.ok && r.estimated.cashOutCosts && s.cashOutCosts.trim() === "";
+  const first = readNumber(s.firstBalance), cash = readNumber(s.cashNeeded);
+  const costsFigure = s.cashOutCosts.trim() === "" && first > 0 && cash > 0 ? closingCostsEstimate(first + cash) : null;
   const F = (field, label, extra) => <Field cardId="blended" field={field} label={label} errors={errors} {...extra} />;
   const o = r.ok ? r.out : null;
   const years = r.ok ? r.inputs.compareYears : null;
@@ -248,7 +249,7 @@ function BlendedCard() {
         {F("secondCosts", "Second closing costs ($, paid in cash)")}
         {F("cashOutRate", "Cash-out rate (% a year)", { children: <AverageLink cardId="blended" field="cashOutRate" termYears={s.cashOutTermYears} /> })}
         {F("cashOutTermYears", "Cash-out term (years)")}
-        {F("cashOutCosts", "Cash-out closing costs ($, added to the new loan)", { tag: costsEst ? CALC_LINES.estimateTag : null, placeholder: costsEst ? String(r.out.cashOutCosts) : "" })}
+        {F("cashOutCosts", "Cash-out closing costs ($, added to the new loan)", { tag: costsFigure !== null ? CALC_LINES.estimateTag : null, placeholder: costsFigure !== null ? String(costsFigure) : "" })}
         {F("compareYears", "Compare over (years)")}
       </>}
       results={o && (
@@ -336,7 +337,7 @@ export default function CalculatorsView({ rates, prefill, onClearPrefill, ui }) 
     for (const k of Object.keys(seed)) Object.assign(v[k], seed[k]);
     return v;
   });
-  const [touched, setTouched] = useState({});
+  const [touched, setTouched] = useState(() => (prefill ? seedTouched(prefillInputs(prefill)) : {}));
 
   const set = (cardId, field, value) => setVals((v) => ({ ...v, [cardId]: { ...v[cardId], [field]: value } }));
   const touch = (cardId, field) => setTouched((t) => (t[`${cardId}.${field}`] ? t : { ...t, [`${cardId}.${field}`]: true }));

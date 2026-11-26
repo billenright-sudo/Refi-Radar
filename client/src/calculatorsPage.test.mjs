@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readNumber, fredLink, CARDS, freshInputs, inputFor, pointsFromEdit, fmtSigned, MONTHS_MISSING, prefillFrom, prefillStrip, prefillInputs } from "./calculatorsPage.mjs";
+import { readNumber, fredLink, CARDS, freshInputs, inputFor, pointsFromEdit, fmtSigned, MONTHS_MISSING, lifeDifference, seedTouched, prefillFrom, prefillStrip, prefillInputs } from "./calculatorsPage.mjs";
 import { paymentCalc, breakEvenCalc, blendedRateCalc, buydownCalc } from "./calculators.mjs";
 
 test("Review Focus 1: readNumber reads typed and pasted money", () => {
@@ -96,4 +96,17 @@ test("prefillInputs: only the figures the cards use; a null figure is a blank st
   const i = prefillInputs(prefillFrom({ ...CHEN, upgrades: null, currentRate: null, propertyValue: 0 }));
   assert.deepEqual(i.payment, { loanAmount: "360000", rate: "", homeValue: "", creditScore: "742" });
   assert.deepEqual(i.blended, { firstBalance: "360000", firstRate: "", firstMonthsLeft: "" });
+});
+
+test("lifeDifference: more, less or equal over the life of the loan", () => {
+  assert.equal(lifeDifference(24676), "$24,676 more");
+  assert.equal(lifeDifference(-16752), "$16,752 less");
+  assert.equal(lifeDifference(0), "$0");
+});
+test("seedTouched: every field a pre-fill filled in counts as touched, and only those", () => {
+  const t = seedTouched(prefillInputs(prefillFrom(CHEN)));
+  assert.equal(t["breakEven.currentBalance"], true); assert.equal(t["payment.rate"], true); assert.equal(t["blended.firstMonthsLeft"], true);
+  assert.equal(t["breakEven.newRate"], undefined);
+  const blank = seedTouched(prefillInputs(prefillFrom({ ...CHEN, creditScoreKnown: false })));
+  assert.equal(blank["breakEven.creditScore"], undefined);
 });

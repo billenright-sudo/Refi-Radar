@@ -52,6 +52,10 @@ const remainingBalance = (p, rate, years, paid) => {
   return p * g - (pay * (g - 1)) / r;
 };
 
+// The app's closing-cost estimate for a loan of this size, in whole dollars; null when the size is missing or outside the limits.
+const closingCostsEstimate = (balance) => (typeof balance === "number" && Number.isFinite(balance) && balance > 0 && balance <= CALC_LIMITS.amountMax
+  ? roundDollars(estClosingCosts(balance)) : null);
+
 const fmtCents = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDollars = (n) => "$" + Math.round(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
 const fmtAmount = (n) => (Number.isInteger(n) ? fmtDollars(n) : fmtCents(n));
@@ -136,7 +140,7 @@ const breakEvenCalc = (input) => {
   const newTermYears = orDefault(input.newTermYears, 30);
   if (input.newTermYears == null) defaulted.push("newTermYears");
   let closingCosts = input.closingCosts;
-  if (closingCosts == null) { closingCosts = roundDollars(estClosingCosts(currentBalance)); estimated.closingCosts = true; }
+  if (closingCosts == null) { closingCosts = closingCostsEstimate(currentBalance); estimated.closingCosts = true; }
   const costsInLoan = input.costsInLoan === true;
   const newAmount = currentBalance + (costsInLoan ? closingCosts : 0);
   const miNow = roundCents(orDefault(input.miNowMonthly, 0));
@@ -188,7 +192,7 @@ const blendedRateCalc = (input) => {
   const secondCosts = orDefault(input.secondCosts, 0);
   if (input.secondCosts == null) notEntered.push("secondCosts");
   let cashOutCosts = input.cashOutCosts;
-  if (cashOutCosts == null) { cashOutCosts = roundDollars(estClosingCosts(firstBalance + cashNeeded)); estimated.cashOutCosts = true; }
+  if (cashOutCosts == null) { cashOutCosts = closingCostsEstimate(firstBalance + cashNeeded); estimated.cashOutCosts = true; }
   const blendedRate = roundRate((firstBalance * firstRate + cashNeeded * secondRate) / (firstBalance + cashNeeded));
   const firstPayment = roundCents(calcPayment(firstBalance, firstRate, firstMonthsLeft / 12));
   const secondPayment = roundCents(calcPayment(cashNeeded, secondRate, secondTermYears));
@@ -262,5 +266,5 @@ const buydownCalc = (input) => {
 // ---- calculators: shared math end ----
 
 module.exports = {
-  CALC_LIMITS, CALC_LINES, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc, blendedRateCalc, BUYDOWN_STEPS, buydownCalc,
+  CALC_LIMITS, CALC_LINES, closingCostsEstimate, roundCents, roundDollars, roundRate, remainingBalance, fmtCents, fmtDollars, fmtAmount, fmtRate, fmtBlended, possessive, paymentCalc, breakEvenCalc, blendedRateCalc, BUYDOWN_STEPS, buydownCalc,
 };

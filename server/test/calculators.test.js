@@ -268,3 +268,10 @@ each("fix 4: break-even says which monthly MI amounts were not entered", (side) 
   assert.deepEqual(side.breakEvenCalc({ ...L, homeValue: 400000, creditScore: 740, costsInLoan: true }).notEntered, ["miNow"]);
   assert.deepEqual(side.breakEvenCalc({ ...L, miNowMonthly: 0, miNewMonthly: 0 }).notEntered, []);
 });
+
+each("closingCostsEstimate: the app's estimate, whole dollars, only for a balance inside the limits", (m) => {
+  assert.equal(m.closingCostsEstimate(350000), 6000);
+  assert.equal(m.closingCostsEstimate(400000), 6500);
+  for (const bad of [0, -1, NaN, null, undefined, "350000", 50000001]) assert.equal(m.closingCostsEstimate(bad), null, String(bad));
+  assert.notEqual(m.closingCostsEstimate(50000000), null);
+});

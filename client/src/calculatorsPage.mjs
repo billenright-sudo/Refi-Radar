@@ -121,3 +121,13 @@ export function prefillInputs(p) {
     blended: { firstBalance: str(p.balance), firstRate: str(p.rate), firstMonthsLeft: str(p.monthsLeft) },
   };
 }
+
+// The break-even tile "Difference over the life of the loan": new total minus current total, in words.
+export const lifeDifference = (n) => (n > 0 ? `${fmtDollars(n)} more` : n < 0 ? `${fmtDollars(-n)} less` : "$0");
+
+// The fields a pre-fill filled in count as touched, so a figure outside a limit shows its line at once.
+export function seedTouched(seed) {
+  const t = {};
+  for (const [card, fields] of Object.entries(seed)) for (const [f, v] of Object.entries(fields)) if (v !== "") t[`${card}.${f}`] = true;
+  return t;
+}
