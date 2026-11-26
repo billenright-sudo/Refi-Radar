@@ -176,3 +176,59 @@ each("points edge cases", (side) => {
   assert.deepEqual(side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5 }).missing, ["points"]);
   assert.equal(side.buydownCalc({ kind: "points", loanAmount: 400000, noteRate: 7, rateWithPoints: 6.5, points: 21 }).errors.points, side.CALC_LINES.points);
 });
+
+test("500 input sets give identical results from both files", async () => {
+  const refiClient = await import(require("url").pathToFileURL(path.join(__dirname, "../../client/src/refiAnalysis.mjs")).href);
+  const refiServer = require("../lib/refi");
+  const pmiServer = require("../lib/pmi");
+  // 32-bit LCG, fixed seed: the same 500 sets on every run
+  let state = 20261125;
+  const next = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+  const int = (lo, hi) => lo + Math.floor(next() * (hi - lo + 1));
+  const pick = (a) => a[int(0, a.length - 1)];
+  const rate = () => int(0, 96) * 0.125;                 // 0 to 12 in steps of 0.125
+  const amount = () => int(10000, 2000000);
+  const maybe = (v, p = 0.25) => (next() < p ? null : v);  // some optional fields blank
+  const wild = (v, bad) => (next() < 0.06 ? bad : v);     // now and then a value outside the limits or missing
+
+  const makers = {
+    paymentCalc: () => ({ loanAmount: wild(amount(), pick([null, 0, 60000000])), rate: wild(rate(), pick([null, 21])), termYears: maybe(int(1, 40)),
+      taxesYearly: maybe(int(0, 20000)), insuranceYearly: maybe(int(0, 8000)), miMonthly: maybe(int(0, 400)), hoaMonthly: maybe(int(0, 800)),
+      homeValue: maybe(amount()), creditScore: maybe(int(600, 800)) }),
+    breakEvenCalc: () => ({ currentBalance: wild(amount(), pick([null, 0])), currentRate: rate(), monthsLeft: wild(int(1, 480), pick([null, 481])),
+      newRate: wild(rate(), pick([null, 25])), newTermYears: maybe(int(1, 40)), closingCosts: maybe(int(0, 30000)),
+      costsInLoan: pick([true, false, null]), miNowMonthly: maybe(int(0, 300)), miNewMonthly: maybe(int(0, 300), 0.5),
+      homeValue: maybe(amount()), creditScore: maybe(int(600, 800)) }),
+    blendedRateCalc: () => ({ firstBalance: wild(amount(), pick([null, 0])), firstRate: rate(), firstMonthsLeft: int(1, 480),
+      cashNeeded: wild(int(5000, 500000), pick([null, 0])), secondKind: pick(["second", "heloc", null]), secondRate: rate(),
+      secondTermYears: maybe(int(1, 40)), secondCosts: maybe(int(0, 8000)), cashOutRate: wild(rate(), pick([null, 30])),
+      cashOutTermYears: maybe(int(1, 40)), cashOutCosts: maybe(int(0, 20000), 0.5), compareYears: maybe(int(1, 40)) }),
+    buydownCalc: () => {
+      const kind = pick(["2-1", "3-2-1", "1-0", "points", "points"]);
+      const noteRate = rate();
+      return { kind: wild(kind, "9-9"), loanAmount: amount(), noteRate, termYears: maybe(int(1, 40)),
+        rateWithPoints: Math.max(0, noteRate - int(0, 16) * 0.125), points: pick([null, int(0, 40) * 0.25]),
+        pointsCost: pick([null, int(0, 20000)]) };
+    },
+  };
+
+  const seen = { paymentCalc: [0, 0], breakEvenCalc: [0, 0], blendedRateCalc: [0, 0], buydownCalc: [0, 0] };  // [sets, refusals]
+  const names = Object.keys(makers);
+  for (let i = 0; i < 500; i++) {
+    const name = names[i % names.length];
+    const set = makers[name]();
+    const s = server[name](set), c = client[name](set);
+    assert.deepEqual(c, s, `${name} set ${i}: ${JSON.stringify(set)}`);
+    seen[name][0]++; if (!s.ok) seen[name][1]++;
+
+    const amt = amount(), r = rate(), term = int(1, 40), score = int(600, 800), ltv = int(70, 99);
+    assert.equal(refiClient.calcPayment(amt, r, term), refiServer.calcPayment(amt, r, term));
+    assert.equal(refiClient.estClosingCosts(amt), refiServer.estClosingCosts(amt));
+    assert.equal(refiClient.pmiMonthly(score, ltv, term, amt), pmiServer.pmiMonthly(score, ltv, term, amt));
+  }
+  for (const name of names) {
+    assert.ok(seen[name][0] >= 100, `${name}: ${seen[name][0]} sets`);
+    assert.ok(seen[name][1] >= 1, `${name}: no refusal seen`);
+    assert.ok(seen[name][0] > seen[name][1], `${name}: no result seen`);
+  }
+});
