@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { OPEN_URL, OPEN_MESSAGE } from "./open.mjs";
 
 const SOURCE = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
 const plain = (value) => JSON.parse(JSON.stringify(value));   // the script's objects come from another realm
@@ -61,15 +62,50 @@ test("install and activate take over at once, and nothing is cached or fetched",
   assert.ok(!/caches|fetch\(/.test(SOURCE.replace(/\/\/.*$/gm, "")), "the worker never touches a cache or the network");
 });
 
-test("click: a window on the home path is focused and reloaded; a window on another path is focused and left alone; none opens /", async () => {
+test("the worker's open address and message are the app's (open.mjs)", () => {
+  assert.ok(SOURCE.includes(`const OPEN_URL = ${JSON.stringify(OPEN_URL)};`), "the same address as open.mjs");
+  assert.ok(SOURCE.includes(`const OPEN_MESSAGE = ${JSON.stringify(OPEN_MESSAGE)};`), "the same message as open.mjs");
+});
+
+test("click: a home window that cannot be navigated is asked to go Home itself, then focused", async () => {
+  const notification = { close: () => {} };
+  const at = "https://app.example.test/";
+
+  const noNavigateLog = [];
+  const noNavigate = load({ windows: [{ url: at, postMessage: (data) => { noNavigateLog.push(["postMessage", plain(data)]); }, focus: async () => { noNavigateLog.push(["focus"]); } }] });
+  await noNavigate.fire("notificationclick", { notification });
+  assert.deepEqual(noNavigateLog, [["postMessage", { type: OPEN_MESSAGE }], ["focus"]]);
+  assert.deepEqual(noNavigate.calls, []);
+
+  const refusedLog = [];
+  const refused = load({ windows: [{
+    url: at,
+    navigate: async (to) => { refusedLog.push(["navigate", to]); throw new TypeError("not controlled"); },
+    postMessage: (data) => { refusedLog.push(["postMessage", plain(data)]); },
+    focus: async () => { refusedLog.push(["focus"]); },
+  }] });
+  await refused.fire("notificationclick", { notification });
+  assert.deepEqual(refusedLog, [["navigate", OPEN_URL], ["postMessage", { type: OPEN_MESSAGE }], ["focus"]]);
+  assert.deepEqual(refused.calls, [], "no second window");
+
+  const navigatedLog = [];
+  await load({ windows: [{ url: at, navigate: async (to) => { navigatedLog.push(["navigate", to]); }, postMessage: () => { navigatedLog.push(["postMessage"]); }, focus: async () => { navigatedLog.push(["focus"]); } }] }).fire("notificationclick", { notification });
+  assert.deepEqual(navigatedLog, [["navigate", OPEN_URL], ["focus"]], "a window that was navigated is not asked as well");
+
+  const stuck = load({ windows: [{ url: at, focus: async () => { throw new Error("cannot focus"); } }] });
+  await stuck.fire("notificationclick", { notification });
+  assert.deepEqual(stuck.calls, [["openWindow", OPEN_URL]], "a window that can be neither sent nor focused: a new one opens on Home");
+});
+
+test("click: a window on the home path is focused and reloaded on Home; a window on another path is focused and left alone; none opens Home", async () => {
   const closed = [];
   const notification = { close: () => closed.push(1) };
-  const windowAt = (url, log) => ({ url, navigate: async (to) => { log.push(["navigate", url, to]); }, focus: async () => { log.push(["focus", url]); } });
+  const windowAt = (url, log) => ({ url, navigate: async (to) => { log.push(["navigate", url, to]); }, postMessage: () => { log.push(["postMessage", url]); }, focus: async () => { log.push(["focus", url]); } });
 
   const homeLog = [];
   const home = load({ windows: [windowAt("https://app.example.test/", homeLog)] });
   await home.fire("notificationclick", { notification });
-  assert.deepEqual(homeLog, [["navigate", "https://app.example.test/", "/"], ["focus", "https://app.example.test/"]]);
+  assert.deepEqual(homeLog, [["navigate", "https://app.example.test/", OPEN_URL], ["focus", "https://app.example.test/"]]);
   assert.deepEqual(home.calls, []);
 
   const homeQueryLog = [];
@@ -84,10 +120,10 @@ test("click: a window on the home path is focused and reloaded; a window on anot
 
   const mixedLog = [];
   await load({ windows: [windowAt("https://app.example.test/profile", mixedLog), windowAt("https://app.example.test/", mixedLog)] }).fire("notificationclick", { notification });
-  assert.deepEqual(mixedLog, [["navigate", "https://app.example.test/", "/"], ["focus", "https://app.example.test/"]], "the home window wins when there is one");
+  assert.deepEqual(mixedLog, [["navigate", "https://app.example.test/", OPEN_URL], ["focus", "https://app.example.test/"]], "the home window wins when there is one");
 
   const none = load({ windows: [] });
   await none.fire("notificationclick", { notification });
-  assert.deepEqual(none.calls, [["openWindow", "/"]]);
+  assert.deepEqual(none.calls, [["openWindow", OPEN_URL]]);
   assert.equal(closed.length, 5);
 });

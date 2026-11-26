@@ -14,6 +14,7 @@ import { loadCalls } from "./calls.mjs";
 import { feedbackCanSend, FEEDBACK_THANKS, FEEDBACK_MAX } from "./feedback.mjs";
 import ProfileView from "./profile/ProfileView.jsx";
 import { resyncPush, forgetDevice } from "./push/push.mjs";
+import { OPEN_URL, openedFromNotification, withoutOpenMark, isOpenMessage } from "./push/open.mjs";
 import { emailChangedNotice, loadProfile, profileCheckDue, profileLanding, nextProfilePrompt, stillNeededLine, PROFILE_WELCOME } from "./profile/profile.mjs";
 import { resetTokenFrom, newPasswordProblem, forgotSentText, linkCheckOutcome, prefillEmail, PASSWORD_CHANGED_NOTICE } from "./auth/reset.mjs";
 import { signupTokenFrom, inviteTokenFrom, signupSentText, signupCheckOutcome, inviteCheckOutcome, finishSignupProblem, browserTimeZone, registerBody } from "./auth/signup.mjs";
@@ -3003,6 +3004,7 @@ export default function App() {
   const [emailNotice, setEmailNotice] = useState(null);     // { text, bad } after the emailed confirm link sent the browser back
   const [profileAsk, setProfileAsk] = useState(null);       // what the profile still lacks (the Profile page's banner), null when nothing is asked
   const profileSkippedBy = useRef(null);                     // the user id that chose "Skip for now": no more asking this page visit
+  const notificationOpen = useRef(false);                    // this page visit was opened from a rate notification: it lands on Home (until sign-out)
 
   // Google's consent screen sends the browser back to /?google=connected|denied|scope|error: open the Profile page (where the Google
   // connection is) with that line, once, and take the parameter out of the address so a reload does not repeat it.
@@ -3035,6 +3037,24 @@ export default function App() {
     url.searchParams.delete("emailChanged");
     window.history.replaceState({}, "", url.pathname + url.search + url.hash);
     if (found) setEmailNotice(found);
+  }, []);
+
+  // A tap on a rate notification sends the browser to /?from=notification (public/sw.js): remember it, so this visit lands on Home
+  // whatever the profile still lacks (profileLanding), and take the mark out of the address so a reload does not repeat it.
+  useEffect(() => {
+    if (!openedFromNotification(window.location.search)) return;
+    notificationOpen.current = true;
+    window.history.replaceState({}, "", withoutOpenMark(window.location.href));
+  }, []);
+
+  // Where the service worker cannot move this window to Home itself, it posts a message and the page goes there: the same reload, so
+  // the briefing is rebuilt with fresh rates.
+  useEffect(() => {
+    const workers = window.navigator && window.navigator.serviceWorker;
+    if (!workers || !workers.addEventListener) return undefined;
+    const onMessage = (event) => { if (isOpenMessage(event.data)) window.location.replace(OPEN_URL); };
+    workers.addEventListener("message", onMessage);
+    return () => workers.removeEventListener("message", onMessage);
   }, []);
 
   useEffect(() => {
@@ -3077,7 +3097,7 @@ export default function App() {
     const role = st?.role ?? who?.role;
     const check = { gateOpen: gateScreen(st?.access, role, st?.billing) === null, userId: who?.id ?? null, skippedBy: profileSkippedBy.current };
     const res = profileCheckDue(check) ? await loadProfile(fetch) : null;
-    return profileLanding({ ...check, res, role });
+    return profileLanding({ ...check, res, role, fromNotification: notificationOpen.current });
   }, []);
 
   // After sign-in (or /me): read the billing status, then show the app or a gate. Back from Stripe: read it up to 10 times, a second
@@ -3209,6 +3229,7 @@ export default function App() {
     try { await Promise.race([forgetDevice({ navigator: window.navigator, fetchFn: fetch }), new Promise((resolve) => setTimeout(resolve, 3000))]); } catch { /* ignore */ }
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     endKeptSession();
+    notificationOpen.current = false;   // the next sign-in in this visit is an ordinary one
     setUser(null);
     setBillingState(null);
     setProfileAsk(null);

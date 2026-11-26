@@ -200,9 +200,12 @@ export function profileCheckDue({ gateOpen, userId, skippedBy } = {}) {
 // The landing decision, after a sign-in, on boot, and when the terms gate opens: { view: "profile", ask } when the check was due
 // and the read (`res`, loadProfile's answer, or null when it was not made) found something missing; else { view: null, ask: null },
 // and the landing stays where it was (Home, or the page a link asked for). A failed read lands on Home, as today.
-export function profileLanding({ gateOpen, userId, skippedBy, res, role } = {}) {
+// A visit opened from a rate notification (`fromNotification`, true) stays on Home as well: { view: null, ask }, so the Profile page
+// still shows its banner when the user goes there.
+export function profileLanding({ gateOpen, userId, skippedBy, res, role, fromNotification } = {}) {
   const ask = profileCheckDue({ gateOpen, userId, skippedBy }) ? profilePrompt(res, role) : null;
-  return ask ? { view: "profile", ask } : { view: null, ask: null };
+  if (!ask) return { view: null, ask: null };
+  return { view: fromNotification === true ? null : "profile", ask };
 }
 
 // ── where the emailed confirm link sends the browser ──

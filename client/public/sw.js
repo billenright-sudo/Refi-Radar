@@ -1,7 +1,12 @@
 // Broker Radar's service worker. It does one job: show the rate-drop notification the server sent and open the app when it is tapped.
 // It shows only what the server put in the push (market news written by server code), adds no data of its own, stores nothing and
 // caches nothing, and has no fetch handler, so every page and API call goes to the network exactly as without it.
-// The notification always opens "/" whatever the push says: the payload's own url is never used (no open redirect).
+// The notification always opens Home (OPEN_URL) whatever the push says: the payload's own url is never used (no open redirect).
+
+// Home with the mark the app reads to land on Home whatever the profile still lacks, and the message for a window this script cannot
+// move itself. src/push/open.mjs holds the same two values (this classic script cannot import it); sw.test.mjs checks they match.
+const OPEN_URL = "/?from=notification";
+const OPEN_MESSAGE = "notification-open";
 
 const FALLBACK_TITLE = "Broker Radar";
 const FALLBACK_BODY = "Open Charlie for today's market update.";
@@ -45,8 +50,23 @@ const pathOf = (win) => {
   return match ? match[1] || "/" : "";
 };
 
-// An open Broker Radar window on the home path "/" is reloaded (so the briefing is rebuilt with fresh rates) and brought forward. A window
-// open on any other path is only brought forward, never navigated: whatever is typed there stays. With none open, a new one opens at "/".
+// Sends a home-path window to Home: by navigating it where the browser allows, else by asking the page to go there itself (App.jsx
+// listens). A browser that refuses the navigation (a window this worker does not control, for one) gets the message too.
+const sendHome = async (win) => {
+  if (win.navigate) {
+    try {
+      await win.navigate(OPEN_URL);
+      return;
+    } catch (err) {
+      // ask the page instead
+    }
+  }
+  if (win.postMessage) win.postMessage({ type: OPEN_MESSAGE });
+};
+
+// An open Broker Radar window on the home path "/" is reloaded on Home (so the briefing is rebuilt with fresh rates, whatever page of
+// the app was showing) and brought forward. A window open on any other path is only brought forward, never navigated: whatever is
+// typed there stays. With none open, a new one opens on Home.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
@@ -56,14 +76,14 @@ self.addEventListener("notificationclick", (event) => {
       const open = home || list[0];
       if (open) {
         try {
-          if (home && open.navigate) await open.navigate("/");
+          if (home) await sendHome(home);
           if (open.focus) await open.focus();
           return undefined;
         } catch (err) {
-          // a window that cannot be navigated or focused: fall through and open a new one
+          // a window that cannot be focused: fall through and open a new one
         }
       }
-      return self.clients.openWindow("/");
+      return self.clients.openWindow(OPEN_URL);
     })
   );
 });

@@ -356,3 +356,16 @@ test("profileLanding: Profile with the missing items when the check is due and t
   assert.deepEqual(profileLanding({ ...open, skippedBy: 7, res: incomplete, role: "broker" }), stays, "skipped by this user");
   assert.deepEqual(profileLanding({ ...open, gateOpen: false, res: incomplete, role: "broker" }), stays, "the gate is in the way");
 });
+
+test("profileLanding: a visit opened from a rate notification stays on Home, and the Profile page still gets its banner", () => {
+  const read = (data) => ({ ok: true, data });
+  const incomplete = read({ ...COMPLETE, nmlsId: null, orgNmlsId: null });
+  const open = { gateOpen: true, userId: 7, skippedBy: null, fromNotification: true };
+  assert.deepEqual(profileLanding({ ...open, res: incomplete, role: "broker" }), { view: null, ask: [OWN, COMPANY] });
+  assert.deepEqual(profileLanding({ ...open, res: incomplete, role: "lo" }), { view: null, ask: [OWN] });
+  assert.deepEqual(profileLanding({ ...open, res: read(COMPLETE), role: "broker" }), { view: null, ask: null }, "complete");
+  assert.deepEqual(profileLanding({ ...open, skippedBy: 7, res: incomplete, role: "broker" }), { view: null, ask: null }, "skipped by this user");
+  for (const notTrue of [false, undefined, null, "yes", 1]) {
+    assert.deepEqual(profileLanding({ ...open, fromNotification: notTrue, res: incomplete, role: "lo" }), { view: "profile", ask: [OWN] }, "only a true keeps Home");
+  }
+});
