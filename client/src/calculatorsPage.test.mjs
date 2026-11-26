@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readNumber, fredLink, CARDS, freshInputs, inputFor } from "./calculatorsPage.mjs";
+import { readNumber, fredLink, CARDS, freshInputs, inputFor, pointsFromEdit, fmtSigned } from "./calculatorsPage.mjs";
 import { paymentCalc, breakEvenCalc, blendedRateCalc, buydownCalc } from "./calculators.mjs";
 
 test("Review Focus 1: readNumber reads typed and pasted money", () => {
@@ -40,4 +40,28 @@ test("inputFor: the break-even card's spec example (costs in cash, then added to
   assert.equal(cash.out.monthlySavings, 309.67); assert.equal(cash.out.breakEvenMonth, 20);
   const inLoan = breakEvenCalc(inputFor("breakEven", { ...s, costsPaid: "loan" }));
   assert.equal(inLoan.out.breakEvenMonth, 22);
+});
+
+test("pointsFromEdit: the field edited last wins, the other is left null", () => {
+  assert.deepEqual(pointsFromEdit("pointsCost", { points: "1.5", pointsCost: "6,000" }), { points: null, pointsCost: 6000 });
+  assert.deepEqual(pointsFromEdit("points", { points: "1.5", pointsCost: "6,000" }), { points: 1.5, pointsCost: null });
+  assert.deepEqual(pointsFromEdit(null, { points: "1.5", pointsCost: "6,000" }), { points: null, pointsCost: null });
+});
+test("inputFor: the buydown card's worked examples (2-1, and 1.5 points) come to the spec's figures", () => {
+  const b = { ...freshInputs().buydown, loanAmount: "400,000", noteRate: "7" };
+  assert.equal(buydownCalc(inputFor("buydown", b)).out.subsidy, 9323.16);
+  const p = { ...b, kind: "points", rateWithPoints: "6.5", points: "1.5", pointsCost: "999", lastEdited: "points" };
+  const r = buydownCalc(inputFor("buydown", p));
+  assert.equal(r.out.cost, 6000); assert.equal(r.out.breakEvenMonth, 46); assert.equal(r.out.fullTermSavings, 41858);
+  const byCost = buydownCalc(inputFor("buydown", { ...p, lastEdited: "pointsCost", pointsCost: "$6,000" }));
+  assert.equal(byCost.out.points, 1.5);
+});
+test("inputFor: the blended card's worked example", () => {
+  const s = { ...freshInputs().blended, firstBalance: "300000", firstRate: "3", firstMonthsLeft: "300", cashNeeded: "100000", secondRate: "8.5",
+    secondTermYears: "20", secondCosts: "1500", cashOutRate: "6.75", compareYears: "7" };
+  const r = blendedRateCalc(inputFor("blended", s));
+  assert.equal(r.out.blendedRate, 4.375); assert.equal(r.out.keep.total, 512892); assert.equal(r.out.cashOut.total, 590521); assert.equal(r.out.difference, 77629);
+});
+test("fmtSigned: a negative whole-dollar figure gets its minus before the dollar sign", () => {
+  assert.equal(fmtSigned(-9454), "-$9,454"); assert.equal(fmtSigned(24676), "$24,676"); assert.equal(fmtSigned(0), "$0");
 });

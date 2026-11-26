@@ -1,6 +1,6 @@
 // Helpers for the Calculators page (CalculatorsView.jsx): reading what is typed, today's-average links, and the starting inputs.
 // Pure. Nothing here saves anything; the page keeps its inputs in React state only.
-import { fmtRate } from "./calculators.mjs";
+import { fmtRate, fmtDollars } from "./calculators.mjs";
 
 export const CARDS = [["payment", "Payment"], ["breakEven", "Refi break-even"], ["blended", "Blended rate"], ["buydown", "Buydown"]];
 
@@ -68,3 +68,6 @@ export function inputFor(card, s) {
   }
   return out;
 }
+
+// A whole-dollar figure that may be negative: "-$9,454" (fmtDollars alone would print "$-9,454").
+export const fmtSigned = (n) => (n < 0 ? "-" + fmtDollars(-n) : fmtDollars(n));
