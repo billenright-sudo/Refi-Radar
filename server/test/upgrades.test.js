@@ -583,3 +583,189 @@ describe("unpricedLenses", () => {
     }
   });
 });
+
+// Golden: the today block (and everything else) as it was before monthsLeft was added.
+describe("today block golden", () => {
+  const T = "2026-11-25";
+  const R = { rate_30yr_fixed: 6.52, rate_15yr_fixed: 5.91, rate_30yr_fha: 6.1, rate_30yr_va: 5.9 };
+  const mk = (o) => ({ loanProgram: "conventional", occupancy: "primary", loanType: "30yr_fixed", currentRate: 7.25, loanBalance: 360000, balanceAsOf: "2024-03-15", closeDate: "2024-03-15", originalAmount: 380000, originalValue: 475000, propertyValue: 475000, valueAsOf: "2024-03-15", propertyZip: "85016", creditScore: 742, creditScoreKnown: true, monthlyMi: null, editedByHand: "", ...o });
+  const FIXTURES = [
+    mk({}),
+    mk({ loanType: "15yr_fixed", currentRate: 6.5, loanBalance: 250000, originalAmount: 270000, closeDate: "2022-06-10", balanceAsOf: "2022-06-10", valueAsOf: "2022-06-10" }),
+    mk({ loanType: "5_1_arm", currentRate: 6.9 }),
+    mk({ loanProgram: "fha", currentRate: 6.9, loanBalance: 289500, originalAmount: 289500, originalValue: 300000, propertyValue: 300000, closeDate: "2021-06-15", balanceAsOf: "2021-06-15", valueAsOf: "2021-06-15" }),
+    mk({ closeDate: null, balanceAsOf: null }),
+    mk({ loanBalance: null }),
+  ];
+  const GOLDEN = [
+    {
+      "lenses": [],
+      "gaps": [],
+      "today": {
+        "balance": 350119,
+        "balanceFrom": 360000,
+        "balanceAsOf": "2024-03-15",
+        "balanceBasis": "rolled",
+        "value": 493221,
+        "valueFrom": 475000,
+        "cautiousValue": 443899,
+        "valueAsOf": "2024-03-15",
+        "valueBasis": "grown",
+        "growthPct": 4,
+        "ltv": 78.9,
+        "miOnFile": 0
+      },
+      "mi": {
+        "monthly": null,
+        "annualRate": null,
+        "basis": "none",
+        "endsOn": null,
+        "endsReason": null,
+        "originalLtv": 80
+      }
+    },
+    {
+      "lenses": [],
+      "gaps": [],
+      "today": {
+        "balance": 199595,
+        "balanceFrom": 250000,
+        "balanceAsOf": "2022-06-10",
+        "balanceBasis": "rolled",
+        "value": 498718,
+        "valueFrom": 475000,
+        "cautiousValue": 448846,
+        "valueAsOf": "2022-06-10",
+        "valueBasis": "grown",
+        "growthPct": 5,
+        "ltv": 44.5,
+        "miOnFile": 0
+      },
+      "mi": {
+        "monthly": null,
+        "annualRate": null,
+        "basis": "none",
+        "endsOn": null,
+        "endsReason": null,
+        "originalLtv": 56.8421
+      }
+    },
+    {
+      "lenses": [],
+      "gaps": [],
+      "today": {
+        "balance": 349459,
+        "balanceFrom": 360000,
+        "balanceAsOf": "2024-03-15",
+        "balanceBasis": "rolled",
+        "value": 493221,
+        "valueFrom": 475000,
+        "cautiousValue": 443899,
+        "valueAsOf": "2024-03-15",
+        "valueBasis": "grown",
+        "growthPct": 4,
+        "ltv": 78.7,
+        "miOnFile": 0
+      },
+      "mi": {
+        "monthly": null,
+        "annualRate": null,
+        "basis": "none",
+        "endsOn": null,
+        "endsReason": null,
+        "originalLtv": 80
+      }
+    },
+    {
+      "lenses": [
+        {
+          "lens": "fha_to_conv",
+          "label": "FHA → Conventional",
+          "priority": "high",
+          "headline": 226,
+          "unit": "$/mo",
+          "detail": "FHA, about 74% of value, insurance about $180/mo; conventional at about 6.65% saves about $226/mo, break-even 24 mo",
+          "monthlySavings": 226,
+          "breakEven": 24,
+          "effRate": 6.65,
+          "ltv": 73.9,
+          "miMonthly": 180
+        }
+      ],
+      "gaps": [],
+      "today": {
+        "balance": 270491,
+        "balanceFrom": 289500,
+        "balanceAsOf": "2021-06-15",
+        "balanceBasis": "rolled",
+        "value": 406782,
+        "valueFrom": 300000,
+        "cautiousValue": 366104,
+        "valueAsOf": "2021-06-15",
+        "valueBasis": "grown",
+        "growthPct": 36,
+        "ltv": 73.9,
+        "miOnFile": 0
+      },
+      "mi": {
+        "monthly": 180.33,
+        "annualRate": 0.8,
+        "basis": "estimated",
+        "endsOn": null,
+        "endsReason": null,
+        "originalLtv": 96.5
+      }
+    },
+    {
+      "lenses": [],
+      "gaps": [
+        "Add the original close date to check upgrades."
+      ],
+      "today": {
+        "balance": 360000,
+        "balanceFrom": 360000,
+        "balanceAsOf": null,
+        "balanceBasis": "stored",
+        "value": 493221,
+        "valueFrom": 475000,
+        "cautiousValue": 443899,
+        "valueAsOf": "2024-03-15",
+        "valueBasis": "grown",
+        "growthPct": 4,
+        "ltv": 81.1,
+        "miOnFile": 0
+      },
+      "mi": null
+    },
+    {
+      "lenses": [],
+      "gaps": [],
+      "today": {
+        "balance": null,
+        "balanceFrom": null,
+        "balanceAsOf": "2024-03-15",
+        "balanceBasis": "stored",
+        "value": 493221,
+        "valueFrom": 475000,
+        "cautiousValue": 443899,
+        "valueAsOf": "2024-03-15",
+        "valueBasis": "grown",
+        "growthPct": 4,
+        "ltv": null,
+        "miOnFile": 0
+      },
+      "mi": {
+        "monthly": null,
+        "annualRate": null,
+        "basis": "none",
+        "endsOn": null,
+        "endsReason": null,
+        "originalLtv": 80
+      }
+    }
+  ];
+  const withoutMonthsLeft = (r) => { const c = JSON.parse(JSON.stringify(r)); delete c.today.monthsLeft; return c; };
+  test("the today block is unchanged apart from monthsLeft", () => {
+    FIXTURES.forEach((c, i) => assert.deepStrictEqual(withoutMonthsLeft(upgradesFor(c, R, T)), GOLDEN[i], "fixture " + i));
+  });
+});
