@@ -4,7 +4,7 @@ import { createContext, useContext, useState } from "react";
 import { gridCols } from "./layout.mjs";
 import { useIsPhone } from "./useIsPhone.js";
 import { CALC_LINES, paymentCalc, breakEvenCalc, blendedRateCalc, buydownCalc, fmtCents, fmtDollars, fmtRate, fmtBlended } from "./calculators.mjs";
-import { CARDS, freshInputs, inputFor, fredLink, fmtSigned, readNumber } from "./calculatorsPage.mjs";
+import { CARDS, freshInputs, inputFor, fredLink, fmtSigned, readNumber, MONTHS_MISSING, prefillStrip, prefillInputs } from "./calculatorsPage.mjs";
 
 const Ctx = createContext(null);
 
@@ -127,6 +127,13 @@ function TwoColumns({ inputs, results }) {
   );
 }
 
+// Under a months-left field when the client's record has none (and nothing is typed yet).
+function MonthsMissing({ cardId, field }) {
+  const { ui, vals, prefill } = useContext(Ctx);
+  if (!prefill || prefill.monthsLeft !== null || vals[cardId][field].trim() !== "") return null;
+  return <div style={{ fontSize: 13, color: ui.C.muted, marginTop: 6 }}>{MONTHS_MISSING}</div>;
+}
+
 const noOf = (r, key) => (r.ok && r.notEntered.includes(key) ? CALC_LINES.notEntered : null);
 const monthOrWhy = (month, costZero, noCostLine) => (month !== null ? `Month ${month}` : costZero ? noCostLine : "N/A");
 
@@ -184,7 +191,7 @@ function BreakEvenCard() {
       inputs={<>
         {F("currentBalance", "Current balance ($)")}
         {F("currentRate", "Current rate (% a year)")}
-        {F("monthsLeft", "Months left on the current loan")}
+        {F("monthsLeft", "Months left on the current loan", { children: <MonthsMissing cardId="breakEven" field="monthsLeft" /> })}
         {F("newRate", "New rate (% a year)", { children: <AverageLink cardId="breakEven" field="newRate" termYears={s.newTermYears} /> })}
         {F("newTermYears", "New term (years)")}
         {F("closingCosts", "Closing costs ($)", { tag: costsEst ? CALC_LINES.estimateTag : null, placeholder: costsEst ? String(r.out.closingCosts) : "" })}
@@ -233,7 +240,7 @@ function BlendedCard() {
       inputs={<>
         {F("firstBalance", "First mortgage balance ($)")}
         {F("firstRate", "First mortgage rate (% a year)")}
-        {F("firstMonthsLeft", "First mortgage months left")}
+        {F("firstMonthsLeft", "First mortgage months left", { children: <MonthsMissing cardId="blended" field="firstMonthsLeft" /> })}
         {F("cashNeeded", "Cash needed ($)")}
         <Choice label="Second kind" options={[["second", "Second"], ["heloc", "HELOC"]]} current={s.secondKind} onPick={(v) => set("blended", "secondKind", v)} />
         {F("secondRate", "Second rate (% a year)")}
@@ -321,8 +328,14 @@ function BuydownCard() {
 export default function CalculatorsView({ rates, prefill, onClearPrefill, ui }) {
   const { C, card, btnPrimary, btnGhost } = ui;
   const isPhone = useIsPhone();
-  const [active, setActive] = useState("payment");
-  const [vals, setVals] = useState(freshInputs);
+  const [active, setActive] = useState(prefill ? "breakEven" : "payment");
+  const [vals, setVals] = useState(() => {
+    const v = freshInputs();
+    if (!prefill) return v;
+    const seed = prefillInputs(prefill);
+    for (const k of Object.keys(seed)) Object.assign(v[k], seed[k]);
+    return v;
+  });
   const [touched, setTouched] = useState({});
 
   const set = (cardId, field, value) => setVals((v) => ({ ...v, [cardId]: { ...v[cardId], [field]: value } }));
@@ -340,6 +353,13 @@ export default function CalculatorsView({ rates, prefill, onClearPrefill, ui }) 
             <button key={id} onClick={() => setActive(id)} style={{ ...(active === id ? btnPrimary : btnGhost), padding: "8px 14px", fontSize: 13 }}>{label}</button>
           ))}
         </div>
+        {prefill && (
+          <div style={{ fontSize: 13, color: C.mutedHi, background: C.surfaceHi, borderRadius: 8, padding: "10px 14px", marginBottom: "1.25rem" }}>
+            {prefillStrip(prefill)}{" "}
+            <button type="button" onClick={onClearPrefill}
+              style={{ background: "none", border: "none", padding: 0, color: C.blue, fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>Clear</button>
+          </div>
+        )}
         <div style={card}>
           {active === "payment" && <PaymentCard />}
           {active === "breakEven" && <BreakEvenCard />}

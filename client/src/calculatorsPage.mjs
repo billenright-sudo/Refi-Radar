@@ -1,6 +1,7 @@
 // Helpers for the Calculators page (CalculatorsView.jsx): reading what is typed, today's-average links, and the starting inputs.
 // Pure. Nothing here saves anything; the page keeps its inputs in React state only.
-import { fmtRate, fmtDollars } from "./calculators.mjs";
+import { fmtRate, fmtDollars, fmtAmount, possessive } from "./calculators.mjs";
+import { pricedToday } from "./equity.mjs";
 
 export const CARDS = [["payment", "Payment"], ["breakEven", "Refi break-even"], ["blended", "Blended rate"], ["buydown", "Buydown"]];
 
@@ -71,3 +72,52 @@ export function inputFor(card, s) {
 
 // A whole-dollar figure that may be negative: "-$9,454" (fmtDollars alone would print "$-9,454").
 export const fmtSigned = (n) => (n < 0 ? "-" + fmtDollars(-n) : fmtDollars(n));
+
+// ---- Open in calculator: what a client's record fills in ----
+
+export const MONTHS_MISSING = "Months left isn't on this client's record. Type it.";
+
+const posNum = (n) => (Number.isFinite(n) && n > 0 ? n : null);
+
+// The figures a client's page offers the calculators: today's balance and the cautious value (the same ones as the Equity Projection
+// card), the rate, months left only when the server counted them, a credit score only when it is a real one. A figure that is
+// blank, zero or paid off is null, never 0.
+export function prefillFrom(client) {
+  const c = client || {};
+  const t = c.upgrades && c.upgrades.today;
+  const priced = pricedToday(c);
+  const todayUsed = !!t && Number.isFinite(t.cautiousValue) && t.cautiousValue > 0 && Number.isFinite(t.balance) && t.balance >= 0;
+  // With a today block that has no balance there is nothing to fill in; without one the stored balance is the figure.
+  const balance = t ? (Number.isFinite(t.balance) ? posNum(Number(priced.loanBalance)) : null) : posNum(Number(priced.loanBalance));
+  const ml = t ? t.monthsLeft : null;
+  return {
+    name: String(c.name || ""),
+    balance,
+    balanceBasis: todayUsed && t.balanceBasis === "rolled" ? "rolled" : "stored",
+    rate: posNum(Number(c.currentRate)),
+    monthsLeft: Number.isInteger(ml) && ml >= 1 && ml <= 480 ? ml : null,
+    monthsTerm: c.loanType === "30yr_fixed" ? 30 : c.loanType === "15yr_fixed" ? 15 : null,
+    value: posNum(Number(priced.propertyValue)),
+    score: c.creditScoreKnown === true && Number.isFinite(c.creditScore) ? c.creditScore : null,
+  };
+}
+
+// The line above the card: where the figures came from.
+export function prefillStrip(p) {
+  const parts = [];
+  if (p.balance !== null) parts.push(`balance ${fmtAmount(p.balance)} (${p.balanceBasis === "rolled" ? "estimated for today" : "on file"})`);
+  if (p.rate !== null) parts.push(`rate ${fmtRate(p.rate)}`);
+  if (p.monthsLeft !== null) parts.push(`${p.monthsLeft} months left (from the closing date${p.monthsTerm ? `, on a ${p.monthsTerm}-year term` : ""})`);
+  return `Filled in from ${possessive(p.name)} record${parts.length ? ": " + parts.join(", ") : ""}. Change any figure. Nothing here is saved to the client.`;
+}
+
+const str = (n) => (n === null || n === undefined ? "" : String(n));
+
+// The input strings each card starts with.
+export function prefillInputs(p) {
+  return {
+    payment: { loanAmount: str(p.balance), rate: str(p.rate), homeValue: str(p.value), creditScore: str(p.score) },
+    breakEven: { currentBalance: str(p.balance), currentRate: str(p.rate), monthsLeft: str(p.monthsLeft), homeValue: str(p.value), creditScore: str(p.score) },
+    blended: { firstBalance: str(p.balance), firstRate: str(p.rate), firstMonthsLeft: str(p.monthsLeft) },
+  };
+}

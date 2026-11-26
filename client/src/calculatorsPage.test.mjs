@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readNumber, fredLink, CARDS, freshInputs, inputFor, pointsFromEdit, fmtSigned } from "./calculatorsPage.mjs";
+import { readNumber, fredLink, CARDS, freshInputs, inputFor, pointsFromEdit, fmtSigned, MONTHS_MISSING, prefillFrom, prefillStrip, prefillInputs } from "./calculatorsPage.mjs";
 import { paymentCalc, breakEvenCalc, blendedRateCalc, buydownCalc } from "./calculators.mjs";
 
 test("Review Focus 1: readNumber reads typed and pasted money", () => {
@@ -64,4 +64,36 @@ test("inputFor: the blended card's worked example", () => {
 });
 test("fmtSigned: a negative whole-dollar figure gets its minus before the dollar sign", () => {
   assert.equal(fmtSigned(-9454), "-$9,454"); assert.equal(fmtSigned(24676), "$24,676"); assert.equal(fmtSigned(0), "$0");
+});
+
+const CHEN = { name: "Robert & Linda Chen", currentRate: 7.25, loanType: "30yr_fixed", loanBalance: 360000, propertyValue: 700000,
+  creditScore: 742, creditScoreKnown: true,
+  upgrades: { lenses: [], gaps: [], today: { balance: 350000, balanceBasis: "rolled", cautiousValue: 585000, monthsLeft: 324 } } };
+test("prefillStrip: the spec's example", () => {
+  assert.equal(prefillStrip(prefillFrom(CHEN)), "Filled in from Robert & Linda Chen's record: balance $350,000 (estimated for today), " +
+    "rate 7.25%, 324 months left (from the closing date, on a 30-year term). Change any figure. Nothing here is saved to the client.");
+});
+test("prefillFrom: cautious value, real score only, months only from the record", () => {
+  const p = prefillFrom(CHEN);
+  assert.deepEqual([p.balance, p.value, p.score, p.monthsLeft], [350000, 585000, 742, 324]);
+  assert.equal(prefillFrom({ ...CHEN, creditScore: 700, creditScoreKnown: false }).score, null);
+  const arm = prefillFrom({ ...CHEN, loanType: "5_1_arm", upgrades: { ...CHEN.upgrades, today: { ...CHEN.upgrades.today, monthsLeft: null } } });
+  assert.equal(arm.monthsLeft, null); assert.doesNotMatch(prefillStrip(arm), /months left/);
+  assert.equal(MONTHS_MISSING, "Months left isn't on this client's record. Type it.");
+  const stored = prefillFrom({ ...CHEN, upgrades: null });
+  assert.equal(stored.balance, 360000); assert.match(prefillStrip(stored), /balance \$360,000 \(on file\)/);
+  assert.deepEqual(prefillInputs(prefillFrom(CHEN)).breakEven,
+    { currentBalance: "350000", currentRate: "7.25", monthsLeft: "324", homeValue: "585000", creditScore: "742" });
+});
+test("Review Focus 4: a paid-off or blank balance is left blank", () => {
+  for (const balance of [0, null]) {
+    const p = prefillFrom({ ...CHEN, upgrades: { ...CHEN.upgrades, today: { ...CHEN.upgrades.today, balance } } });
+    assert.equal(p.balance, null); assert.doesNotMatch(prefillStrip(p), /balance/);
+    assert.equal(prefillInputs(p).breakEven.currentBalance, "");
+  }
+});
+test("prefillInputs: only the figures the cards use; a null figure is a blank string", () => {
+  const i = prefillInputs(prefillFrom({ ...CHEN, upgrades: null, currentRate: null, propertyValue: 0 }));
+  assert.deepEqual(i.payment, { loanAmount: "360000", rate: "", homeValue: "", creditScore: "742" });
+  assert.deepEqual(i.blended, { firstBalance: "360000", firstRate: "", firstMonthsLeft: "" });
 });
