@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { PORTRAIT, clipToPlay, portraitBox } from "./portrait.mjs";
+import { PORTRAIT, CLIP_CHECK_MS, clipToPlay, clipNeedsRestart, portraitBox } from "./portrait.mjs";
 
 // Charlie's face as a rounded portrait card with an amber edge. `state` comes from faceState(). Only the clip clipToPlay()
 // names plays (the other is paused); a hidden tab or reduced motion plays none, leaving the still, which is always underneath.
@@ -23,6 +23,7 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
   const idle = useRef(null);
   const [still] = useState(reducedMotion);
   const [hidden, setHidden] = useState(isHidden);
+  const [restarts, setRestarts] = useState(0);   // how often the talking clip had to be started again (the lips readout shows it)
   const clip = clipToPlay({ state, hidden, reducedMotion: still });
 
   useEffect(() => {
@@ -47,6 +48,19 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
     }
   }, [clip]);
 
+  // While she talks, her talking clip has to keep going. It is started when her voice is heard, not from a tap, and a phone can
+  // pause such a clip on its own mid-line: looked at every CLIP_CHECK_MS, and started again from where it stopped.
+  useEffect(() => {
+    if (clip !== "talk") return undefined;
+    const timer = setInterval(() => {
+      const t = talk.current;
+      if (!t || !clipNeedsRestart({ clip, paused: t.paused, ended: t.ended })) return;
+      setRestarts((n) => n + 1);
+      play(t);
+    }, CLIP_CHECK_MS);
+    return () => clearInterval(timer);
+  }, [clip]);
+
   // A number is pixels; a CSS length (e.g. "min(100%, 420px)") keeps the shape through aspect-ratio instead; a `height` (CSS
   // length) keeps her whole frame, head and shoulders, with the width following (portraitBox).
   const box = portraitBox({ shape, width, height: fixedHeight });
@@ -56,17 +70,19 @@ export default function CharliePortrait({ state = "listening", shape = "portrait
       data-testid="charlie-portrait"
       data-state={state}
       data-shape={shape}
+      data-clip={clip || "none"}
+      data-restarts={restarts}
       style={{ ...box, ...(maxHeight ? { maxHeight } : null), borderRadius: 18, position: "relative", overflow: "hidden", flex: "none", background: "#0c1b2b", border: "1px solid #f59e0b", boxShadow: "0 0 18px rgba(245, 158, 11, 0.22)" }}
     >
       <div aria-hidden="true" style={{ position: "absolute", inset: 0 }}>
         <img src={PORTRAIT.still} alt="" draggable={false} style={fill} />
         {!still && (
           <>
-            <video ref={idle} muted loop playsInline preload="auto" poster={PORTRAIT.still} tabIndex={-1} style={{ ...fill, opacity: clip === "talk" ? 0 : 1, transition: "opacity 0.2s ease" }}>
+            <video ref={idle} data-face-clip="idle" muted loop playsInline preload="auto" poster={PORTRAIT.still} tabIndex={-1} style={{ ...fill, opacity: clip === "talk" ? 0 : 1, transition: "opacity 0.2s ease" }}>
               <source src={PORTRAIT.idleWebm} type="video/webm" />
               <source src={PORTRAIT.idleMp4} type="video/mp4" />
             </video>
-            <video ref={talk} muted loop playsInline preload="auto" poster={PORTRAIT.still} tabIndex={-1} style={{ ...fill, opacity: clip === "talk" ? 1 : 0, transition: "opacity 0.2s ease" }}>
+            <video ref={talk} data-face-clip="talk" muted loop playsInline preload="auto" poster={PORTRAIT.still} tabIndex={-1} style={{ ...fill, opacity: clip === "talk" ? 1 : 0, transition: "opacity 0.2s ease" }}>
               <source src={PORTRAIT.talkWebm} type="video/webm" />
               <source src={PORTRAIT.talkMp4} type="video/mp4" />
             </video>

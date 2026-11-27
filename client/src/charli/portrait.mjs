@@ -8,6 +8,13 @@ export function clipToPlay({ state, hidden = false, reducedMotion = false } = {}
   return state === "talking" ? "talk" : "idle";
 }
 
+// Whether her talking clip has to be started again: it is the clip that should be playing, and the browser has paused it (a phone
+// can, mid-line: the clip is not started from a tap) or it has run out. Looked at every CLIP_CHECK_MS while she talks.
+export const CLIP_CHECK_MS = 400;
+export function clipNeedsRestart({ clip, paused = false, ended = false } = {}) {
+  return clip === "talk" && (paused || ended);
+}
+
 // The card's box. A `height` (CSS length) keeps her whole 4:5 frame, head and shoulders, and the width follows from it (the dock);
 // a pixel `width` sets the height; a CSS `width` keeps the shape through aspect-ratio.
 export function portraitBox({ shape = "portrait", width = 168, height } = {}) {

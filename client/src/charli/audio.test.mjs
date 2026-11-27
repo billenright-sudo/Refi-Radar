@@ -109,10 +109,10 @@ function fakeEars(t) {
     stop() { this.state = "inactive"; if (this.ondataavailable) this.ondataavailable({ data: new Blob(["x"]) }); if (this.onstop) this.onstop(); }
   }
   class FakeAudio {
-    constructor() { env.voice = this; this.src = undefined; }
-    play() { return Promise.resolve(); }
-    pause() {}
-    load() {}
+    constructor() { env.voice = this; this.src = undefined; this.currentTime = 0; this.paused = true; this.readyState = 0; }
+    play() { this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+    load() { this.currentTime = 0; }
     getAttribute() { return this.src; }
     removeAttribute() { this.src = undefined; }
   }
@@ -133,6 +133,15 @@ function fakeEars(t) {
     }
   };
   env.wait = (ms) => { env.now += ms; };
+  // `ms` of her voice really coming out: the <audio> element's own clock moves on with the time, one step per 30 ms tick.
+  // (env.run moves the time only: her voice stands still.)
+  env.play = (ms) => {
+    for (let i = 0; i < Math.round(ms / 30); i++) {
+      env.now += 30;
+      env.voice.currentTime += 0.03;
+      env.ticks.forEach((fn) => fn && fn());
+    }
+  };
   return env;
 }
 
@@ -309,11 +318,14 @@ test("retire() with only autoplay-blocked clips drops them and disposes", async 
 });
 
 // ── onSoundChange: her mouth moves only while her voice is really heard ──
+// "Heard" is read from the <audio> element's own clock (currentTime) on a tick: her voice is heard while that clock moves on. What
+// the browser SAYS about the element (playing, waiting, pause) decides nothing: an iPhone can say "waiting" in the middle of a line
+// it goes on playing, and never say "playing" again (Bill's phone, 2026-11-26: her mouth stopped halfway through the briefing).
 
 // What the browser tells the <audio> element (playing, waiting, pause), when a handler is set for it.
 const fire = (el, name) => { const fn = el && el[`on${name}`]; if (typeof fn === "function") fn(); };
 
-test("her voice counts as heard only while a clip is really playing, not from the moment a line is queued", async (t) => {
+test("her voice counts as heard only while the clip's own clock moves on, not from the moment a line is queued", async (t) => {
   const ears = fakeEars(t);
   const speaking = [];
   const sound = [];
@@ -326,16 +338,21 @@ test("her voice counts as heard only while a clip is really playing, not from th
   audio.speak({ text: "Good morning.", turnId: "t1" });
   await settle();
   assert.deepEqual(speaking, [true], "the line is queued");
+  ears.run(0, 600);
   assert.deepEqual(sound, [], "nothing is heard while the clip is on its way (a phone waits for all of it)");
   arrive();
   await settle();
-  assert.deepEqual(sound, [], "it has arrived, but it is not playing yet");
   fire(ears.voice, "playing");
+  ears.run(0, 90);
+  assert.deepEqual(sound, [], "the browser says it is playing, but her voice has not moved on yet");
+  ears.play(60);
   assert.deepEqual(sound, [true]);
-  fire(ears.voice, "waiting");   // playback stalls
-  assert.deepEqual(sound, [true, false]);
-  fire(ears.voice, "playing");
-  fire(ears.voice, "playing");   // told twice: nothing new
+  ears.run(0, 270);   // her voice stands still (the stream ran dry, a call took the audio)
+  assert.deepEqual(sound, [true], "a gap shorter than 300 ms is not a silence");
+  ears.run(0, 30);
+  assert.deepEqual(sound, [true, false], "300 ms without her voice moving on: she has gone quiet");
+  ears.play(30);
+  ears.play(300);   // moving on, tick after tick: nothing new
   assert.deepEqual(sound, [true, false, true]);
   ears.voice.onended();
   await settle();
@@ -344,18 +361,53 @@ test("her voice counts as heard only while a clip is really playing, not from th
   audio.dispose();
 });
 
-test("between two queued lines she is silent until the second clip plays", async (t) => {
+test("an iPhone that says 'waiting' or 'pause' mid-line while her voice goes on does not still her mouth", async (t) => {
+  const ears = fakeEars(t);
+  const sound = [];
+  const audio = createAudio({ fetch: okClip, onSoundChange: (on) => sound.push(on) });
+  audio.speak({ text: "A long briefing.", turnId: "t1" });
+  await settle();
+  fire(ears.voice, "playing");
+  ears.play(300);
+  assert.deepEqual(sound, [true]);
+  fire(ears.voice, "waiting");   // and "playing" is never said again
+  ears.play(3000);
+  fire(ears.voice, "pause");
+  ears.play(3000);
+  assert.deepEqual(sound, [true], "her voice never stopped, so neither did her mouth");
+  ears.voice.onended();
+  await settle();
+  assert.deepEqual(sound, [true, false]);
+  audio.dispose();
+});
+
+test("her voice is heard from its clock even when the browser never says 'playing'", async (t) => {
+  const ears = fakeEars(t);
+  const sound = [];
+  const audio = createAudio({ fetch: okClip, onSoundChange: (on) => sound.push(on) });
+  audio.speak({ text: "Hello.", turnId: "t1" });
+  await settle();
+  ears.play(90);
+  assert.deepEqual(sound, [true]);
+  audio.stopSpeaking();
+  await settle();
+  audio.dispose();
+});
+
+test("between two queued lines she is silent until the second clip's clock moves", async (t) => {
   const ears = fakeEars(t);
   const sound = [];
   const audio = createAudio({ fetch: okClip, onSoundChange: (on) => sound.push(on) });
   audio.speak({ text: "First.", turnId: "t1" });
   audio.speak({ text: "Second.", turnId: "t1" });
   await settle();
-  fire(ears.voice, "playing");
+  ears.play(300);
   ears.voice.onended();
   await settle();   // the second clip has been fetched and handed to the element
-  assert.deepEqual(sound, [true, false], "the gap between the lines is a silence");
-  fire(ears.voice, "playing");
+  assert.deepEqual(sound, [true, false], "the end of a line is a silence at once");
+  ears.run(0, 600);
+  assert.deepEqual(sound, [true, false], "the gap between the lines stays a silence");
+  ears.play(60);
   assert.deepEqual(sound, [true, false, true]);
   ears.voice.onended();
   await settle();
@@ -363,18 +415,24 @@ test("between two queued lines she is silent until the second clip plays", async
   audio.dispose();
 });
 
-test("a line the phone pauses, or one that is cut off, stops the sound at once", async (t) => {
+test("a line the phone really pauses goes quiet within 300 ms, and one that is cut off stops at once", async (t) => {
   const ears = fakeEars(t);
   const sound = [];
   const audio = createAudio({ fetch: okClip, onSoundChange: (on) => sound.push(on) });
   audio.speak({ text: "A long line.", turnId: "t1" });
   await settle();
-  fire(ears.voice, "playing");
-  fire(ears.voice, "pause");   // the phone took the audio away (a call)
+  ears.play(300);
+  ears.voice.paused = true;   // the phone took the audio away (a call): her voice stops moving on
+  fire(ears.voice, "pause");
+  ears.run(0, 300);
   assert.deepEqual(sound, [true, false]);
-  fire(ears.voice, "playing");
+  ears.voice.paused = false;
+  ears.play(60);
+  assert.deepEqual(sound, [true, false, true]);
   audio.stopSpeaking();
-  assert.deepEqual(sound, [true, false, true, false]);
+  assert.deepEqual(sound, [true, false, true, false], "cut off: quiet at once, with no wait for the clock");
+  ears.play(300);
+  assert.deepEqual(sound, [true, false, true, false], "the clock is no longer read once the line is over");
   await settle();
   audio.dispose();
 });
@@ -385,20 +443,52 @@ test("the silent clip a tap plays to unlock audio never counts as her voice, bef
   const audio = createAudio({ fetch: okClip, onSoundChange: (on) => sound.push(on) });
   audio.unlock();
   fire(ears.voice, "playing");
+  ears.play(300);
   await settle();
   assert.deepEqual(sound, []);
   audio.speak({ text: "Hello.", turnId: "t1" });
   await settle();
-  fire(ears.voice, "playing");
+  ears.voice.currentTime = 0;   // the element starts her clip from the top
+  ears.run(0, 60);
+  assert.deepEqual(sound, [], "the clock going back to the start is not her voice");
+  ears.play(60);
+  assert.deepEqual(sound, [true]);
   ears.voice.onended();
   await settle();
   assert.deepEqual(sound, [true, false]);
   audio.unlock();
   fire(ears.voice, "playing");
+  ears.play(300);
   fire(ears.voice, "waiting");
   fire(ears.voice, "pause");
   await settle();
-  assert.deepEqual(sound, [true, false], "the element stopped reporting when the line ended");
+  assert.deepEqual(sound, [true, false], "the clock stopped being read when the line ended");
+  audio.dispose();
+});
+
+test("probe(): what her voice is doing right now, for the hidden lips readout", async (t) => {
+  const ears = fakeEars(t);
+  let arrive;
+  const audio = createAudio({ fetch: () => new Promise((resolve) => { arrive = () => resolve(okClip()); }) });
+  assert.deepEqual(audio.probe(), { clip: "none", at: 0, paused: true, ready: 0, heard: false, said: [] });
+  audio.speak({ text: "Hello.", turnId: "t1" });
+  await settle();
+  assert.equal(audio.probe().clip, "loading");
+  arrive();
+  await settle();
+  assert.equal(audio.probe().clip, "whole", "all of it arrived, then it was handed to the element (a phone)");
+  ears.voice.readyState = 4;
+  fire(ears.voice, "playing");
+  ears.play(300);
+  fire(ears.voice, "waiting");
+  const now = audio.probe();
+  assert.ok(Math.abs(now.at - 0.3) < 1e-9);
+  assert.deepEqual({ ...now, at: 0 }, { clip: "whole", at: 0, paused: false, ready: 4, heard: true, said: ["playing", "waiting"] });
+  for (let i = 0; i < 9; i++) fire(ears.voice, "pause");
+  assert.deepEqual(audio.probe().said, ["pause", "pause", "pause", "pause", "pause", "pause"], "only the last six things the browser said");
+  ears.voice.onended();
+  await settle();
+  assert.deepEqual(audio.probe(), { clip: "none", at: 0, paused: true, ready: 4, heard: false, said: [] });
   audio.dispose();
 });
 
@@ -426,7 +516,7 @@ function fakeStreaming(t) {
   };
 }
 
-test("a streamed clip: she is heard once it starts playing, quiet while the stream runs dry, heard again when it picks up", async (t) => {
+test("a streamed clip: she is heard once its clock moves, quiet while the stream runs dry, heard again when it picks up", async (t) => {
   const ears = fakeEars(t);
   const body = fakeStreaming(t);
   const sound = [];
@@ -435,16 +525,21 @@ test("a streamed clip: she is heard once it starts playing, quiet while the stre
   audio.speak({ text: "Streaming.", turnId: "t1" });
   await settle();
   assert.equal(String(ears.voice.src), "blob:fake", "the element is fed through MediaSource");
+  assert.equal(audio.probe().clip, "stream");
+  ears.run(0, 300);
   assert.deepEqual(sound, [], "told to play, but nothing has played yet");
   body.chunk();
   await settle();
   fire(ears.voice, "playing");
+  ears.play(300);
   assert.deepEqual(sound, [true]);
   fire(ears.voice, "waiting");   // the next bytes are late
+  ears.run(0, 300);
   assert.deepEqual(sound, [true, false]);
   body.chunk();
   await settle();
   fire(ears.voice, "playing");
+  ears.play(60);
   body.end();
   await settle();
   ears.voice.onended();
