@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { HANDS_FREE_KEY, NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel, stopAfterUtterance, noSpeechClockRuns, talkTap, speakingStatus } from "./talkMode.mjs";
+import { HANDS_FREE_KEY, NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel, stopAfterUtterance, noSpeechClockRuns, talkTap, speakingStatus, briefTapCounts, BRIEF_WAIT_MS } from "./talkMode.mjs";
 
 test("talkTap: a tap on Talk while she speaks interrupts her; otherwise it opens or closes the mic, or resumes", () => {
   assert.equal(talkTap({ speaking: true, micLive: false }), "interrupt");
@@ -28,6 +28,24 @@ test("speakingStatus: the status line says a tap on Talk interrupts her, when Ta
   assert.equal(speakingStatus({ canTalk: true }), "Speaking… tap Talk to interrupt");
   assert.equal(speakingStatus(), "Speaking… tap Talk to interrupt");
   assert.equal(speakingStatus({ canTalk: false }), "Speaking…");
+});
+
+test("speakingStatus: while her line is still on its way (not heard yet), the status says so instead", () => {
+  assert.equal(speakingStatus({ canTalk: true, heard: false }), "Getting her voice…");
+  assert.equal(speakingStatus({ canTalk: false, heard: false }), "Getting her voice…");
+  assert.equal(speakingStatus({ canTalk: true, heard: true }), "Speaking… tap Talk to interrupt");
+});
+
+test("briefTapCounts: a second Brief me tap while the briefing is still on its way is ignored; any other tap counts", () => {
+  const waiting = { askedAt: 1000, now: 6000, speaking: true, heard: false };
+  assert.equal(briefTapCounts(waiting), false, "asked 5 s ago, on its way, not heard yet: a new request would start the wait over");
+  assert.equal(briefTapCounts({ ...waiting, heard: true }), true, "she is heard: a tap says it again from the top, as before");
+  assert.equal(briefTapCounts({ ...waiting, speaking: false }), true, "nothing is on its way (it failed, was blocked, or was yesterday's)");
+  assert.equal(briefTapCounts({ ...waiting, askedAt: null }), true, "another line is on its way, not a briefing: Brief me cuts in, as before");
+  assert.equal(briefTapCounts({ ...waiting, now: 1000 + BRIEF_WAIT_MS - 1 }), false);
+  assert.equal(briefTapCounts({ ...waiting, now: 1000 + BRIEF_WAIT_MS }), true, "waited too long: the tap goes through");
+  assert.equal(BRIEF_WAIT_MS, 20000);
+  assert.equal(briefTapCounts(), true);
 });
 
 const fakeStorage = (initial = {}) => {

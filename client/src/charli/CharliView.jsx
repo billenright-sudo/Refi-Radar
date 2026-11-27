@@ -6,10 +6,12 @@ import { createReplay, shouldClear } from "./replay.mjs";
 import { createAudio, transcribe } from "./audio.js";
 import { useIsPhone } from "../useIsPhone.js";
 import CharliePortrait from "./CharliePortrait.jsx";
+import LipsReadout from "./LipsReadout.jsx";
+import { lipsReadoutOn } from "./lips.mjs";
 import { faceState } from "./face.mjs";
 import { briefingFolded } from "./briefingFold.mjs";
 import { dockParts, portraitSlot, BRIEFING_SHRINK } from "./dockLayout.mjs";
-import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns, talkTap, speakingStatus } from "./talkMode.mjs";
+import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk, stopAfterUtterance, noSpeechClockRuns, talkTap, speakingStatus, briefTapCounts } from "./talkMode.mjs";
 
 // Charlie, the voice co-pilot. The conversation and every server call live in session.mjs; the microphone and speaker live in
 // audio.js. This file is the screen: it wires the two together and draws the result, in one of two shapes of the same conversation.
@@ -37,6 +39,12 @@ import { NO_SPEECH_MS, readHandsFree, writeHandsFree, talkLabel as labelForTalk,
 const deviceStorage = () => {
   try { return typeof window !== "undefined" ? window.localStorage : undefined; } catch { return undefined; }
 };
+// This tab's sessionStorage, the same way.
+const tabStorage = () => {
+  try { return typeof window !== "undefined" ? window.sessionStorage : undefined; } catch { return undefined; }
+};
+// The hidden lips readout under her picture: only with ?lips=1 in the address. Read once, as the app loads (lips.mjs).
+const LIPS_READOUT = typeof window !== "undefined" && lipsReadoutOn(window.location.search, tabStorage());
 
 const MIC_NOTES = {
   denied: "Microphone access is blocked. Allow it in your browser's site settings to talk to Charlie. Typing works in the meantime.",
@@ -193,6 +201,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   const screenNowRef = useRef(screenNow);
   screenNowRef.current = screenNow;
   const handoffRef = useRef(false);   // a line about the page she just opened is being said: it must outlive this view
+  const briefAskedRef = useRef(null);   // when Brief me was tapped (performance.now) while that briefing is still on its way; else null
+  const portraitWrap = useRef(null);   // the element her portrait is in (the lips readout reads her clips off it)
   // A brief request refused because the briefing is yesterday's: App rebuilds this screen for today.
   const rebuildIfStale = (result) => { if (result && result.reason === "stale" && onStaleRef.current) onStaleRef.current(); };
 
@@ -243,8 +253,8 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
 
     const audio = createAudio({
       onUtterance: handleUtterance,
-      onSpeakingChange: (on) => { speakingRef.current = on; if (!on) handoffRef.current = false; setSpeaking(on); },
-      onSoundChange: setSounding,
+      onSpeakingChange: (on) => { speakingRef.current = on; if (!on) { handoffRef.current = false; briefAskedRef.current = null; } setSpeaking(on); },
+      onSoundChange: (on) => { if (on) briefAskedRef.current = null; setSounding(on); },
       onHearing: setHearing,
       onMicChange: (state) => { micLiveRef.current = state === "live"; setMic(state); },
       onAutoplayBlocked: () => setNeedsStart(true),
@@ -369,11 +379,17 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
     if (!on && mic === "live") audio.stopMic();
   };
   // Brief me: the briefing said aloud, from this tap (a tap is what lets the browser play audio). Said again if it was already; a
-  // briefing from an earlier day is not said, and the screen is rebuilt for today instead.
+  // briefing from an earlier day is not said, and the screen is rebuilt for today instead. A second tap while the briefing just
+  // asked for is still on its way does nothing (talkMode.mjs briefTapCounts): the status line says her voice is coming.
   const briefMe = () => {
+    if (!briefTapCounts({ askedAt: briefAskedRef.current, now: performance.now(), speaking: speakingRef.current, heard: sounding })) return;
     audio.stopSpeaking();
     audio.unlock();
-    session.briefMe().then(rebuildIfStale);
+    briefAskedRef.current = performance.now();
+    session.briefMe().then((result) => {
+      if (!result || !result.ok) briefAskedRef.current = null;   // nothing was said: nothing is on its way
+      rebuildIfStale(result);
+    });
   };
   const startCharlie = () => {
     setNeedsStart(false);
@@ -398,7 +414,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   let dot = C.muted;
   if (!snap.hasRates) status = "Fetching rates…";
   else if (paused) status = "Paused";
-  else if (speaking) { status = speakingStatus({ canTalk: !voiceDown && !MIC_NOTES[mic] }); dot = C.blue; }
+  else if (speaking) { status = speakingStatus({ canTalk: !voiceDown && !MIC_NOTES[mic], heard: sounding }); dot = C.blue; }
   else if (working) { status = "Thinking…"; dot = C.amber; }
   else if (voiceDown) status = "Type below. Voice input isn't set up here";
   else if (mic === "live") { status = hearing ? "Listening… hearing you" : "Listening"; dot = C.green; }
@@ -407,6 +423,7 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
   else status = handsFree ? "Tap Talk to speak, or type below" : "Tap to talk, or type below";
 
   const micNote = !paused && MIC_NOTES[mic];
+  const lipsReadout = LIPS_READOUT && <LipsReadout probe={audio.probe} within={portraitWrap} color={C.muted} font={mono} />;
   const face = faceState({ sounding, working, paused });
   const buttonBase = { display: "flex", alignItems: "center", gap: 8, border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "inherit" };
   const primary = { ...buttonBase, background: C.amber, color: "#0f2040" };
@@ -569,9 +586,10 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
             </button>
           </div>
         </div>
-        <div style={{ display: "flex", justifyContent: "center", margin: "0.2rem 0 1rem" }}>
+        <div ref={portraitWrap} style={{ display: "flex", justifyContent: "center", margin: "0.2rem 0 1rem" }}>
           <CharliePortrait state={face} shape="portrait" width={168} />
         </div>
+        {lipsReadout}
         {statusRow}
         {banners}
         {transcript}
@@ -601,11 +619,12 @@ export default function CharliView({ rates, user, ui, mode = "dock", stacked = f
 
       {/* unstacked, her portrait's slot is full size when there is room and shrinks (after the briefing) on a short screen, never
           under 100px tall; the portrait fills the slot's height and keeps its shape (dockLayout.mjs portraitSlot) */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", ...(stacked || width != null ? { flex: "none" } : portraitSlot()) }}>
+      <div ref={portraitWrap} style={{ display: "flex", justifyContent: "center", marginBottom: "0.9rem", ...(stacked || width != null ? { flex: "none" } : portraitSlot()) }}>
         {stacked
           ? <CharliePortrait state={face} shape="square" width={width ?? "min(100%, 420px)"} ariaHideName />
           : <CharliePortrait state={face} shape="portrait" {...(width != null ? { width } : { height: "100%" })} ariaHideName />}
       </div>
+      {lipsReadout}
 
       {statusRow}
       {banners}

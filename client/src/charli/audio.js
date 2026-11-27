@@ -13,6 +13,9 @@ const TTS_URL = "/api/voice/tts";
 const STT_URL = "/api/voice/stt";
 const ECHO_TAIL_MS = 350;   // after Charli's voice stops, ignore the room this long (the end of her own voice); none after a silence
 const TTS_ERROR_BODY_CHARS = 1024;   // how much of a failed /tts response is read
+const SOUND_TICK_MS = 100;    // how often the clock of the clip in play is read
+const SOUND_STALL_MS = 300;   // her voice has not moved on for this long: she has gone quiet
+const SAID_KEPT = 6;          // how many of the browser's last signals probe() keeps
 
 // ── a failed speech response ─────────────────────────────────────────────────
 
@@ -111,6 +114,7 @@ const abortError = () => Object.assign(new Error("aborted"), { name: "AbortError
 //                            half-duplex gate, not what is heard)
 //   onSoundChange(bool)      her voice is really coming out / has stopped: false while a clip is fetched (a phone waits for the
 //                            whole clip), while playback stalls or is paused, and between two queued lines. Her face follows this.
+//                            Read from the clip's own clock, never from what the browser says about it (see `hear` below).
 //   onHearing(bool)          an utterance is being recorded
 //   onMicChange(state)       "live" | "off" | "denied" | "unavailable" | "error"
 //   onAutoplayBlocked()      the browser refused to play without a tap: show a "Start Charli" button, then call
@@ -271,6 +275,9 @@ export function createAudio({
     sounding = on;
     if (!disposed) onSoundChange(on);
   };
+  let mode = "none";   // the line in hand: "none" | "loading" (being fetched) | "stream" | "whole" (how the element was given it)
+  let said = [];       // the browser's last signals about the clip in play (playing, waiting, pause): for probe() only
+  const note = (signal) => { said = [...said, signal].slice(-SAID_KEPT); };
   const audioEl = () => {
     if (!element) { element = new Audio(); element.preload = "auto"; }
     return element;
@@ -288,6 +295,7 @@ export function createAudio({
       let readDone = false;
       let started = false;
       let blobUrl = null;
+      let clock = null;   // the tick that reads this clip's clock (hear)
       const reader = res.body && typeof res.body.getReader === "function" ? res.body.getReader() : null;
 
       const finish = (err) => {
@@ -295,6 +303,8 @@ export function createAudio({
         settled = true;
         signal.removeEventListener("abort", onAbort);
         el.onended = el.onerror = el.onplaying = el.onwaiting = el.onpause = null;
+        clearInterval(clock);
+        clock = null;
         sound(false);
         try { el.pause(); } catch { /* nothing to pause */ }
         if (reader) reader.cancel().catch(() => {});
@@ -308,11 +318,29 @@ export function createAudio({
       signal.addEventListener("abort", onAbort);
       if (signal.aborted) { onAbort(); return; }
 
-      // Her voice is heard from "playing" until the element waits for more data, is paused (a call takes the audio) or the clip
-      // is done (finish). Set only once the element holds this clip, so the silent unlock clip never counts.
+      // Her voice is heard while the element's own clock moves on, read every SOUND_TICK_MS; quiet once it has stood still for
+      // SOUND_STALL_MS (the stream ran dry, a call took the audio) and when the clip is done (finish). What the browser SAYS
+      // (playing, waiting, pause) is only noted for probe(): an iPhone can say "waiting" in the middle of a line it goes on
+      // playing and never say "playing" again, which stilled her mouth mid-briefing. Read only once the element holds this
+      // clip, so the silent unlock clip never counts; a clock that goes BACK (the element starting this clip from the top) is
+      // not her voice either.
+      let lastAt = 0;     // the element's clock at the last reading
+      let movedAt = 0;    // when it last moved on
+      const readClock = () => {
+        const at = Number(el.currentTime) || 0;
+        const now = performance.now();
+        if (at > lastAt) { movedAt = now; sound(true); }
+        else if (now - movedAt >= SOUND_STALL_MS) sound(false);
+        lastAt = at;
+      };
       const hear = () => {
-        el.onplaying = () => { started = true; sound(true); };
-        el.onwaiting = el.onpause = () => sound(false);
+        el.onplaying = () => { started = true; note("playing"); };
+        el.onwaiting = () => note("waiting");
+        el.onpause = () => note("pause");
+        if (clock != null) return;   // the whole-file fallback of a clip that started as a stream: one clock
+        lastAt = Number(el.currentTime) || 0;
+        movedAt = performance.now();
+        clock = setInterval(readClock, SOUND_TICK_MS);
       };
 
       // Everything has arrived: play it as one file.
@@ -320,6 +348,7 @@ export function createAudio({
         if (settled) return;
         if (sink) { sink.dispose(); sink = null; }
         streaming = false;
+        mode = "whole";
         blobUrl = URL.createObjectURL(new Blob(chunks, { type: "audio/mpeg" }));
         el.onended = () => finish();
         el.onerror = () => finish(new Error("playback failed"));
@@ -342,6 +371,7 @@ export function createAudio({
         } catch { sink = null; }
       }
       if (streaming) {
+        mode = "stream";
         el.onended = () => finish();
         el.onerror = () => { if (started) finish(new Error("playback failed")); else sinkFailed(); };
         hear();
@@ -377,6 +407,8 @@ export function createAudio({
   async function playClip(job) {
     const ac = new AbortController();
     current = ac;
+    mode = "loading";
+    said = [];
     try {
       let res;
       try {
@@ -409,6 +441,8 @@ export function createAudio({
       }
     } finally {
       if (current === ac) current = null;
+      mode = "none";
+      said = [];
     }
   }
 
@@ -475,6 +509,21 @@ export function createAudio({
     releaseMic();
   }
 
+  // What her voice is doing right now, for the hidden lips readout (lips.mjs): how the line in hand reached the element
+  // (`clip`), the element's clock, whether it is paused, its readyState, whether she counts as heard, and the browser's last
+  // signals about this clip. Reads only; never throws.
+  function probe() {
+    const el = element;
+    return {
+      clip: mode,
+      at: el ? Number(el.currentTime) || 0 : 0,
+      paused: el ? el.paused !== false : true,
+      ready: el ? Number(el.readyState) || 0 : 0,
+      heard: sounding,
+      said: [...said],
+    };
+  }
+
   // The view that owns this instance is going away but her line should finish (a page change): the mic and capture stop at
   // once, nothing new is accepted, what is playing or queued (a clip still being fetched included) plays to the end, then
   // the instance disposes itself. With nothing playing or queued, or only clips the browser blocked, it disposes now.
@@ -487,5 +536,5 @@ export function createAudio({
     if (!pumping) dispose();
   }
 
-  return { startMic, stopMic, setCapture, speak, stopSpeaking, unlock, retryBlocked, retire, dispose };
+  return { startMic, stopMic, setCapture, speak, stopSpeaking, unlock, retryBlocked, retire, dispose, probe };
 }

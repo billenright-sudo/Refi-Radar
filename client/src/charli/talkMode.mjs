@@ -46,9 +46,21 @@ export function talkTap({ paused = false, speaking = false, micLive = false } = 
 }
 
 // The status line while she speaks. It says how to interrupt her whenever Talk can open the mic (`canTalk`: voice input is
-// set up here and the microphone is available).
-export function speakingStatus({ canTalk = true } = {}) {
+// set up here and the microphone is available). While her line is still on its way (`heard` false: a phone waits seconds for
+// the whole clip, with her mouth still), it says that instead, so a tap is seen to have worked.
+export function speakingStatus({ canTalk = true, heard = true } = {}) {
+  if (!heard) return "Getting her voice…";
   return canTalk ? "Speaking… tap Talk to interrupt" : "Speaking…";
+}
+
+// Whether a tap on Brief me is a new request. Not while the briefing it already asked for (`askedAt`, cleared once she is heard
+// or nothing is on its way any more) is still on its way: saying yes would cut that clip off and start the wait over (Bill's
+// phone, 2026-11-26: two taps, twice the wait). Once she is heard, a tap says it again from the top, as before; a wait of
+// BRIEF_WAIT_MS is not coming, and the tap goes through.
+export const BRIEF_WAIT_MS = 20000;
+export function briefTapCounts({ askedAt = null, now = 0, speaking = false, heard = false } = {}) {
+  if (askedAt == null || !speaking || heard) return true;
+  return now - askedAt >= BRIEF_WAIT_MS;
 }
 
 // Whether the mic closes as soon as one utterance has been captured (tap to talk), before it is sent.

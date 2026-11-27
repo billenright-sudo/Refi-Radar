@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clipToPlay, portraitBox } from "./portrait.mjs";
+import { clipToPlay, clipNeedsRestart, portraitBox } from "./portrait.mjs";
 
 test("clipToPlay: talk while she talks, idle otherwise, nothing when hidden or reduced motion", () => {
   assert.equal(clipToPlay({ state: "talking", hidden: false, reducedMotion: false }), "talk");
@@ -8,6 +8,15 @@ test("clipToPlay: talk while she talks, idle otherwise, nothing when hidden or r
   assert.equal(clipToPlay({ state: "thinking", hidden: false, reducedMotion: false }), "idle");
   assert.equal(clipToPlay({ state: "talking", hidden: true, reducedMotion: false }), null);
   assert.equal(clipToPlay({ state: "talking", hidden: false, reducedMotion: true }), null);
+});
+
+test("clipNeedsRestart: her talking clip is started again when the browser paused it, or it ended, while she still talks", () => {
+  assert.equal(clipNeedsRestart({ clip: "talk", paused: true }), true, "a phone can pause it mid-line");
+  assert.equal(clipNeedsRestart({ clip: "talk", ended: true }), true);
+  assert.equal(clipNeedsRestart({ clip: "talk", paused: false, ended: false }), false, "going: left alone");
+  assert.equal(clipNeedsRestart({ clip: "idle", paused: true }), false, "only the talking clip");
+  assert.equal(clipNeedsRestart({ clip: null, paused: true }), false, "hidden or reduced motion: nothing plays");
+  assert.equal(clipNeedsRestart(), false);
 });
 
 test("portraitBox: a height keeps her whole 4:5 frame (head and shoulders), the width following from it", () => {
